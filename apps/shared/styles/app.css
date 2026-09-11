@@ -14,12 +14,25 @@
  * Tailwind v4's automatic content scanning excludes `node_modules` by default, which is exactly where
  * `@rapidmx/react-shared`'s components live from every consumer's perspective (a `link:`-ed sibling) -
  * without this, none of its Tailwind classnames (Modal/Drawer/Button/Alert/Skeleton/FormField/
- * PopoverPortal/ContactAvatar/MiniDatePicker/BottomTabBar) would ever be scanned. Every real consumer
- * (`server`'s Vite build, `electron-client`'s renderer) imports this one stylesheet as its Tailwind
- * entry, so this one `@source` line covers all of them - see `electron-client`'s own `styles.css` for
- * the identical fix already applied there for `@rapidmx/web-client` itself.
+ * PopoverPortal/ContactAvatar/MiniDatePicker/BottomTabBar) would ever be scanned.
  */
 @source "../../node_modules/@rapidmx/react-shared/src";
+
+/*
+ * `server`'s own build (unlike `electron-client`, which already explicitly sourced this same tree in
+ * its own `styles.css`) has no explicit `@source` for this package's *own* `apps/**` tree at all,
+ * relying entirely on Tailwind's "automatic" module-graph-based detection - confirmed empirically to
+ * be incomplete here: `server`'s `vite.config.ts` (`@rapidrest/react`'s `createViteConfig`) builds one
+ * independent Rollup entry per page (dozens of them, one per `www`/`admin` route), and Tailwind's
+ * per-css-module content scan only picked up classnames from whichever ONE chunk's reachable graph
+ * `app.css` first got attached to - e.g. every `admin`-only utility (`justify-between`, `px-6`,
+ * `max-w-md`, ...) used by `AdminShell.tsx` (which has its own, separate `import "./app.css"`) was
+ * silently absent from the built stylesheet, even though `AdminShell.tsx` itself was very much in the
+ * bundle - verified directly by diffing every classname `AdminShell.tsx` uses against the actual built
+ * CSS. An explicit `@source` here makes the scan independent of Vite's per-entry chunking, the same
+ * fix this file already applies to `react-shared`, just for this package's own source too.
+ */
+@source "../../";
 
 /*
  * Self-hosted display typeface — the four weights shipped in `public/fonts/`. Matches the
