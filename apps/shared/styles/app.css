@@ -1,0 +1,241 @@
+/*
+ * RapidMX mail-server UI — Tailwind entry point.
+ *
+ * Design tokens are still defined as plain CSS custom properties (ported from auth-server's
+ * `public/styles/globals.css`, itself from rapidrest.dev's Infima-based cyan/gold palette) rather than
+ * inside the `@theme` block directly, so the existing `prefers-color-scheme`/`[data-theme]` dark-mode
+ * mechanism keeps working exactly as before. The `@theme` block below just aliases Tailwind's own color/
+ * radius/shadow/font tokens to these variables, so `bg-primary`, `text-muted`, `rounded-md`, `shadow-card`,
+ * etc. resolve through the same live-swappable custom properties instead of static values.
+ */
+@import "tailwindcss";
+
+/*
+ * Self-hosted display typeface — the four weights shipped in `public/fonts/`. Matches the
+ * Book/Medium/Bold/Heavy naming + 400/500/700/800 weight mapping from the brand style guide
+ * (https://powerlevel.gg/style-guide/): Blender Pro is for headings/display/short UI labels only —
+ * never long-form body copy, which stays on `--font-sans` (Inter) below.
+ */
+@font-face {
+    font-family: "Blender Pro";
+    src: url("/fonts/Blender-Pro-Book.ttf") format("truetype");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Blender Pro";
+    src: url("/fonts/Blender-Pro-Medium.ttf") format("truetype");
+    font-weight: 500;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Blender Pro";
+    src: url("/fonts/Blender-Pro-Bold.ttf") format("truetype");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Blender Pro";
+    src: url("/fonts/Blender-Pro-Heavy.ttf") format("truetype");
+    font-weight: 800;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    /* Teal — the primary structural/brand color (nav, links, active states, focus rings), sampled
+     * from the new logo's glass-cube color. Same 7-step shape the old cyan scale used (600/700/800/
+     * 900/500/400/300), just re-hued. */
+    --rr-color-primary: #0d9488;
+    --rr-color-primary-dark: #0f766e;
+    --rr-color-primary-darker: #115e59;
+    --rr-color-primary-darkest: #134e4a;
+    --rr-color-primary-light: #14b8a6;
+    --rr-color-primary-lighter: #2dd4bf;
+    --rr-color-primary-lightest: #5eead4;
+
+    /* Gold — the action/highlight color (primary buttons, hover accents), sampled from the new
+     * logo's envelope. Values taken directly from the brand style guide's gold palette
+     * (https://powerlevel.gg/style-guide/), which is already vetted for WCAG AA contrast. */
+    --rr-color-accent: #a3690a;
+    --rr-color-accent-dark: #7a4e08;
+    --rr-color-accent-soft: #c98a1d;
+    --rr-color-accent-pale: #fbe9c2;
+    --rr-color-text-on-accent: #1c2526;
+
+    --rr-color-danger: #dc2626;
+    --rr-color-danger-bg: #fef2f2;
+    --rr-color-success: #16a34a;
+    --rr-color-warning: #f0b429;
+    --rr-color-warning-contrast: #1c2526;
+
+    --rr-color-bg: #ffffff;
+    --rr-color-surface: #ffffff;
+    --rr-color-surface-alt: #f5f7f8;
+    --rr-color-border: #e3e8ea;
+    --rr-color-text: #1c2526;
+    --rr-color-text-muted: #5a6b6e;
+    --rr-color-text-on-primary: #ffffff;
+
+    --rr-radius-sm: 0.4rem;
+    --rr-radius-md: 0.8rem;
+    --rr-radius-lg: 1rem;
+    --rr-radius-pill: 999px;
+
+    --rr-shadow-lw: 0 1px 2px 0 rgba(0, 0, 0, 0.1);
+    --rr-shadow-md: 0 5px 40px rgba(0, 0, 0, 0.12);
+
+    /* Inter (loaded via Google Fonts in each app's `_layout.tsx`) is body copy's typeface per the
+     * style guide; `--rr-font-display` (Blender Pro) is applied separately, to headings/short UI
+     * labels only — see the global `h1`-`h6` rule near the bottom of this file. */
+    --rr-font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans",
+        sans-serif, BlinkMacSystemFont;
+    --rr-font-display: "Blender Pro", var(--rr-font-family);
+
+    color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --rr-color-primary: #2dd4bf;
+        --rr-color-primary-dark: #14b8a6;
+        --rr-color-primary-darker: #0d9488;
+        --rr-color-primary-darkest: #0f766e;
+        --rr-color-primary-light: #5eead4;
+        --rr-color-primary-lighter: #99f6e4;
+        --rr-color-primary-lightest: #ccfbf1;
+
+        --rr-color-accent: #f2af0d;
+        --rr-color-accent-dark: #c98a0a;
+        --rr-color-accent-soft: #f6ca5f;
+        --rr-color-accent-pale: #fce9ba;
+        --rr-color-text-on-accent: #1c2526;
+
+        --rr-color-danger: #f87171;
+        --rr-color-danger-bg: #3f1d1d;
+        --rr-color-success: #4ade80;
+        --rr-color-warning: #fbbf24;
+        --rr-color-warning-contrast: #1c2526;
+
+        --rr-color-bg: #14181a;
+        --rr-color-surface: #1b2022;
+        --rr-color-surface-alt: #20262a;
+        --rr-color-border: #313a3d;
+        --rr-color-text: #eef2f3;
+        --rr-color-text-muted: #9fb0b3;
+        --rr-color-text-on-primary: #0b1416;
+
+        color-scheme: dark;
+    }
+}
+
+:root[data-theme="dark"] {
+    --rr-color-primary: #2dd4bf;
+    --rr-color-primary-dark: #14b8a6;
+    --rr-color-primary-darker: #0d9488;
+    --rr-color-primary-darkest: #0f766e;
+    --rr-color-primary-light: #5eead4;
+    --rr-color-primary-lighter: #99f6e4;
+    --rr-color-primary-lightest: #ccfbf1;
+
+    --rr-color-accent: #f2af0d;
+    --rr-color-accent-dark: #c98a0a;
+    --rr-color-accent-soft: #f6ca5f;
+    --rr-color-accent-pale: #fce9ba;
+    --rr-color-text-on-accent: #1c2526;
+
+    --rr-color-danger: #f87171;
+    --rr-color-danger-bg: #3f1d1d;
+    --rr-color-success: #4ade80;
+    --rr-color-warning: #fbbf24;
+    --rr-color-warning-contrast: #1c2526;
+
+    --rr-color-bg: #14181a;
+    --rr-color-surface: #1b2022;
+    --rr-color-surface-alt: #20262a;
+    --rr-color-border: #313a3d;
+    --rr-color-text: #eef2f3;
+    --rr-color-text-muted: #9fb0b3;
+    --rr-color-text-on-primary: #0b1416;
+
+    color-scheme: dark;
+}
+
+@theme {
+    --color-primary: var(--rr-color-primary);
+    --color-primary-dark: var(--rr-color-primary-dark);
+    --color-primary-darker: var(--rr-color-primary-darker);
+    --color-primary-darkest: var(--rr-color-primary-darkest);
+    --color-primary-light: var(--rr-color-primary-light);
+    --color-primary-lighter: var(--rr-color-primary-lighter);
+    --color-primary-lightest: var(--rr-color-primary-lightest);
+    --color-accent: var(--rr-color-accent);
+    --color-accent-dark: var(--rr-color-accent-dark);
+    --color-accent-soft: var(--rr-color-accent-soft);
+    --color-accent-pale: var(--rr-color-accent-pale);
+    --color-text-on-accent: var(--rr-color-text-on-accent);
+
+    --color-danger: var(--rr-color-danger);
+    --color-danger-bg: var(--rr-color-danger-bg);
+    --color-success: var(--rr-color-success);
+    --color-warning: var(--rr-color-warning);
+    --color-warning-contrast: var(--rr-color-warning-contrast);
+
+    --color-bg: var(--rr-color-bg);
+    --color-surface: var(--rr-color-surface);
+    --color-surface-alt: var(--rr-color-surface-alt);
+    --color-border: var(--rr-color-border);
+    --color-text: var(--rr-color-text);
+    --color-text-muted: var(--rr-color-text-muted);
+    --color-text-on-primary: var(--rr-color-text-on-primary);
+
+    --radius-sm: var(--rr-radius-sm);
+    --radius-md: var(--rr-radius-md);
+    --radius-lg: var(--rr-radius-lg);
+    --radius-pill: var(--rr-radius-pill);
+
+    --shadow-card: var(--rr-shadow-lw);
+    --shadow-modal: var(--rr-shadow-md);
+
+    --font-sans: var(--rr-font-family);
+    --font-display: var(--rr-font-display);
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: var(--rr-font-family);
+    background: var(--rr-color-bg);
+    color: var(--rr-color-text);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Blender Pro is the brand's display typeface (see the style guide linked at the top of this file) —
+ * applied to every heading regardless of its content, since a font swap alone never hurts even
+ * dynamic content (a contact's name, an email subject). Uppercase/wide-tracking treatment is
+ * deliberately NOT applied blanket here — it reads fine on short, static UI chrome ("Mailboxes",
+ * "Tasks") but turns a real name or subject line into shouty all-caps, so that's opted into per
+ * element instead (`uppercase tracking-wide`), matching the style guide's own body-text warning
+ * ("Blender Pro set in long paragraphs reads as shouting") applied to short user content too. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-family: var(--rr-font-display);
+}
