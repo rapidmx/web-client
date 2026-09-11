@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { ConversationSummary } from "@rapidmx/react-shared/conversationsApi.js";
+import { ConversationSummary } from "@rapidmx/react-shared/mail/conversationsApi.js";
 
 export interface ConversationListProps {
     conversations: ConversationSummary[];

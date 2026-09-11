@@ -7,7 +7,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import AvailabilityEditor from "../../../apps/shared/components/booking/AvailabilityEditor.js";
-import { BookingAvailabilityWindow } from "@rapidmx/react-shared/bookingApi.js";
+import { BookingAvailabilityWindow } from "@rapidmx/react-shared/booking/bookingApi.js";
 
 function Harness({ initial = [] }: { initial?: BookingAvailabilityWindow[] }) {
     const [value, setValue] = React.useState<BookingAvailabilityWindow[]>(initial);

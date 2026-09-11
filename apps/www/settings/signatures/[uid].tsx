@@ -3,14 +3,14 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { MailSignature, getMailSignature, listMailSignatures, updateMailSignature } from "@rapidmx/react-shared/mailSignaturesApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { MailSignature, getMailSignature, listMailSignatures, updateMailSignature } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
 import { clearPreviousDefaults } from "./signatureDefaults.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import RichTextEditor from "../../../shared/components/mail/compose/RichTextEditor.js";
-import Alert from "../../../shared/components/feedback/Alert.js";
-import Button from "../../../shared/components/buttons/Button.js";
-import FormField from "../../../shared/components/forms/FormField.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

@@ -11,7 +11,7 @@ import ResourcePicker from "../../../apps/shared/components/calendar/ResourcePic
 
 // `PopoverPortal`'s own positioning/portal/outside-click behavior is tested in its own file — mocked
 // here to a plain passthrough so this file only exercises `ResourcePicker`'s own content.
-vi.mock("../../../apps/shared/components/mail/compose/PopoverPortal.js", () => ({
+vi.mock("@rapidmx/react-shared/components/overlays/PopoverPortal.js", () => ({
     default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 

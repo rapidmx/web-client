@@ -3,21 +3,21 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { Folder, listFolders } from "@rapidmx/react-shared/mailApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
 import {
     MailFilterAction,
     MailFilterConditions,
     MailFilterRule,
     getMailFilterRule,
     updateMailFilterRule,
-} from "@rapidmx/react-shared/mailFilterRulesApi.js";
+} from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import RuleBuilder, { RuleBuilderValue } from "../../../shared/components/rules/RuleBuilder.js";
 import { MAIL_FILTER_CONDITION_FIELDS, buildMailFilterActionTypes } from "./_mailFilterRuleConfig.js";
-import Alert from "../../../shared/components/feedback/Alert.js";
-import Button from "../../../shared/components/buttons/Button.js";
-import FormField from "../../../shared/components/forms/FormField.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

@@ -10,7 +10,7 @@ import EmojiPicker from "../../../apps/shared/components/mail/compose/EmojiPicke
 
 // `PopoverPortal`'s own positioning/portal/outside-click behavior is tested in `PopoverPortal.test.tsx`
 // — mocked here to a plain passthrough so this file only exercises `EmojiPicker`'s own content.
-vi.mock("../../../apps/shared/components/mail/compose/PopoverPortal.js", () => ({
+vi.mock("@rapidmx/react-shared/components/overlays/PopoverPortal.js", () => ({
     default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
@@ -50,7 +50,7 @@ describe("EmojiPicker", () => {
 });
 
 describe("EmojiPicker with an unrecognized category id", () => {
-    vi.doMock("@rapidmx/react-shared/emojiData.js", () => ({
+    vi.doMock("@rapidmx/react-shared/mail/compose/emojiData.js", () => ({
         EMOJI_CATEGORIES: [{ id: "mystery", emojis: [{ id: "e1", native: "🦄", name: "Unicorn" }] }],
     }));
 

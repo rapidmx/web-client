@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { MailSignature, updateMailSignature } from "@rapidmx/react-shared/mailSignaturesApi.js";
+import { MailSignature, updateMailSignature } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
 
 /**
  * `MailSignature.isDefaultForNewMessages`/`isDefaultForReplyForward` are each meant to hold on at most

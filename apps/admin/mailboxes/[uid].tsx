@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { getMailbox, impersonateUser, Mailbox } from "@rapidmx/react-shared/mailApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { getMailbox, impersonateUser, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import ShareAccessCard from "../../shared/components/admin/mailboxes/ShareAccessCard.js";
 import ResourceSettingsCard from "../../shared/components/admin/mailboxes/ResourceSettingsCard.js";
-import Alert from "../../shared/components/feedback/Alert.js";
-import Button from "../../shared/components/buttons/Button.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 function formatBytes(bytes: number): string {
     if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`;

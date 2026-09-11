@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { Mailbox, updateMailbox } from "@rapidmx/react-shared/mailApi.js";
-import Alert from "../../feedback/Alert.js";
-import Button from "../../buttons/Button.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { Mailbox, updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

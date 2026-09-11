@@ -14,11 +14,11 @@ import {
     HiOutlineShieldExclamation,
     HiOutlineUserGroup,
 } from "react-icons/hi2";
-import { apiFetch, ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/session.js";
-import useBranding from "@rapidmx/react-shared/useBranding.js";
-import Alert from "../../feedback/Alert.js";
-import BottomTabBar, { NavItem } from "../../layout/BottomTabBar.js";
+import { apiFetch, ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
+import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { BrandingFooter, BrandingHeader } from "../../layout/BrandingChrome.js";
 import UserMenu from "../../layout/UserMenu.js";
 

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attachment,
     Message,
@@ -15,12 +15,12 @@ import {
     classifyMessage,
     declineReceipt,
     recallMessage,
-} from "@rapidmx/react-shared/mailApi.js";
-import { buildForwardQuote, buildReplyQuote, forwardSubject, replySubject } from "@rapidmx/react-shared/composeQuoting.js";
+} from "@rapidmx/react-shared/mail/mailApi.js";
+import { buildForwardQuote, buildReplyQuote, forwardSubject, replySubject } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import { useCompose } from "./compose/ComposeContext.js";
-import Modal from "@rapidmx/react-shared/Modal.js";
-import Alert from "../feedback/Alert.js";
-import Button from "../buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 export interface MessageDetailPaneProps {
     message: Message | null;

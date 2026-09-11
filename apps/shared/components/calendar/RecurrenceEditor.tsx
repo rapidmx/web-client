@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { RecurrenceFrequency, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendarApi.js";
-import { WEEKDAY_CODES, WEEKDAY_LABELS, describeRecurrence } from "@rapidmx/react-shared/recurrence.js";
+import { RecurrenceFrequency, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { WEEKDAY_CODES, WEEKDAY_LABELS, describeRecurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
 const SELECT_CLASS =
     "text-sm py-2 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

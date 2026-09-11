@@ -7,7 +7,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import RecurrenceEditor from "../../../apps/shared/components/calendar/RecurrenceEditor.js";
-import { RecurrenceRule } from "@rapidmx/react-shared/calendarApi.js";
+import { RecurrenceRule } from "@rapidmx/react-shared/calendar/calendarApi.js";
 
 /** A thin stateful wrapper so interactions can be chained realistically (each onChange re-renders
  * with the new value), rather than asserting only the first onChange call in isolation. */

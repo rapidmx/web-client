@@ -3,18 +3,18 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     createTransportRule,
     TransportRuleAction,
     TransportRuleConditions,
-} from "@rapidmx/react-shared/transportRulesApi.js";
+} from "@rapidmx/react-shared/admin/transportRulesApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
 import RuleBuilder, { RuleBuilderValue } from "../../../shared/components/rules/RuleBuilder.js";
 import { TRANSPORT_RULE_ACTION_TYPES, TRANSPORT_RULE_CONDITION_FIELDS } from "../_transportRuleConfig.js";
-import Alert from "../../../shared/components/feedback/Alert.js";
-import Button from "../../../shared/components/buttons/Button.js";
-import FormField from "../../../shared/components/forms/FormField.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

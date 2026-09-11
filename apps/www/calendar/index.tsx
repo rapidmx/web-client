@@ -18,23 +18,23 @@ import {
     startOfMonth,
     startOfWeek,
 } from "date-fns";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { colorForFolder } from "@rapidmx/react-shared/calendarColors.js";
-import { CalendarEvent, listCalendarEvents } from "@rapidmx/react-shared/calendarApi.js";
-import { moveOccurrence, resizeOccurrenceEnd } from "@rapidmx/react-shared/calendarMutations.js";
-import { resolveDragAction } from "@rapidmx/react-shared/calendarDragIds.js";
-import { createFolder } from "@rapidmx/react-shared/mailApi.js";
-import { CalendarOccurrence, expandAllOccurrences } from "@rapidmx/react-shared/recurrence.js";
-import Drawer from "@rapidmx/react-shared/Drawer.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { colorForFolder } from "@rapidmx/react-shared/calendar/calendarColors.js";
+import { CalendarEvent, listCalendarEvents } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { moveOccurrence, resizeOccurrenceEnd } from "@rapidmx/react-shared/calendar/calendarMutations.js";
+import { resolveDragAction } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
+import { createFolder } from "@rapidmx/react-shared/mail/mailApi.js";
+import { CalendarOccurrence, expandAllOccurrences } from "@rapidmx/react-shared/calendar/recurrence.js";
+import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
 import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../shared/components/calendar/layout/CalendarShell.js";
 import CalendarListSidebar from "../../shared/components/calendar/CalendarListSidebar.js";
 import EventModal from "../../shared/components/calendar/EventModal.js";
-import MiniDatePicker from "../../shared/components/calendar/MiniDatePicker.js";
+import MiniDatePicker from "@rapidmx/react-shared/components/pickers/MiniDatePicker.js";
 import MonthView from "../../shared/components/calendar/MonthView.js";
 import SplitDayView from "../../shared/components/calendar/SplitDayView.js";
 import TimeGridView from "../../shared/components/calendar/TimeGridView.js";
-import Alert from "../../shared/components/feedback/Alert.js";
-import Button from "../../shared/components/buttons/Button.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 export default function CalendarPage(props: CalendarShellProps) {
     return (

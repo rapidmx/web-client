@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { deleteDomain, DnsRecordCheck, Domain, getDnsSetup, getDomain, verifyDomain } from "@rapidmx/react-shared/domainsApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { deleteDomain, DnsRecordCheck, Domain, getDnsSetup, getDomain, verifyDomain } from "@rapidmx/react-shared/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../shared/components/feedback/Alert.js";
-import Button from "../../shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/Modal.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
     ownership: "Ownership (TXT)",

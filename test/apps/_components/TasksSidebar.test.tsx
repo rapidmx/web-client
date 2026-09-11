@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import TasksSidebar, { tasksViewKey, TasksView } from "../../../apps/shared/components/tasks/TasksSidebar.js";
-import type { Task } from "@rapidmx/react-shared/tasksApi.js";
+import type { Task } from "@rapidmx/react-shared/tasks/tasksApi.js";
 
 function task(overrides: Partial<Task> = {}): Task {
     return {
@@ -111,7 +111,7 @@ describe("TasksSidebar", () => {
     });
 
     it("shows the ApiRequestError message when loading task lists fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockFetch(() => {
             throw new ApiRequestError("nope", 500);
         });
@@ -218,7 +218,7 @@ describe("TasksSidebar", () => {
     });
 
     it("shows the ApiRequestError message when creating a new list fails with an API error.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockFetch((url, init) => {
             if (init?.method === "POST") throw new ApiRequestError("list name already taken", 409);
             return jsonResponse(200, []);

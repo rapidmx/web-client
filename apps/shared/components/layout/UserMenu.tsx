@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef, useState } from "react";
-import { formatProfileName, getMyProfile, Profile, profileInitials } from "@rapidmx/react-shared/profileApi.js";
+import { formatProfileName, getMyProfile, Profile, profileInitials } from "@rapidmx/react-shared/auth/profileApi.js";
 
 export interface UserMenuProps {
     userUid: string;

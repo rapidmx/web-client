@@ -6,7 +6,7 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import MailboxTable from "../../../../apps/shared/components/admin/mailboxes/MailboxTable.js";
-import { Mailbox } from "@rapidmx/react-shared/mailApi.js";
+import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 
 const owned: Mailbox = {
     uid: "mb1",

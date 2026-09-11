@@ -3,20 +3,20 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     BookingAvailabilityWindow,
     BookingType,
     deleteBookingType,
     getBookingType,
     updateBookingType,
-} from "@rapidmx/react-shared/bookingApi.js";
+} from "@rapidmx/react-shared/booking/bookingApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import AvailabilityEditor from "../../../shared/components/booking/AvailabilityEditor.js";
-import Alert from "../../../shared/components/feedback/Alert.js";
-import Button from "../../../shared/components/buttons/Button.js";
-import FormField from "../../../shared/components/forms/FormField.js";
-import Modal from "@rapidmx/react-shared/Modal.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

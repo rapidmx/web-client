@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useState } from "react";
-import Button from "../buttons/Button.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 const INPUT_CLASS =
     "flex-1 text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

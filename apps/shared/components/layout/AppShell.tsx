@@ -6,11 +6,11 @@ import "../../styles/app.css";
 import React, { PropsWithChildren, useState } from "react";
 import type { IconType } from "react-icons";
 import { HiOutlineCalendarDays, HiOutlineClipboardDocumentList, HiOutlineEnvelope, HiOutlineUsers } from "react-icons/hi2";
-import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/session.js";
-import { stopImpersonating } from "@rapidmx/react-shared/mailApi.js";
-import useBranding from "@rapidmx/react-shared/useBranding.js";
+import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
+import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
+import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import ComposeProvider from "../mail/compose/ComposeContext.js";
-import BottomTabBar from "./BottomTabBar.js";
+import BottomTabBar from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { BrandingFooter, BrandingHeader } from "./BrandingChrome.js";
 import UserMenu from "./UserMenu.js";
 

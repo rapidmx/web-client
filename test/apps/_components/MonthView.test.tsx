@@ -9,7 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { eachDayOfInterval, endOfMonth, endOfWeek, format, isSameMonth, startOfMonth, startOfWeek } from "date-fns";
 import { describe, expect, it, vi } from "vitest";
 import MonthView from "../../../apps/shared/components/calendar/MonthView.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/recurrence.js";
+import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
 const VIEW_DATE = new Date("2026-06-15T00:00:00.000Z");
 

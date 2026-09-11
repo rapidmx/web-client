@@ -11,7 +11,7 @@ import GifPicker from "../../../apps/shared/components/mail/compose/GifPicker.js
 
 // `PopoverPortal`'s own positioning/portal/outside-click behavior is tested in `PopoverPortal.test.tsx`
 // — mocked here to a plain passthrough so this file only exercises `GifPicker`'s own content.
-vi.mock("../../../apps/shared/components/mail/compose/PopoverPortal.js", () => ({
+vi.mock("@rapidmx/react-shared/components/overlays/PopoverPortal.js", () => ({
     default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 

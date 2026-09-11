@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { PropsWithChildren, createContext, useContext, useMemo, useState } from "react";
-import useIsMobile from "@rapidmx/react-shared/useIsMobile.js";
+import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import ComposeWindow from "./ComposeWindow.js";
 
 export interface ComposeSession {

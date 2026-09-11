@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useMemo, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Contact,
     createContact,
@@ -12,17 +12,17 @@ import {
     listDeletedContacts,
     setContactFavorite,
     updateContact,
-} from "@rapidmx/react-shared/contactsApi.js";
-import { contactsToVCardFile, contactToVCard, parseVCards } from "@rapidmx/react-shared/vcard.js";
-import useIsMobile from "@rapidmx/react-shared/useIsMobile.js";
+} from "@rapidmx/react-shared/contacts/contactsApi.js";
+import { contactsToVCardFile, contactToVCard, parseVCards } from "@rapidmx/react-shared/contacts/vcard.js";
+import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import { useCompose } from "../../shared/components/mail/compose/ComposeContext.js";
 import ContactsShell, { ContactsShellProps, useContactsShell } from "../../shared/components/contacts/layout/ContactsShell.js";
 import ContactsSidebar, { ContactsView } from "../../shared/components/contacts/ContactsSidebar.js";
 import ContactsToolbar from "../../shared/components/contacts/ContactsToolbar.js";
-import ContactAvatar from "../../shared/components/contacts/ContactAvatar.js";
+import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar.js";
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
-import Alert from "../../shared/components/feedback/Alert.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

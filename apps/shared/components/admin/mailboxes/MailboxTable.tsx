@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { Mailbox } from "@rapidmx/react-shared/mailApi.js";
+import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 
 function formatBytes(bytes: number): string {
     if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;

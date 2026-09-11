@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { BookingAvailabilityWindow } from "@rapidmx/react-shared/bookingApi.js";
-import Button from "../buttons/Button.js";
+import { BookingAvailabilityWindow } from "@rapidmx/react-shared/booking/bookingApi.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 const DAY_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const INPUT_CLASS =

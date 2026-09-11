@@ -11,7 +11,7 @@ import ScheduleSendPicker from "../../../apps/shared/components/mail/compose/Sch
 // `PopoverPortal`'s own positioning/portal/outside-click behavior is tested in its own file — mocked
 // here (matching `EmojiPicker`/`GifPicker`/`ResourcePicker`'s own test files' identical convention) so
 // this file only exercises `ScheduleSendPicker`'s own validation/content.
-vi.mock("../../../apps/shared/components/mail/compose/PopoverPortal.js", () => ({
+vi.mock("@rapidmx/react-shared/components/overlays/PopoverPortal.js", () => ({
     default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 

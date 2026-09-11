@@ -4,9 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { Task, TaskList, createTaskList, listTaskLists } from "@rapidmx/react-shared/tasksApi.js";
-import Drawer from "@rapidmx/react-shared/Drawer.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { Task, TaskList, createTaskList, listTaskLists } from "@rapidmx/react-shared/tasks/tasksApi.js";
+import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
 
 export type TasksView =
     | { type: "myDay" }

@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { Contact, deleteContact, getContact } from "@rapidmx/react-shared/contactsApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { Contact, deleteContact, getContact } from "@rapidmx/react-shared/contacts/contactsApi.js";
 import ContactsShell, { ContactsShellProps } from "../../shared/components/contacts/layout/ContactsShell.js";
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
-import Alert from "../../shared/components/feedback/Alert.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 /**
  * Only reached on mobile (below the `md` breakpoint) — desktop's `apps/www/contacts/index.tsx` keeps its

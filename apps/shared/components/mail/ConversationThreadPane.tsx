@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { Attachment, Folder, Message, getMessage, listAttachments, setMessageRead } from "@rapidmx/react-shared/mailApi.js";
-import { ConversationSummary } from "@rapidmx/react-shared/conversationsApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { Attachment, Folder, Message, getMessage, listAttachments, setMessageRead } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ConversationSummary } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import MessageDetailPane from "./MessageDetailPane.js";
-import Alert from "../feedback/Alert.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 export interface ConversationThreadPaneProps {
     conversation: ConversationSummary | null;

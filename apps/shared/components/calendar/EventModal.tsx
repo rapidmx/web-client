@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attendee,
     AttendeeResponseInput,
@@ -15,15 +15,15 @@ import {
     createCalendarEvent,
     respondToEvent,
     updateCalendarEvent,
-} from "@rapidmx/react-shared/calendarApi.js";
-import { deleteEventOccurrence, deleteEventSeries, detachOccurrence, saveEventSeries } from "@rapidmx/react-shared/calendarMutations.js";
-import { toDatetimeLocal } from "@rapidmx/react-shared/dateInput.js";
-import { Mailbox } from "@rapidmx/react-shared/mailApi.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/recurrence.js";
-import Modal from "@rapidmx/react-shared/Modal.js";
-import Alert from "../feedback/Alert.js";
-import Button from "../buttons/Button.js";
-import FormField from "../forms/FormField.js";
+} from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { deleteEventOccurrence, deleteEventSeries, detachOccurrence, saveEventSeries } from "@rapidmx/react-shared/calendar/calendarMutations.js";
+import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
+import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
 import ResourcePicker from "./ResourcePicker.js";
 

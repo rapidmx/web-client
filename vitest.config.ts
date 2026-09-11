@@ -37,14 +37,24 @@ export default defineConfig({
                 // without matching tests. Carried over from rapidmx/server's own vitest.config.ts, which
                 // enforced this on the same code before the 2026-09-10 extraction (see .claude/NOTES.md).
                 'apps/**': {
-                    // Branches held at 99%, not 100%, as a deliberate one-off: `ComposeWindow.tsx` has a
-                    // single branch (`e.target.files ?? []`) that's genuinely exercised on both sides -
-                    // confirmed via repeated isolated/small-group/single-threaded re-runs - but that
-                    // `@vitest/coverage-v8`'s branch derivation reproducibly fails to attribute correctly
-                    // only at full-suite scale (statements/lines/functions all stay 100% regardless). See
-                    // rapidmx/server's `.claude/NOTES.md`'s 2026-09-07 "Floating Compose window" entry for
-                    // the full investigation. Revisit if this ever creeps further - it should stay pinned
-                    // to this one known branch, not a general excuse to skip writing branch-coverage tests.
+                    // Branches held at 99%, not 100%, as a deliberate one-off covering two known,
+                    // individually-investigated gaps - not a general excuse to skip writing branch-coverage
+                    // tests:
+                    // - `ComposeWindow.tsx`'s `e.target.files ?? []` branch is genuinely exercised on both
+                    //   sides - confirmed via repeated isolated/small-group/single-threaded re-runs - but
+                    //   `@vitest/coverage-v8`'s branch derivation reproducibly fails to attribute correctly
+                    //   only at full-suite scale (statements/lines/functions all stay 100% regardless). See
+                    //   rapidmx/server's `.claude/NOTES.md`'s 2026-09-07 "Floating Compose window" entry for
+                    //   the full investigation.
+                    // - `RuleBuilder.tsx`'s `removeListEntry()` has its own defensive `?? []` fallback for
+                    //   `conditions[key]` being unset, mirroring `addListEntry()`'s identical fallback - but
+                    //   unlike `addListEntry` (reachable: adding a field's *first* entry always starts from
+                    //   `conditions[key] === undefined`), `removeListEntry` is only ever invoked from a
+                    //   chip's own "Remove" button, which by construction only renders when
+                    //   `conditions[key]` already holds that entry - so this fallback can't be reached
+                    //   through the component's real UI (2026-09-11).
+                    // Revisit if either count ever creeps further, or a real reachable path to
+                    // `removeListEntry`'s fallback is found.
                     branches: 99,
                     functions: 100,
                     lines: 100,

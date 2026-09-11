@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, RefObject, useState } from "react";
-import PopoverPortal from "./PopoverPortal.js";
+import PopoverPortal from "@rapidmx/react-shared/components/overlays/PopoverPortal.js";
 
 export interface ScheduleSendPickerProps {
     anchorRef: RefObject<HTMLElement | null>;

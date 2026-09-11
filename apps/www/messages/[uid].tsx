@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { Message, getMessage } from "@rapidmx/react-shared/mailApi.js";
-import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mailDetailHooks.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { Message, getMessage } from "@rapidmx/react-shared/mail/mailApi.js";
+import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import MailShell, { MailShellProps, useMailShell } from "../../shared/components/mail/layout/MailShell.js";
 import MessageDetailPane from "../../shared/components/mail/MessageDetailPane.js";
-import Alert from "../../shared/components/feedback/Alert.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 /**
  * Only reached on mobile (below the `md` breakpoint) — desktop's `apps/www/index.tsx` keeps its existing

@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { Folder, FolderType } from "@rapidmx/react-shared/mailApi.js";
-import { MailFilterAction } from "@rapidmx/react-shared/mailFilterRulesApi.js";
+import { Folder, FolderType } from "@rapidmx/react-shared/mail/mailApi.js";
+import { MailFilterAction } from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
 import { ActionTypeDef, ConditionFieldDef } from "../../../shared/components/rules/RuleBuilder.js";
 
 const FIELD_INPUT_CLASS =

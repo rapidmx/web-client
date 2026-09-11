@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mailApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../shared/components/admin/layout/AdminShell.js";
 import MailboxTable from "../shared/components/admin/mailboxes/MailboxTable.js";
-import Alert from "../shared/components/feedback/Alert.js";
-import Button from "../shared/components/buttons/Button.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 const PAGE_SIZE = 25;
 

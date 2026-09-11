@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { IngestQueueEntry, listIngestQueue } from "@rapidmx/react-shared/mailApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { IngestQueueEntry, listIngestQueue } from "@rapidmx/react-shared/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../shared/components/feedback/Alert.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 export function readMailboxUid(): string | null {
     if (typeof window === "undefined") return null;

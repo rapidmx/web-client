@@ -520,7 +520,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
     });
 
     it("Flagged email view shows the ApiRequestError message when the fetch fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockShellAndTasksWithLists([todayTask], [list], [tasksFolder, inboxFolder], (url) => {
             if (url.includes("folderUid=f-inbox")) throw new ApiRequestError("nope", 500);
             return undefined;
@@ -653,7 +653,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
     });
 
     it("toolbar Complete shows the ApiRequestError message when updating a checked task fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockShellAndTasksWithLists([todayTask], [list], [tasksFolder], (url, init) => {
             if (init?.method === "PUT") throw new ApiRequestError("cannot complete", 403);
             return undefined;
@@ -707,7 +707,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
     });
 
     it("toolbar Add to My Day shows the ApiRequestError message when updating a checked task fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockShellAndTasksWithLists([todayTask], [list], [tasksFolder], (url, init) => {
             if (init?.method === "PUT") throw new ApiRequestError("cannot add to my day", 403);
             return undefined;
@@ -759,7 +759,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
     });
 
     it("toolbar Delete shows the ApiRequestError message when deleting a checked task fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockShellAndTasksWithLists([todayTask], [list], [tasksFolder], (url, init) => {
             if (init?.method === "DELETE") throw new ApiRequestError("cannot delete", 403);
             return undefined;

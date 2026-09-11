@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { TransportRuleAction } from "@rapidmx/react-shared/transportRulesApi.js";
+import { TransportRuleAction } from "@rapidmx/react-shared/admin/transportRulesApi.js";
 import { ActionTypeDef, ConditionFieldDef } from "../../shared/components/rules/RuleBuilder.js";
 
 const FIELD_INPUT_CLASS =

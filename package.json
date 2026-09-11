@@ -1,7 +1,7 @@
 {
   "name": "@rapidmx/web-client",
   "version": "0.1.0",
-  "description": "RapidMX's webmail and admin console React UI - pages and components extracted from rapidmx/server so the same source can build the web client, the SSR server, and a future Electron desktop client.",
+  "description": "RapidMX's webmail and admin console React UI for web-based clients.",
   "type": "module",
   "repository": "https://github.com/rapidmx/web-client",
   "author": "Jean-Philippe Steinmetz <rapidrests@gmail.com>",
@@ -20,7 +20,9 @@
     "build": "rimraf dist && tsc -p tsconfig.json && shx mkdir -p dist/apps/shared/styles && shx cp apps/shared/styles/app.css dist/apps/shared/styles/app.css",
     "lint": "eslint ./apps ./test",
     "test": "vitest run --coverage",
-    "test:watch": "vitest --watch --coverage"
+    "test:watch": "vitest --watch --coverage",
+    "release": "npx @rapidrest/cli release",
+    "prepublish": "yarn build"
   },
   "prettier": {
     "printWidth": 120,

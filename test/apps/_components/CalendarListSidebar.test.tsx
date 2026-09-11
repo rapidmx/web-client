@@ -7,8 +7,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import CalendarListSidebar from "../../../apps/shared/components/calendar/CalendarListSidebar.js";
-import { CALENDAR_COLOR_PALETTE } from "@rapidmx/react-shared/calendarColors.js";
-import { Folder } from "@rapidmx/react-shared/mailApi.js";
+import { CALENDAR_COLOR_PALETTE } from "@rapidmx/react-shared/calendar/calendarColors.js";
+import { Folder } from "@rapidmx/react-shared/mail/mailApi.js";
 
 function folder(overrides: Partial<Folder> = {}): Folder {
     return {

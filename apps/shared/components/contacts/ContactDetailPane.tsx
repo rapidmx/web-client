@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { Contact } from "@rapidmx/react-shared/contactsApi.js";
-import Button from "../buttons/Button.js";
-import ContactAvatar from "./ContactAvatar.js";
+import { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar.js";
 
 export interface ContactDetailPaneProps {
     contact: Contact;

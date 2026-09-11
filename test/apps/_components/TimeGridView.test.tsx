@@ -8,7 +8,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import TimeGridView from "../../../apps/shared/components/calendar/TimeGridView.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/recurrence.js";
+import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
 function occurrence(overrides: Partial<CalendarOccurrence> = {}): CalendarOccurrence {
     return {

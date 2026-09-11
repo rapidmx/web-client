@@ -566,7 +566,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("shows an error, using the ApiRequestError message, when loading deleted contacts fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
             if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [contactsFolder]);
@@ -688,7 +688,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("toolbar Delete shows an error, using the ApiRequestError message, when one deletion fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockShellAndContactsWithLists([jane], [list], (url, init) => {
             if (init?.method === "DELETE") throw new ApiRequestError("cannot delete", 403);
             return undefined;
@@ -771,7 +771,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("toolbar Favorite shows the ApiRequestError message when updating a checked contact fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockShellAndContactsWithLists([jane], [list], (url, init) => {
             if (init?.method === "PUT") throw new ApiRequestError("cannot favorite", 403);
             return undefined;
@@ -844,7 +844,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("toolbar Add category shows the ApiRequestError message when updating a checked contact fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("VIP");
         mockShellAndContactsWithLists([jane], [list], (url, init) => {
             if (init?.method === "PUT") throw new ApiRequestError("cannot categorize", 403);
@@ -943,7 +943,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("toolbar Import shows the ApiRequestError message when creating one of the imported contacts fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockShellAndContactsWithLists([], [list], (url, init) => {
             if (url === "/api/mail/contacts" && init?.method === "POST") throw new ApiRequestError("cannot import", 403);
             return undefined;

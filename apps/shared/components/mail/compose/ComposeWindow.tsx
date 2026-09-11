@@ -12,7 +12,7 @@ import {
     HiOutlineTrash,
     HiOutlineXMark,
 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attachment,
     ComposeRecipientInput,
@@ -25,13 +25,13 @@ import {
     setMessageRequestReceipt,
     setMessageScheduledSendTime,
     uploadAttachment,
-} from "@rapidmx/react-shared/mailApi.js";
-import { listMailSignatures } from "@rapidmx/react-shared/mailSignaturesApi.js";
-import useIsMobile from "@rapidmx/react-shared/useIsMobile.js";
+} from "@rapidmx/react-shared/mail/mailApi.js";
+import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
+import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import type { ComposeSession } from "./ComposeContext.js";
 import RichTextEditor from "./RichTextEditor.js";
 import ScheduleSendPicker from "./ScheduleSendPicker.js";
-import Alert from "../../feedback/Alert.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 export interface ComposeWindowProps {
     session: ComposeSession;

@@ -7,7 +7,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import SplitDayView from "../../../apps/shared/components/calendar/SplitDayView.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/recurrence.js";
+import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
 const DAY = new Date("2026-06-10T00:00:00.000Z");
 const COLUMNS = [

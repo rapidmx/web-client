@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ContactsSidebar, { contactsViewKey, ContactsView } from "../../../apps/shared/components/contacts/ContactsSidebar.js";
-import type { Contact } from "@rapidmx/react-shared/contactsApi.js";
+import type { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
 
 function contact(overrides: Partial<Contact> = {}): Contact {
     return {
@@ -106,7 +106,7 @@ describe("ContactsSidebar", () => {
     });
 
     it("shows an error, using the ApiRequestError message, when loading contact lists fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockFetch(() => {
             throw new ApiRequestError("nope", 500);
         });
@@ -257,7 +257,7 @@ describe("ContactsSidebar", () => {
     });
 
     it("shows the ApiRequestError message when creating a new list fails with an API error.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/api.js");
+        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
         mockFetch((url, init) => {
             if (init?.method === "POST") {
                 throw new ApiRequestError("list name already taken", 409);

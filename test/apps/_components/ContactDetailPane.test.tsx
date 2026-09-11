@@ -11,7 +11,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import ContactDetailPane from "../../../apps/shared/components/contacts/ContactDetailPane.js";
-import type { Contact } from "@rapidmx/react-shared/contactsApi.js";
+import type { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
 
 function contactFixture(overrides: Partial<Contact> = {}): Contact {
     return {

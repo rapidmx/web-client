@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { addMinutes, format, isSameDay, startOfDay } from "date-fns";
-import { CalendarOccurrence } from "@rapidmx/react-shared/recurrence.js";
+import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
 const HOUR_HEIGHT_PX = 48;
 const SLOT_MINUTES = 30;

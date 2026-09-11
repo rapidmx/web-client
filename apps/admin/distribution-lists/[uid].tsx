@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import { DistributionList, getDistributionList } from "@rapidmx/react-shared/distributionListsApi.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { DistributionList, getDistributionList } from "@rapidmx/react-shared/admin/distributionListsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import MemberListCard from "../../shared/components/admin/distributionLists/MemberListCard.js";
-import Alert from "../../shared/components/feedback/Alert.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 export default function DistributionListDetailPage(props: Omit<AdminShellProps, "active"> & { params: { uid: string } }) {
     return (

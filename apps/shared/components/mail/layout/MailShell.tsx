@@ -4,11 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/api.js";
-import Drawer from "@rapidmx/react-shared/Drawer.js";
-import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shared/mailApi.js";
-import Alert from "../../feedback/Alert.js";
-import Skeleton, { SkeletonList } from "../../feedback/Skeleton.js";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
+import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { useCompose } from "../compose/ComposeContext.js";

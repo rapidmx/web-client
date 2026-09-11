@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { clearPreviousDefaults } from "../../../apps/www/settings/signatures/signatureDefaults.js";
-import { MailSignature } from "@rapidmx/react-shared/mailSignaturesApi.js";
+import { MailSignature } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
 
 function signatureFixture(overrides: Partial<MailSignature> = {}): MailSignature {
     return {

@@ -170,10 +170,91 @@ describe("BrandingPage", () => {
         await screen.findByLabelText("Company name");
 
         fireEvent.change(screen.getByLabelText("Upload logo"), { target: { files: [] } });
+        fireEvent.change(screen.getByLabelText("Upload icon"), { target: { files: [] } });
         fireEvent.change(screen.getByLabelText("Upload stylesheet"), { target: { files: [] } });
 
         expect(screen.queryByRole("button", { name: "Remove logo" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Remove icon" })).not.toBeInTheDocument();
         expect(screen.getByText("None configured")).toBeInTheDocument();
+    });
+
+    it("uploads an icon file and shows the updated preview, then removes it", async () => {
+        const user = userEvent.setup();
+        mockAdminFetch((url, init) => {
+            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/mail/branding/icon" && init.method === "POST") {
+                return jsonResponse(200, { ...BRANDING, iconUrl: "/api/mail/branding/icon" });
+            }
+            if (url === "/api/mail/branding/icon" && init.method === "DELETE") return new Response(null, { status: 204 });
+        });
+        render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByLabelText("Company name");
+
+        await user.click(screen.getByRole("button", { name: "Upload icon" }));
+        const file = new File(["png"], "icon.png", { type: "image/png" });
+        await user.upload(screen.getByLabelText("Upload icon"), file);
+        expect(await screen.findByRole("button", { name: "Remove icon" })).toBeInTheDocument();
+        expect(screen.getByAltText("Current icon")).toHaveAttribute("src", "/api/mail/branding/icon");
+
+        await user.click(screen.getByRole("button", { name: "Remove icon" }));
+        expect(screen.queryByRole("button", { name: "Remove icon" })).not.toBeInTheDocument();
+    });
+
+    it("rejects an oversized icon file client-side without ever calling the upload endpoint", async () => {
+        const user = userEvent.setup();
+        mockAdminFetch((url) => {
+            if (url === "/api/mail/branding") return jsonResponse(200, BRANDING);
+        });
+        render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByLabelText("Company name");
+
+        const bigFile = new File([new Uint8Array(5 * 1024 * 1024 + 1)], "huge.png", { type: "image/png" });
+        await user.upload(screen.getByLabelText("Upload icon"), bigFile);
+
+        expect(await screen.findByText('"huge.png" is too large — icons must be 5MB or smaller.')).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Remove icon" })).not.toBeInTheDocument();
+    });
+
+    it("sets an external icon URL, disabling Set until the value changes, and falls back to the logo when unset", async () => {
+        const user = userEvent.setup();
+        mockAdminFetch((url, init) => {
+            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) {
+                return jsonResponse(200, { ...BRANDING, logoUrl: "https://cdn.example.com/logo.png" });
+            }
+            if (url === "/api/mail/branding" && init.method === "PUT") {
+                const body = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...BRANDING, logoUrl: "https://cdn.example.com/logo.png", ...body });
+            }
+        });
+        render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByLabelText("Company name");
+
+        expect(screen.getByAltText("Current icon")).toHaveAttribute("src", "https://cdn.example.com/logo.png");
+
+        const setButtons = screen.getAllByRole("button", { name: "Set" });
+        const iconSetButton = setButtons[1];
+        expect(iconSetButton).toBeDisabled();
+
+        await user.type(screen.getByLabelText("Icon URL"), "https://cdn.example.com/i.png");
+        expect(iconSetButton).not.toBeDisabled();
+        await user.click(iconSetButton);
+
+        expect(await screen.findByAltText("Current icon")).toHaveAttribute("src", "https://cdn.example.com/i.png");
+    });
+
+    it("shows an error when the icon upload fails", async () => {
+        const user = userEvent.setup();
+        mockAdminFetch((url, init) => {
+            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/mail/branding/icon" && init.method === "POST") return jsonResponse(400, { message: "too big" });
+        });
+        render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByLabelText("Company name");
+
+        const file = new File(["png"], "icon.png", { type: "image/png" });
+        await user.upload(screen.getByLabelText("Upload icon"), file);
+
+        expect(await screen.findByText("too big")).toBeInTheDocument();
     });
 
     it("sets an external logo URL, disabling Set until the value changes", async () => {

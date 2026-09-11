@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { RefObject } from "react";
-import { EMOJI_CATEGORIES } from "@rapidmx/react-shared/emojiData.js";
-import PopoverPortal from "./PopoverPortal.js";
+import { EMOJI_CATEGORIES } from "@rapidmx/react-shared/mail/compose/emojiData.js";
+import PopoverPortal from "@rapidmx/react-shared/components/overlays/PopoverPortal.js";
 
 export interface EmojiPickerProps {
     anchorRef: RefObject<HTMLElement | null>;

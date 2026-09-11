@@ -17,7 +17,7 @@ import { MouseSensor, TouchSensor } from "@dnd-kit/core";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { dayDropId, resizeDragId, slotDropId } from "@rapidmx/react-shared/calendarDragIds.js";
+import { dayDropId, resizeDragId, slotDropId } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
 import CalendarPage from "../../../apps/www/calendar/index.js";
 
 let capturedOnDragEnd: ((event: { active: { id: string }; over: { id: string } | null }) => Promise<void>) | undefined;

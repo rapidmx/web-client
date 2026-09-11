@@ -5,8 +5,8 @@
 import React from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { addMinutes, format, isSameDay, isToday, startOfDay } from "date-fns";
-import { dayDropId, eventDragId, resizeDragId, slotDropId } from "@rapidmx/react-shared/calendarDragIds.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/recurrence.js";
+import { dayDropId, eventDragId, resizeDragId, slotDropId } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
+import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
 const HOUR_HEIGHT_PX = 48;
 const SLOT_MINUTES = 30;

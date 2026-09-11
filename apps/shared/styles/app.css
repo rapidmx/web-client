@@ -11,6 +11,17 @@
 @import "tailwindcss";
 
 /*
+ * Tailwind v4's automatic content scanning excludes `node_modules` by default, which is exactly where
+ * `@rapidmx/react-shared`'s components live from every consumer's perspective (a `link:`-ed sibling) -
+ * without this, none of its Tailwind classnames (Modal/Drawer/Button/Alert/Skeleton/FormField/
+ * PopoverPortal/ContactAvatar/MiniDatePicker/BottomTabBar) would ever be scanned. Every real consumer
+ * (`server`'s Vite build, `electron-client`'s renderer) imports this one stylesheet as its Tailwind
+ * entry, so this one `@source` line covers all of them - see `electron-client`'s own `styles.css` for
+ * the identical fix already applied there for `@rapidmx/web-client` itself.
+ */
+@source "../../node_modules/@rapidmx/react-shared/src";
+
+/*
  * Self-hosted display typeface — the four weights shipped in `public/fonts/`. Matches the
  * Book/Medium/Bold/Heavy naming + 400/500/700/800 weight mapping from the brand style guide
  * (https://powerlevel.gg/style-guide/): Blender Pro is for headings/display/short UI labels only —
