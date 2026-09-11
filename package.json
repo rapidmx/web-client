@@ -37,7 +37,7 @@
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
-    "@rapidmx/react-shared": "link:../react-shared",
+    "@rapidmx/react-shared": "^0.2.0",
     "@tiptap/core": "^3.31.3",
     "@tiptap/extension-highlight": "^3.31.3",
     "@tiptap/extension-image": "^3.31.3",
