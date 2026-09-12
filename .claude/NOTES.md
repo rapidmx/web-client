@@ -138,4 +138,57 @@ confirmed by diffing every classname `AdminShell.tsx`/`MailboxProvisioning.tsx` 
   built file, not assumed), completely present after. This was pre-existing since the original
   2026-09-10 split, just never visible until now - the SSR "Invalid hook call" bug (see `server`'s
   own `.claude/NOTES.md`, same date) made every page 500 before anyone could see the layout render
+
+### 2026-09-11 (continued) — Add `KeyEnrollmentGate`, and a real architectural bug found along the way
+
+Part of the same session that added `react-shared`'s `crypto/` foundation (see that repo's own
+NOTES.md) - this piece wires first-sign-in E2E key provisioning into `MailShell`. Only the
+**encryption** key is auto-provisioned; the signing key's RFC 8823 ACME public-CA enrolment has no
+server-side endpoint yet (tracked in `restapi`, out of scope here), so generating a signing keypair
+with nowhere real to enroll it would be premature.
+
+- **Real bug, not a test artifact**: the first version of this wiring only wrapped `AppShell` in
+  `KeyEnrollmentGate` *once `mailboxUid` had resolved* ("checking"/"error" states rendered `AppShell`
+  bare, ungated, reasoning that there was nothing to gate yet). This is wrong - the moment
+  `mailboxUid` resolves, that's a **different component type at the same tree position**
+  (`AppShell` directly vs. `KeyEnrollmentGate > AppShell`), so React unmounts and remounts the
+  *entire* `AppShell` subtree right at that transition, destroying whatever state/effects it had
+  already started. Caught via a real, reproducible test failure (three impersonation-banner tests
+  broke only when `impersonating: true` was set - confirmed the banner rendered *immediately* during
+  MailShell's own "checking" phase, then vanished the instant `status` flipped to "ready", exactly
+  when `AppShell` got torn down and rebuilt from scratch). **Fix**: `KeyEnrollmentGate` now always
+  wraps `AppShell`, at a stable tree position for MailShell's entire lifecycle; the gate itself
+  accepts an optional `mailboxUid` and simply passes `children` through untouched until a real one is
+  supplied, only starting its own async check once it has something to check. This is a real lesson
+  for any future "gate real content behind an async check" component in this codebase: gate *inside*
+  a stable wrapper, never by conditionally wrapping at the call site.
+- **Confirmed the same real bug empirically before concluding it was a bug**, not a test quirk - spent
+  significant effort first suspecting (and ruling out, one at a time, via direct instrumentation)
+  `mockLocation()`'s jsdom interaction, Vite dependency-optimizer caching, `vi.mock` realm/module
+  duplication, and React Strict Mode double-invoking effects, before a `console.trace()` in the
+  gate's own effect cleanup showed the real cause: `commitPassiveUnmountEffectsInsideOfDeletedTree`,
+  i.e. a genuine fiber-tree deletion, not a mock timing artifact.
+- **Separately, a real Vite/Vitest quirk does exist** and is unrelated to the bug above:
+  `vi.stubGlobal("fetch", ...)` (this suite's usual way of mocking every other `@rapidmx/react-shared`
+  API call) does not reliably reach `@rapidmx/react-shared/crypto/keyvaultApi.js` specifically -
+  confirmed by direct reproduction (`globalThis.fetch` read as the real, unstubbed implementation
+  *inside* `KeyEnrollmentGate`'s own effect, even though the exact same check one tick earlier, in
+  the test body itself, showed the stub still active). Root cause not fully isolated (tried and ruled
+  out: clearing `node_modules/.vite`, `optimizeDeps.include`, `server.deps.inline` - none changed the
+  outcome) - plausibly specific to this being a brand-new, not-yet-published subpath consumed via a
+  fresh `yarn patch` rather than a real registry release. **Workaround**: mock
+  `@rapidmx/react-shared/crypto/keyvaultApi.js` at the module level (`vi.mock(...)`) instead of
+  relying on the shared `mockFetch()` helper, in any test that renders `MailShell`/anything wrapping
+  `KeyEnrollmentGate`. Revisit whether this is still needed once `react-shared` gets a real publish
+  past this patch.
+- **`@rapidmx/react-shared` is now consumed via `yarn patch`**, not a plain registry dependency,
+  specifically to pick up its new `crypto/` module ahead of a real npm publish - `.yarn/patches/
+  @rapidmx-react-shared-npm-0.2.0-*.patch` replaces the installed package's `dist/` wholesale with a
+  freshly-built copy from the sibling `react-shared` checkout. Patching alone does **not** pull in a
+  patched package's own *new* transitive dependencies (Yarn resolves the dependency graph from the
+  original, unpatched registry manifest before applying the patch) - `@peculiar/x509`, `hash-wasm`,
+  and `reflect-metadata` had to be added as this repo's own **direct** dependencies too, matching
+  exactly what `react-shared`'s own `package.json` newly declares. Whenever `react-shared` picks up
+  more new dependencies for code this repo actually imports, mirror them here the same way until a
+  real publish makes the patch unnecessary.
   at all.
