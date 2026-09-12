@@ -9,6 +9,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import MailShell, { useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
 
+// MailShell now wraps its content in KeyEnrollmentGate (see that component), which checks
+// getKeyVault() once mailboxUid resolves. Mocked at the module level rather than via the shared
+// mockFetch() helper used everywhere else in this file: KeyEnrollmentGate.tsx's dependency on
+// @rapidmx/react-shared's crypto/ subpath (added ahead of a real react-shared publish, consumed here
+// via a yarn patch) isn't reliably reached by a plain vi.stubGlobal("fetch", ...) the way every other
+// @rapidmx/react-shared API call in this suite is - a Vite/Vitest module-resolution quirk specific to
+// this not-yet-published subpath, confirmed by direct reproduction. Every test in this file exercises
+// MailShell's own behavior, not encryption enrollment, so "already enrolled" is the correct default
+// throughout - a mailbox with no keys enrolled yet is KeyEnrollmentGate's own concern, covered by its
+// own dedicated test file.
+vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
+    getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
+    enrollKey: vi.fn(),
+}));
+
 const AUTH_SERVER_URL = "https://auth.example.com";
 
 const mailboxA = {

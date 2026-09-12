@@ -1,0 +1,808 @@
+diff --git a/dist/crypto/encoding.d.ts b/dist/crypto/encoding.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f5df9fabc16c28b2e98d83bb77fe32634e40d1a8
+--- /dev/null
++++ b/dist/crypto/encoding.d.ts
+@@ -0,0 +1,9 @@
++/**
++ * Plain base64/base64url <-> `Uint8Array` conversions shared by every `crypto/*` module. Deliberately
++ * `Buffer`-free — this code runs in a browser tab and an Electron renderer alike, and `Buffer` is not
++ * guaranteed to exist in either without a bundler polyfill.
++ */
++export declare function toBase64(bytes: Uint8Array): string;
++export declare function fromBase64(base64: string): Uint8Array;
++export declare function toBase64Url(bytes: Uint8Array): string;
++export declare function fromBase64Url(base64url: string): Uint8Array;
+diff --git a/dist/crypto/encoding.js b/dist/crypto/encoding.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..02bb0730ce7c2e0d1e5148458931315ee4f3614d
+--- /dev/null
++++ b/dist/crypto/encoding.js
+@@ -0,0 +1,32 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Plain base64/base64url <-> `Uint8Array` conversions shared by every `crypto/*` module. Deliberately
++ * `Buffer`-free — this code runs in a browser tab and an Electron renderer alike, and `Buffer` is not
++ * guaranteed to exist in either without a bundler polyfill.
++ */
++export function toBase64(bytes) {
++    let binary = "";
++    for (const byte of bytes) {
++        binary += String.fromCharCode(byte);
++    }
++    return btoa(binary);
++}
++export function fromBase64(base64) {
++    const binary = atob(base64);
++    const bytes = new Uint8Array(binary.length);
++    for (let i = 0; i < binary.length; i++) {
++        bytes[i] = binary.charCodeAt(i);
++    }
++    return bytes;
++}
++export function toBase64Url(bytes) {
++    return toBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
++}
++export function fromBase64Url(base64url) {
++    const padded = base64url.replace(/-/g, "+").replace(/_/g, "/");
++    const padding = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
++    return fromBase64(padded + padding);
++}
+diff --git a/dist/crypto/keys.d.ts b/dist/crypto/keys.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..37fae09b31b59d842afd9a0feba0be54cd2bb77e
+--- /dev/null
++++ b/dist/crypto/keys.d.ts
+@@ -0,0 +1,45 @@
++/**
++ * Client-side keypair generation for `specs/end-to-end_encryption.md`'s "Keypair Generation & Storage":
++ * on first sign-in, the client generates two ECC P-256 keypairs (signing, encryption) and builds a
++ * PKCS#10 CSR for each — `keyvaultApi.ts`'s `enrollKey()` then either submits the encryption CSR to the
++ * server's internal CA (`useType: "encrypt"`), or, for signing, the CSR is sent through the separate,
++ * asynchronous public-CA enrollment flow this repo doesn't drive directly (`useType: "sign"` expects an
++ * already-issued certificate — see `keyvaultApi.ts`'s `EnrollKeyInput` doc comment).
++ *
++ * Both keys are generated as WebCrypto `ECDSA` keypairs (`sign`/`verify` usages) even though the
++ * encryption key is only ever used, once issued, for key-agreement operations, never for signing a
++ * message — a PKCS#10 CSR must itself be signed by the key it certifies (proof of possession), which
++ * requires a signing-capable `CryptoKey`. The issued certificate's own `keyUsage` extension (set
++ * server-side — see `@rapidmx/restapi`'s `LocalX509CertificateAuthority`) is what actually restricts the
++ * encryption key to key-agreement use; nothing in this module relies on that restriction, it only
++ * generates the keypair and proves possession of it. The same underlying P-256 key material is
++ * re-imported under the `ECDH` algorithm tag by `crypto/smime.ts` when it's actually used to encrypt/
++ * decrypt (see `exportPrivateKeyPkcs8()`'s own doc comment) — WebCrypto ties an algorithm to a
++ * `CryptoKey` object, not to the underlying key material itself, so this is the same key, re-imported.
++ *
++ * ECC P-256, not RSA, per the spec: "roughly halves the size of the Autocrypt-style header carried on
++ * every outgoing message" versus RSA-2048.
++ */
++import "reflect-metadata";
++export interface GeneratedKeyPair {
++    keyPair: CryptoKeyPair;
++    /** PEM-encoded PKCS#10 CSR, ready to pass as `keyvaultApi.ts`'s `EnrollKeyInput.csr`. */
++    csrPem: string;
++}
++/**
++ * Generates a fresh P-256 keypair and a self-signed PKCS#10 CSR naming `mailboxAddress` as the subject
++ * common name. `useType` only affects the CSR's own extensions (`emailProtection` EKU either way, since
++ * both signing and encryption certs are used for S/MIME) — actual key-usage restriction happens
++ * server-side at issuance, not here; this function only proves possession of the generated key.
++ */
++export declare function generateKeyPairWithCsr(mailboxAddress: string, useType: "sign" | "encrypt"): Promise<GeneratedKeyPair>;
++/** Exports a private key as raw PKCS#8 bytes — the form AEAD-sealed under MK (see `masterKey.ts`) before
++ * being uploaded via `keyvaultApi.ts`'s `enrollKey()`. */
++export declare function exportPrivateKeyPkcs8(privateKey: CryptoKey): Promise<Uint8Array>;
++/**
++ * Re-imports a PKCS#8 private key for a specific algorithm/usage — used both to restore a signing key
++ * after unwrapping it (`algorithm: "ECDSA"`, `usages: ["sign"]`) and, by `crypto/smime.ts`, to reinterpret
++ * the same P-256 encryption key material for actual key-agreement operations (`algorithm: "ECDH"`,
++ * `usages: ["deriveBits"]`) — see this module's own doc comment for why one physical key supports both.
++ */
++export declare function importPrivateKeyPkcs8(raw: Uint8Array, algorithm: EcKeyImportParams, usages: KeyUsage[]): Promise<CryptoKey>;
+diff --git a/dist/crypto/keys.js b/dist/crypto/keys.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..509f0888cb0a588e1a404f15baacb2dad03fc613
+--- /dev/null
++++ b/dist/crypto/keys.js
+@@ -0,0 +1,70 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Client-side keypair generation for `specs/end-to-end_encryption.md`'s "Keypair Generation & Storage":
++ * on first sign-in, the client generates two ECC P-256 keypairs (signing, encryption) and builds a
++ * PKCS#10 CSR for each — `keyvaultApi.ts`'s `enrollKey()` then either submits the encryption CSR to the
++ * server's internal CA (`useType: "encrypt"`), or, for signing, the CSR is sent through the separate,
++ * asynchronous public-CA enrollment flow this repo doesn't drive directly (`useType: "sign"` expects an
++ * already-issued certificate — see `keyvaultApi.ts`'s `EnrollKeyInput` doc comment).
++ *
++ * Both keys are generated as WebCrypto `ECDSA` keypairs (`sign`/`verify` usages) even though the
++ * encryption key is only ever used, once issued, for key-agreement operations, never for signing a
++ * message — a PKCS#10 CSR must itself be signed by the key it certifies (proof of possession), which
++ * requires a signing-capable `CryptoKey`. The issued certificate's own `keyUsage` extension (set
++ * server-side — see `@rapidmx/restapi`'s `LocalX509CertificateAuthority`) is what actually restricts the
++ * encryption key to key-agreement use; nothing in this module relies on that restriction, it only
++ * generates the keypair and proves possession of it. The same underlying P-256 key material is
++ * re-imported under the `ECDH` algorithm tag by `crypto/smime.ts` when it's actually used to encrypt/
++ * decrypt (see `exportPrivateKeyPkcs8()`'s own doc comment) — WebCrypto ties an algorithm to a
++ * `CryptoKey` object, not to the underlying key material itself, so this is the same key, re-imported.
++ *
++ * ECC P-256, not RSA, per the spec: "roughly halves the size of the Autocrypt-style header carried on
++ * every outgoing message" versus RSA-2048.
++ */
++import "reflect-metadata";
++import * as x509 from "@peculiar/x509";
++// The global `crypto` (WebCrypto) is what a browser tab or Electron renderer already provides natively —
++// no polyfill needed, unlike Node's own global `crypto`, which @peculiar/x509's server-side usage in
++// @rapidmx/restapi has to opt into explicitly (see that repo's `LocalX509CertificateAuthority.ts`).
++x509.cryptoProvider.set(crypto);
++const KEY_ALGORITHM = { name: "ECDSA", namedCurve: "P-256" };
++const CSR_SIGNING_ALGORITHM = { name: "ECDSA", hash: "SHA-256" };
++/**
++ * Generates a fresh P-256 keypair and a self-signed PKCS#10 CSR naming `mailboxAddress` as the subject
++ * common name. `useType` only affects the CSR's own extensions (`emailProtection` EKU either way, since
++ * both signing and encryption certs are used for S/MIME) — actual key-usage restriction happens
++ * server-side at issuance, not here; this function only proves possession of the generated key.
++ */
++export async function generateKeyPairWithCsr(mailboxAddress, useType) {
++    const keyPair = (await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"]));
++    const csr = await x509.Pkcs10CertificateRequestGenerator.create({
++        // Structural (array-of-object) subject name, matching @rapidmx/restapi's own CA-side convention -
++        // never string-interpolated, so a mailbox address containing RDN-special characters (`,`, `+`,
++        // `=`) can't inject an extra attribute into the subject DN.
++        name: [{ CN: [mailboxAddress] }],
++        keys: keyPair,
++        signingAlgorithm: CSR_SIGNING_ALGORITHM,
++        extensions: [
++            new x509.ExtendedKeyUsageExtension(["1.3.6.1.5.5.7.3.4"] /* emailProtection */, false),
++        ],
++    });
++    return { keyPair, csrPem: csr.toString("pem") };
++}
++/** Exports a private key as raw PKCS#8 bytes — the form AEAD-sealed under MK (see `masterKey.ts`) before
++ * being uploaded via `keyvaultApi.ts`'s `enrollKey()`. */
++export async function exportPrivateKeyPkcs8(privateKey) {
++    const pkcs8 = await crypto.subtle.exportKey("pkcs8", privateKey);
++    return new Uint8Array(pkcs8);
++}
++/**
++ * Re-imports a PKCS#8 private key for a specific algorithm/usage — used both to restore a signing key
++ * after unwrapping it (`algorithm: "ECDSA"`, `usages: ["sign"]`) and, by `crypto/smime.ts`, to reinterpret
++ * the same P-256 encryption key material for actual key-agreement operations (`algorithm: "ECDH"`,
++ * `usages: ["deriveBits"]`) — see this module's own doc comment for why one physical key supports both.
++ */
++export async function importPrivateKeyPkcs8(raw, algorithm, usages) {
++    return crypto.subtle.importKey("pkcs8", raw, algorithm, true, usages);
++}
+diff --git a/dist/crypto/keyvaultApi.d.ts b/dist/crypto/keyvaultApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b5b50dedd7f17aa410624489c0baca2b04120248
+--- /dev/null
++++ b/dist/crypto/keyvaultApi.d.ts
+@@ -0,0 +1,114 @@
++/** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
++ * `@rapidmx/restapi`'s `PublicKey` type exactly. */
++export interface PublicKey {
++    /** Base64-encoded DER X.509 certificate. */
++    publicKey: string;
++    /** The key's type/format (e.g. `x509`). */
++    type: string;
++    useType: "sign" | "encrypt";
++    /** SHA-256 fingerprint of the certificate, hex encoded. */
++    fingerprint: string;
++    /** UTC timestamp (epoch ms) at which this key becomes valid. */
++    notBefore: number;
++    /** UTC timestamp (epoch ms) at which this key expires. */
++    notAfter: number;
++    /** UTC timestamp (epoch ms) at which this key was revoked, if applicable. */
++    revokedAt?: number;
++}
++/** A private key encrypted under the mailbox's master key (MK). Mirrors `@rapidmx/restapi`'s
++ * `WrappedPrivateKey` exactly. */
++export interface WrappedPrivateKey {
++    /** Base64-encoded AEAD ciphertext of the private key. */
++    ciphertext: string;
++    /** Base64-encoded AEAD nonce. */
++    nonce: string;
++    /** AEAD algorithm identifier (e.g. `AES-256-GCM`). */
++    algorithm: string;
++    fingerprint: string;
++    useType: "sign" | "encrypt";
++}
++/** One wrapped copy of the mailbox master key (MK), per unlock method. Mirrors `@rapidmx/restapi`'s
++ * `MasterKeyWrap` exactly. */
++export interface MasterKeyWrap {
++    method: "password" | "passkey" | "recovery" | "escrow";
++    /** Opaque identifier for the method instance (e.g. a WebAuthn credential ID). */
++    methodId?: string;
++    escrowScopeId?: string;
++    /** Base64-encoded AEAD ciphertext of the master key. */
++    ciphertext: string;
++    /** Base64-encoded AEAD nonce. */
++    nonce: string;
++    /** Base64-encoded KDF salt. */
++    salt: string;
++    /** KDF identifier and parameters (e.g. `argon2id:m=65536,t=3,p=4`). */
++    kdf: string;
++    schemeVersion: number;
++    createdAt: number;
++}
++export interface EncryptionPreference {
++    lastSeen?: number;
++    preferEncrypt: "mutual" | "nopreference";
++}
++export interface KeyConflict {
++    observedFingerprint: string;
++    observedAt: number;
++    source: "header" | "discovery";
++}
++/** The wire shape `GET`/`POST`/`PUT`/`DELETE` `/mail/mailboxes/:id/keyvault*` return. */
++export interface KeyVault {
++    wrappedKeys: WrappedPrivateKey[];
++    masterKeyWraps: MasterKeyWrap[];
++}
++/** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
++export declare function getKeyVault(mailboxUid: string): Promise<KeyVault>;
++export interface EnrollKeyInput {
++    useType: "sign" | "encrypt";
++    /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
++     * calls its own internal CA against this CSR. */
++    csr?: string;
++    /** An already-issued PEM certificate — required (and only meaningful) for `useType: "sign"`. */
++    certificate?: string;
++    wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType">;
++    /** Only meaningful the very first time a mailbox enrolls a key at all (bootstraps its master key). */
++    masterKeyWraps?: MasterKeyWrap[];
++}
++/** Enrolls a new signing or encryption key. See `EnrollKeyInput`'s own doc comments for which fields
++ * matter for which `useType`. */
++export declare function enrollKey(mailboxUid: string, input: EnrollKeyInput): Promise<KeyVault>;
++/** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
++ * independent of key enrollment. Requires an already-initialized vault. */
++export declare function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap): Promise<KeyVault>;
++/** Removes a wrapped copy of the master key for one unlock method. `methodId` is required whenever more
++ * than one wrap could share the same `method` (e.g. multiple passkeys). This alone does NOT revoke
++ * access for anyone who already captured the wrapped blob — see `rekey()`. */
++export declare function removeMasterKeyWrap(mailboxUid: string, method: string, methodId?: string): Promise<KeyVault>;
++export interface RekeyInput {
++    wrappedKeys: WrappedPrivateKey[];
++    masterKeyWraps: MasterKeyWrap[];
++    keys: PublicKey[];
++}
++/** Full, atomic replacement of the mailbox's key-vault contents — the only real revocation mechanism
++ * for a captured wrap. Restricted server-side to the mailbox's actual owner. */
++export declare function rekey(mailboxUid: string, input: RekeyInput): Promise<KeyVault>;
++/** The wire shape `GET /mail/mailboxes/:id/keys/lookup` returns. */
++export interface KeyLookupResult {
++    keys: PublicKey[];
++    encryptPreference?: EncryptionPreference;
++    keyConflict?: KeyConflict;
++}
++/** Server-side Discovery: the server itself performs the `_rapidmx` DNS lookup and remote key-endpoint
++ * fetch (browsers can't do DNS TXT lookups, and a direct cross-origin fetch would hit CORS), persisting
++ * the result onto a `Contact` in the caller's own address book. MUST be called lazily at compose time,
++ * never on message receipt (see `specs/end-to-end_encryption.md`'s "Discovery is Server-Side"). */
++export declare function lookupKeys(mailboxUid: string, addr: string): Promise<KeyLookupResult>;
++export type PolicyState = "automatic" | "optional" | "prohibited";
++export interface EncryptionPolicy {
++    encryptSameOrg: PolicyState;
++    encryptFederated: PolicyState;
++    encryptExternal: PolicyState;
++}
++/** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption
++ * controls a compose UI should offer). */
++export declare function getEncryptionPolicy(): Promise<EncryptionPolicy>;
++/** Admin-only (`RequiresTrustedRole`) — updates the system-wide encryption policy. */
++export declare function updateEncryptionPolicy(patch: Partial<EncryptionPolicy>): Promise<EncryptionPolicy>;
+diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..feebb41ff14e63e49c7d6361c9270a6995f7770b
+--- /dev/null
++++ b/dist/crypto/keyvaultApi.js
+@@ -0,0 +1,70 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s E2E encryption endpoints (`BaseKeyVaultRoute`,
++ * `BaseKeyLookupRoute`, `BaseEncryptionPolicyRoute` — mounted in `server` at `mail/mailboxes` and
++ * `mail/encryption-policy`, see `src/{mongo,sql}/routes/{KeyVaultRoute,KeyLookupRoute,
++ * EncryptionPolicyRoute}.ts`). These calls carry only wrapped/ciphertext key material and public
++ * certificates — the server never sees an unwrapped private key or master key; see `crypto/masterKey.ts`
++ * and `crypto/keys.ts` for the client-side cryptography that produces the values passed here.
++ */
++import { apiFetch } from "../util/api.js";
++/** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
++export function getKeyVault(mailboxUid) {
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`);
++}
++/** Enrolls a new signing or encryption key. See `EnrollKeyInput`'s own doc comments for which fields
++ * matter for which `useType`. */
++export function enrollKey(mailboxUid, input) {
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys`, {
++        method: "POST",
++        body: JSON.stringify(input),
++    });
++}
++/** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
++ * independent of key enrollment. Requires an already-initialized vault. */
++export function addMasterKeyWrap(mailboxUid, wrap) {
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps`, {
++        method: "POST",
++        body: JSON.stringify(wrap),
++    });
++}
++/** Removes a wrapped copy of the master key for one unlock method. `methodId` is required whenever more
++ * than one wrap could share the same `method` (e.g. multiple passkeys). This alone does NOT revoke
++ * access for anyone who already captured the wrapped blob — see `rekey()`. */
++export function removeMasterKeyWrap(mailboxUid, method, methodId) {
++    const query = methodId ? `?methodId=${encodeURIComponent(methodId)}` : "";
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps/${encodeURIComponent(method)}${query}`, {
++        method: "DELETE",
++    });
++}
++/** Full, atomic replacement of the mailbox's key-vault contents — the only real revocation mechanism
++ * for a captured wrap. Restricted server-side to the mailbox's actual owner. */
++export function rekey(mailboxUid, input) {
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/rekey`, {
++        method: "PUT",
++        body: JSON.stringify(input),
++    });
++}
++/** Server-side Discovery: the server itself performs the `_rapidmx` DNS lookup and remote key-endpoint
++ * fetch (browsers can't do DNS TXT lookups, and a direct cross-origin fetch would hit CORS), persisting
++ * the result onto a `Contact` in the caller's own address book. MUST be called lazily at compose time,
++ * never on message receipt (see `specs/end-to-end_encryption.md`'s "Discovery is Server-Side"). */
++export function lookupKeys(mailboxUid, addr) {
++    const query = new URLSearchParams({ addr });
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/lookup?${query.toString()}`);
++}
++/** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption
++ * controls a compose UI should offer). */
++export function getEncryptionPolicy() {
++    return apiFetch(`/mail/encryption-policy`);
++}
++/** Admin-only (`RequiresTrustedRole`) — updates the system-wide encryption policy. */
++export function updateEncryptionPolicy(patch) {
++    return apiFetch(`/mail/encryption-policy`, {
++        method: "PUT",
++        body: JSON.stringify(patch),
++    });
++}
+diff --git a/dist/crypto/masterKey.d.ts b/dist/crypto/masterKey.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..77156c2b0c8817ff89d1e132e43435aae1707800
+--- /dev/null
++++ b/dist/crypto/masterKey.d.ts
+@@ -0,0 +1,39 @@
++/** MK is always 32 random bytes (AES-256), per the spec. */
++export declare const MASTER_KEY_LENGTH_BYTES = 32;
++/** The one AEAD construction used everywhere in this scheme, per the spec's "MUST use an AEAD
++ * construction (AES-256-GCM or XChaCha20-Poly1305)" — this codebase uses AES-256-GCM specifically,
++ * since it's natively available via WebCrypto with no additional library on any target platform
++ * (browser, Electron renderer). */
++export declare const AEAD_ALGORITHM = "AES-256-GCM";
++/** Generates a fresh master key. Never persisted directly — only ever used to derive an AES-GCM
++ * `CryptoKey` in-process (see `sealWithKey`/`openWithKey`) or wrapped via `wrapMasterKey.ts`-style
++ * helpers before being sent anywhere. */
++export declare function generateMasterKey(): Uint8Array;
++/** The wire shape stored/sent for any AEAD-sealed value — matches `WrappedPrivateKey`/`MasterKeyWrap`'s
++ * own `ciphertext`/`nonce` fields in `keyvaultApi.ts`. */
++export interface Sealed {
++    ciphertext: string;
++    nonce: string;
++}
++/**
++ * Binds a wrap to the account and purpose it was created for, per the spec: "The user ID and the wrap
++ * purpose MUST be bound as additional authenticated data, preventing a blob from being replayed against
++ * another account." Passed as AES-GCM's `additionalData` — authenticated but never encrypted, so
++ * `openWithKey()` fails closed (throws) if either value doesn't match what `sealWithKey()` was given.
++ */
++export declare function buildAad(mailboxUid: string, purpose: string): Uint8Array;
++/** AEAD-encrypts `plaintext` under `rawKey` (32 bytes — MK when sealing a private key, or a
++ * KDF-derived wrapping key when sealing MK itself). A fresh random nonce is generated per call — GCM
++ * requires a unique nonce per key, never reused. */
++export declare function sealWithKey(rawKey: Uint8Array, plaintext: Uint8Array, aad: Uint8Array): Promise<Sealed>;
++/** Inverse of `sealWithKey()`. Throws (WebCrypto's own `OperationError`) if `rawKey`/`aad` don't match
++ * what the value was sealed under, or if the ciphertext was tampered with — GCM's authentication tag
++ * covers both the ciphertext and the AAD. */
++export declare function openWithKey(rawKey: Uint8Array, sealed: Sealed, aad: Uint8Array): Promise<Uint8Array>;
++/**
++ * HKDF-SHA256, used throughout this scheme to turn raw input keying material (an Argon2id output, a
++ * WebAuthn PRF secret, a recovery code) into an independent key for a specific purpose — never the raw
++ * material directly. `info` binds the derived key to what it's for (e.g. `"wrap"` vs. an auth proof),
++ * so the same input material never accidentally produces the same output for two different purposes.
++ */
++export declare function hkdfDerive(ikm: Uint8Array, salt: Uint8Array, info: string, lengthBytes?: number): Promise<Uint8Array>;
+diff --git a/dist/crypto/masterKey.js b/dist/crypto/masterKey.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..da85967d8e3474b387cff2da2432bdb2b3503be2
+--- /dev/null
++++ b/dist/crypto/masterKey.js
+@@ -0,0 +1,72 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * The master-key (MK) wrapping scheme from `specs/end-to-end_encryption.md`'s "Master Key Wrapping":
++ * a random 32-byte MK is generated once, private keys are AEAD-encrypted under MK directly, and MK
++ * itself is wrapped once per unlock method (password/passkey/recovery — see the sibling `*Unlock.ts`
++ * modules) using a key derived via HKDF. MK never leaves this module unwrapped except in memory, and
++ * this module never talks to the network — see `keyvaultApi.ts` for what gets sent to the server (only
++ * ciphertext, nonces, salts and KDF parameters, all opaque to it).
++ */
++import { fromBase64, toBase64 } from "./encoding.js";
++/** MK is always 32 random bytes (AES-256), per the spec. */
++export const MASTER_KEY_LENGTH_BYTES = 32;
++/** The one AEAD construction used everywhere in this scheme, per the spec's "MUST use an AEAD
++ * construction (AES-256-GCM or XChaCha20-Poly1305)" — this codebase uses AES-256-GCM specifically,
++ * since it's natively available via WebCrypto with no additional library on any target platform
++ * (browser, Electron renderer). */
++export const AEAD_ALGORITHM = "AES-256-GCM";
++const GCM_NONCE_LENGTH_BYTES = 12;
++/** Generates a fresh master key. Never persisted directly — only ever used to derive an AES-GCM
++ * `CryptoKey` in-process (see `sealWithKey`/`openWithKey`) or wrapped via `wrapMasterKey.ts`-style
++ * helpers before being sent anywhere. */
++export function generateMasterKey() {
++    return crypto.getRandomValues(new Uint8Array(MASTER_KEY_LENGTH_BYTES));
++}
++async function importAeadKey(rawKey) {
++    return crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["encrypt", "decrypt"]);
++}
++/**
++ * Binds a wrap to the account and purpose it was created for, per the spec: "The user ID and the wrap
++ * purpose MUST be bound as additional authenticated data, preventing a blob from being replayed against
++ * another account." Passed as AES-GCM's `additionalData` — authenticated but never encrypted, so
++ * `openWithKey()` fails closed (throws) if either value doesn't match what `sealWithKey()` was given.
++ */
++export function buildAad(mailboxUid, purpose) {
++    return new TextEncoder().encode(`${mailboxUid}:${purpose}`);
++}
++/** AEAD-encrypts `plaintext` under `rawKey` (32 bytes — MK when sealing a private key, or a
++ * KDF-derived wrapping key when sealing MK itself). A fresh random nonce is generated per call — GCM
++ * requires a unique nonce per key, never reused. */
++export async function sealWithKey(rawKey, plaintext, aad) {
++    const key = await importAeadKey(rawKey);
++    const nonce = crypto.getRandomValues(new Uint8Array(GCM_NONCE_LENGTH_BYTES));
++    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad }, key, plaintext);
++    return { ciphertext: toBase64(new Uint8Array(ciphertext)), nonce: toBase64(nonce) };
++}
++/** Inverse of `sealWithKey()`. Throws (WebCrypto's own `OperationError`) if `rawKey`/`aad` don't match
++ * what the value was sealed under, or if the ciphertext was tampered with — GCM's authentication tag
++ * covers both the ciphertext and the AAD. */
++export async function openWithKey(rawKey, sealed, aad) {
++    const key = await importAeadKey(rawKey);
++    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64(sealed.nonce), additionalData: aad }, key, fromBase64(sealed.ciphertext));
++    return new Uint8Array(plaintext);
++}
++/**
++ * HKDF-SHA256, used throughout this scheme to turn raw input keying material (an Argon2id output, a
++ * WebAuthn PRF secret, a recovery code) into an independent key for a specific purpose — never the raw
++ * material directly. `info` binds the derived key to what it's for (e.g. `"wrap"` vs. an auth proof),
++ * so the same input material never accidentally produces the same output for two different purposes.
++ */
++export async function hkdfDerive(ikm, salt, info, lengthBytes = 32) {
++    const baseKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
++    const bits = await crypto.subtle.deriveBits({
++        name: "HKDF",
++        hash: "SHA-256",
++        salt: salt,
++        info: new TextEncoder().encode(info),
++    }, baseKey, lengthBytes * 8);
++    return new Uint8Array(bits);
++}
+diff --git a/dist/crypto/passkeyUnlock.d.ts b/dist/crypto/passkeyUnlock.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f97f98fa40a61e8422886cd8af228c9f905e4337
+--- /dev/null
++++ b/dist/crypto/passkeyUnlock.d.ts
+@@ -0,0 +1,20 @@
++export interface PasskeyRegistration {
++    /** Base64url-encoded credential ID — stored as `MasterKeyWrap.methodId`. */
++    credentialId: string;
++    /** Whether this authenticator reported PRF support at registration time. A `false`/absent value here
++     * does not necessarily mean PRF evaluation will fail later on some platforms (some only report
++     * support upon first `get()`), but MUST be treated as "unknown/unlikely," not "yes." */
++    prfSupported: boolean;
++}
++/**
++ * Registers a new platform/roaming passkey for use purely as a local unlock method (see this module's
++ * doc comment for why no server round-trip is involved). `rpId` MUST be this deployment's own domain.
++ */
++export declare function registerPasskeyForUnlock(rpId: string, userId: Uint8Array, userName: string): Promise<PasskeyRegistration>;
++/**
++ * Evaluates the PRF extension for an already-registered passkey and HKDF-derives a wrapping key from the
++ * result. Throws if the authenticator doesn't return a PRF output (e.g. it doesn't support the
++ * extension) — callers MUST treat that as "this unlock method is unavailable here," not silently fall
++ * back to a weaker derivation.
++ */
++export declare function deriveFromPasskey(rpId: string, credentialId: string, salt: Uint8Array): Promise<Uint8Array>;
+diff --git a/dist/crypto/passkeyUnlock.js b/dist/crypto/passkeyUnlock.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..84f4457cdad3016943eba26bde7b5c34c21117e5
+--- /dev/null
++++ b/dist/crypto/passkeyUnlock.js
+@@ -0,0 +1,79 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * The "passkey" unlock method from `specs/end-to-end_encryption.md`'s "Master Key Wrapping": uses the
++ * WebAuthn **PRF extension** to obtain a stable per-credential secret, then HKDF-derives a wrapping key
++ * from it — `wrap_passkey_N = AEAD(HKDF(WebAuthn-PRF(credential_N, salt)), MK)`. The credential's own
++ * private key is non-extractable and never used directly; only the PRF extension's derived secret is.
++ *
++ * This deliberately talks to the raw `navigator.credentials` WebAuthn API rather than
++ * `@simplewebauthn/browser` — that library's `startRegistration`/`startAuthentication` helpers expect a
++ * server-generated `optionsJSON` (from `@simplewebauthn/server`'s `generateRegistrationOptions()`/
++ * `generateAuthenticationOptions()`), which assumes a full relying-party ceremony with server-side
++ * challenge issuance and assertion verification. There is no such flow here — this passkey is never used
++ * to authenticate to `@rapidmx/restapi` or auth-server, only as a local, hardware-backed KDF input. A
++ * locally-generated challenge is fine because nothing server-side ever verifies this credential's
++ * attestation/assertion signature; only the PRF extension output is consumed. Identity/session auth
++ * remains entirely `auth-server`'s job (see `.claude/NOTES.md` in `server`).
++ *
++ * **Needs real hardware/browser verification.** PRF extension behavior (in particular, whether a
++ * browser returns `prf.results` on the *registration* ceremony itself vs. only on a subsequent
++ * `navigator.credentials.get()`) is not exercisable in this test environment (no real authenticator) —
++ * this module's tests mock `navigator.credentials` and cover this module's own request-building/
++ * response-parsing logic, not real authenticator behavior end to end. Verify against real hardware
++ * before shipping, the same honesty standard `@rapidmx/restapi` holds its own hard-to-verify pieces to
++ * (e.g. that repo's `sameIssuingCa()` doc comment).
++ */
++import { fromBase64Url, toBase64Url } from "./encoding.js";
++import { hkdfDerive } from "./masterKey.js";
++const PRF_HKDF_INFO = "wrap";
++const CHALLENGE_LENGTH_BYTES = 32;
++/**
++ * Registers a new platform/roaming passkey for use purely as a local unlock method (see this module's
++ * doc comment for why no server round-trip is involved). `rpId` MUST be this deployment's own domain.
++ */
++export async function registerPasskeyForUnlock(rpId, userId, userName) {
++    const challenge = crypto.getRandomValues(new Uint8Array(CHALLENGE_LENGTH_BYTES));
++    const credential = (await navigator.credentials.create({
++        publicKey: {
++            rp: { id: rpId, name: rpId },
++            user: { id: userId, name: userName, displayName: userName },
++            challenge: challenge,
++            // ES256 - matches this system's P-256 default elsewhere (see crypto/keys.ts).
++            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
++            authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
++            extensions: { prf: {} },
++        },
++    }));
++    const results = credential.getClientExtensionResults();
++    return {
++        credentialId: toBase64Url(new Uint8Array(credential.rawId)),
++        prfSupported: !!results.prf?.enabled,
++    };
++}
++/**
++ * Evaluates the PRF extension for an already-registered passkey and HKDF-derives a wrapping key from the
++ * result. Throws if the authenticator doesn't return a PRF output (e.g. it doesn't support the
++ * extension) — callers MUST treat that as "this unlock method is unavailable here," not silently fall
++ * back to a weaker derivation.
++ */
++export async function deriveFromPasskey(rpId, credentialId, salt) {
++    const challenge = crypto.getRandomValues(new Uint8Array(CHALLENGE_LENGTH_BYTES));
++    const assertion = (await navigator.credentials.get({
++        publicKey: {
++            rpId,
++            challenge: challenge,
++            allowCredentials: [{ id: fromBase64Url(credentialId), type: "public-key" }],
++            userVerification: "required",
++            extensions: { prf: { eval: { first: salt } } },
++        },
++    }));
++    const results = assertion.getClientExtensionResults();
++    const prfOutput = results.prf?.results?.first;
++    if (!prfOutput) {
++        throw new Error("This passkey did not return a PRF result - it may not support the PRF extension.");
++    }
++    return hkdfDerive(new Uint8Array(prfOutput), salt, PRF_HKDF_INFO);
++}
+diff --git a/dist/crypto/passwordUnlock.d.ts b/dist/crypto/passwordUnlock.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f262109dd2327f48084ae52c0ac89eb7f04ec6b9
+--- /dev/null
++++ b/dist/crypto/passwordUnlock.d.ts
+@@ -0,0 +1,30 @@
++export interface Argon2idParams {
++    /** Memory cost, in KiB. */
++    memorySize: number;
++    iterations: number;
++    parallelism: number;
++}
++/** Matches the `kdf` string format `MasterKeyWrap.kdf` documents (`argon2id:m=65536,t=3,p=4`) — OWASP's
++ * current recommended minimum for Argon2id (m=19MiB is the OWASP floor; this is deliberately higher,
++ * matching the doc comment on `EncryptionCertificateAuthority`'s own conservative defaults elsewhere in
++ * this system). */
++export declare const DEFAULT_ARGON2ID_PARAMS: Argon2idParams;
++/** Builds the `kdf` string stored alongside a password-method `MasterKeyWrap`, so parameters can be
++ * upgraded over time without breaking existing accounts (each wrap records the parameters it was
++ * actually created with). */
++export declare function argon2idKdfLabel(params: Argon2idParams): string;
++/** A fresh random salt for a new password enrollment. 16 bytes is Argon2id's own recommended minimum. */
++export declare function generateSalt(lengthBytes?: number): Uint8Array;
++export interface PasswordDerivation {
++    /** Base64-encoded. See this module's own doc comment — not yet sent anywhere, reserved for a future
++     * server-side verification endpoint. */
++    authProof: string;
++    /** Never leaves the device. Passed directly to `masterKey.ts`'s `sealWithKey`/`openWithKey`. */
++    wrappingKey: Uint8Array;
++}
++/**
++ * Runs Argon2id once against `password`/`salt`, then HKDF-splits the result into `authProof` and
++ * `wrappingKey` (see this module's doc comment for why two independent values, not one reused for both
++ * purposes). The plaintext password itself never leaves this function.
++ */
++export declare function deriveFromPassword(password: string, salt: Uint8Array, params?: Argon2idParams): Promise<PasswordDerivation>;
+diff --git a/dist/crypto/passwordUnlock.js b/dist/crypto/passwordUnlock.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..df8625c31a415bfb0de1c2090f74b91a2da8292d
+--- /dev/null
++++ b/dist/crypto/passwordUnlock.js
+@@ -0,0 +1,57 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * The "password" unlock method from `specs/end-to-end_encryption.md`'s "Master Key Wrapping": derives a
++ * single Argon2id output from the user's password, then HKDF-splits it into two independent values so
++ * the plaintext password (and the Argon2id output itself) never has to be transmitted or reused for two
++ * purposes — an authentication proof and a device-only wrapping key.
++ *
++ * `wrappingKey` is used with `masterKey.ts`'s `sealWithKey`/`openWithKey` to wrap/unwrap MK, and is never
++ * sent anywhere. `authProof` is derived for a future server-side "does this look like the right password"
++ * online-guess-rate-limiting check (distinct from `wrappingKey`, so the server can never derive the
++ * wrapping key even if it learns the proof) — no such verification endpoint exists in `@rapidmx/restapi`
++ * yet, so today only `wrappingKey` is actually consumed; `authProof` is produced now so the wire format
++ * (`kdf` string on `MasterKeyWrap`) doesn't need to change when that endpoint is added.
++ */
++import { argon2id } from "hash-wasm";
++import { toBase64 } from "./encoding.js";
++import { hkdfDerive } from "./masterKey.js";
++/** Matches the `kdf` string format `MasterKeyWrap.kdf` documents (`argon2id:m=65536,t=3,p=4`) — OWASP's
++ * current recommended minimum for Argon2id (m=19MiB is the OWASP floor; this is deliberately higher,
++ * matching the doc comment on `EncryptionCertificateAuthority`'s own conservative defaults elsewhere in
++ * this system). */
++export const DEFAULT_ARGON2ID_PARAMS = { memorySize: 65536, iterations: 3, parallelism: 4 };
++const ARGON2ID_HASH_LENGTH_BYTES = 32;
++/** Builds the `kdf` string stored alongside a password-method `MasterKeyWrap`, so parameters can be
++ * upgraded over time without breaking existing accounts (each wrap records the parameters it was
++ * actually created with). */
++export function argon2idKdfLabel(params) {
++    return `argon2id:m=${params.memorySize},t=${params.iterations},p=${params.parallelism}`;
++}
++/** A fresh random salt for a new password enrollment. 16 bytes is Argon2id's own recommended minimum. */
++export function generateSalt(lengthBytes = 16) {
++    return crypto.getRandomValues(new Uint8Array(lengthBytes));
++}
++/**
++ * Runs Argon2id once against `password`/`salt`, then HKDF-splits the result into `authProof` and
++ * `wrappingKey` (see this module's doc comment for why two independent values, not one reused for both
++ * purposes). The plaintext password itself never leaves this function.
++ */
++export async function deriveFromPassword(password, salt, params = DEFAULT_ARGON2ID_PARAMS) {
++    const argonOutput = await argon2id({
++        password,
++        salt,
++        memorySize: params.memorySize,
++        iterations: params.iterations,
++        parallelism: params.parallelism,
++        hashLength: ARGON2ID_HASH_LENGTH_BYTES,
++        outputType: "binary",
++    });
++    const [authProofBytes, wrappingKey] = await Promise.all([
++        hkdfDerive(argonOutput, salt, "auth-proof"),
++        hkdfDerive(argonOutput, salt, "wrap"),
++    ]);
++    return { authProof: toBase64(authProofBytes), wrappingKey };
++}
+diff --git a/dist/crypto/recoveryCode.d.ts b/dist/crypto/recoveryCode.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..14e55fa9b2c6c11d45f3a8442ac36627a10f19f2
+--- /dev/null
++++ b/dist/crypto/recoveryCode.d.ts
+@@ -0,0 +1,12 @@
++/** Exported for direct unit testing of the padding/remainder-bits path — `generateRecoveryCode()` always
++ * calls this with a fixed 20-byte input (160 bits), which happens to divide evenly into 5-bit groups
++ * with no remainder, so that path is otherwise unreachable through the public recovery-code API alone. */
++export declare function base32Encode(bytes: Uint8Array): string;
++/** Generates one recovery code, e.g. `"XQ4M-8K2P-7RTN-JY3H-VC9D-WA6F-2E5S"`. Callers should generate
++ * several (the spec: "a set of ... codes") and display them once, with explicit user confirmation that
++ * they've been saved — losing every unlock method makes the mailbox's encrypted content permanently
++ * unreadable (see the spec's "Recovery" section). */
++export declare function generateRecoveryCode(): string;
++/** Derives the wrapping key for one recovery code. `salt` is per-wrap, generated at enrolment and stored
++ * alongside the resulting `MasterKeyWrap` (never secret — HKDF's salt need not be). */
++export declare function deriveFromRecoveryCode(code: string, salt: Uint8Array): Promise<Uint8Array>;
+diff --git a/dist/crypto/recoveryCode.js b/dist/crypto/recoveryCode.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..ac7f897fd95d6c05874a8e5856e98c7b88806bec
+--- /dev/null
++++ b/dist/crypto/recoveryCode.js
+@@ -0,0 +1,59 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * The "recovery codes" unlock method from `specs/end-to-end_encryption.md`'s "Master Key Wrapping": a
++ * set of high-entropy, single-use codes generated client-side and displayed to the user once, at
++ * enrolment. Unlike the password method (see `passwordUnlock.ts`), there is no separate auth-proof split
++ * — the spec's own wrapping pseudocode derives the wrapping key directly: `wrap_recovery =
++ * AEAD(HKDF(recovery_code, salt), MK)`.
++ */
++import { hkdfDerive } from "./masterKey.js";
++/** Crockford base32 alphabet — excludes I/L/O/U to avoid transcription ambiguity with 1/0/V, the same
++ * reasoning as TOTP/backup-code schemes elsewhere. */
++const CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
++/** 20 random bytes (160 bits) — well above the ~20-bit entropy the spec explicitly calls TOTP out for
++ * being too weak (`specs/end-to-end_encryption.md`: "A 6-digit code additionally carries only ~20 bits
++ * of entropy"). Encoded as Crockford base32 and grouped into 4-character blocks for transcription. */
++const RECOVERY_CODE_ENTROPY_BYTES = 20;
++const GROUP_SIZE = 4;
++/** Exported for direct unit testing of the padding/remainder-bits path — `generateRecoveryCode()` always
++ * calls this with a fixed 20-byte input (160 bits), which happens to divide evenly into 5-bit groups
++ * with no remainder, so that path is otherwise unreachable through the public recovery-code API alone. */
++export function base32Encode(bytes) {
++    let bits = 0;
++    let value = 0;
++    let output = "";
++    for (const byte of bytes) {
++        value = (value << 8) | byte;
++        bits += 8;
++        while (bits >= 5) {
++            output += CROCKFORD_ALPHABET[(value >>> (bits - 5)) & 0x1f];
++            bits -= 5;
++        }
++    }
++    if (bits > 0) {
++        output += CROCKFORD_ALPHABET[(value << (5 - bits)) & 0x1f];
++    }
++    return output;
++}
++/** Generates one recovery code, e.g. `"XQ4M-8K2P-7RTN-JY3H-VC9D-WA6F-2E5S"`. Callers should generate
++ * several (the spec: "a set of ... codes") and display them once, with explicit user confirmation that
++ * they've been saved — losing every unlock method makes the mailbox's encrypted content permanently
++ * unreadable (see the spec's "Recovery" section). */
++export function generateRecoveryCode() {
++    const bytes = crypto.getRandomValues(new Uint8Array(RECOVERY_CODE_ENTROPY_BYTES));
++    const encoded = base32Encode(bytes);
++    const groups = [];
++    for (let i = 0; i < encoded.length; i += GROUP_SIZE) {
++        groups.push(encoded.slice(i, i + GROUP_SIZE));
++    }
++    return groups.join("-");
++}
++/** Derives the wrapping key for one recovery code. `salt` is per-wrap, generated at enrolment and stored
++ * alongside the resulting `MasterKeyWrap` (never secret — HKDF's salt need not be). */
++export async function deriveFromRecoveryCode(code, salt) {
++    const ikm = new TextEncoder().encode(code.trim().toUpperCase());
++    return hkdfDerive(ikm, salt, "wrap");
++}
+diff --git a/package.json b/package.json
+index 752ddd38befaf38a75c5047b844511ff8ee4108e..c04c3afc208bbede1061f8de88d67e5337abb64c 100644
+--- a/package.json
++++ b/package.json
+@@ -36,8 +36,11 @@
+   },
+   "dependencies": {
+     "@emoji-mart/data": "^1.2.1",
++    "@peculiar/x509": "^2.1.0",
+     "date-fns": "^4.4.0",
++    "hash-wasm": "^4.12.0",
+     "react-icons": "^5.7.0",
++    "reflect-metadata": "^0.2.2",
+     "rrule": "^2.8.1"
+   },
+   "devDependencies": {

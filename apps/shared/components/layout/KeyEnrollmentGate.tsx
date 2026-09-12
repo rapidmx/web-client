@@ -1,0 +1,241 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+import React, { useEffect, useState } from "react";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { enrollKey, getKeyVault, MasterKeyWrap } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { buildAad, generateMasterKey, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
+import { DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "@rapidmx/react-shared/crypto/passwordUnlock.js";
+import { deriveFromRecoveryCode, generateRecoveryCode } from "@rapidmx/react-shared/crypto/recoveryCode.js";
+import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
+import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
+
+type Status = "checking" | "setup_password" | "enrolling" | "show_recovery_codes" | "ready";
+
+const MIN_PASSWORD_LENGTH = 8;
+const RECOVERY_CODE_COUNT = 8;
+/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
+ * high-entropy, see `recoveryCode.ts`'s own doc comment), just a direct HKDF derivation. */
+const RECOVERY_KDF_LABEL = "hkdf-sha256";
+const WRAP_SCHEME_VERSION = 1;
+
+async function provisionEncryptionKey(
+    mailboxUid: string,
+    mailboxAddress: string,
+    password: string,
+): Promise<{ recoveryCodes: string[] }> {
+    const mk = generateMasterKey();
+    const mkAad = buildAad(mailboxUid, "master-key");
+
+    const passwordSalt = generateSalt();
+    const { wrappingKey: passwordWrappingKey } = await deriveFromPassword(password, passwordSalt, DEFAULT_ARGON2ID_PARAMS);
+    const passwordSealed = await sealWithKey(passwordWrappingKey, mk, mkAad);
+    const passwordWrap: MasterKeyWrap = {
+        method: "password",
+        ciphertext: passwordSealed.ciphertext,
+        nonce: passwordSealed.nonce,
+        salt: toBase64(passwordSalt),
+        kdf: argon2idKdfLabel(DEFAULT_ARGON2ID_PARAMS),
+        schemeVersion: WRAP_SCHEME_VERSION,
+        createdAt: Date.now(),
+    };
+
+    const recoveryCodes: string[] = [];
+    const recoveryWraps: MasterKeyWrap[] = [];
+    for (let i = 0; i < RECOVERY_CODE_COUNT; i++) {
+        const code = generateRecoveryCode();
+        const salt = generateSalt();
+        const wrappingKey = await deriveFromRecoveryCode(code, salt);
+        const sealed = await sealWithKey(wrappingKey, mk, mkAad);
+        recoveryCodes.push(code);
+        recoveryWraps.push({
+            method: "recovery",
+            // Not derived from the code itself - an id derived from the code would let anyone who saw a
+            // wrap's methodId narrow down which physical recovery code it corresponds to.
+            methodId: `recovery-${i + 1}`,
+            ciphertext: sealed.ciphertext,
+            nonce: sealed.nonce,
+            salt: toBase64(salt),
+            kdf: RECOVERY_KDF_LABEL,
+            schemeVersion: WRAP_SCHEME_VERSION,
+            createdAt: Date.now(),
+        });
+    }
+
+    // Only the encryption key is provisioned here. The signing key's spec-required public-CA enrolment
+    // (RFC 8823 ACME automation) doesn't exist yet in @rapidmx/restapi - see server's own NOTES.md - so
+    // automatically generating a signing keypair here would have nowhere real to enroll it. Digital
+    // Signatures are deferred until that lands; encryption (this mailbox's own protective capability) is
+    // not blocked on it.
+    const { keyPair, csrPem } = await generateKeyPairWithCsr(mailboxAddress, "encrypt");
+    const privateKeyRaw = await exportPrivateKeyPkcs8(keyPair.privateKey);
+    const wrappedKeySealed = await sealWithKey(mk, privateKeyRaw, buildAad(mailboxUid, "encrypt-private-key"));
+
+    await enrollKey(mailboxUid, {
+        useType: "encrypt",
+        csr: csrPem,
+        wrappedKey: { ciphertext: wrappedKeySealed.ciphertext, nonce: wrappedKeySealed.nonce, algorithm: "AES-256-GCM" },
+        masterKeyWraps: [passwordWrap, ...recoveryWraps],
+    });
+
+    return { recoveryCodes };
+}
+
+export interface KeyEnrollmentGateProps {
+    /** Undefined while the caller's mailbox hasn't resolved yet (or has none) - renders `children`
+     * unchanged in that case, so this component can be mounted unconditionally at a stable tree
+     * position (see this component's own doc comment for why that matters). */
+    mailboxUid?: string;
+    mailboxAddress?: string;
+    children: React.ReactNode;
+}
+
+/**
+ * Gates a mailbox's normal content behind one-time E2E encryption key setup, per
+ * `specs/end-to-end_encryption.md`'s "Generate signing and encryption keypairs on the client's device on
+ * first sign-in." Rendered by `MailShell` wrapping its own returned content unconditionally, not only
+ * once a mailbox is resolved — mounting this component at a *different* tree position depending on
+ * `mailboxUid`'s readiness (e.g. only wrapping once ready, rendering bare content beforehand) would make
+ * `children` (real `AppShell` chrome) itself remount the moment `mailboxUid` resolves, tearing down any
+ * state/effects it had already started. Always wrapping keeps `AppShell` mounted continuously across
+ * that transition; this component simply passes `children` through untouched while `mailboxUid` is
+ * still unresolved, and only starts its own check once a real `mailboxUid` is supplied.
+ *
+ * A `getKeyVault()` failure (network error, server not yet wired up to serve this endpoint) also renders
+ * `children` unchanged rather than blocking mail entirely - encryption is optional and gradual by design
+ * (the spec's own "near zero frictionless experience" goal), not a hard prerequisite for reading mail.
+ */
+export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, children }: KeyEnrollmentGateProps) {
+    const [status, setStatus] = useState<Status>(mailboxUid ? "checking" : "ready");
+    const [password, setPassword] = useState("");
+    const [confirmPassword, setConfirmPassword] = useState("");
+    const [error, setError] = useState<string | null>(null);
+    const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+    const [codesSaved, setCodesSaved] = useState(false);
+
+    useEffect(() => {
+        if (!mailboxUid) {
+            return;
+        }
+        let cancelled = false;
+        getKeyVault(mailboxUid)
+            .then((vault) => {
+                if (!cancelled) {
+                    setStatus(vault.wrappedKeys.length > 0 ? "ready" : "setup_password");
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setStatus("ready");
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [mailboxUid]);
+
+    async function handleSetPassword(e: React.FormEvent) {
+        e.preventDefault();
+        if (password.length < MIN_PASSWORD_LENGTH) {
+            setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+            return;
+        }
+        if (password !== confirmPassword) {
+            setError("Passwords do not match.");
+            return;
+        }
+        setError(null);
+        setStatus("enrolling");
+        try {
+            // Only reachable via "setup_password", which the effect above only ever sets once mailboxUid
+            // was defined (and mailboxAddress necessarily came with it - see KeyEnrollmentGateProps).
+            const { recoveryCodes: codes } = await provisionEncryptionKey(mailboxUid!, mailboxAddress!, password);
+            setRecoveryCodes(codes);
+            setStatus("show_recovery_codes");
+        } catch (err) {
+            setError(err instanceof ApiRequestError ? err.message : "Could not set up encryption for this mailbox.");
+            setStatus("setup_password");
+        }
+    }
+
+    if (status === "checking") {
+        return null;
+    }
+
+    if (status === "setup_password" || status === "enrolling") {
+        const enrolling = status === "enrolling";
+        return (
+            <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
+                <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
+                    <h1 className="text-lg font-bold mb-2">Protect your mailbox</h1>
+                    <p className="text-sm text-text-muted mb-5">
+                        Choose a password to protect your encryption keys. This is separate from your sign-in
+                        password and is never sent to the server.
+                    </p>
+                    {error && <Alert>{error}</Alert>}
+                    <form onSubmit={handleSetPassword}>
+                        <FormField label="Encryption password" htmlFor="key-enrollment-password">
+                            <input
+                                id="key-enrollment-password"
+                                type="password"
+                                className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                disabled={enrolling}
+                                autoComplete="new-password"
+                            />
+                        </FormField>
+                        <FormField label="Confirm password" htmlFor="key-enrollment-password-confirm">
+                            <input
+                                id="key-enrollment-password-confirm"
+                                type="password"
+                                className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                value={confirmPassword}
+                                onChange={(e) => setConfirmPassword(e.target.value)}
+                                disabled={enrolling}
+                                autoComplete="new-password"
+                            />
+                        </FormField>
+                        <Button type="submit" loading={enrolling} disabled={enrolling}>
+                            Continue
+                        </Button>
+                    </form>
+                </div>
+            </div>
+        );
+    }
+
+    if (status === "show_recovery_codes") {
+        return (
+            <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
+                <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
+                    <h1 className="text-lg font-bold mb-2">Save your recovery codes</h1>
+                    <p className="text-sm text-text-muted mb-5">
+                        If you lose your password, these codes are the only way to recover your encrypted mail.
+                        Each code can be used once. Store them somewhere safe — they will not be shown again.
+                    </p>
+                    <ul className="grid grid-cols-2 gap-2 mb-5 font-mono text-sm">
+                        {recoveryCodes.map((code) => (
+                            <li key={code} className="bg-surface-alt rounded-sm py-1.5 px-2 text-center">
+                                {code}
+                            </li>
+                        ))}
+                    </ul>
+                    <label className="flex items-center gap-2 text-sm mb-4">
+                        <input type="checkbox" checked={codesSaved} onChange={(e) => setCodesSaved(e.target.checked)} />
+                        I have saved these recovery codes in a safe place.
+                    </label>
+                    <Button type="button" disabled={!codesSaved} onClick={() => setStatus("ready")}>
+                        Continue
+                    </Button>
+                </div>
+            </div>
+        );
+    }
+
+    return <>{children}</>;
+}

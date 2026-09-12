@@ -10,6 +10,7 @@ import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shar
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
+import KeyEnrollmentGate from "../../layout/KeyEnrollmentGate.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { useCompose } from "../compose/ComposeContext.js";
 
@@ -272,16 +273,25 @@ export default function MailShell({
         );
     }
 
+    // Wraps AppShell unconditionally, at a stable tree position regardless of whether mailboxUid has
+    // resolved yet - KeyEnrollmentGate itself passes `children` through untouched until a real
+    // mailboxUid is supplied (see its own doc comment). Wrapping only once ready (a conditional tree
+    // position) would make AppShell itself remount the moment mailboxUid resolves, tearing down
+    // whatever state/effects it had already started (confirmed by direct reproduction: the
+    // impersonation banner's own internal state was lost exactly at that transition).
+    const selectedMailbox = mailboxes.find((mb) => mb.uid === mailboxUid);
     return (
-        <AppShell
-            active="mail"
-            userUid={userUid}
-            authServerUrl={authServerUrl}
-            impersonating={impersonating}
-            impersonationBaseUrl={impersonationBaseUrl}
-            trusted={trusted}
-        >
-            {inner}
-        </AppShell>
+        <KeyEnrollmentGate mailboxUid={mailboxUid} mailboxAddress={selectedMailbox?.primarySmtpAddress}>
+            <AppShell
+                active="mail"
+                userUid={userUid}
+                authServerUrl={authServerUrl}
+                impersonating={impersonating}
+                impersonationBaseUrl={impersonationBaseUrl}
+                trusted={trusted}
+            >
+                {inner}
+            </AppShell>
+        </KeyEnrollmentGate>
     );
 }
