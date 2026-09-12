@@ -397,3 +397,34 @@ confirming Rotation Notification's receive side needed no client work at all).
 - Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up both this
   and the HP-Outer/`listUnsubscribeHeader` react-shared changes in one pass (deliberately batched
   rather than one patch cycle per change).
+
+### 2026-09-11 (continued) — search.md Tier 1: operator-aware search UI, snippets
+
+Ends the E2E remaining-work pass and starts on `specs/search.md`. Confirmed with JP (plan mode,
+`AskUserQuestion`) that only Tier 1 - the server-side search restapi already fully implements and
+mounts - is in scope for this pass; Tiers 2/3 (local encrypted SQLite index, progressive skeleton
+results) are a separate future effort. See `react-shared`'s own NOTES.md, same date, for the new
+`search/queryGrammar.ts`/`searchScoring.ts` modules and the rewritten `searchApi.ts` this builds on.
+
+- `apps/www/index.tsx`'s `InboxContent` search box now runs the raw input through
+  `parseSearchQuery()` before calling `searchApi.search()`, forwarding every structured field
+  (`from`/`to`/`cc`/`subject`/`hasAttachment`/`before`/`after`/`folderUid`/`flags`/`labels`) alongside
+  the free-text remainder as `q` - previously the entire raw string went through as `q` with no
+  operator support at all. `type:` narrows the requested `entityTypes`; absent that, still defaults to
+  `["message"]` as before - a non-message hit has no `Message` to resolve via the existing
+  `getMessage()` call and is simply dropped by the same already-existing eventually-consistent-index
+  fallback (a real multi-entity-type results view is a separate, larger UI project, not this pass).
+- Each search hit's `SearchResult.snippet` (previously fetched and silently discarded) now renders in
+  place of the plain `bodyPreview` in the message row, via a new `snippets: Record<uid, string>` state
+  populated alongside `messages` in both the initial-load and load-more paths.
+- **Test-authoring bug caught while writing the new snippet tests**: a fixture for the search-hit
+  message omitted `folderUid`, defaulting to the same folder as the *initial*, pre-search listing - the
+  message was therefore already on screen from the very first render, so `findByText("Matched
+  message")` succeeded immediately without ever waiting for the mocked search response, and the
+  assertion silently checked the pre-search DOM instead. Diagnosed by adding temporary `console.log`
+  instrumentation inside the implementation itself and confirming it never fired during the failing
+  test - proof the search code path hadn't run at all, not a snippet-rendering bug. Fixed by giving the
+  hit fixture a distinct `folderUid` (`"f2"`), matching every other passing test's own established
+  convention in this same file. Lesson: a search-hit fixture in this test file MUST use a folder
+  distinct from the initial listing's folder, or a stale pre-search render can silently satisfy an
+  assertion meant to prove the search round-trip happened.

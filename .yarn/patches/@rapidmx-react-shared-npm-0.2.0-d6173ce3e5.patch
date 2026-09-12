@@ -2529,6 +2529,433 @@ index bbea6c30708cf0767a11336b663b758e6eaaae58..a216244f0c5b4909abf4efe378031dec
  /**
   * Trusted-role-only: starts an admin "log in as user" session. In production this calls auth-server
   * directly (not this app's own API) since only auth-server can mint a token carrying `userUid`'s real
+diff --git a/dist/search/queryGrammar.d.ts b/dist/search/queryGrammar.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ae5d71169840dac91cebd632b35f7f177e32baa
+--- /dev/null
++++ b/dist/search/queryGrammar.d.ts
+@@ -0,0 +1,51 @@
++/**
++ * Parses `specs/search.md` §14's light operator syntax (`from:`, `to:`, `cc:`, `subject:`,
++ * `has:attachment`, `before:`, `after:`, `in:`, `is:`, `label:`, `type:`) out of a raw search box
++ * string, once, client-side — per the spec's own requirement that parsing happen in exactly one place
++ * so every tier (server Tier 1 today; a future local Tier 2/3) interprets the grammar identically.
++ *
++ * Only the *operator* tokens are extracted. Everything else — plain words, quoted phrases, a leading
++ * `-` negating a term — is left untouched in the returned `text` remainder, because each provider's own
++ * free-text engine already understands that syntax natively (`specs/search.md` §14's own "Provider
++ * Implementation": Postgres's `websearch_to_tsquery` handles quoted phrases, `OR`, and `-` negation
++ * safely on untrusted input). Rewriting that ourselves would just be a worse reimplementation of what
++ * the provider already does correctly.
++ *
++ * An operator token is only recognized when it starts at a word boundary (start of string, or after
++ * whitespace) — `-from:bob` therefore is NOT parsed as a negated operator (the operator fields
++ * `BaseSearchRoute` accepts are single-value/AND-only with no negated form) and is left in `text`
++ * verbatim, and a deliberately-quoted phrase like `"from:bob"` is never mistaken for the operator
++ * either, since the match requires an *unquoted* key immediately followed by `:`.
++ */
++import { SearchEntityType } from "./searchApi.js";
++export interface ParsedSearchQuery {
++    /** The remaining free-text portion — quotes, `-` negation, and `OR` preserved verbatim for each
++     * provider's own free-text engine to interpret. Never rewritten by this parser beyond removing the
++     * operator tokens themselves and collapsing the whitespace that leaves behind. */
++    text: string;
++    /** `from:` — sender address or display name. */
++    from?: string;
++    /** `to:` — a recipient address. */
++    to?: string;
++    /** `cc:` — a recipient address. */
++    cc?: string;
++    /** `subject:` — restricts matching to the subject/title field. */
++    subject?: string;
++    /** `has:attachment` */
++    hasAttachment?: boolean;
++    /** `before:` — parsed via `new Date()`; an unparseable value is left in `text` rather than dropped. */
++    before?: Date;
++    /** `after:` — see `before`. */
++    after?: Date;
++    /** `in:` — folder or calendar uid. */
++    folderUid?: string;
++    /** `is:` — one or more flag/state strings (`is:read`, repeated `is:` tokens, or a single
++     * comma-separated `is:read,flagged` token all accumulate into this array). */
++    flags?: string[];
++    /** `label:` — one or more `Label.uid`s. Same repeat/comma-separation rules as `flags`. */
++    labels?: string[];
++    /** `type:` — maps to `SearchQuery.entityTypes`. An unrecognized type token is dropped rather than
++     * forwarded, since the server has no representation for anything outside `SearchEntityType`. */
++    entityTypes?: SearchEntityType[];
++}
++export declare function parseSearchQuery(raw: string): ParsedSearchQuery;
+diff --git a/dist/search/queryGrammar.js b/dist/search/queryGrammar.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..628642650cd59af2beb137db8dda2ba3195a7763
+--- /dev/null
++++ b/dist/search/queryGrammar.js
+@@ -0,0 +1,100 @@
++const VALID_ENTITY_TYPES = new Set(["message", "contact", "calendarEvent", "note", "task"]);
++/** Finds and removes the first `key:value`/`key:"quoted value"` occurrence of `key` in `input`, where
++ * `value` is either a quoted phrase or a run of non-whitespace characters. Returns `undefined` for
++ * `value` (and `input` unchanged as `rest`) when no such token exists. The matched span is replaced by
++ * the single whitespace character that preceded it (or removed entirely at start-of-string), so
++ * `removeRange` never joins two words together — final whitespace collapsing happens once, in
++ * `parseSearchQuery()` itself, after every extraction has run. */
++function extractFirst(input, key) {
++    const pattern = new RegExp(`(^|\\s)${key}:(?:"([^"]*)"|(\\S+))`, "i");
++    const match = pattern.exec(input);
++    if (!match) {
++        return { rest: input };
++    }
++    const value = match[2] ?? match[3] ?? "";
++    const rest = input.slice(0, match.index) + match[1] + input.slice(match.index + match[0].length);
++    return { value, rest };
++}
++/** Repeatedly applies `extractFirst()` for `key` until no more occurrences remain, splitting any
++ * comma-separated value into individual entries — so `is:read is:flagged` and `is:read,flagged` both
++ * produce `["read", "flagged"]`. */
++function extractAll(input, key) {
++    const values = [];
++    let rest = input;
++    for (;;) {
++        const result = extractFirst(rest, key);
++        if (result.value === undefined) {
++            return { values, rest };
++        }
++        rest = result.rest;
++        for (const part of result.value.split(",")) {
++            const trimmed = part.trim();
++            if (trimmed) {
++                values.push(trimmed);
++            }
++        }
++    }
++}
++/** Removes the exact literal token `has:attachment` (case-insensitively), the one compound keyword the
++ * spec defines for this operator — there is no `has:<other value>` form. */
++function extractHasAttachment(input) {
++    const pattern = /(^|\s)has:attachment\b/i;
++    const match = pattern.exec(input);
++    if (!match) {
++        return { found: false, rest: input };
++    }
++    return { found: true, rest: input.slice(0, match.index) + match[1] + input.slice(match.index + match[0].length) };
++}
++function extractDate(input, key) {
++    const { value, rest } = extractFirst(input, key);
++    if (value === undefined) {
++        return { rest: input };
++    }
++    const date = new Date(value);
++    if (Number.isNaN(date.getTime())) {
++        // Unparseable — leave the whole token in the free-text remainder rather than silently dropping
++        // it, mirroring BaseSearchRoute's own parseDateParam() leniency (invalid date -> undefined).
++        return { rest: input };
++    }
++    return { date, rest };
++}
++export function parseSearchQuery(raw) {
++    let rest = raw;
++    const from = extractFirst(rest, "from");
++    rest = from.rest;
++    const to = extractFirst(rest, "to");
++    rest = to.rest;
++    const cc = extractFirst(rest, "cc");
++    rest = cc.rest;
++    const subject = extractFirst(rest, "subject");
++    rest = subject.rest;
++    const folder = extractFirst(rest, "in");
++    rest = folder.rest;
++    const hasAttachment = extractHasAttachment(rest);
++    rest = hasAttachment.rest;
++    const before = extractDate(rest, "before");
++    rest = before.rest;
++    const after = extractDate(rest, "after");
++    rest = after.rest;
++    const flags = extractAll(rest, "is");
++    rest = flags.rest;
++    const labels = extractAll(rest, "label");
++    rest = labels.rest;
++    const types = extractAll(rest, "type");
++    rest = types.rest;
++    const entityTypes = types.values.filter((t) => VALID_ENTITY_TYPES.has(t));
++    return {
++        text: rest.replace(/\s+/g, " ").trim(),
++        from: from.value,
++        to: to.value,
++        cc: cc.value,
++        subject: subject.value,
++        hasAttachment: hasAttachment.found ? true : undefined,
++        before: before.date,
++        after: after.date,
++        folderUid: folder.value,
++        flags: flags.values.length > 0 ? flags.values : undefined,
++        labels: labels.values.length > 0 ? labels.values : undefined,
++        entityTypes: entityTypes.length > 0 ? entityTypes : undefined,
++    };
++}
+diff --git a/dist/search/searchApi.d.ts b/dist/search/searchApi.d.ts
+index 78817f85cba496a9d5431b211d55940921fa518f..d8163f3bfbf13ceafe3a8336028c2206818d98af 100644
+--- a/dist/search/searchApi.d.ts
++++ b/dist/search/searchApi.d.ts
+@@ -1,10 +1,20 @@
+ export type SearchEntityType = "message" | "contact" | "calendarEvent" | "note" | "task";
++/** Which tier produced a result. Only `"server"` is possible until Tier 2 (local index) and Tier 3
++ * (server-assisted narrowing) exist — kept as its own type now so a future client-side tier doesn't need
++ * a breaking change to `SearchResult`. */
++export type SearchResultSource = "server" | "local" | "candidate";
+ export interface SearchResult {
+     entityType: SearchEntityType;
+     entityUid: string;
+     score: number;
+     /** A short, provider-generated snippet highlighting the matched text, if supported. */
+     snippet?: string;
++    /** True when `score` is derived from server-visible metadata only (participants/date, not content —
++     * always the case for an encrypted message) and is therefore not comparable to a result scored from
++     * full content. See `searchScoring.ts` for how this is handled once mixed-source merging exists. */
++    metadataOnly?: boolean;
++    /** Which tier produced this result. Always `"server"` from this function today. */
++    source?: SearchResultSource;
+ }
+ export interface SearchResultPage {
+     results: SearchResult[];
+@@ -15,5 +25,53 @@ export interface SearchParams {
+     types?: SearchEntityType[];
+     cursor?: string;
+     limit?: number;
++    /** `from:` — sender address. */
++    from?: string;
++    /** `to:` — a recipient address in the `To` line. */
++    to?: string;
++    /** `cc:` — a recipient address in the `Cc` line. */
++    cc?: string;
++    /** `subject:` — restricts matching to the subject/title field only. May be combined with free text. */
++    subject?: string;
++    /** `has:attachment` */
++    hasAttachment?: boolean;
++    /** `before:` */
++    before?: Date;
++    /** `after:` */
++    after?: Date;
++    /** `in:` — folder or calendar uid. */
++    folderUid?: string;
++    /** `is:` — one or more flag/state strings, matched as an AND (all must be present). */
++    flags?: string[];
++    /** `label:` — one or more `Label.uid`s, matched as an AND (all must be present). */
++    labels?: string[];
+ }
+ export declare function search(text: string, params?: SearchParams): Promise<SearchResultPage>;
++/**
++ * Requests a Tier 3 candidate set (`specs/search.md` §6/§12) — identifiers only, ranked purely on
++ * server-visible metadata, never on `subject`/`body`/`attachmentText`. Not called anywhere yet (Tier 3 is
++ * a separate, not-yet-built follow-on to this pass) — added now so that work doesn't need to revisit this
++ * file's shape, since the underlying route (`BaseSearchRoute.candidates()`) is already shipped.
++ */
++export interface CandidateParams {
++    types?: SearchEntityType[];
++    /** Participant terms extracted from the query text, matched against server-visible envelope data
++     * (`from`/`to`/`cc`/`participants`). */
++    participants?: string[];
++    before?: Date;
++    after?: Date;
++    folderUid?: string;
++    flags?: string[];
++    labels?: string[];
++    limit?: number;
++    cursor?: string;
++}
++export interface CandidateResult {
++    entityType: SearchEntityType;
++    entityUid: string;
++}
++export interface CandidateResultPage {
++    candidates: CandidateResult[];
++    nextCursor?: string;
++}
++export declare function candidates(params?: CandidateParams): Promise<CandidateResultPage>;
+diff --git a/dist/search/searchApi.js b/dist/search/searchApi.js
+index 9d4da11d4e7da61bbc59f5f2a3b7c705740f895d..a87296fd949076c3ea2f713454242020e365abc4 100644
+--- a/dist/search/searchApi.js
++++ b/dist/search/searchApi.js
+@@ -7,9 +7,15 @@
+  * `src/mongo/routes/SearchRoute.ts`/`src/sql/routes/SearchRoute.ts`), the full-text search endpoint across
+  * a mailbox's messages/contacts/calendar events/notes/tasks. Always scoped server-side to the caller's own
+  * mailbox — there is no `mailboxUid` param to pass here.
++ *
++ * The structured filter params below mirror `specs/search.md` §14's operator grammar
++ * (`from:`/`to:`/`cc:`/`subject:`/`has:attachment`/`before:`/`after:`/`in:`/`is:`/`label:`), already parsed
++ * out of raw query text by `queryGrammar.ts`'s `parseSearchQuery()` — this module only ever sends the
++ * already-structured result, matching `BaseSearchRoute`'s own query-param names exactly
++ * (`from`/`to`/`cc`/`subject`/`hasAttachment`/`before`/`after`/`in`/`is`/`label`).
+  */
+ import { apiFetch } from "../util/api.js";
+-export function search(text, params = {}) {
++function buildSearchParams(text, params) {
+     const query = new URLSearchParams({ q: text });
+     if (params.types?.length) {
+         query.set("types", params.types.join(","));
+@@ -20,5 +26,72 @@ export function search(text, params = {}) {
+     if (params.limit) {
+         query.set("limit", String(params.limit));
+     }
+-    return apiFetch(`/mail/search?${query.toString()}`);
++    if (params.from) {
++        query.set("from", params.from);
++    }
++    if (params.to) {
++        query.set("to", params.to);
++    }
++    if (params.cc) {
++        query.set("cc", params.cc);
++    }
++    if (params.subject) {
++        query.set("subject", params.subject);
++    }
++    if (params.hasAttachment !== undefined) {
++        query.set("hasAttachment", String(params.hasAttachment));
++    }
++    if (params.before) {
++        query.set("before", params.before.toISOString());
++    }
++    if (params.after) {
++        query.set("after", params.after.toISOString());
++    }
++    if (params.folderUid) {
++        query.set("in", params.folderUid);
++    }
++    if (params.flags?.length) {
++        query.set("is", params.flags.join(","));
++    }
++    if (params.labels?.length) {
++        query.set("label", params.labels.join(","));
++    }
++    return query;
++}
++export function search(text, params = {}) {
++    return apiFetch(`/mail/search?${buildSearchParams(text, params).toString()}`);
++}
++function buildCandidateParams(params) {
++    const query = new URLSearchParams();
++    if (params.types?.length) {
++        query.set("types", params.types.join(","));
++    }
++    if (params.participants?.length) {
++        query.set("participants", params.participants.join(","));
++    }
++    if (params.before) {
++        query.set("before", params.before.toISOString());
++    }
++    if (params.after) {
++        query.set("after", params.after.toISOString());
++    }
++    if (params.folderUid) {
++        query.set("in", params.folderUid);
++    }
++    if (params.flags?.length) {
++        query.set("is", params.flags.join(","));
++    }
++    if (params.labels?.length) {
++        query.set("label", params.labels.join(","));
++    }
++    if (params.cursor) {
++        query.set("cursor", params.cursor);
++    }
++    if (params.limit) {
++        query.set("limit", String(params.limit));
++    }
++    return query;
++}
++export function candidates(params = {}) {
++    return apiFetch(`/mail/search/candidates?${buildCandidateParams(params).toString()}`);
+ }
+diff --git a/dist/search/searchScoring.d.ts b/dist/search/searchScoring.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..663908a426ea21423e5e208cf2880c37ffe64d19
+--- /dev/null
++++ b/dist/search/searchScoring.d.ts
+@@ -0,0 +1,34 @@
++/**
++ * Client-side re-scoring per `specs/search.md` §7 "Ranking and Merge": scores from different search
++ * sources are not comparable — a Postgres `ts_rank`, an OpenSearch `_score`, and a future local FTS5
++ * `bm25()` value occupy different, provider-specific ranges. The spec requires normalizing every
++ * source's scores into one shared space rather than interleaving raw values.
++ *
++ * This pass only has one source (Tier 1 - the server), so there is nothing to *merge* yet - the real
++ * cross-tier merge (§7's full ranking pass, §8's composite pagination cursor) is Tier 2/3 work,
++ * deliberately out of scope for this pass. What's implemented here is the normalization step itself,
++ * written generically (one page's raw scores in, normalized scores out) so a future per-source call
++ * into the same function is all cross-tier merging needs to add - not a second implementation of
++ * normalization.
++ */
++/** The spec's own field-weight table (§7), exported for reuse by whichever component eventually
++ * computes a *local* (Tier 2) score from decrypted content - the same weights must produce ranking
++ * that matches today's server-side behavior. */
++export declare const SEARCH_FIELD_WEIGHTS: {
++    readonly subject: 3;
++    readonly participants: 2;
++    readonly body: 1;
++    readonly attachmentText: 1;
++};
++/**
++ * Normalizes one page's raw provider scores into `[0, 1]`, preserving relative order, so a caller never
++ * has to reason about a specific provider's raw score range. `0` for every result when every score in
++ * the page is equal (including the degenerate single-result and all-zero cases) - there is no relative
++ * ordering information to preserve in that case, and `0` is a safer default than an arbitrary `1`.
++ */
++export declare function normalizeServerScores<T extends {
++    score: number;
++}>(results: readonly T[]): {
++    result: T;
++    normalizedScore: number;
++}[];
+diff --git a/dist/search/searchScoring.js b/dist/search/searchScoring.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..193a28da28100e109e06519d7610e12ae49f35eb
+--- /dev/null
++++ b/dist/search/searchScoring.js
+@@ -0,0 +1,44 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Client-side re-scoring per `specs/search.md` §7 "Ranking and Merge": scores from different search
++ * sources are not comparable — a Postgres `ts_rank`, an OpenSearch `_score`, and a future local FTS5
++ * `bm25()` value occupy different, provider-specific ranges. The spec requires normalizing every
++ * source's scores into one shared space rather than interleaving raw values.
++ *
++ * This pass only has one source (Tier 1 - the server), so there is nothing to *merge* yet - the real
++ * cross-tier merge (§7's full ranking pass, §8's composite pagination cursor) is Tier 2/3 work,
++ * deliberately out of scope for this pass. What's implemented here is the normalization step itself,
++ * written generically (one page's raw scores in, normalized scores out) so a future per-source call
++ * into the same function is all cross-tier merging needs to add - not a second implementation of
++ * normalization.
++ */
++/** The spec's own field-weight table (§7), exported for reuse by whichever component eventually
++ * computes a *local* (Tier 2) score from decrypted content - the same weights must produce ranking
++ * that matches today's server-side behavior. */
++export const SEARCH_FIELD_WEIGHTS = {
++    subject: 3,
++    participants: 2,
++    body: 1,
++    attachmentText: 1,
++};
++/**
++ * Normalizes one page's raw provider scores into `[0, 1]`, preserving relative order, so a caller never
++ * has to reason about a specific provider's raw score range. `0` for every result when every score in
++ * the page is equal (including the degenerate single-result and all-zero cases) - there is no relative
++ * ordering information to preserve in that case, and `0` is a safer default than an arbitrary `1`.
++ */
++export function normalizeServerScores(results) {
++    if (results.length === 0) {
++        return [];
++    }
++    const maxScore = Math.max(...results.map((r) => r.score));
++    const minScore = Math.min(...results.map((r) => r.score));
++    const range = maxScore - minScore;
++    return results.map((result) => ({
++        result,
++        normalizedScore: range === 0 ? 0 : (result.score - minScore) / range,
++    }));
++}
 diff --git a/package.json b/package.json
 index 752ddd38befaf38a75c5047b844511ff8ee4108e..46e2b1ed9b458266ccc40599f21e5d210f993c8a 100644
 --- a/package.json

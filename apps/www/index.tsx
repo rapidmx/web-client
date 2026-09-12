@@ -7,6 +7,7 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Message, MessageClassification, getMessage, listMessages } from "@rapidmx/react-shared/mail/mailApi.js";
 import { ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
+import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import MailShell, { MailShellProps, useMailShell } from "../shared/components/mail/layout/MailShell.js";
@@ -20,16 +21,59 @@ type ViewMode = "date" | "conversation";
 const MESSAGE_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
 
-/** Resolves one page of search hits (of type "message") into full `Message` records for display. */
-async function searchMessages(text: string, cursor?: string): Promise<{ messages: Message[]; nextCursor?: string }> {
-    const page = await searchMailbox(text, { types: ["message"], cursor, limit: MESSAGE_PAGE_SIZE });
+/** Resolves one page of search hits into full `Message` records for display, plus each hit's own
+ * `snippet` (keyed by message uid) for rendering in place of the plain `bodyPreview` while searching.
+ *
+ * `rawQuery` is parsed once, client-side, via `queryGrammar.ts`'s `parseSearchQuery()` — the operator
+ * grammar (`from:`/`to:`/`subject:`/`has:attachment`/`before:`/`after:`/`in:`/`is:`/`label:`/`type:`,
+ * `specs/search.md` §14) is extracted into structured filters passed to the server, while the
+ * remaining free text (quotes, `-` negation, `OR` all preserved) still drives ranking as `q`.
+ * `type:` narrows `entityTypes`; when absent this still defaults to `["message"]` — a non-message hit
+ * (contact/calendarEvent/note/task) has no `Message` to resolve via `getMessage()` below and is simply
+ * dropped by the same eventually-consistent-index fallback that already existed, rather than rendered
+ * (this inbox list only ever shows message rows; a real multi-entity-type results view is a separate,
+ * larger UI project outside this pass). */
+async function searchMessages(
+    rawQuery: string,
+    cursor?: string,
+): Promise<{ messages: Message[]; nextCursor?: string; snippets: Record<string, string> }> {
+    const parsed = parseSearchQuery(rawQuery);
+    const page = await searchMailbox(parsed.text, {
+        types: parsed.entityTypes ?? ["message"],
+        cursor,
+        limit: MESSAGE_PAGE_SIZE,
+        from: parsed.from,
+        to: parsed.to,
+        cc: parsed.cc,
+        subject: parsed.subject,
+        hasAttachment: parsed.hasAttachment,
+        before: parsed.before,
+        after: parsed.after,
+        folderUid: parsed.folderUid,
+        flags: parsed.flags,
+        labels: parsed.labels,
+    });
     const resolved = await Promise.all(
-        page.results.map((hit) => getMessage(hit.entityUid).catch(() => null)),
+        page.results.map(async (hit) => {
+            const message = await getMessage(hit.entityUid).catch(() => null);
+            return message ? { message, snippet: hit.snippet } : null;
+        }),
     );
     // A search hit can briefly outlive the message it points to (index updates are eventually consistent,
     // and a message can be deleted after being indexed) - drop anything that no longer resolves rather than
     // rendering a broken entry.
-    return { messages: resolved.filter((m): m is Message => m !== null), nextCursor: page.nextCursor };
+    const messages: Message[] = [];
+    const snippets: Record<string, string> = {};
+    for (const entry of resolved) {
+        if (!entry) {
+            continue;
+        }
+        messages.push(entry.message);
+        if (entry.snippet) {
+            snippets[entry.message.uid] = entry.snippet;
+        }
+    }
+    return { messages, nextCursor: page.nextCursor, snippets };
 }
 
 export default function InboxPage(props: MailShellProps) {
@@ -55,6 +99,7 @@ function InboxContent() {
     const [classificationFilter, setClassificationFilter] = useState<MessageClassification | "all">("all");
     const [searchInput, setSearchInput] = useState("");
     const [searchQuery, setSearchQuery] = useState("");
+    const [snippets, setSnippets] = useState<Record<string, string>>({});
     const isSearching = viewMode === "date" && searchQuery.length > 0;
     const pageRef = useRef(0);
     const cursorRef = useRef<string | undefined>(undefined);
@@ -101,8 +146,9 @@ function InboxContent() {
 
         if (isSearching) {
             searchMessages(searchQuery)
-                .then(({ messages: results, nextCursor }) => {
+                .then(({ messages: results, nextCursor, snippets: newSnippets }) => {
                     setMessages(results);
+                    setSnippets(newSnippets);
                     setHasMore(!!nextCursor);
                     cursorRef.current = nextCursor;
                 })
@@ -127,8 +173,9 @@ function InboxContent() {
         setLoadingMore(true);
         try {
             if (isSearching) {
-                const { messages: more, nextCursor } = await searchMessages(searchQuery, cursorRef.current);
+                const { messages: more, nextCursor, snippets: moreSnippets } = await searchMessages(searchQuery, cursorRef.current);
                 setMessages((prev) => [...prev, ...more]);
+                setSnippets((prev) => ({ ...prev, ...moreSnippets }));
                 setHasMore(!!nextCursor);
                 cursorRef.current = nextCursor;
             } else {
@@ -333,7 +380,9 @@ function InboxContent() {
                                             </span>
                                         </div>
                                         <div className="text-sm truncate">{message.subject || "(no subject)"}</div>
-                                        <div className="text-xs text-text-muted truncate font-normal">{message.bodyPreview}</div>
+                                        <div className="text-xs text-text-muted truncate font-normal">
+                                            {snippets[message.uid] || message.bodyPreview}
+                                        </div>
                                     </button>
                                 </li>
                             ))}

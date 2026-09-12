@@ -721,6 +721,62 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Search failed.")).toBeInTheDocument();
         });
 
+        it("parses an operator query into structured filter params, sent alongside the free-text remainder", async () => {
+            const hit = messageFixture({ uid: "m2", subject: "Matched message", folderUid: "f2" });
+            const fetchMock = mockSearch([hit], (url) =>
+                url.includes("q=report")
+                    ? jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1 }] })
+                    : undefined,
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Search all mail…");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "from:alice@example.com has:attachment report");
+
+            expect(await screen.findByText("Matched message")).toBeInTheDocument();
+            const searchCall = fetchMock.mock.calls.find(([url]: [string]) => url.includes("/api/mail/search?"))!;
+            const params = new URLSearchParams(searchCall[0].split("?")[1]);
+            expect(params.get("q")).toBe("report");
+            expect(params.get("from")).toBe("alice@example.com");
+            expect(params.get("hasAttachment")).toBe("true");
+        });
+
+        it("renders a search hit's snippet in place of the plain body preview", async () => {
+            const hit = messageFixture({ uid: "m2", subject: "Matched message", folderUid: "f2", bodyPreview: "plain preview" });
+            mockSearch([hit], (url) =>
+                url.includes("q=budget")
+                    ? jsonResponse(200, {
+                          results: [{ entityType: "message", entityUid: "m2", score: 1, snippet: "...the <b>budget</b> for..." }],
+                      })
+                    : undefined,
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Search all mail…");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+            await screen.findByText("Matched message");
+            expect(screen.getByText("...the <b>budget</b> for...")).toBeInTheDocument();
+            expect(screen.queryByText("plain preview")).not.toBeInTheDocument();
+        });
+
+        it("falls back to the plain body preview when a search hit has no snippet", async () => {
+            const hit = messageFixture({ uid: "m2", subject: "Matched message", folderUid: "f2", bodyPreview: "plain preview" });
+            mockSearch([hit], (url) =>
+                url.includes("q=budget") ? jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1 }] }) : undefined,
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Search all mail…");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+            await screen.findByText("Matched message");
+            expect(screen.getByText("plain preview")).toBeInTheDocument();
+        });
+
         it("clearing the search box returns to the normal folder listing", async () => {
             const inboxMsg = messageFixture({ uid: "m1", subject: "Folder message" });
             const hit = messageFixture({ uid: "m2", subject: "Matched message", folderUid: "f2" });
