@@ -9,6 +9,7 @@ import { HiOutlineCalendarDays, HiOutlineClipboardDocumentList, HiOutlineEnvelop
 import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
 import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
+import { useIdleKeyTimeout } from "@rapidmx/react-shared/crypto/useIdleKeyTimeout.js";
 import ComposeProvider from "../mail/compose/ComposeContext.js";
 import BottomTabBar from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { BrandingFooter, BrandingHeader } from "./BrandingChrome.js";
@@ -84,6 +85,9 @@ export default function AppShell({
     const { branding, iconSrc } = useBranding();
 
     useRedirectIfUnauthenticated(userUid, authServerUrl);
+    // Mounted here, not scoped to Mail/Settings (the only shells that actually read unlocked keys),
+    // specifically so activity in *any* app resets the idle clock - see that hook's own doc comment.
+    useIdleKeyTimeout();
 
     function handleSignOut() {
         window.location.href = authServerUrl ?? "/";

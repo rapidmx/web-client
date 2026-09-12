@@ -105,6 +105,7 @@ afterEach(() => {
     buildPasswordWrap.mockReset();
     buildRecoveryWraps.mockReset();
     rewrapPrivateKeysUnderNewMasterKey.mockReset();
+    localStorage.clear();
 });
 
 describe("SettingsEncryptionPage", () => {
@@ -529,6 +530,42 @@ describe("SettingsEncryptionPage", () => {
         await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
 
         expect(await screen.findByText("mailbox is not owned by this user")).toBeInTheDocument();
+    });
+
+    it("shows the default session timeout (30 minutes) when nothing has been configured", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        mockShell();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        expect(screen.getByLabelText("Session timeout")).toHaveValue("30");
+    });
+
+    it("changing the session timeout persists it to localStorage immediately", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.selectOptions(screen.getByLabelText("Session timeout"), "Never");
+
+        expect(screen.getByLabelText("Session timeout")).toHaveValue("0");
+        expect(localStorage.getItem("rapidmx:idle-timeout-minutes")).toBe("0");
+    });
+
+    it("reflects an already-configured session timeout on load", async () => {
+        localStorage.setItem("rapidmx:idle-timeout-minutes", "60");
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        mockShell();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        expect(screen.getByLabelText("Session timeout")).toHaveValue("60");
+        expect(screen.getByText("1 hour")).toBeInTheDocument();
     });
 
     it("destroys this session's unlocked keys and shows a confirmation instead of the management UI", async () => {

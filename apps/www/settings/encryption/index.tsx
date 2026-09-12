@@ -6,6 +6,7 @@ import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { KeyVault, MasterKeyWrap, addMasterKeyWrap, getKeyVault, rekey, removeMasterKeyWrap } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { destroyUnlockedKeys, getUnlockedKeys, unlockWithPassword } from "@rapidmx/react-shared/crypto/keySession.js";
+import { IDLE_TIMEOUT_OPTIONS_MINUTES, getIdleTimeoutMinutes, setIdleTimeoutMinutes } from "@rapidmx/react-shared/crypto/idleTimeout.js";
 import { buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
 import { rewrapPrivateKeysUnderNewMasterKey } from "@rapidmx/react-shared/crypto/keyRotation.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
@@ -21,6 +22,16 @@ const METHOD_LABELS: Record<string, string> = {
     recovery: "Recovery code",
     escrow: "Escrow (managed by your organization)",
 };
+
+function idleTimeoutLabel(minutes: number): string {
+    if (minutes === 0) {
+        return "Never";
+    }
+    if (minutes === 60) {
+        return "1 hour";
+    }
+    return `${minutes} minutes`;
+}
 
 export type SettingsEncryptionPageProps = Omit<SettingsShellProps, "active">;
 
@@ -75,6 +86,13 @@ function EncryptionContent() {
     const [rotating, setRotating] = useState(false);
 
     const [destroyed, setDestroyed] = useState(false);
+    const [idleTimeoutMinutes, setIdleTimeoutMinutesState] = useState(() => getIdleTimeoutMinutes());
+
+    function handleIdleTimeoutChange(e: React.ChangeEvent<HTMLSelectElement>) {
+        const minutes = Number(e.target.value);
+        setIdleTimeoutMinutes(minutes);
+        setIdleTimeoutMinutesState(minutes);
+    }
 
     function loadVault() {
         return getKeyVault(mailboxUid!)
@@ -397,6 +415,27 @@ function EncryptionContent() {
                         </Button>
                     </div>
                 </form>
+
+                <div>
+                    <h2 className="text-sm font-semibold mb-2">Session timeout</h2>
+                    <p className="text-xs text-text-muted mb-3">
+                        Automatically destroys your unlocked keys on this device after this much time with no
+                        activity anywhere in the app - not just Mail or Settings. Applies the next time you open
+                        or reload the app.
+                    </p>
+                    <select
+                        aria-label="Session timeout"
+                        className="text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                        value={idleTimeoutMinutes}
+                        onChange={handleIdleTimeoutChange}
+                    >
+                        {IDLE_TIMEOUT_OPTIONS_MINUTES.map((minutes) => (
+                            <option key={minutes} value={minutes}>
+                                {idleTimeoutLabel(minutes)}
+                            </option>
+                        ))}
+                    </select>
+                </div>
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">This session</h2>

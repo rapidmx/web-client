@@ -309,10 +309,8 @@ foundation, without a large new subsystem of its own:
   to await.
 - **Deliberately deferred, not built even partially**: a full WebAuthn passkey-registration ceremony as
   a second "add a method" action (`passkeyUnlock.ts`'s `registerPasskeyForUnlock()`/`deriveFromPasskey()`
-  already exist and are still used nowhere yet); and idle-timeout configuration (needs a session-wide
-  activity-tracking mechanism mounted somewhere like `AppShell.tsx`, not just a page-level setting with
-  nothing enforcing it - a control with no effect would be worse than no control). Revisit as a
-  follow-up pass. "Rotate keys" (`rekey()`) landed the same day - see the entry directly below.
+  already exist and are still used nowhere yet). "Rotate keys" (`rekey()`) and idle-timeout
+  configuration both landed the same day - see the two entries directly below.
 
 ### 2026-09-11 (continued) — Real key rotation ("Rotate keys")
 
@@ -339,3 +337,29 @@ Reuses the exact same "Save your new recovery codes" one-time-display screen "Re
 codes" already built, with a `recoveryCodesReason` flag swapping in different explanatory copy (a
 rotation also invalidates every *other* unlock method, not just recovery codes — the screen needs to
 say so plainly, not just "codes changed").
+
+### 2026-09-11 (continued) — Idle-timeout key destruction
+
+JP's own direction on this one: "the clock needs to reset on any legitimate action in the client, not
+just Mail and Settings" - ruling out the narrower option (mounting the timer inside `KeyEnrollmentGate`
+itself, which only exists while Mail/Settings are open) in favor of `AppShell.tsx`, the one component
+every app (Mail/Calendar/Contacts/Tasks/Settings) actually renders through.
+
+- `react-shared`'s new `crypto/useIdleKeyTimeout()` (see that repo's own NOTES.md, same date) listens
+  for `mousedown`/`keydown`/`scroll`/`touchstart` at the **`document`** level, not scoped to any one
+  app's own content area - activity in Contacts or Calendar resets the clock exactly the same as
+  activity in Mail, even though only Mail/Settings ever actually read the keys it protects. Mounted
+  once, unconditionally, in `AppShell.tsx` (alongside the existing `useRedirectIfUnauthenticated()` -
+  same "call it every render regardless of `userUid`, let the hook itself no-op" pattern).
+  `destroyUnlockedKeys()` (no argument - wipes every mailbox's session, not just one) is a no-op
+  against an empty store, so mounting this before anything is ever unlocked has no observable effect.
+- Settings > Encryption gained a "Session timeout" `<select>` (5/15/30/60 minutes, or Never) reading/
+  writing `idleTimeout.ts`'s `localStorage`-backed preference directly - no API call, no submit
+  button, applied on the very next `change` event. Takes effect the next time the user opens or
+  reloads the app (`AppShell.tsx` reads the configured duration once, at its own mount - this
+  framework has no client-side router, so every navigation is already a fresh mount, matching how
+  every other page here already works).
+- Simplified `idleTimeoutLabel()`'s hour-formatting to a plain `minutes === 60 ? "1 hour" : ...` special
+  case rather than a general `minutes / 60` pluralization branch — the only >= 60 option
+  `IDLE_TIMEOUT_OPTIONS_MINUTES` actually offers today is exactly 60, so the general form's plural
+  branch was untestable dead code, not a real gap.

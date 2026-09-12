@@ -9,10 +9,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import AppShell from "../../../apps/shared/components/layout/AppShell.js";
 
+// The hook's own behavior (activity resets the clock, disabled at 0, cleans up on unmount, ...) is
+// already exercised end to end in react-shared's own test suite - this file only needs to confirm
+// AppShell actually mounts it, which is its own orchestration responsibility.
+const { useIdleKeyTimeout } = vi.hoisted(() => ({ useIdleKeyTimeout: vi.fn() }));
+vi.mock("@rapidmx/react-shared/crypto/useIdleKeyTimeout.js", () => ({ useIdleKeyTimeout }));
+
 const AUTH_SERVER_URL = "https://auth.example.com";
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    useIdleKeyTimeout.mockClear();
 });
 
 describe("AppShell", () => {
@@ -25,6 +32,11 @@ describe("AppShell", () => {
         );
         expect(screen.queryByText("content")).not.toBeInTheDocument();
         expect(screen.queryByRole("navigation", { name: "Apps" })).not.toBeInTheDocument();
+    });
+
+    it("mounts the idle-key-timeout hook", () => {
+        render(<AppShell active="mail" userUid="u1">content</AppShell>);
+        expect(useIdleKeyTimeout).toHaveBeenCalled();
     });
 
     it("renders the icon rail with all four apps, highlighting the active one", () => {

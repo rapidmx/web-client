@@ -236,6 +236,81 @@ index 0000000000000000000000000000000000000000..02bb0730ce7c2e0d1e5148458931315e
 +    const padding = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
 +    return fromBase64(padded + padding);
 +}
+diff --git a/dist/crypto/idleTimeout.d.ts b/dist/crypto/idleTimeout.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e361b6d96af6a25b7f0cfa02898ca10dd1a74d
+--- /dev/null
++++ b/dist/crypto/idleTimeout.d.ts
+@@ -0,0 +1,16 @@
++/** The default for a device that has never set a preference - conservative enough for a shared/public
++ * machine without being disruptive on a personal one. */
++export declare const DEFAULT_IDLE_TIMEOUT_MINUTES = 30;
++/** `0` means "never" - the idle timer is disabled entirely. */
++export declare const IDLE_TIMEOUT_OPTIONS_MINUTES: readonly [5, 15, 30, 60, 0];
++/**
++ * Reads this device's configured idle-timeout duration, in minutes. Falls back to
++ * `DEFAULT_IDLE_TIMEOUT_MINUTES` for a never-configured device, a corrupted/non-numeric stored value,
++ * or a `localStorage` access that throws (private-browsing/storage-blocked contexts) - never throws
++ * itself, since a broken read here must not be able to prevent the app from rendering at all.
++ */
++export declare function getIdleTimeoutMinutes(): number;
++/** Persists this device's idle-timeout preference. A `localStorage` write failure is swallowed, not
++ * thrown - the setting just doesn't survive a reload in that case, same fallback-to-default behavior
++ * `getIdleTimeoutMinutes()` already has for a storage-blocked context. */
++export declare function setIdleTimeoutMinutes(minutes: number): void;
+diff --git a/dist/crypto/idleTimeout.js b/dist/crypto/idleTimeout.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8d98321ca6cba78b1a451e5c7b90e95f167e88b
+--- /dev/null
++++ b/dist/crypto/idleTimeout.js
+@@ -0,0 +1,47 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * The configured idle-timeout duration behind `useIdleKeyTimeout()` — the spec's own "configurable
++ * idle period" trigger for `keySession.ts`'s `destroyUnlockedKeys()`. Stored in `localStorage`, not
++ * synced to the server: it's a per-device preference about *this browser's* own in-memory key cache,
++ * the same "never persisted anywhere durable" posture `keySession.ts` itself takes for the keys this
++ * setting protects.
++ */
++const STORAGE_KEY = "rapidmx:idle-timeout-minutes";
++/** The default for a device that has never set a preference - conservative enough for a shared/public
++ * machine without being disruptive on a personal one. */
++export const DEFAULT_IDLE_TIMEOUT_MINUTES = 30;
++/** `0` means "never" - the idle timer is disabled entirely. */
++export const IDLE_TIMEOUT_OPTIONS_MINUTES = [5, 15, 30, 60, 0];
++/**
++ * Reads this device's configured idle-timeout duration, in minutes. Falls back to
++ * `DEFAULT_IDLE_TIMEOUT_MINUTES` for a never-configured device, a corrupted/non-numeric stored value,
++ * or a `localStorage` access that throws (private-browsing/storage-blocked contexts) - never throws
++ * itself, since a broken read here must not be able to prevent the app from rendering at all.
++ */
++export function getIdleTimeoutMinutes() {
++    try {
++        const stored = localStorage.getItem(STORAGE_KEY);
++        if (stored === null) {
++            return DEFAULT_IDLE_TIMEOUT_MINUTES;
++        }
++        const parsed = Number(stored);
++        return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_IDLE_TIMEOUT_MINUTES;
++    }
++    catch {
++        return DEFAULT_IDLE_TIMEOUT_MINUTES;
++    }
++}
++/** Persists this device's idle-timeout preference. A `localStorage` write failure is swallowed, not
++ * thrown - the setting just doesn't survive a reload in that case, same fallback-to-default behavior
++ * `getIdleTimeoutMinutes()` already has for a storage-blocked context. */
++export function setIdleTimeoutMinutes(minutes) {
++    try {
++        localStorage.setItem(STORAGE_KEY, String(minutes));
++    }
++    catch {
++        // Best-effort - see this function's own doc comment.
++    }
++}
 diff --git a/dist/crypto/keyRotation.d.ts b/dist/crypto/keyRotation.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..02ddd122b1f534fbca1b2c15716b6de7d3728f71
@@ -2153,6 +2228,81 @@ index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b048
 +        subject: headers["subject"] ?? "",
 +        messageId: headers["message-id"] ?? "",
 +    };
++}
+diff --git a/dist/crypto/useIdleKeyTimeout.d.ts b/dist/crypto/useIdleKeyTimeout.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e56694c169ec48b4f62728ed1572c644469438fc
+--- /dev/null
++++ b/dist/crypto/useIdleKeyTimeout.d.ts
+@@ -0,0 +1,10 @@
++/**
++ * Safe to mount unconditionally, even before any mailbox has been unlocked this session -
++ * `destroyUnlockedKeys()` is a no-op against an empty session store, so an idle period elapsing with
++ * nothing unlocked yet has no observable effect. Reads the configured duration once, at mount - the
++ * host component (`AppShell.tsx`) remounts on every navigation in this framework's own no-client-
++ * router design (see that component's own doc comment), so a preference change made on the Settings
++ * page takes effect the next time the user goes anywhere, without needing this hook to poll for
++ * changes itself.
++ */
++export declare function useIdleKeyTimeout(): void;
+diff --git a/dist/crypto/useIdleKeyTimeout.js b/dist/crypto/useIdleKeyTimeout.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..6507d543d18d97693f23e9b9961c403119b7c8a7
+--- /dev/null
++++ b/dist/crypto/useIdleKeyTimeout.js
+@@ -0,0 +1,53 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Destroys every unlocked mailbox's in-memory keys after this device's configured idle period
++ * (`idleTimeout.ts`) with no user activity — `specs/end-to-end_encryption.md`'s "destroyed on ...
++ * a configurable idle period" trigger for `keySession.ts`'s `destroyUnlockedKeys()`.
++ *
++ * Listened at the `document` level (not scoped to any one app's own content area) specifically so
++ * activity in *any* app — Contacts, Calendar, Tasks, not just Mail/Settings, where the unlocked keys
++ * are actually read/used — resets the clock. A user reading a long document in Tasks for 40 minutes
++ * without touching Mail again is still an actively-attended device, not an idle one; scoping this to
++ * only the app(s) that touch key material would time it out from underneath a session that was never
++ * actually unattended.
++ */
++import { useEffect } from "react";
++import { destroyUnlockedKeys } from "./keySession.js";
++import { getIdleTimeoutMinutes } from "./idleTimeout.js";
++const ACTIVITY_EVENTS = ["mousedown", "keydown", "scroll", "touchstart"];
++/**
++ * Safe to mount unconditionally, even before any mailbox has been unlocked this session -
++ * `destroyUnlockedKeys()` is a no-op against an empty session store, so an idle period elapsing with
++ * nothing unlocked yet has no observable effect. Reads the configured duration once, at mount - the
++ * host component (`AppShell.tsx`) remounts on every navigation in this framework's own no-client-
++ * router design (see that component's own doc comment), so a preference change made on the Settings
++ * page takes effect the next time the user goes anywhere, without needing this hook to poll for
++ * changes itself.
++ */
++export function useIdleKeyTimeout() {
++    useEffect(() => {
++        const minutes = getIdleTimeoutMinutes();
++        if (!minutes) {
++            return;
++        }
++        const timeoutMs = minutes * 60000;
++        let timer;
++        function reset() {
++            clearTimeout(timer);
++            timer = setTimeout(() => destroyUnlockedKeys(), timeoutMs);
++        }
++        reset();
++        for (const event of ACTIVITY_EVENTS) {
++            document.addEventListener(event, reset, { passive: true });
++        }
++        return () => {
++            clearTimeout(timer);
++            for (const event of ACTIVITY_EVENTS) {
++                document.removeEventListener(event, reset);
++            }
++        };
++    }, []);
 +}
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
 index 9eba1e5013b5604ec48710251ce3adafbf5c2896..2e7e9ceec6a2f448505e89b19659ae645263801c 100644
