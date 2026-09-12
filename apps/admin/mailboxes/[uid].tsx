@@ -4,12 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { getMailbox, impersonateUser, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { deleteMailbox, getMailbox, impersonateUser, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import ShareAccessCard from "../../shared/components/admin/mailboxes/ShareAccessCard.js";
 import ResourceSettingsCard from "../../shared/components/admin/mailboxes/ResourceSettingsCard.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 function formatBytes(bytes: number): string {
     if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
@@ -31,6 +32,9 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [impersonating, setImpersonating] = useState(false);
+    const [confirmingDelete, setConfirmingDelete] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
 
     async function handleAccessMailbox(ownerUserUid: string) {
         setImpersonating(true);
@@ -40,6 +44,27 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not access this mailbox.");
             setImpersonating(false);
+        }
+    }
+
+    function closeDeleteModal() {
+        setConfirmingDelete(false);
+    }
+
+    // Only ever invoked from the delete-confirmation modal below, which itself only renders once
+    // `mailbox` is resolved (the `error || !mailbox` branch below returns before this content mounts).
+    async function handleDelete() {
+        setDeleting(true);
+        setDeleteError(null);
+        try {
+            await deleteMailbox(mailbox!.uid, mailbox!.version);
+            window.location.href = "/admin";
+        } catch (err) {
+            // Most commonly a 409 if this mailbox is a custodian on an open legal hold (restapi's own
+            // `assertNotOnLegalHold()`, naming the blocking Matter uid(s)) - surfaced as-is, same as
+            // every other destructive-action error in this codebase, rather than special-cased here.
+            setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this mailbox.");
+            setDeleting(false);
         }
     }
 
@@ -71,18 +96,28 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
                     </a>
                     <h1 className="text-xl font-bold tracking-tight mt-1">{mailbox.primarySmtpAddress}</h1>
                 </div>
-                {mailbox.ownerUserUid && (
+                <div className="flex gap-3 shrink-0">
+                    {mailbox.ownerUserUid && (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto"
+                            loading={impersonating}
+                            disabled={impersonating}
+                            onClick={() => handleAccessMailbox(mailbox.ownerUserUid as string)}
+                        >
+                            Access this mailbox
+                        </Button>
+                    )}
                     <Button
                         type="button"
                         variant="secondary"
-                        className="!w-auto shrink-0"
-                        loading={impersonating}
-                        disabled={impersonating}
-                        onClick={() => handleAccessMailbox(mailbox.ownerUserUid as string)}
+                        className="!w-auto !border-danger !text-danger hover:!border-danger hover:!text-danger"
+                        onClick={() => setConfirmingDelete(true)}
                     >
-                        Access this mailbox
+                        Delete mailbox
                     </Button>
-                )}
+                </div>
             </div>
 
             <div className="bg-surface border border-border rounded-md p-6">
@@ -121,6 +156,29 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
             <ShareAccessCard mailboxUid={mailbox.uid} />
 
             {mailbox.isResource && <ResourceSettingsCard mailbox={mailbox} onUpdate={setMailbox} />}
+
+            <Modal open={confirmingDelete} onClose={closeDeleteModal} title="Delete mailbox">
+                <p className="text-sm mb-5">
+                    Are you sure you want to delete <strong>{mailbox.primarySmtpAddress}</strong>? This permanently
+                    deletes the mailbox and everything in it, and cannot be undone. It fails if this mailbox is a
+                    custodian on an active legal hold.
+                </p>
+                {deleteError && <Alert>{deleteError}</Alert>}
+                <div className="flex gap-3 justify-end mt-5">
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={deleting} onClick={closeDeleteModal}>
+                        Cancel
+                    </Button>
+                    <Button
+                        type="button"
+                        className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger"
+                        loading={deleting}
+                        disabled={deleting}
+                        onClick={handleDelete}
+                    >
+                        Delete
+                    </Button>
+                </div>
+            </Modal>
         </div>
     );
 }

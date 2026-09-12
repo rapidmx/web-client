@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
@@ -208,6 +208,94 @@ describe("MailboxDetailPage", () => {
 
         await user.click(await screen.findByRole("button", { name: "Access this mailbox" }));
         expect(await screen.findByText("Could not access this mailbox.")).toBeInTheDocument();
+    });
+
+    it("opens the delete-confirmation modal, deletes the mailbox, and redirects to the mailbox list", async () => {
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") return jsonResponse(200, {});
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
+        const location = mockLocation();
+
+        await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
+        expect(await screen.findByText(/permanently deletes the mailbox/)).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+
+        await vi.waitFor(() => expect(location.href).toBe("/admin"));
+    });
+
+    it("closes the delete-confirmation modal via Cancel without deleting", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
+            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
+
+        await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByText(/permanently deletes the mailbox/)).not.toBeInTheDocument();
+    });
+
+    it("closes the delete-confirmation modal via its own close button", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
+            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
+
+        await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
+        const dialog = await screen.findByRole("dialog");
+        await user.click(within(dialog).getByRole("button", { name: /close/i }));
+
+        expect(screen.queryByText(/permanently deletes the mailbox/)).not.toBeInTheDocument();
+    });
+
+    it("shows the server's own message when deleting the mailbox fails, e.g. an active legal hold", async () => {
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") {
+                return jsonResponse(409, { message: "This action is blocked by an active legal hold: matter-1." });
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
+
+        await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+
+        expect(await screen.findByText("This action is blocked by an active legal hold: matter-1.")).toBeInTheDocument();
+    });
+
+    it("shows a generic message when deleting the mailbox fails with a non-API error", async () => {
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") throw new TypeError("network down");
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
+
+        await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+
+        expect(await screen.findByText("Could not delete this mailbox.")).toBeInTheDocument();
     });
 
     // Mocks window.location wholesale (see testUtils.mockLocation), which isn't undone between tests

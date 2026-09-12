@@ -674,3 +674,18 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     never *prove* freshness, only presence) is restapi's own, already-disclosed, out-of-scope design
     limit. This just makes the common case (this page performing the rotation) actually re-establish real
     coverage automatically, instead of silently leaving a dead wrap as the only one on file.
+
+- **2026-09-12 (continued) — Phase 2 of consuming restapi's next batch (compliance roadmap Groups A-F):
+  Legal Hold enforcement (Group A).** restapi now 409s a permanent message delete or a mailbox delete
+  when the target mailbox is a custodian on an open `Matter` - entirely transparent server-side (no new
+  fields/routes on this repo's side; `server`'s `MailboxRoute`/`MessageRoute` already inherit restapi's
+  own concrete `matterClass` wiring with zero changes needed there - see `server`'s own NOTES.md). The
+  one real gap: nothing anywhere in this app could actually trigger a mailbox delete, so the enforcement,
+  while real, had no reachable UI path to exercise it. Added a "Delete mailbox" button + confirmation
+  `Modal` to `apps/admin/mailboxes/[uid].tsx`, calling the already-existing (but never-wired)
+  `deleteMailbox(uid, version)` from `react-shared`'s `mailApi.ts` - surfaces the 409's own message
+  (naming the blocking Matter uid verbatim) exactly like every other destructive-action error in this
+  codebase, no special-casing. A dedicated "empty trash"/purge-a-single-message UI is deliberately not
+  built here - Phase 6 (GDPR erasure, later in this batch) already gives a real end-to-end path that
+  exercises this exact block when erasing a held mailbox, so this phase only needed to make the plainer
+  mailbox-delete path reachable.
