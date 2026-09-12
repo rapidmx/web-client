@@ -689,3 +689,14 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   built here - Phase 6 (GDPR erasure, later in this batch) already gives a real end-to-end path that
   exercises this exact block when erasing a held mailbox, so this phase only needed to make the plainer
   mailbox-delete path reachable.
+
+- **2026-09-12 (continued) — Phase 3 of consuming restapi's next batch: Retention Policy (Group C).**
+  New `apps/admin/retention-policy/index.tsx` - two optional number inputs (message/audit-log retention
+  in days), surfacing the endpoint's own 400 validation messages verbatim rather than duplicating them
+  client-side (positive-integer check, the 2190-day audit-log floor via `MIN_AUDIT_LOG_RETENTION_DAYS`).
+  Load/save shape mirrors `apps/admin/branding/index.tsx`'s own simpler singleton-settings pattern. A
+  blank field is simply omitted from the `PUT` patch (not sent as `null`/`0`) - matches the endpoint's
+  own real behavior of "only supplied fields change, no way to clear one back to unset," so the UI
+  doesn't invent a clear-field affordance the API can't honor. `AdminShell` gained a `retentionPolicy`
+  nav entry (`HiOutlineClock`). Full react-shared rebuild + patch cycle to pick up
+  `admin/retentionPolicyApi.ts`.

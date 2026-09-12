@@ -6,6 +6,7 @@ import "../../../styles/app.css";
 import React, { PropsWithChildren, ReactNode, useEffect, useState } from "react";
 import {
     HiOutlineClipboardDocumentList,
+    HiOutlineClock,
     HiOutlineGlobeAlt,
     HiOutlineInboxStack,
     HiOutlineKey,
@@ -32,6 +33,7 @@ export type AdminSection =
     | "distributionLists"
     | "transportRules"
     | "escrowScopes"
+    | "retentionPolicy"
     | "branding";
 
 export interface AdminShellProps {
@@ -76,6 +78,12 @@ const NAV_ITEMS: NavItem[] = [
         href: "/admin/escrow-scopes",
         label: "Escrow Scopes",
         icon: HiOutlineKey,
+    },
+    {
+        id: "retentionPolicy",
+        href: "/admin/retention-policy",
+        label: "Retention Policy",
+        icon: HiOutlineClock,
     },
     { id: "branding", href: "/admin/branding", label: "Branding", icon: HiOutlinePaintBrush },
 ];

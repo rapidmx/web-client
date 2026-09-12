@@ -427,6 +427,65 @@ index 0000000000000000000000000000000000000000..f1e9be8cf0ffadb1f9cae2af985fe07e
 +export function closeMatter(uid) {
 +    return apiFetch(`/escrow/matters/${encodeURIComponent(uid)}/close`, { method: "POST" });
 +}
+diff --git a/dist/admin/retentionPolicyApi.d.ts b/dist/admin/retentionPolicyApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ebfb6dcd3f8950f2b5d44dcf4b20041d1b551c5
+--- /dev/null
++++ b/dist/admin/retentionPolicyApi.d.ts
+@@ -0,0 +1,19 @@
++/** Mirrors `@rapidmx/restapi`'s `PublicRetentionPolicy` exactly. Both fields `undefined` means "no
++ * automatic purge configured" — `GET` returns `{}` rather than 404 when nothing has been set yet. */
++export interface RetentionPolicy {
++    /** Max age (days) for any `Message`, any folder. `undefined` = no automatic purge. */
++    messageRetentionDays?: number;
++    /** Max age (days) for `AuditLogEntry` rows. `undefined` = keep forever. Never applies to the
++     * separate, hash-chained `EscrowAuditLogEntry` ledger — deleting from that would break its own
++     * tamper-evident chain, by design. */
++    auditLogRetentionDays?: number;
++}
++/** The server-enforced floor for `auditLogRetentionDays` (2190 days, ~6 years — a HIPAA-approximation
++ * minimum) — mirrored here only so client-side validation can give the same message before a round trip;
++ * the server enforces this regardless. */
++export declare const MIN_AUDIT_LOG_RETENTION_DAYS = 2190;
++export declare function getRetentionPolicy(): Promise<RetentionPolicy>;
++/** Partial patch — only supplied fields are changed. There is no way to clear a previously-configured
++ * field back to "no automatic purge" through this endpoint (matches the route's own real behavior,
++ * not a client-side limitation to work around). */
++export declare function updateRetentionPolicy(patch: Partial<RetentionPolicy>): Promise<RetentionPolicy>;
+diff --git a/dist/admin/retentionPolicyApi.js b/dist/admin/retentionPolicyApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..47aed4992d3f7588d1a6869bc56acd91a2ad29c7
+--- /dev/null
++++ b/dist/admin/retentionPolicyApi.js
+@@ -0,0 +1,28 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s deployment-wide `RetentionPolicy` singleton
++ * (`BaseRetentionPolicyRoute`, mounted at `mail/retention-policy`). `GET` is readable by any
++ * authenticated user; `PUT` is trusted-admin-only server-side. Enforcement itself (actually purging
++ * expired messages/audit-log entries) lives entirely in restapi's own `RetentionEnforcementJob` — this
++ * file only reads/writes the configuration.
++ */
++import { apiFetch } from "../util/api.js";
++/** The server-enforced floor for `auditLogRetentionDays` (2190 days, ~6 years — a HIPAA-approximation
++ * minimum) — mirrored here only so client-side validation can give the same message before a round trip;
++ * the server enforces this regardless. */
++export const MIN_AUDIT_LOG_RETENTION_DAYS = 2190;
++export function getRetentionPolicy() {
++    return apiFetch(`/mail/retention-policy`);
++}
++/** Partial patch — only supplied fields are changed. There is no way to clear a previously-configured
++ * field back to "no automatic purge" through this endpoint (matches the route's own real behavior,
++ * not a client-side limitation to work around). */
++export function updateRetentionPolicy(patch) {
++    return apiFetch(`/mail/retention-policy`, {
++        method: "PUT",
++        body: JSON.stringify(patch),
++    });
++}
 diff --git a/dist/contacts/contactsApi.d.ts b/dist/contacts/contactsApi.d.ts
 index 325ea9e5b51bbc2a4758215c1013b6c91a803fd3..535b446cce3b3cf086dc849d521c8c856bebae7f 100644
 --- a/dist/contacts/contactsApi.d.ts
@@ -1505,10 +1564,10 @@ index 0000000000000000000000000000000000000000..da85967d8e3474b387cff2da2432bdb2
 +}
 diff --git a/dist/crypto/masterKeyWraps.d.ts b/dist/crypto/masterKeyWraps.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc3e4cc507f1d84403e177ee9c27caa2d9b4f70e
+index 0000000000000000000000000000000000000000..0e6a71d2b6cd5afb235e23eace026e55ead474b5
 --- /dev/null
 +++ b/dist/crypto/masterKeyWraps.d.ts
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,52 @@
 +import type { MasterKeyWrap } from "./keyvaultApi.js";
 +import { Argon2idParams } from "./passwordUnlock.js";
 +/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
@@ -1532,7 +1591,14 @@ index 0000000000000000000000000000000000000000..dc3e4cc507f1d84403e177ee9c27caa2
 +    codes: string[];
 +}>;
 +/** `nonce`/`salt` labels for an escrow wrap - see `buildEscrowWrap()`'s own doc comment for why these
-+ * are fixed placeholders rather than freshly generated values, unlike every other wrap method. */
++ * are fixed placeholders rather than freshly generated values, unlike every other wrap method.
++ * Deliberately NOT valid base64 (`fromBase64("n/a")` decodes to 2 arbitrary bytes rather than throwing,
++ * since only a length of `4n+1` makes `atob()` reject its input) - any future generic
++ * `fromBase64(wrap.salt)`/`fromBase64(wrap.nonce)` refactor across every wrap method MUST special-case
++ * (or simply skip) `method === "escrow"` first, or it will silently "succeed" with garbage bytes instead
++ * of failing loudly. Nothing in this codebase does that generically today (`keySession.ts` only ever
++ * reads `.salt`/`.nonce` after already filtering to `method === "password"`), but it's exactly the kind
++ * of innocent-looking refactor that would reintroduce this as a real bug. */
 +export declare const ESCROW_KDF_LABEL = "cms-enveloped-data";
 +/**
 + * Wraps `mk` for the `escrow` unlock method: encrypts it as a CMS `EnvelopedData` structure to the
@@ -1556,10 +1622,10 @@ index 0000000000000000000000000000000000000000..dc3e4cc507f1d84403e177ee9c27caa2
 +export declare function buildEscrowWrap(mk: Uint8Array, escrowScopeId: string, scopePublicKeyCertDer: Uint8Array): Promise<MasterKeyWrap>;
 diff --git a/dist/crypto/masterKeyWraps.js b/dist/crypto/masterKeyWraps.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..f5fda62c5e172ffb953851284876a297a79e0cd0
+index 0000000000000000000000000000000000000000..6b59664b782354b7b0f2c8f61a8c3431a6067cef
 --- /dev/null
 +++ b/dist/crypto/masterKeyWraps.js
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,114 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1631,7 +1697,14 @@ index 0000000000000000000000000000000000000000..f5fda62c5e172ffb953851284876a297
 +    return { wraps, codes };
 +}
 +/** `nonce`/`salt` labels for an escrow wrap - see `buildEscrowWrap()`'s own doc comment for why these
-+ * are fixed placeholders rather than freshly generated values, unlike every other wrap method. */
++ * are fixed placeholders rather than freshly generated values, unlike every other wrap method.
++ * Deliberately NOT valid base64 (`fromBase64("n/a")` decodes to 2 arbitrary bytes rather than throwing,
++ * since only a length of `4n+1` makes `atob()` reject its input) - any future generic
++ * `fromBase64(wrap.salt)`/`fromBase64(wrap.nonce)` refactor across every wrap method MUST special-case
++ * (or simply skip) `method === "escrow"` first, or it will silently "succeed" with garbage bytes instead
++ * of failing loudly. Nothing in this codebase does that generically today (`keySession.ts` only ever
++ * reads `.salt`/`.nonce` after already filtering to `method === "password"`), but it's exactly the kind
++ * of innocent-looking refactor that would reintroduce this as a real bug. */
 +export const ESCROW_KDF_LABEL = "cms-enveloped-data";
 +const ESCROW_NONCE_PLACEHOLDER = "n/a";
 +const ESCROW_SALT_PLACEHOLDER = "n/a";
