@@ -52,4 +52,12 @@ describe("ContactDetailPane", () => {
         await user.click(screen.getByRole("button", { name: "Delete" }));
         expect(onDelete).toHaveBeenCalledTimes(1);
     });
+
+    it("falls back to the raw string when a fingerprint doesn't match the grouping pattern (defensive - real fingerprints always do)", () => {
+        const contact = contactFixture({
+            keys: [{ publicKey: "x", type: "x509", useType: "encrypt", fingerprint: "", notBefore: 1, notAfter: 2 }],
+        });
+        render(<ContactDetailPane contact={contact} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        expect(screen.getByText(/Encryption key:/)).toBeInTheDocument();
+    });
 });

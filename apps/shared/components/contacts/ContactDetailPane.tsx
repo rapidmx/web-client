@@ -5,7 +5,15 @@
 import React from "react";
 import { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar.js";
+
+/** Groups a hex fingerprint into 4-character blocks (`ab12 cd34 ...`) for out-of-band verification -
+ * the spec's own use case ("compare this over the phone") is materially easier with a grouped string
+ * than one 64-character run. */
+function formatFingerprint(fingerprint: string): string {
+    return fingerprint.match(/.{1,4}/g)?.join(" ") ?? fingerprint;
+}
 
 export interface ContactDetailPaneProps {
     contact: Contact;
@@ -93,6 +101,42 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, backHref 
                         <div>{contact.notes}</div>
                     </div>
                 )}
+                {(contact.keys && contact.keys.length > 0) || contact.encryptPreference || contact.keyConflict ? (
+                    <div>
+                        <div className="text-text-muted text-xs font-bold uppercase tracking-wide mb-1">Encryption</div>
+                        {contact.keyConflict && (
+                            <div className="mb-2">
+                                <Alert>
+                                    <p className="mb-2">
+                                        A different encryption key was observed for this contact on{" "}
+                                        {new Date(contact.keyConflict.observedAt).toLocaleDateString()}. The
+                                        previously verified key below is still the one in use — this is routine
+                                        after a device change or reinstall, but it&rsquo;s also what a real attack
+                                        looks like, so verify the new fingerprint with {contact.displayName}{" "}
+                                        directly (e.g. by phone) before trusting it. There is no automatic way to
+                                        accept or reject this yet.
+                                    </p>
+                                    <p className="font-mono text-xs">
+                                        Newly observed: {formatFingerprint(contact.keyConflict.observedFingerprint)}
+                                    </p>
+                                </Alert>
+                            </div>
+                        )}
+                        {contact.encryptPreference && (
+                            <div className="mb-1">
+                                {contact.encryptPreference.preferEncrypt === "mutual"
+                                    ? "This contact also encrypts to you — messages to them can be encrypted."
+                                    : "This contact has not indicated a mutual encryption preference."}
+                            </div>
+                        )}
+                        {contact.keys?.map((key) => (
+                            <div key={key.fingerprint} className="font-mono text-xs py-0.5">
+                                {key.useType === "sign" ? "Signing" : "Encryption"} key: {formatFingerprint(key.fingerprint)}
+                                {key.revokedAt && <span className="text-danger"> (revoked)</span>}
+                            </div>
+                        ))}
+                    </div>
+                ) : null}
             </div>
         </div>
     );

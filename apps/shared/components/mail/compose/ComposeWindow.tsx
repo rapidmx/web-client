@@ -134,6 +134,11 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
     const [signEnabled, setSignEnabled] = useState(true);
     const [encryptRequested, setEncryptRequested] = useState(false);
     const [encryptionBlocked, setEncryptionBlocked] = useState<RecipientEncryptionStatus[] | null>(null);
+    // Compose-time discovery (spec: "Discovery occurs ... when the user addresses a new message to a
+    // recipient", never on receipt) - keyed by address so a recipient already looked up isn't re-fetched
+    // just because the user re-focuses the field. Only ever grows via `checkRecipientDiscovery()` below;
+    // never cleared, so switching focus between To/Cc/Bcc repeatedly doesn't re-trigger lookups.
+    const [recipientStatuses, setRecipientStatuses] = useState<Record<string, RecipientEncryptionStatus>>({});
 
     // Best-effort, same as the signature-list fetch below: a mailbox with no keys enrolled yet (or a
     // failed fetch) just means sign/encrypt stay unavailable for this compose session, never a blocking
@@ -183,6 +188,31 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
             .then((folders) => setDraftsFolderUid(folders.find((f) => f.type === "drafts")?.uid))
             .catch((err) => setFolderError(err instanceof ApiRequestError ? err.message : "Could not load your Drafts folder."));
     }, [mailboxUid]);
+
+    /**
+     * Runs discovery for whichever of `addresses` haven't already been looked up this compose session,
+     * caching the result so the small per-recipient indicator below the recipient fields can update
+     * without waiting for Send. Called from the To/Cc/Bcc fields' own `onBlur` - not on every keystroke,
+     * and not the same lookup `assembleForSend()` performs again at send time (deliberately: this is a
+     * best-effort UI hint, not something a stale value here should be trusted to skip at send time).
+     * A failed lookup or a mailbox/policy fetch that hasn't resolved yet just leaves that address with no
+     * indicator rather than surfacing an error over what's a cosmetic nicety.
+     */
+    function checkRecipientDiscovery(addresses: ComposeRecipientInput[]) {
+        if (!mailbox || !encryptionPolicy) {
+            return;
+        }
+        const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
+        const unchecked = addresses.filter((r) => !(r.address in recipientStatuses));
+        for (const recipient of unchecked) {
+            lookupKeys(mailboxUid, recipient.address)
+                .catch(() => undefined)
+                .then((lookup) => {
+                    const status = resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, recipient.address, lookup);
+                    setRecipientStatuses((prev) => ({ ...prev, [recipient.address]: status }));
+                });
+        }
+    }
 
     // Resolves the mailbox's default signature (if any) for `signatureContext` and seeds `html` with it
     // plus any quoted original message, before `RichTextEditor` ever mounts (gated by `contentReady`
@@ -562,6 +592,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
                         className={FIELD_INPUT}
                         value={to}
                         onChange={(e) => setTo(e.target.value)}
+                        onBlur={() => checkRecipientDiscovery(parseAddresses(to))}
                     />
                     {!showCcBcc && (
                         <button
@@ -580,16 +611,53 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
                             <label htmlFor={`compose-cc-${id}`} className="text-xs text-text-muted shrink-0">
                                 Cc
                             </label>
-                            <input id={`compose-cc-${id}`} type="text" className={FIELD_INPUT} value={cc} onChange={(e) => setCc(e.target.value)} />
+                            <input
+                                id={`compose-cc-${id}`}
+                                type="text"
+                                className={FIELD_INPUT}
+                                value={cc}
+                                onChange={(e) => setCc(e.target.value)}
+                                onBlur={() => checkRecipientDiscovery(parseAddresses(cc))}
+                            />
                         </div>
                         <div className={FIELD_ROW}>
                             <label htmlFor={`compose-bcc-${id}`} className="text-xs text-text-muted shrink-0">
                                 Bcc
                             </label>
-                            <input id={`compose-bcc-${id}`} type="text" className={FIELD_INPUT} value={bcc} onChange={(e) => setBcc(e.target.value)} />
+                            <input
+                                id={`compose-bcc-${id}`}
+                                type="text"
+                                className={FIELD_INPUT}
+                                value={bcc}
+                                onChange={(e) => setBcc(e.target.value)}
+                                onBlur={() => checkRecipientDiscovery(parseAddresses(bcc))}
+                            />
                         </div>
                     </>
                 )}
+
+                {(() => {
+                    const knownRecipients = [...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)]
+                        .map((r) => recipientStatuses[r.address])
+                        .filter((status): status is RecipientEncryptionStatus => !!status);
+                    if (knownRecipients.length === 0) {
+                        return null;
+                    }
+                    return (
+                        <ul className="flex flex-wrap gap-1.5 px-3 pt-1.5" aria-label="Recipient encryption availability">
+                            {knownRecipients.map((status) => (
+                                <li
+                                    key={status.address}
+                                    className={`text-xs font-medium py-0.5 px-2 rounded-pill ${
+                                        status.canEncrypt ? "bg-primary/10 text-primary-dark" : "bg-surface-alt text-text-muted"
+                                    }`}
+                                >
+                                    {status.address} {status.canEncrypt ? "supports encryption" : "no encryption key found"}
+                                </li>
+                            ))}
+                        </ul>
+                    );
+                })()}
 
                 <div className={FIELD_ROW}>
                     <input

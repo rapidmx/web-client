@@ -240,3 +240,35 @@ compose and message-reading UI - the rest of Phase 3 of the E2E encryption plan.
   `ComposeWindow.tsx` adds to it. `MailShell.test.tsx`'s own mock was missing
   `getEncryptionPolicy`/`lookupKeys` for exactly this reason - its "clicking Compose" test mounts a
   real `ComposeWindow`, which now calls both unconditionally on mount.
+
+### 2026-09-11 (continued) — Phase 4: compose-time discovery indicator + Contact key/fingerprint display
+
+The two pieces of Phase 4 ("Discovery & contacts UI") that restapi's current release actually
+supports. One piece from the original plan - the Key Conflict Handling accept/reject *action* - turned
+out to be **unimplementable against the current restapi release** (see below), not just deferred.
+
+- **`ComposeWindow.tsx`** now runs `lookupKeys()` on `onBlur` of the To/Cc/Bcc fields (not on every
+  keystroke, and not the same lookup `assembleForSend()` already ran at send time - this is a
+  best-effort UI hint, so a stale cached result here is fine to leave stale rather than re-fetching),
+  caching each address's `composeSecurity.ts#resolveRecipientEncryption()` result in a
+  `recipientStatuses` map and rendering a small "supports encryption"/"no encryption key found" pill
+  per known recipient below the fields. Skips the lookup entirely while `mailbox`/`encryptionPolicy`
+  haven't resolved yet (same guard `assembleForSend()` already uses) rather than firing a lookup it
+  can't yet classify.
+- **`ContactDetailPane.tsx`** gained an "Encryption" section: each pinned key's fingerprint (grouped
+  into 4-char blocks - `abcd 1234 ...` - specifically because the spec's own use case is "compare this
+  over the phone," and one 64-character run defeats that), marked `(revoked)` where applicable, plus
+  the contact's `encryptPreference` in plain language. When `Contact.keyConflict` is set, shows an
+  informational warning with the newly observed fingerprint and the date - the previously pinned key
+  stays displayed unchanged alongside it (spec: "retain the previously stored key," never silently
+  replace).
+- **Real, disclosed restapi-release gap, not a deferral**: the spec's Key Conflict Handling requires
+  "explicit user action to replace the pinned key," implying an actual accept/reject action - but
+  `@rapidmx/restapi`'s `BaseContactRoute.ts` hard-rejects (400) any client attempt to set `keys`/
+  `encryptPreference`/`keysFirstSeen`/`lastMessageSeen`/`keyConflict` directly (`DISCOVERY_MANAGED_FIELDS`,
+  its own doc comment: "trust-on-first-use pinning, anti-downgrade, and key-conflict detection all
+  depend on these never being set by an ordinary client-facing edit"), and there is no dedicated
+  resolve-conflict route anywhere in that library either. Unlike the RFC 8823 ACME signing-key gap
+  (tracked, expected to land later), this specific mechanism doesn't exist in restapi at all yet - the
+  banner above is informational-only, with no action button pretending to do something the server
+  can't currently accept. Revisit once restapi adds a real resolution endpoint.

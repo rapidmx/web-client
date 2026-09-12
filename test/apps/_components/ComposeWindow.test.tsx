@@ -990,6 +990,102 @@ describe("ComposeWindow", () => {
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
 
+        it("shows a 'supports encryption' badge for a recipient once compose-time discovery resolves on blur", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            mockCryptoEndpoints((url) => {
+                if (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup")) {
+                    return jsonResponse(200, {
+                        keys: [
+                            {
+                                publicKey: toBase64(fakeCertDer("bob-encrypt")),
+                                type: "x509",
+                                useType: "encrypt",
+                                fingerprint: "fp-bob",
+                                notBefore: Date.now() - 1000,
+                                notAfter: Date.now() + 1_000_000,
+                            },
+                        ],
+                        encryptPreference: { preferEncrypt: "mutual" },
+                    });
+                }
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "bob@example.com");
+            await user.tab();
+
+            expect(await screen.findByText(/bob@example\.com supports encryption/)).toBeInTheDocument();
+        });
+
+        it("shows a 'no encryption key found' badge for a recipient discovery couldn't find keys for", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            mockCryptoEndpoints((url) => (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup") ? jsonResponse(200, { keys: [] }) : undefined));
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "nokey@example.com");
+            await user.tab();
+
+            expect(await screen.findByText(/nokey@example\.com no encryption key found/)).toBeInTheDocument();
+        });
+
+        it("runs discovery for a Bcc recipient too, on its own blur", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            mockCryptoEndpoints((url) => (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup") ? jsonResponse(200, { keys: [] }) : undefined));
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.click(screen.getByRole("button", { name: "Cc Bcc" }));
+            await user.type(screen.getByLabelText("Bcc"), "hidden@example.com");
+            await user.tab();
+
+            expect(await screen.findByText(/hidden@example\.com no encryption key found/)).toBeInTheDocument();
+        });
+
+        it("does not re-run discovery for an address already looked up", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const fetchMock = mockCryptoEndpoints((url) =>
+                url.startsWith("/api/mail/mailboxes/mb1/keys/lookup") ? jsonResponse(200, { keys: [] }) : undefined,
+            );
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "nokey@example.com");
+            await user.tab();
+            await screen.findByText(/no encryption key found/);
+            const lookupCallsAfterFirstBlur = fetchMock.mock.calls.filter(([url]) => String(url).includes("/keys/lookup")).length;
+
+            await user.click(screen.getByLabelText("To"));
+            await user.tab();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const lookupCallsAfterSecondBlur = fetchMock.mock.calls.filter(([url]) => String(url).includes("/keys/lookup")).length;
+            expect(lookupCallsAfterSecondBlur).toBe(lookupCallsAfterFirstBlur);
+        });
+
+        it("does not run discovery on blur before the mailbox/policy fetch has resolved", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const fetchMock = mockCompose((url) => {
+                if (url === "/api/mail/mailboxes/mb1") return new Promise(() => undefined);
+                if (url === "/api/mail/encryption-policy") return new Promise(() => undefined);
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByLabelText("To")).toBeInTheDocument());
+
+            await user.type(screen.getByLabelText("To"), "bob@example.com");
+            await user.tab();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/keys/lookup"))).toBe(false);
+        });
+
         it("does not render Sign/Encrypt checkboxes when no key has been unlocked this session", async () => {
             getUnlockedKeys.mockReturnValue(undefined);
             mockCryptoEndpoints();

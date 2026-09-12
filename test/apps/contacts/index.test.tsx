@@ -191,6 +191,94 @@ describe("ContactsPage", () => {
         expect(detail.queryByText("Phone")).not.toBeInTheDocument();
         expect(detail.queryByText("Address")).not.toBeInTheDocument();
         expect(detail.queryByText("Notes")).not.toBeInTheDocument();
+        expect(detail.queryByText("Encryption")).not.toBeInTheDocument();
+    });
+
+    it("detail view shows the contact's encryption preference and key fingerprints when known", async () => {
+        const encrypting = {
+            ...jane,
+            encryptPreference: { preferEncrypt: "mutual" as const },
+            keys: [
+                {
+                    publicKey: "base64cert",
+                    type: "x509",
+                    useType: "encrypt" as const,
+                    fingerprint: "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+                    notBefore: 1,
+                    notAfter: 2,
+                },
+            ],
+        };
+        mockShellAndContacts([encrypting]);
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByText("Jane Doe"));
+
+        const detail = within(screen.getByRole("region", { name: "Contact details" }));
+        expect(detail.getByText("Encryption")).toBeInTheDocument();
+        expect(detail.getByText(/also encrypts to you/)).toBeInTheDocument();
+        expect(detail.getByText(/Encryption key: abcd 1234/)).toBeInTheDocument();
+    });
+
+    it("detail view marks a revoked key and shows a 'no preference' message when the contact hasn't opted into mutual encryption", async () => {
+        const revoked = {
+            ...bob,
+            encryptPreference: { preferEncrypt: "nopreference" as const },
+            keys: [
+                {
+                    publicKey: "base64cert",
+                    type: "x509",
+                    useType: "sign" as const,
+                    fingerprint: "ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000",
+                    notBefore: 1,
+                    notAfter: 2,
+                    revokedAt: 3,
+                },
+            ],
+        };
+        mockShellAndContacts([revoked]);
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByText("Bob Smith"));
+
+        const detail = within(screen.getByRole("region", { name: "Contact details" }));
+        expect(detail.getByText(/has not indicated a mutual encryption preference/)).toBeInTheDocument();
+        expect(detail.getByText(/Signing key: ffff 0000/)).toBeInTheDocument();
+        expect(detail.getByText("(revoked)")).toBeInTheDocument();
+    });
+
+    it("detail view shows a key-conflict warning with the newly observed fingerprint, without silently replacing the pinned key", async () => {
+        const conflicted = {
+            ...jane,
+            keys: [
+                {
+                    publicKey: "base64cert",
+                    type: "x509",
+                    useType: "encrypt" as const,
+                    fingerprint: "1111222211112222111122221111222211112222111122221111222211112222",
+                    notBefore: 1,
+                    notAfter: 2,
+                },
+            ],
+            keyConflict: {
+                observedFingerprint: "9999888899998888999988889999888899998888999988889999888899998888",
+                observedAt: new Date("2026-02-01T00:00:00.000Z").getTime(),
+                source: "discovery" as const,
+            },
+        };
+        mockShellAndContacts([conflicted]);
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByText("Jane Doe"));
+
+        const detail = within(screen.getByRole("region", { name: "Contact details" }));
+        expect(detail.getByText(/previously verified key below is still the one in use/)).toBeInTheDocument();
+        expect(detail.getByText(/Newly observed: 9999 8888/)).toBeInTheDocument();
+        // The pinned key is still shown, unchanged - the spec's "retain the previously stored key".
+        expect(detail.getByText(/Encryption key: 1111 2222/)).toBeInTheDocument();
     });
 
     it("clicking + New contact shows a blank form", async () => {
