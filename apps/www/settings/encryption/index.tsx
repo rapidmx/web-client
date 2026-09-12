@@ -309,6 +309,7 @@ function EncryptionContent() {
             return;
         }
         setActionError(null);
+        setEscrowError(null);
         setRotating(true);
         try {
             // Only reachable once `unlocked` is defined - see `handleAddPassword`'s identical note.
@@ -316,6 +317,30 @@ function EncryptionContent() {
             const passwordWrap = await buildPasswordWrap(mailboxUid!, mk, rotationPassword);
             const { wraps: newRecoveryWraps, codes } = await buildRecoveryWraps(mailboxUid!, mk);
             await rekey(mailboxUid!, { wrappedKeys, masterKeyWraps: [passwordWrap, ...newRecoveryWraps], keys: mailbox.keys ?? [] });
+
+            // restapi's own rekey() can never accept a fresh escrow wrap (its validateMasterKeyWrap()
+            // always passes allowEscrow: false there) - it preserves this mailbox's existing escrow wrap
+            // verbatim instead, which now encrypts a master key nobody has any longer. Re-wrap it
+            // separately, via the same addMasterKeyWrap() path "Add escrow protection" above already
+            // uses, so rotating keys for an unrelated reason (lost device, password hygiene) doesn't
+            // silently drop real escrow coverage while this page keeps claiming it's still active. A
+            // failure here is reported via escrowError, not as a rotation failure - the rotation itself
+            // (password/recovery codes) already succeeded by this point and must not be rolled back for
+            // an escrow-specific hiccup the user can retry independently.
+            if (hasEscrowWrap) {
+                try {
+                    const escrowInfo = await getEscrowInfo(mailboxUid!);
+                    const escrowWrap = await buildEscrowWrap(mk, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
+                    await addMasterKeyWrap(mailboxUid!, escrowWrap);
+                } catch (err) {
+                    setEscrowError(
+                        err instanceof ApiRequestError
+                            ? err.message
+                            : 'Your keys were rotated, but escrow protection could not be re-established automatically. Use "Add escrow protection" below to restore it.',
+                    );
+                }
+            }
+
             // Refreshes this session's own cached keys against the new MK, via the password we just set -
             // the underlying private key material didn't change, but the stale MK in memory would silently
             // build wrong future wraps (e.g. a second "Add a password") if left as-is.
@@ -448,6 +473,10 @@ function EncryptionContent() {
                 {mailbox.escrowScopeId && (
                     <div>
                         <h2 className="text-sm font-semibold mb-2">Escrow</h2>
+                        {/* Rendered regardless of hasEscrowWrap - a rotation-triggered re-wrap failure
+                            (see handleRotateKeys) leaves the mailbox's old, now-stale escrow wrap in place,
+                            so hasEscrowWrap alone can't be trusted to hide this. */}
+                        {escrowError && <Alert>{escrowError}</Alert>}
                         {hasEscrowWrap ? (
                             <p className="text-sm text-text-muted">
                                 This mailbox is under legal/compliance escrow — an authorized holder in your
@@ -462,7 +491,6 @@ function EncryptionContent() {
                                     encrypted mail until you complete this step. This does not weaken protection
                                     against anyone else.
                                 </p>
-                                {escrowError && <Alert>{escrowError}</Alert>}
                                 <Button
                                     type="button"
                                     variant="secondary"

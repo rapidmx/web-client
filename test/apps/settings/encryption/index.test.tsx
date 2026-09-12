@@ -484,6 +484,126 @@ describe("SettingsEncryptionPage", () => {
         expect(unlockWithPassword).toHaveBeenCalledWith("mb1", mailbox.keys, "a good new password");
     });
 
+    it("re-wraps escrow under the new MK during rotation, when the mailbox already had escrow protection", async () => {
+        const unlockedFixture = { masterKey: new Uint8Array(32) };
+        getUnlockedKeys.mockReturnValue(unlockedFixture);
+        const staleEscrowWrap = {
+            method: "escrow" as const,
+            escrowScopeId: "scope-1",
+            ciphertext: "old-ct",
+            nonce: "n/a",
+            salt: "n/a",
+            kdf: "cms-enveloped-data",
+            schemeVersion: 1,
+            createdAt: 0,
+        };
+        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
+        const newMk = new Uint8Array(32).fill(9);
+        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: newMk, wrappedKeys: [] });
+        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
+        rekey.mockResolvedValue(vault);
+        unlockWithPassword.mockResolvedValue(undefined);
+        getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } });
+        const freshEscrowWrap = { ...staleEscrowWrap, ciphertext: "fresh-ct" };
+        buildEscrowWrap.mockResolvedValue(freshEscrowWrap);
+        addMasterKeyWrap.mockResolvedValue(vault);
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
+        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
+        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+
+        await screen.findByText("Save your new recovery codes");
+        expect(getEscrowInfo).toHaveBeenCalledWith("mb1");
+        expect(buildEscrowWrap).toHaveBeenCalledWith(newMk, "scope-1", expect.any(Uint8Array));
+        expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", freshEscrowWrap);
+    });
+
+    it("reports an escrow re-wrap failure during rotation separately, without blocking the rest of the rotation", async () => {
+        const unlockedFixture = { masterKey: new Uint8Array(32) };
+        getUnlockedKeys.mockReturnValue(unlockedFixture);
+        const staleEscrowWrap = {
+            method: "escrow" as const,
+            escrowScopeId: "scope-1",
+            ciphertext: "old-ct",
+            nonce: "n/a",
+            salt: "n/a",
+            kdf: "cms-enveloped-data",
+            schemeVersion: 1,
+            createdAt: 0,
+        };
+        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
+        const newMk = new Uint8Array(32).fill(9);
+        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: newMk, wrappedKeys: [] });
+        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
+        rekey.mockResolvedValue(vault);
+        unlockWithPassword.mockResolvedValue(undefined);
+        getEscrowInfo.mockRejectedValue(new ApiRequestError("escrow scope no longer exists", 404));
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
+        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
+        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+
+        // The rotation itself still succeeds - the recovery-codes screen appears and unlockWithPassword ran -
+        // even though re-establishing escrow protection failed.
+        expect(await screen.findByText("Save your new recovery codes")).toBeInTheDocument();
+        expect(unlockWithPassword).toHaveBeenCalledWith("mb1", mailbox.keys, "a good new password");
+        expect(addMasterKeyWrap).not.toHaveBeenCalled();
+
+        await user.click(screen.getByRole("checkbox"));
+        await user.click(screen.getByRole("button", { name: "Done" }));
+
+        expect(await screen.findByText("escrow scope no longer exists")).toBeInTheDocument();
+    });
+
+    it("shows a generic message when an escrow re-wrap failure during rotation isn't an ApiRequestError", async () => {
+        const unlockedFixture = { masterKey: new Uint8Array(32) };
+        getUnlockedKeys.mockReturnValue(unlockedFixture);
+        const staleEscrowWrap = {
+            method: "escrow" as const,
+            escrowScopeId: "scope-1",
+            ciphertext: "old-ct",
+            nonce: "n/a",
+            salt: "n/a",
+            kdf: "cms-enveloped-data",
+            schemeVersion: 1,
+            createdAt: 0,
+        };
+        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
+        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: new Uint8Array(32).fill(9), wrappedKeys: [] });
+        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
+        rekey.mockResolvedValue(vault);
+        unlockWithPassword.mockResolvedValue(undefined);
+        getEscrowInfo.mockRejectedValue(new Error("network down"));
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
+        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
+        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+
+        await screen.findByText("Save your new recovery codes");
+        await user.click(screen.getByRole("checkbox"));
+        await user.click(screen.getByRole("button", { name: "Done" }));
+
+        expect(await screen.findByText(/could not be re-established automatically/)).toBeInTheDocument();
+    });
+
     it("passes an empty keys array to rekey()/unlockWithPassword() when the mailbox has none", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });

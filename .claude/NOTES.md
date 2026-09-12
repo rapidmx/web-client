@@ -634,3 +634,43 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     have been unreachable dead code - see that repo's own NOTES.md, same date.
   - This closes out all five phases of consuming restapi's 11 post-`v0.6.0` commits (S3BlobStore, Archive
     folder, Label entity, RFC 8823 ACME signing enrollment, Escrow Scoping).
+
+- **2026-09-12 (continued) — Adversarial review pass over the restapi-consumption batch: a real,
+  highest-severity finding, fixed.** `handleRotateKeys()` in Settings > Encryption (`apps/www/settings/
+  encryption/index.tsx`) built fresh password/recovery wraps under a newly-generated MK but never touched
+  escrow, even though `getEscrowInfo()`/`buildEscrowWrap()` (the exact functions the "Add escrow
+  protection" button above already calls) were sitting right there in the same file. Traced what restapi
+  actually does with the old escrow wrap on a `rekey()`: `BaseKeyVaultRoute.persistRekey()` preserves it
+  **verbatim** (its own doc comment explicitly documents this as an accepted "correctness gap ... for the
+  escrow holder to resolve out of band, not a security one" - `rekey()`'s own `validateMasterKeyWrap()`
+  always passes `allowEscrow: false`, so a client literally cannot submit a fresh escrow wrap through this
+  endpoint at all, by restapi's own design). The old wrap still decrypts to the master key that rotation
+  just discarded - it silently stops working, while this page's `hasEscrowWrap` check (mere presence of a
+  `method: "escrow"` entry) kept showing "This mailbox is under legal/compliance escrow" as if nothing had
+  changed. A mailbox owner rotating keys for an unrelated reason (lost device, password hygiene) would
+  silently and permanently break a compliance/legal-hold guarantee with no error anywhere - discovered
+  only later, when a holder tries to pull material during an actual investigation and it doesn't decrypt.
+  - Fix: since `rekey()` can never accept a fresh escrow wrap, `handleRotateKeys()` now performs a
+    *separate* `addMasterKeyWrap()` call right after a successful `rekey()` - re-fetching the scope's
+    public key and building a fresh wrap under the *new* MK, exactly the same path "Add escrow protection"
+    already uses, whenever `hasEscrowWrap` was true going in. This restores real, decryptable escrow
+    coverage for the current MK; it does **not** remove the old, now-stale wrap restapi preserved (removal
+    is blocked for the `escrow` method through this same endpoint, by the identical design choice, and
+    isn't this fix's job to work around) - a holder's own offline tooling ends up trying two wraps instead
+    of one and simply discarding whichever fails to decrypt, the same "try every slot, keep the one that
+    works" pattern `decryptEnvelopedData()` itself already uses for multi-recipient CMS.
+  - A failure in this re-wrap step is deliberately **not** reported as a rotation failure - the rotation
+    itself (password/recovery, the thing the user actually asked for) has already succeeded by that point
+    and must not be second-guessed for an unrelated, independently-retriable escrow hiccup. Surfaced
+    instead via the existing `escrowError` state, which the Escrow section's own `<Alert>` now renders
+    unconditionally rather than only inside its "not yet protected" branch - `hasEscrowWrap` stays `true`
+    after a failed re-wrap (the old, stale wrap is still technically present), so gating the error's
+    visibility on that same flag would have hidden it behind the very "Enabled" claim it needs to correct.
+  - Added three tests: the happy path (escrow re-wrap runs and succeeds during rotation), the failure path
+    (re-wrap fails but rotation still completes, and the error becomes visible once the recovery-codes
+    screen is dismissed), and the non-`ApiRequestError` fallback-message branch.
+  - This is a client-side mitigation, not a complete fix - the fundamental gap (a rekey can't carry a
+    fresh escrow wrap through restapi's own `rekey()` endpoint, so the client's `hasEscrowWrap` flag can
+    never *prove* freshness, only presence) is restapi's own, already-disclosed, out-of-scope design
+    limit. This just makes the common case (this page performing the rotation) actually re-establish real
+    coverage automatically, instead of silently leaving a dead wrap as the only one on file.
