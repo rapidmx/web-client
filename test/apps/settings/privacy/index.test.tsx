@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -67,6 +67,19 @@ function importRequest(overrides: Record<string, unknown> = {}) {
     };
 }
 
+function erasureRequest(overrides: Record<string, unknown> = {}) {
+    return {
+        uid: "der1",
+        version: 0,
+        dateCreated: "2026-01-01T00:00:00.000Z",
+        dateModified: "2026-01-01T00:00:00.000Z",
+        mailboxUid: "mb1",
+        requestedByUserUid: "u1",
+        status: "pending" as const,
+        ...overrides,
+    };
+}
+
 function mockShell(extra?: (url: string, init?: RequestInit) => Response | undefined) {
     return mockFetch((url, init) => {
         const custom = extra?.(url, init);
@@ -75,6 +88,7 @@ function mockShell(extra?: (url: string, init?: RequestInit) => Response | undef
         if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
         if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [folder, secondFolder]);
         if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
+        if (url.startsWith("/api/mail/erasure-requests") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
         throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
     });
 }
@@ -343,5 +357,137 @@ describe("SettingsPrivacyPage", () => {
         await user.upload(screen.getByLabelText("Upload mail archive"), file);
 
         expect(await screen.findByText("Could not upload this file.")).toBeInTheDocument();
+    });
+
+    it("shows no request list when there are no erasure requests, with the button enabled", async () => {
+        mockShell();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        const button = await screen.findByRole("button", { name: "Request account erasure" });
+        expect(button).toBeEnabled();
+    });
+
+    it("lists existing erasure requests and shows a denial reason", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/erasure-requests") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, [erasureRequest({ status: "denied", reason: "identity not verified" })]);
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText(/identity not verified/)).toBeInTheDocument();
+        expect(screen.getByText("denied")).toBeInTheDocument();
+    });
+
+    it("disables the button while a request is already pending", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/erasure-requests") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, [erasureRequest({ status: "pending" })]);
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByRole("button", { name: "Request account erasure" })).toBeDisabled();
+    });
+
+    it("shows the server's own message when loading erasure requests fails", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/erasure-requests") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(500, { message: "server unavailable" });
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText("server unavailable")).toBeInTheDocument();
+    });
+
+    it("shows a generic message when loading erasure requests fails with a non-API error", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/erasure-requests") && (init?.method ?? "GET") === "GET") throw new TypeError("network down");
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText("Could not load your erasure requests.")).toBeInTheDocument();
+    });
+
+    it("opens the confirmation modal, submits an erasure request, and reloads the list", async () => {
+        let created = false;
+        const fetchMock = mockShell((url, init) => {
+            if (url === "/api/mail/erasure-requests" && init?.method === "POST") {
+                created = true;
+                return jsonResponse(200, erasureRequest());
+            }
+            if (url === "/api/mail/erasure-requests" && (init?.method ?? "GET") === "GET" && created) {
+                return jsonResponse(200, [erasureRequest()]);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Request account erasure" });
+
+        await user.click(screen.getByRole("button", { name: "Request account erasure" }));
+        expect(await screen.findByText(/cannot be cancelled once submitted/)).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Request erasure" }));
+
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/erasure-requests", expect.objectContaining({ method: "POST" })));
+        expect(await screen.findByText("pending")).toBeInTheDocument();
+    });
+
+    it("closes the confirmation modal via Cancel without submitting", async () => {
+        const fetchMock = mockShell();
+        const user = userEvent.setup();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Request account erasure" });
+
+        await user.click(screen.getByRole("button", { name: "Request account erasure" }));
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByText(/cannot be cancelled once submitted/)).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    });
+
+    it("closes the confirmation modal via its own close button", async () => {
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Request account erasure" });
+
+        await user.click(screen.getByRole("button", { name: "Request account erasure" }));
+        const dialog = await screen.findByRole("dialog");
+        await user.click(within(dialog).getByRole("button", { name: /close/i }));
+
+        expect(screen.queryByText(/cannot be cancelled once submitted/)).not.toBeInTheDocument();
+    });
+
+    it("shows the server's own message when submitting an erasure request fails", async () => {
+        mockShell((url, init) => {
+            if (url === "/api/mail/erasure-requests" && init?.method === "POST") {
+                return jsonResponse(409, { message: "An erasure request for this mailbox is already pending review." });
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Request account erasure" });
+
+        await user.click(screen.getByRole("button", { name: "Request account erasure" }));
+        await user.click(screen.getByRole("button", { name: "Request erasure" }));
+
+        expect(await screen.findByText("An erasure request for this mailbox is already pending review.")).toBeInTheDocument();
+    });
+
+    it("shows a generic message when submitting an erasure request fails with a non-API error", async () => {
+        mockShell((url, init) => {
+            if (url === "/api/mail/erasure-requests" && init?.method === "POST") throw new TypeError("network down");
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Request account erasure" });
+
+        await user.click(screen.getByRole("button", { name: "Request account erasure" }));
+        await user.click(screen.getByRole("button", { name: "Request erasure" }));
+
+        expect(await screen.findByText("Could not submit this request.")).toBeInTheDocument();
     });
 });

@@ -17,10 +17,16 @@ import {
     listImportRequests,
     uploadMailboxImport,
 } from "@rapidmx/react-shared/mail/mailboxImportApi.js";
+import {
+    DataSubjectErasureRequest,
+    createErasureRequest,
+    listErasureRequests,
+} from "@rapidmx/react-shared/mail/erasureRequestApi.js";
 import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const NON_MAIL_FOLDER_TYPES = new Set(["calendar", "contacts", "tasks", "notes"]);
 
@@ -29,7 +35,7 @@ function importFormatFromFilename(filename: string): MailboxImportFormat {
 }
 
 function statusBadgeClass(status: string): string {
-    if (status === "failed") return "bg-danger-bg text-danger";
+    if (status === "failed" || status === "denied") return "bg-danger-bg text-danger";
     if (status === "pending" || status === "processing") return "bg-surface-alt text-text-muted";
     return "bg-success text-white";
 }
@@ -57,6 +63,7 @@ function PrivacyContent() {
 
                 <ExportSection mailboxUid={mailboxUid} />
                 <ImportSection mailboxUid={mailboxUid} />
+                <ErasureSection />
             </div>
         </div>
     );
@@ -290,6 +297,120 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
                     ))}
                 </ul>
             )}
+        </div>
+    );
+}
+
+function ErasureSection() {
+    const [requests, setRequests] = useState<DataSubjectErasureRequest[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [confirming, setConfirming] = useState(false);
+    const [creating, setCreating] = useState(false);
+    const [createError, setCreateError] = useState<string | null>(null);
+
+    function loadRequests() {
+        return listErasureRequests()
+            .then(setRequests)
+            .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your erasure requests."));
+    }
+
+    useEffect(() => {
+        loadRequests().finally(() => setLoading(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const hasPending = requests.some((request) => request.status === "pending");
+
+    function closeConfirm() {
+        setConfirming(false);
+    }
+
+    async function handleConfirm() {
+        setCreateError(null);
+        setCreating(true);
+        try {
+            await createErasureRequest();
+            setConfirming(false);
+            await loadRequests();
+        } catch (err) {
+            setCreateError(err instanceof ApiRequestError ? err.message : "Could not submit this request.");
+        } finally {
+            setCreating(false);
+        }
+    }
+
+    return (
+        <div>
+            <h2 className="text-sm font-semibold mb-2">Delete my account</h2>
+            <p className="text-xs text-text-muted mb-3">
+                Permanently and irreversibly deletes this mailbox and everything in it, once a compliance
+                administrator reviews and approves the request. There is no way to cancel a request or undo
+                the deletion once it runs.
+            </p>
+
+            {loadError && <Alert>{loadError}</Alert>}
+
+            {loading ? (
+                <p className="text-sm text-text-muted">Loading&hellip;</p>
+            ) : (
+                <>
+                    {requests.length > 0 && (
+                        <ul className="flex flex-col gap-2 mb-3">
+                            {requests.map((request) => (
+                                <li
+                                    key={request.uid}
+                                    className="flex items-center justify-between gap-3 text-sm py-1.5 px-3 bg-surface-alt rounded-sm"
+                                >
+                                    <span>
+                                        {new Date(request.dateCreated).toLocaleString()}
+                                        {request.status === "denied" && request.reason && (
+                                            <span className="text-danger"> — {request.reason}</span>
+                                        )}
+                                    </span>
+                                    <span
+                                        className={`text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill ${statusBadgeClass(request.status)}`}
+                                    >
+                                        {request.status}
+                                    </span>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto !border-danger !text-danger hover:!border-danger hover:!text-danger"
+                        disabled={hasPending}
+                        onClick={() => setConfirming(true)}
+                    >
+                        Request account erasure
+                    </Button>
+                </>
+            )}
+
+            <Modal open={confirming} onClose={closeConfirm} title="Delete my account">
+                <p className="text-sm mb-5">
+                    This permanently deletes this mailbox and everything in it — messages, contacts,
+                    calendar, tasks, and notes — once approved. This cannot be undone and cannot be
+                    cancelled once submitted.
+                </p>
+                {createError && <Alert>{createError}</Alert>}
+                <div className="flex gap-3 justify-end mt-5">
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={creating} onClick={closeConfirm}>
+                        Cancel
+                    </Button>
+                    <Button
+                        type="button"
+                        className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger"
+                        loading={creating}
+                        disabled={creating}
+                        onClick={handleConfirm}
+                    >
+                        Request erasure
+                    </Button>
+                </div>
+            </Modal>
         </div>
     );
 }

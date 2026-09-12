@@ -733,3 +733,33 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   - Admin-mediated import (into someone else's mailbox) is deferred to the shared
     `apps/admin/data-requests` page built in Phase 6, alongside export and erasure.
   - Full react-shared rebuild + patch cycle to pick up `mail/mailboxImportApi.ts`.
+
+- **2026-09-12 (continued) — Phase 6 of consuming restapi's next batch: GDPR right-to-erasure (Group E) +
+  the shared admin "Data Requests" page.**
+  - Third section on Settings > Privacy & Data, "Delete my account": a clearly-worded, no-undo warning,
+    a `Modal`-gated confirmation (same pattern as the mailbox-delete/escrow-scope-delete modals elsewhere
+    in this codebase) before actually submitting, a request list showing status and (for a `denied`
+    request) the admin's own reason, and the create button disabled while a request is already `pending`
+    (mirrors the route's own 409 duplicate-check, though the button-disable is just a UX nicety - the
+    server is still the real gate). No cancel action exists server-side, so none is offered client-side.
+  - **New `apps/admin/data-requests/index.tsx`** - the shared admin surface promised in Phases 4-6: three
+    stacked sections (no tab component exists in this codebase, and building one felt like scope creep
+    for a page with only three sections - matches the "Encryption" settings page's own precedent of
+    multiple stacked sections on one page):
+    - **Export requests**: a mailbox-UID text field (no mailbox search/autocomplete component exists
+      either - matches `apps/escrow/matters/new/index.tsx`'s own precedent of a plain UID field for the
+      same reason) + format picker + "Create export", plus the full list of every export request across
+      every mailbox (an admin sees all, per the route's own visibility rule).
+    - **Import requests**: mailbox-UID field, on blur fetching that mailbox's folders (`listFolders()`)
+      to populate a destination-folder picker - same fetch-on-demand pattern, just keyed to an
+      admin-entered UID instead of the signed-in caller's own mailbox - then the same file-upload
+      button/hidden-input pair as the self-service version.
+    - **Erasure requests**: read-only list plus Approve/Deny on `pending` rows - no create form here at
+      all, since `createErasureRequest()` has no admin-on-behalf-of path to begin with. Deny opens a
+      `Modal` requiring a reason (disabled until non-empty, matching the route's own 400 validation).
+      Approve surfaces a legal-hold 409 verbatim, naming the blocking Matter - the natural place Phase 2
+      (Legal Hold) and Phase 6 (erasure) become end-to-end observable together.
+  - `AdminShell` gained a `dataRequests` nav entry (`HiOutlineDocumentArrowDown`).
+  - Full react-shared rebuild + patch cycle to pick up `mail/erasureRequestApi.ts`.
+  - This closes out all seven features in restapi's compliance-roadmap batch except Group F (eDiscovery
+    Matter export/search), which is Phase 7, not yet built.
