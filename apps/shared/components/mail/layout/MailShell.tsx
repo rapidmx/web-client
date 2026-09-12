@@ -281,7 +281,11 @@ export default function MailShell({
     // impersonation banner's own internal state was lost exactly at that transition).
     const selectedMailbox = mailboxes.find((mb) => mb.uid === mailboxUid);
     return (
-        <KeyEnrollmentGate mailboxUid={mailboxUid} mailboxAddress={selectedMailbox?.primarySmtpAddress}>
+        <KeyEnrollmentGate
+            mailboxUid={mailboxUid}
+            mailboxAddress={selectedMailbox?.primarySmtpAddress}
+            mailboxKeys={selectedMailbox?.keys}
+        >
             <AppShell
                 active="mail"
                 userUid={userUid}

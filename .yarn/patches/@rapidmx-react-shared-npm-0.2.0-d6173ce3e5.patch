@@ -1,3 +1,188 @@
+diff --git a/dist/contacts/contactsApi.d.ts b/dist/contacts/contactsApi.d.ts
+index 325ea9e5b51bbc2a4758215c1013b6c91a803fd3..535b446cce3b3cf086dc849d521c8c856bebae7f 100644
+--- a/dist/contacts/contactsApi.d.ts
++++ b/dist/contacts/contactsApi.d.ts
+@@ -1,6 +1,7 @@
+ /** Typed wrappers over `@rapidmx/restapi`'s `/mail/contacts` REST surface — see `mailApi.ts`'s own header
+  * comment for the shared ACL/authorization model every wrapper file here follows. */
+ import { ListParams } from "../util/apiQuery.js";
++import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
+ export type ContactAddressKind = "home" | "work" | "other";
+ export interface ContactEmail {
+     address: string;
+@@ -45,6 +46,21 @@ export interface Contact {
+     /** Present (and `true`) only when fetched via `listDeletedContacts()` — a soft-deleted `RecoverableBaseEntity`
+      * record still exists server-side so it can be restored, per `@rapidmx/restapi`'s own soft-delete model. */
+     deleted?: boolean;
++    /** This contact's known encryption preference, per `specs/end-to-end_encryption.md` — discovered
++     * via `crypto/keyvaultApi.ts`'s `lookupKeys()` at compose time, never fetched on message receipt
++     * (that would leak read timing to the sender's server). */
++    encryptPreference?: EncryptionPreference;
++    /** This contact's published public keys, as last discovered. Trust is TOFU (trust-on-first-use) —
++     * see `keyConflict` for what happens when a newly observed key differs from this one. */
++    keys?: PublicKey[];
++    /** Set when an observed key conflicts with the currently pinned key above — blocks silent
++     * acceptance until the user takes explicit action (the spec's Key Conflict Handling). The
++     * previously pinned `keys` are retained unchanged while this is set. */
++    keyConflict?: {
++        observedFingerprint: string;
++        observedAt: number;
++        source: "header" | "discovery";
++    };
+ }
+ /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
+  * `listDeletedContacts()` for those. */
+diff --git a/dist/crypto/composeSecurity.d.ts b/dist/crypto/composeSecurity.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9be6845cc8ae199504893d1d13ea792f138543e5
+--- /dev/null
++++ b/dist/crypto/composeSecurity.d.ts
+@@ -0,0 +1,67 @@
++/**
++ * Compose-time decision logic for `specs/end-to-end_encryption.md`'s Digital Signatures and Encryption
++ * sections — kept as pure, side-effect-free functions (no `fetch`, no crypto) precisely so the actual
++ * discovery round trip (`keyvaultApi.ts`'s `lookupKeys()`) and MIME assembly (`smimeMessage.ts`) stay in
++ * the caller (`ComposeWindow.tsx`), which owns the async orchestration and error handling; this module
++ * only decides *what* a compose window should do once it has the facts.
++ *
++ * **Recipient tier classification is a client-side approximation.** The spec's three tiers
++ * (`specs/end-to-end_encryption.md`'s "Terminology": same-organisation / federated peer / external) are
++ * a server-side administrative concept - "the specific RapidMX server and the domains it controls" - that
++ * `@rapidmx/restapi` 0.6.0 does not actually expose to the client (`KeyLookupResult`/`KeyringUpdate`
++ * carry no tier field; confirmed by reading `util/KeyringUtils.ts`). `classifyRecipientTier()` below
++ * approximates it as "same domain as the sender's own address" vs. "a domain discovery found keys for"
++ * vs. "everything else" - the same domain-suffix heuristic used elsewhere for this class of judgment,
++ * not a guarantee. A real fix would be a restapi endpoint exposing which domains a server actually
++ * controls; until then this is a disclosed approximation, not a silent one.
++ */
++import type { EncryptionPolicy, KeyLookupResult, PublicKey } from "./keyvaultApi.js";
++export type RecipientTier = "sameOrg" | "federated" | "external";
++/** See this module's own doc comment for why this is an approximation, not an authoritative classification. */
++export declare function classifyRecipientTier(ownAddress: string, recipientAddress: string, hasDiscoveredKeys: boolean): RecipientTier;
++export interface RecipientEncryptionStatus {
++    address: string;
++    tier: RecipientTier;
++    /** The recipient's currently-active encryption certificate, if they have published (and this device
++     * has discovered) one. */
++    encryptCert?: PublicKey;
++    /** Whether this recipient *can* be encrypted to at all right now - false when there's no usable key,
++     * or the tier's policy is `prohibited`. */
++    canEncrypt: boolean;
++    /** Whether encryption should default ON for this recipient specifically: per spec, "MUST default to
++     * on only when both parties advertise mutual" AND the tier's policy is `automatic`. */
++    autoEncrypt: boolean;
++    /** Set (non-undefined) exactly when policy blocks encryption outright for this recipient's tier - the
++     * spec: "the client MUST explain why encryption is unavailable rather than silently omitting the
++     * control." `undefined` in every other case, including "no key found," which is not a policy block. */
++    prohibitedReason?: string;
++}
++/** Per-recipient encryption eligibility, given this device's own encryption preference and the
++ * system-wide policy. One entry per (address, lookup result) pair the caller already resolved via
++ * `lookupKeys()` - this function does no discovery itself. */
++export declare function resolveRecipientEncryption(ownAddress: string, ownPrefersMutual: boolean, policy: EncryptionPolicy, recipientAddress: string, lookup: KeyLookupResult | undefined): RecipientEncryptionStatus;
++export interface MessageEncryptionDecision {
++    /** Whether the compose window's encryption toggle should default to checked - true only when every
++     * recipient independently defaults to encrypted. Seeds the toggle's *initial* state only; the user
++     * can still turn it on manually even when this is false, subject to `canEncryptAll`. */
++    autoEncrypt: boolean;
++    /** Every recipient the message *could* be encrypted to right now. */
++    canEncryptAll: boolean;
++    /** Recipients that cannot currently be encrypted to (no key, or policy-prohibited) - the spec's
++     * "Multiple Recipients" all-or-nothing case: when this is non-empty and the user still wants
++     * encryption, the client MUST offer to send in plaintext or remove these recipients, never split. */
++    blockedRecipients: RecipientEncryptionStatus[];
++}
++/** Combines every recipient's individual status into the one decision a compose window's UI actually
++ * needs: whether to default the toggle on, and whether an all-or-nothing prompt is required. */
++export declare function decideMessageEncryption(recipients: RecipientEncryptionStatus[]): MessageEncryptionDecision;
++/** Detects list traffic per the spec's "Mailing lists" note under Digital Signatures: a footer a list
++ * appends after signing invalidates the signature, so the client MAY suppress signing for it. `headers`
++ * is whatever the caller already has on hand (e.g. a `Contact`'s known list-membership flag) - this
++ * module has no way to inspect list membership itself, so it just applies the rule to inputs the caller
++ * supplies. Currently unused by any caller (no UI surfaces distribution-list membership to compose yet -
++ * a disclosed gap, not a silent one; see this module's own file-level doc comment). */
++export declare function isLikelyMailingList(headers: {
++    listId?: string;
++    listUnsubscribe?: string;
++}): boolean;
+diff --git a/dist/crypto/composeSecurity.js b/dist/crypto/composeSecurity.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..81236f1dceed4b282f723ca148bad3a6a66ece00
+--- /dev/null
++++ b/dist/crypto/composeSecurity.js
+@@ -0,0 +1,72 @@
++import { findActivePublicKey } from "./keyvaultApi.js";
++/** See this module's own doc comment for why this is an approximation, not an authoritative classification. */
++export function classifyRecipientTier(ownAddress, recipientAddress, hasDiscoveredKeys) {
++    const ownDomain = ownAddress.split("@")[1]?.toLowerCase();
++    const recipientDomain = recipientAddress.split("@")[1]?.toLowerCase();
++    if (ownDomain && recipientDomain && ownDomain === recipientDomain) {
++        return "sameOrg";
++    }
++    return hasDiscoveredKeys ? "federated" : "external";
++}
++function policyStateForTier(policy, tier) {
++    switch (tier) {
++        case "sameOrg":
++            return policy.encryptSameOrg;
++        case "federated":
++            return policy.encryptFederated;
++        case "external":
++            return policy.encryptExternal;
++    }
++}
++/** Per-recipient encryption eligibility, given this device's own encryption preference and the
++ * system-wide policy. One entry per (address, lookup result) pair the caller already resolved via
++ * `lookupKeys()` - this function does no discovery itself. */
++export function resolveRecipientEncryption(ownAddress, ownPrefersMutual, policy, recipientAddress, lookup) {
++    const encryptCert = lookup ? findActivePublicKey(lookup.keys, "encrypt") : undefined;
++    const tier = classifyRecipientTier(ownAddress, recipientAddress, !!lookup && lookup.keys.length > 0);
++    const policyState = policyStateForTier(policy, tier);
++    if (policyState === "prohibited") {
++        return {
++            address: recipientAddress,
++            tier,
++            encryptCert,
++            canEncrypt: false,
++            autoEncrypt: false,
++            prohibitedReason: "Your organization's encryption policy does not allow encrypting messages to this recipient.",
++        };
++    }
++    if (!encryptCert) {
++        return { address: recipientAddress, tier, canEncrypt: false, autoEncrypt: false };
++    }
++    const recipientPrefersMutual = lookup?.encryptPreference?.preferEncrypt === "mutual";
++    const mutual = ownPrefersMutual && recipientPrefersMutual;
++    return {
++        address: recipientAddress,
++        tier,
++        encryptCert,
++        canEncrypt: true,
++        autoEncrypt: policyState === "automatic" && mutual,
++    };
++}
++/** Combines every recipient's individual status into the one decision a compose window's UI actually
++ * needs: whether to default the toggle on, and whether an all-or-nothing prompt is required. */
++export function decideMessageEncryption(recipients) {
++    if (recipients.length === 0) {
++        return { autoEncrypt: false, canEncryptAll: false, blockedRecipients: [] };
++    }
++    const blockedRecipients = recipients.filter((r) => !r.canEncrypt);
++    return {
++        autoEncrypt: recipients.every((r) => r.autoEncrypt),
++        canEncryptAll: blockedRecipients.length === 0,
++        blockedRecipients,
++    };
++}
++/** Detects list traffic per the spec's "Mailing lists" note under Digital Signatures: a footer a list
++ * appends after signing invalidates the signature, so the client MAY suppress signing for it. `headers`
++ * is whatever the caller already has on hand (e.g. a `Contact`'s known list-membership flag) - this
++ * module has no way to inspect list membership itself, so it just applies the rule to inputs the caller
++ * supplies. Currently unused by any caller (no UI surfaces distribution-list membership to compose yet -
++ * a disclosed gap, not a silent one; see this module's own file-level doc comment). */
++export function isLikelyMailingList(headers) {
++    return !!(headers.listId || headers.listUnsubscribe);
++}
 diff --git a/dist/crypto/encoding.d.ts b/dist/crypto/encoding.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..f5df9fabc16c28b2e98d83bb77fe32634e40d1a8
@@ -50,6 +235,143 @@ index 0000000000000000000000000000000000000000..02bb0730ce7c2e0d1e5148458931315e
 +    const padded = base64url.replace(/-/g, "+").replace(/_/g, "/");
 +    const padding = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
 +    return fromBase64(padded + padding);
++}
+diff --git a/dist/crypto/keySession.d.ts b/dist/crypto/keySession.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8381881fb1ee3419b5547a3dcfc31eb27327f8d9
+--- /dev/null
++++ b/dist/crypto/keySession.d.ts
+@@ -0,0 +1,51 @@
++/**
++ * The in-memory session key store `specs/end-to-end_encryption.md`'s "Keypair Generation & Storage"
++ * requires: "When a user logs in ... the private keys MUST be downloaded from the server, decrypted,
++ * and stored locally on the device in a secure location. When the user explicitly logs out ..., the
++ * private keys MUST be destroyed." This module is that store — a plain module-level `Map`, deliberately
++ * never `localStorage`/IndexedDB (a page reload or new tab correctly starts with no unlocked keys,
++ * requiring the unlock credential again, matching "destroyed on explicit logout" while never
++ * persisting unwrapped key material anywhere durable).
++ *
++ * `KeyEnrollmentGate` (in `web-client`) is what actually prompts for the unlock credential and calls
++ * `unlockWithPassword()` below, once per mailbox per session, before rendering the mailbox's real
++ * content — see that component's own doc comment.
++ *
++ * **Password is the only unlock method implemented so far.** Passkey (`passkeyUnlock.ts`) and recovery
++ * code (`recoveryCode.ts`) derivation already exist and could unwrap the same `MasterKeyWrap` shape,
++ * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
++ * passkey has no way to unlock through this module today.
++ */
++import type { PublicKey } from "./keyvaultApi.js";
++/** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
++ * sealed each of these values, or `openWithKey()` fails (GCM authenticates the AAD, not just the
++ * ciphertext). Centralized here as the one place both wrapping and unwrapping refer to. */
++export declare const MASTER_KEY_AAD_PURPOSE = "master-key";
++export declare const SIGNING_PRIVATE_KEY_AAD_PURPOSE = "sign-private-key";
++export declare const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
++export interface UnlockedKeys {
++    masterKey: Uint8Array;
++    signingPrivateKey?: CryptoKey;
++    signingCertDer?: Uint8Array;
++    signingFingerprint?: string;
++    encryptionPrivateKey?: CryptoKey;
++    encryptionCertDer?: Uint8Array;
++    encryptionFingerprint?: string;
++}
++/** Reads back a mailbox's already-unlocked keys this session, or `undefined` if it hasn't been
++ * unlocked yet (or was destroyed). Never triggers an unlock itself. */
++export declare function getUnlockedKeys(mailboxUid: string): UnlockedKeys | undefined;
++/** Destroys one mailbox's unlocked keys, or every mailbox's if called with no argument — the spec's
++ * "destroyed on explicit logout" / "session revocation" / "configurable idle period" triggers. */
++export declare function destroyUnlockedKeys(mailboxUid?: string): void;
++/**
++ * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
++ * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
++ * the master key, then unwraps and imports whichever signing/encryption private keys the mailbox has
++ * currently-active public keys for. Stores the result in this module's in-memory session store.
++ *
++ * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
++ * wrong (AEAD authentication failure) — callers should present this as "incorrect password," not a
++ * generic error, but this module doesn't presume a specific UI's error copy.
++ */
++export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<void>;
+diff --git a/dist/crypto/keySession.js b/dist/crypto/keySession.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..763759b94580beb99c25cdf780ab1cad7a6f8e60
+--- /dev/null
++++ b/dist/crypto/keySession.js
+@@ -0,0 +1,74 @@
++import { findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
++import { fromBase64 } from "./encoding.js";
++import { importPrivateKeyPkcs8 } from "./keys.js";
++import { buildAad, openWithKey } from "./masterKey.js";
++import { parseArgon2idKdfLabel } from "./passwordUnlock.js";
++import { deriveFromPassword } from "./passwordUnlock.js";
++/** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
++ * sealed each of these values, or `openWithKey()` fails (GCM authenticates the AAD, not just the
++ * ciphertext). Centralized here as the one place both wrapping and unwrapping refer to. */
++export const MASTER_KEY_AAD_PURPOSE = "master-key";
++export const SIGNING_PRIVATE_KEY_AAD_PURPOSE = "sign-private-key";
++export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
++const sessions = new Map();
++/** Reads back a mailbox's already-unlocked keys this session, or `undefined` if it hasn't been
++ * unlocked yet (or was destroyed). Never triggers an unlock itself. */
++export function getUnlockedKeys(mailboxUid) {
++    return sessions.get(mailboxUid);
++}
++/** Destroys one mailbox's unlocked keys, or every mailbox's if called with no argument — the spec's
++ * "destroyed on explicit logout" / "session revocation" / "configurable idle period" triggers. */
++export function destroyUnlockedKeys(mailboxUid) {
++    if (mailboxUid) {
++        sessions.delete(mailboxUid);
++    }
++    else {
++        sessions.clear();
++    }
++}
++/** Finds the wrapped private key whose fingerprint matches a given published public key. */
++function findWrappedPrivateKey(vault, fingerprint) {
++    return vault.wrappedKeys.find((k) => k.fingerprint === fingerprint);
++}
++/**
++ * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
++ * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
++ * the master key, then unwraps and imports whichever signing/encryption private keys the mailbox has
++ * currently-active public keys for. Stores the result in this module's in-memory session store.
++ *
++ * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
++ * wrong (AEAD authentication failure) — callers should present this as "incorrect password," not a
++ * generic error, but this module doesn't presume a specific UI's error copy.
++ */
++export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
++    const vault = await getKeyVault(mailboxUid);
++    const passwordWrap = vault.masterKeyWraps.find((w) => w.method === "password");
++    if (!passwordWrap) {
++        throw new Error("This mailbox has no password unlock method enrolled.");
++    }
++    const kdfParams = parseArgon2idKdfLabel(passwordWrap.kdf);
++    if (!kdfParams) {
++        throw new Error(`Unrecognized KDF for this mailbox's password wrap: ${passwordWrap.kdf}`);
++    }
++    const salt = fromBase64(passwordWrap.salt);
++    const { wrappingKey } = await deriveFromPassword(password, salt, kdfParams);
++    const masterKey = await openWithKey(wrappingKey, { ciphertext: passwordWrap.ciphertext, nonce: passwordWrap.nonce }, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
++    const unlocked = { masterKey };
++    const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
++    const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);
++    if (signingPublicKey && wrappedSigningKey) {
++        const raw = await openWithKey(masterKey, wrappedSigningKey, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
++        unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"]);
++        unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
++        unlocked.signingFingerprint = signingPublicKey.fingerprint;
++    }
++    const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
++    const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
++    if (encryptionPublicKey && wrappedEncryptionKey) {
++        const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
++        unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
++        unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
++        unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
++    }
++    sessions.set(mailboxUid, unlocked);
 +}
 diff --git a/dist/crypto/keys.d.ts b/dist/crypto/keys.d.ts
 new file mode 100644
@@ -180,10 +502,10 @@ index 0000000000000000000000000000000000000000..509f0888cb0a588e1a404f15baacb2da
 +}
 diff --git a/dist/crypto/keyvaultApi.d.ts b/dist/crypto/keyvaultApi.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b5b50dedd7f17aa410624489c0baca2b04120248
+index 0000000000000000000000000000000000000000..6bf5257203203f1c504b3eda66b7bb2dfce538af
 --- /dev/null
 +++ b/dist/crypto/keyvaultApi.d.ts
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,120 @@
 +/** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
 + * `@rapidmx/restapi`'s `PublicKey` type exactly. */
 +export interface PublicKey {
@@ -247,6 +569,12 @@ index 0000000000000000000000000000000000000000..b5b50dedd7f17aa410624489c0baca2b
 +}
 +/** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
 +export declare function getKeyVault(mailboxUid: string): Promise<KeyVault>;
++/** The most recently issued, currently-valid (non-revoked, non-expired) published key of the given use
++ * type — the one that should actually be used to sign/encrypt going forward. A mailbox or contact may
++ * have several of the same `useType` on file after a rotation; older ones are kept for decrypting old
++ * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
++ * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
++export declare function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt"): PublicKey | undefined;
 +export interface EnrollKeyInput {
 +    useType: "sign" | "encrypt";
 +    /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
@@ -300,10 +628,10 @@ index 0000000000000000000000000000000000000000..b5b50dedd7f17aa410624489c0baca2b
 +export declare function updateEncryptionPolicy(patch: Partial<EncryptionPolicy>): Promise<EncryptionPolicy>;
 diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..feebb41ff14e63e49c7d6361c9270a6995f7770b
+index 0000000000000000000000000000000000000000..5956ab92e29c710fddea08feda6ab42e0a2f573f
 --- /dev/null
 +++ b/dist/crypto/keyvaultApi.js
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,81 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -320,6 +648,17 @@ index 0000000000000000000000000000000000000000..feebb41ff14e63e49c7d6361c9270a69
 +/** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
 +export function getKeyVault(mailboxUid) {
 +    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`);
++}
++/** The most recently issued, currently-valid (non-revoked, non-expired) published key of the given use
++ * type — the one that should actually be used to sign/encrypt going forward. A mailbox or contact may
++ * have several of the same `useType` on file after a rotation; older ones are kept for decrypting old
++ * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
++ * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
++export function findActivePublicKey(keys, useType) {
++    const now = Date.now();
++    return keys
++        .filter((k) => k.useType === useType && !k.revokedAt && k.notAfter > now)
++        .sort((a, b) => b.notBefore - a.notBefore)[0];
 +}
 +/** Enrolls a new signing or encryption key. See `EnrollKeyInput`'s own doc comments for which fields
 + * matter for which `useType`. */
@@ -610,10 +949,10 @@ index 0000000000000000000000000000000000000000..84f4457cdad3016943eba26bde7b5c34
 +}
 diff --git a/dist/crypto/passwordUnlock.d.ts b/dist/crypto/passwordUnlock.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f262109dd2327f48084ae52c0ac89eb7f04ec6b9
+index 0000000000000000000000000000000000000000..90ac99ad384ae3d348e4b54b3758fc27c735dc2b
 --- /dev/null
 +++ b/dist/crypto/passwordUnlock.d.ts
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,39 @@
 +export interface Argon2idParams {
 +    /** Memory cost, in KiB. */
 +    memorySize: number;
@@ -629,6 +968,15 @@ index 0000000000000000000000000000000000000000..f262109dd2327f48084ae52c0ac89eb7
 + * upgraded over time without breaking existing accounts (each wrap records the parameters it was
 + * actually created with). */
 +export declare function argon2idKdfLabel(params: Argon2idParams): string;
++/** Inverse of `argon2idKdfLabel()` — reads back the exact parameters a `MasterKeyWrap.kdf` string was
++ * created with, so unlocking always re-derives with the *original* parameters even if
++ * `DEFAULT_ARGON2ID_PARAMS` has since changed (the spec's own "KDF parameters ... MUST be stored
++ * alongside each wrap, so costs can be raised over time without breaking existing accounts"). Returns
++ * `undefined` for anything that isn't a well-formed `argon2id:m=...,t=...,p=...` label — including a
++ * different KDF entirely (e.g. recovery codes' own `"hkdf-sha256"` label), which callers must not
++ * attempt to unlock as if it were password-derived.
++ */
++export declare function parseArgon2idKdfLabel(label: string): Argon2idParams | undefined;
 +/** A fresh random salt for a new password enrollment. 16 bytes is Argon2id's own recommended minimum. */
 +export declare function generateSalt(lengthBytes?: number): Uint8Array;
 +export interface PasswordDerivation {
@@ -646,10 +994,10 @@ index 0000000000000000000000000000000000000000..f262109dd2327f48084ae52c0ac89eb7
 +export declare function deriveFromPassword(password: string, salt: Uint8Array, params?: Argon2idParams): Promise<PasswordDerivation>;
 diff --git a/dist/crypto/passwordUnlock.js b/dist/crypto/passwordUnlock.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..df8625c31a415bfb0de1c2090f74b91a2da8292d
+index 0000000000000000000000000000000000000000..0b11062a33e609067f7e82c2187e9bbc2e06bec9
 --- /dev/null
 +++ b/dist/crypto/passwordUnlock.js
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,72 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -681,6 +1029,21 @@ index 0000000000000000000000000000000000000000..df8625c31a415bfb0de1c2090f74b91a
 + * actually created with). */
 +export function argon2idKdfLabel(params) {
 +    return `argon2id:m=${params.memorySize},t=${params.iterations},p=${params.parallelism}`;
++}
++/** Inverse of `argon2idKdfLabel()` — reads back the exact parameters a `MasterKeyWrap.kdf` string was
++ * created with, so unlocking always re-derives with the *original* parameters even if
++ * `DEFAULT_ARGON2ID_PARAMS` has since changed (the spec's own "KDF parameters ... MUST be stored
++ * alongside each wrap, so costs can be raised over time without breaking existing accounts"). Returns
++ * `undefined` for anything that isn't a well-formed `argon2id:m=...,t=...,p=...` label — including a
++ * different KDF entirely (e.g. recovery codes' own `"hkdf-sha256"` label), which callers must not
++ * attempt to unlock as if it were password-derived.
++ */
++export function parseArgon2idKdfLabel(label) {
++    const match = /^argon2id:m=(\d+),t=(\d+),p=(\d+)$/.exec(label);
++    if (!match) {
++        return undefined;
++    }
++    return { memorySize: Number(match[1]), iterations: Number(match[2]), parallelism: Number(match[3]) };
 +}
 +/** A fresh random salt for a new password enrollment. 16 bytes is Argon2id's own recommended minimum. */
 +export function generateSalt(lengthBytes = 16) {
@@ -790,17 +1153,749 @@ index 0000000000000000000000000000000000000000..ac7f897fd95d6c05874a8e5856e98c7b
 +    const ikm = new TextEncoder().encode(code.trim().toUpperCase());
 +    return hkdfDerive(ikm, salt, "wrap");
 +}
+diff --git a/dist/crypto/smime.d.ts b/dist/crypto/smime.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1c292598887e4ee6988b7e15e5f8791b872d99c
+--- /dev/null
++++ b/dist/crypto/smime.d.ts
+@@ -0,0 +1,67 @@
++/**
++ * The CMS (S/MIME) engine behind `specs/end-to-end_encryption.md`'s "Message Format" requirement
++ * ("RapidMX MUST use S/MIME (CMS) as the on-the-wire message format for both signatures and
++ * encryption"). This module operates on raw CMS structures (`SignedData`/`EnvelopedData`) via
++ * `pkijs` — the actual MIME assembly (`multipart/signed`, RFC 9788 header protection, the
++ * `application/pkcs7-mime` wrapping) is a distinct, mechanical layer built on top of these
++ * primitives, not implemented here.
++ *
++ * Certificates are always the base64-decoded DER bytes — the same wire format
++ * `keyvaultApi.ts`'s `PublicKey.publicKey` already uses — never PEM, so this module composes
++ * directly with values read from a `Mailbox`/`Contact`'s `keys` array with no reformatting.
++ */
++import "reflect-metadata";
++/**
++ * Builds a detached CMS `SignedData` structure over `content`, per the spec's "Digital Signatures"
++ * section — detached, never opaque, so clients that don't understand S/MIME still render the
++ * message body. The signer's own certificate is embedded in the `certificates` field (never sent
++ * separately — unlike the encryption key, which travels in the `RapidMX-Key` header).
++ */
++export declare function signDetached(content: Uint8Array, signingCertDer: Uint8Array, signingPrivateKey: CryptoKey): Promise<Uint8Array>;
++export interface VerifyResult {
++    valid: boolean;
++    /** The signer's certificate as embedded in the SignedData structure, if present - callers
++     * compare its fingerprint against the pinned `Contact` key per the spec's Trust Model (TOFU);
++     * this function only proves the signature is mathematically valid over `content`, not that the
++     * certificate belongs to who the message claims. */
++    signerCertificateDer?: Uint8Array;
++}
++/** Verifies a detached CMS signature (as produced by `signDetached()`) against `content`. A parse
++ * failure or content-type mismatch is treated as an invalid signature (`valid: false`), not a thrown
++ * error - a malformed/foreign CMS blob is exactly the "signature failed" case the spec's Message
++ * Security Indicators table requires being able to render. */
++export declare function verifyDetached(content: Uint8Array, signatureDer: Uint8Array): Promise<VerifyResult>;
++/**
++ * Builds an *opaque* (content embedded, not detached) CMS `SignedData` structure over `content`.
++ * Used only when the signed message is going to be encrypted immediately afterward (`buildMessage()`
++ * in `smimeMessage.ts` composes this with `encryptForRecipients()` for the combined sign-then-encrypt
++ * case) — the spec's "Digital Signatures" section requires *detached* signing only "for
++ * signature-only messages"; once the whole thing is being encrypted regardless, there is no legacy
++ * client ever exposed to this intermediate opaque layer, so embedding the content here (simpler than
++ * building a second detached `multipart/signed` entity solely to immediately encrypt it) is
++ * conformant, not a shortcut around that requirement.
++ */
++export declare function signOpaque(content: Uint8Array, signingCertDer: Uint8Array, signingPrivateKey: CryptoKey): Promise<Uint8Array>;
++export interface VerifyOpaqueResult extends VerifyResult {
++    /** The embedded content, recovered from the SignedData structure - only present when `valid`. */
++    content?: Uint8Array;
++}
++/** Verifies an opaque CMS signature (as produced by `signOpaque()`) and recovers its embedded
++ * content — unlike `verifyDetached()`, the content isn't supplied separately by the caller, since the
++ * whole point of an opaque signature is that it carries its own content. */
++export declare function verifyOpaque(signedDer: Uint8Array): Promise<VerifyOpaqueResult>;
++/**
++ * Builds a CMS `EnvelopedData` structure encrypting `content` to every certificate in
++ * `recipientCertDers` — per the spec's "Encrypt to Self" requirement, callers MUST include the
++ * sender's own encryption certificate in this list alongside the actual recipients' certificates, or
++ * the sender's own Sent-folder copy becomes unreadable to them.
++ */
++export declare function encryptForRecipients(content: Uint8Array, recipientCertDers: Uint8Array[]): Promise<Uint8Array>;
++/**
++ * Decrypts a CMS `EnvelopedData` structure using one recipient's own certificate/private key.
++ * `EnvelopedData` doesn't label which `RecipientInfo` belongs to which recipient in a way this
++ * function's own caller already knows in advance, so it tries every recipient slot in turn with the
++ * one keypair it has, succeeding on whichever slot was actually built for it and discarding the rest
++ * — the same shape as trying every wrapped-key entry in `KeyVault.masterKeyWraps` until one unwraps.
++ */
++export declare function decryptEnvelopedData(envelopedDer: Uint8Array, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey): Promise<Uint8Array>;
+diff --git a/dist/crypto/smime.js b/dist/crypto/smime.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..24376d983d331c71e5c2139766608bf984830607
+--- /dev/null
++++ b/dist/crypto/smime.js
+@@ -0,0 +1,218 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * The CMS (S/MIME) engine behind `specs/end-to-end_encryption.md`'s "Message Format" requirement
++ * ("RapidMX MUST use S/MIME (CMS) as the on-the-wire message format for both signatures and
++ * encryption"). This module operates on raw CMS structures (`SignedData`/`EnvelopedData`) via
++ * `pkijs` — the actual MIME assembly (`multipart/signed`, RFC 9788 header protection, the
++ * `application/pkcs7-mime` wrapping) is a distinct, mechanical layer built on top of these
++ * primitives, not implemented here.
++ *
++ * Certificates are always the base64-decoded DER bytes — the same wire format
++ * `keyvaultApi.ts`'s `PublicKey.publicKey` already uses — never PEM, so this module composes
++ * directly with values read from a `Mailbox`/`Contact`'s `keys` array with no reformatting.
++ */
++import "reflect-metadata";
++import * as asn1js from "asn1js";
++import * as pkijs from "pkijs";
++// Mirrors keys.ts's own WebCrypto engine setup - both @peculiar/x509 and pkijs need to be told which
++// Crypto implementation to use; the browser/Electron renderer's own global `crypto` is exactly what
++// both expect (unlike Node's global `crypto`, which @rapidmx/restapi's server-side code has to set up
++// differently - see that repo's LocalX509CertificateAuthority.ts). The raw (`crypto`, `crypto.subtle`)
++// three-argument form, not `new pkijs.CryptoEngine({...})` - pkijs's own `CryptoEngine` class doesn't
++// actually satisfy its own `ICryptoEngine` interface (a real type-definition inconsistency in pkijs
++// itself, confirmed via `tsc --noEmit`: `generateKey`'s Ed25519/X25519 overloads don't line up between
++// the two), so passing an instance of it here fails to compile even though it works at runtime.
++pkijs.setEngine("rapidmx", crypto, crypto.subtle);
++/** SHA-256 detached signatures throughout, matching this system's hash-algorithm default everywhere
++ * else (fingerprints, HKDF). */
++const DIGEST_ALGORITHM = "SHA-256";
++/** AES-256-GCM for CMS content encryption, matching `masterKey.ts`'s own AEAD choice - one AEAD
++ * construction used consistently across this entire E2E scheme. */
++const CONTENT_ENCRYPTION_ALGORITHM = { name: "AES-GCM", length: 256 };
++function toArrayBuffer(bytes) {
++    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
++}
++function parseCertificate(certDer) {
++    const asn1 = asn1js.fromBER(toArrayBuffer(certDer));
++    if (asn1.offset === -1) {
++        throw new Error("Could not parse the certificate as valid DER/BER.");
++    }
++    return new pkijs.Certificate({ schema: asn1.result });
++}
++/**
++ * Builds a detached CMS `SignedData` structure over `content`, per the spec's "Digital Signatures"
++ * section — detached, never opaque, so clients that don't understand S/MIME still render the
++ * message body. The signer's own certificate is embedded in the `certificates` field (never sent
++ * separately — unlike the encryption key, which travels in the `RapidMX-Key` header).
++ */
++export async function signDetached(content, signingCertDer, signingPrivateKey) {
++    const cert = parseCertificate(signingCertDer);
++    const signedData = new pkijs.SignedData({
++        // No `eContent` - an omitted eContent is exactly what makes this a *detached* signature per
++        // RFC 5652; the actual content is passed to sign()/verify() separately, never embedded here.
++        encapContentInfo: new pkijs.EncapsulatedContentInfo({ eContentType: pkijs.ContentInfo.DATA }),
++        signerInfos: [
++            new pkijs.SignerInfo({
++                sid: new pkijs.IssuerAndSerialNumber({ issuer: cert.issuer, serialNumber: cert.serialNumber }),
++            }),
++        ],
++        certificates: [cert],
++    });
++    await signedData.sign(signingPrivateKey, 0, DIGEST_ALGORITHM, toArrayBuffer(content));
++    const contentInfo = new pkijs.ContentInfo({ contentType: pkijs.ContentInfo.SIGNED_DATA, content: signedData.toSchema(true) });
++    return new Uint8Array(contentInfo.toSchema().toBER());
++}
++/** Verifies a detached CMS signature (as produced by `signDetached()`) against `content`. A parse
++ * failure or content-type mismatch is treated as an invalid signature (`valid: false`), not a thrown
++ * error - a malformed/foreign CMS blob is exactly the "signature failed" case the spec's Message
++ * Security Indicators table requires being able to render. */
++export async function verifyDetached(content, signatureDer) {
++    let contentInfo;
++    try {
++        contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(signatureDer));
++    }
++    catch {
++        return { valid: false };
++    }
++    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
++        return { valid: false };
++    }
++    // Constructing SignedData from an untrusted schema, and verify() itself, can both throw on a
++    // structurally-valid-BER-but-not-actually-SignedData blob (e.g. the right contentType with the
++    // wrong content shape) - either failure degrades to "signature failed," never a thrown error, per
++    // the spec's Message Security Indicators (a malformed CMS blob is exactly that state, not a crash).
++    let signedData;
++    let valid;
++    try {
++        signedData = new pkijs.SignedData({ schema: contentInfo.content });
++        valid = await signedData.verify({ signer: 0, data: toArrayBuffer(content) });
++    }
++    catch {
++        return { valid: false };
++    }
++    // `certificates` is a CertificateSetItem union (Certificate | AttributeCertificateV1/V2 |
++    // OtherCertificateFormat) - `signDetached()` only ever embeds a plain Certificate, so the
++    // non-Certificate branch here is defensive against a foreign/malformed CMS blob, not reachable
++    // through this module's own signing path (not exercised in tests for that reason).
++    const signerCertificate = signedData.certificates?.[0];
++    const signerCertificateDer = signerCertificate && signerCertificate instanceof pkijs.Certificate
++        ? new Uint8Array(signerCertificate.toSchema().toBER())
++        : undefined;
++    return { valid, signerCertificateDer };
++}
++/**
++ * Builds an *opaque* (content embedded, not detached) CMS `SignedData` structure over `content`.
++ * Used only when the signed message is going to be encrypted immediately afterward (`buildMessage()`
++ * in `smimeMessage.ts` composes this with `encryptForRecipients()` for the combined sign-then-encrypt
++ * case) — the spec's "Digital Signatures" section requires *detached* signing only "for
++ * signature-only messages"; once the whole thing is being encrypted regardless, there is no legacy
++ * client ever exposed to this intermediate opaque layer, so embedding the content here (simpler than
++ * building a second detached `multipart/signed` entity solely to immediately encrypt it) is
++ * conformant, not a shortcut around that requirement.
++ */
++export async function signOpaque(content, signingCertDer, signingPrivateKey) {
++    const cert = parseCertificate(signingCertDer);
++    const signedData = new pkijs.SignedData({
++        encapContentInfo: new pkijs.EncapsulatedContentInfo({
++            eContentType: pkijs.ContentInfo.DATA,
++            eContent: new asn1js.OctetString({ valueHex: toArrayBuffer(content) }),
++        }),
++        signerInfos: [
++            new pkijs.SignerInfo({
++                sid: new pkijs.IssuerAndSerialNumber({ issuer: cert.issuer, serialNumber: cert.serialNumber }),
++            }),
++        ],
++        certificates: [cert],
++    });
++    await signedData.sign(signingPrivateKey, 0, DIGEST_ALGORITHM);
++    const contentInfo = new pkijs.ContentInfo({ contentType: pkijs.ContentInfo.SIGNED_DATA, content: signedData.toSchema(true) });
++    return new Uint8Array(contentInfo.toSchema().toBER());
++}
++/** Verifies an opaque CMS signature (as produced by `signOpaque()`) and recovers its embedded
++ * content — unlike `verifyDetached()`, the content isn't supplied separately by the caller, since the
++ * whole point of an opaque signature is that it carries its own content. */
++export async function verifyOpaque(signedDer) {
++    let contentInfo;
++    try {
++        contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(signedDer));
++    }
++    catch {
++        return { valid: false };
++    }
++    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
++        return { valid: false };
++    }
++    let signedData;
++    let valid;
++    try {
++        signedData = new pkijs.SignedData({ schema: contentInfo.content });
++        valid = await signedData.verify({ signer: 0 });
++    }
++    catch {
++        return { valid: false };
++    }
++    // Same defensive, not-reachable-through-signOpaque()'s-own-path branch as verifyDetached() above -
++    // see that function's identical comment.
++    const signerCertificate = signedData.certificates?.[0];
++    const signerCertificateDer = signerCertificate && signerCertificate instanceof pkijs.Certificate
++        ? new Uint8Array(signerCertificate.toSchema().toBER())
++        : undefined;
++    // No external `data` is ever passed to verify() in this function - a detached signature (no
++    // eContent) can only ever fail to verify here, never succeed, so `valid` being true guarantees
++    // eContent is present; this isn't optional defensive handling for a case that can't occur.
++    // `.getValue()`, not `.valueBlock.valueHexView` directly - eContent commonly round-trips as a
++    // *constructed* OctetString (an outer OctetString wrapping one or more inner primitive OctetString
++    // chunks, standard per RFC 5652), and only `.getValue()` transparently concatenates those chunks;
++    // reading `.valueBlock.valueHexView` directly is only correct for a primitive OctetString and
++    // silently returns empty bytes otherwise (confirmed by direct reproduction).
++    const content = valid ? new Uint8Array(signedData.encapContentInfo.eContent.getValue()) : undefined;
++    return { valid, signerCertificateDer, content };
++}
++/**
++ * Builds a CMS `EnvelopedData` structure encrypting `content` to every certificate in
++ * `recipientCertDers` — per the spec's "Encrypt to Self" requirement, callers MUST include the
++ * sender's own encryption certificate in this list alongside the actual recipients' certificates, or
++ * the sender's own Sent-folder copy becomes unreadable to them.
++ */
++export async function encryptForRecipients(content, recipientCertDers) {
++    const envelopedData = new pkijs.EnvelopedData();
++    for (const certDer of recipientCertDers) {
++        envelopedData.addRecipientByCertificate(parseCertificate(certDer));
++    }
++    await envelopedData.encrypt(CONTENT_ENCRYPTION_ALGORITHM, toArrayBuffer(content));
++    const contentInfo = new pkijs.ContentInfo({ contentType: pkijs.ContentInfo.ENVELOPED_DATA, content: envelopedData.toSchema() });
++    return new Uint8Array(contentInfo.toSchema().toBER());
++}
++/**
++ * Decrypts a CMS `EnvelopedData` structure using one recipient's own certificate/private key.
++ * `EnvelopedData` doesn't label which `RecipientInfo` belongs to which recipient in a way this
++ * function's own caller already knows in advance, so it tries every recipient slot in turn with the
++ * one keypair it has, succeeding on whichever slot was actually built for it and discarding the rest
++ * — the same shape as trying every wrapped-key entry in `KeyVault.masterKeyWraps` until one unwraps.
++ */
++export async function decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey) {
++    const contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(envelopedDer));
++    if (contentInfo.contentType !== pkijs.ContentInfo.ENVELOPED_DATA) {
++        throw new Error("This CMS content is not EnvelopedData.");
++    }
++    const envelopedData = new pkijs.EnvelopedData({ schema: contentInfo.content });
++    const recipientCertificate = parseCertificate(recipientCertDer);
++    let lastError;
++    for (let index = 0; index < envelopedData.recipientInfos.length; index++) {
++        try {
++            const decrypted = await envelopedData.decrypt(index, { recipientCertificate, recipientPrivateKey });
++            return new Uint8Array(decrypted);
++        }
++        catch (err) {
++            lastError = err;
++        }
++    }
++    // The `new Error(...)` fallback covers an EnvelopedData with zero recipientInfos (the loop body
++    // never runs, so `lastError` stays its initial `undefined`) - not reachable through this module's
++    // own encryptForRecipients(), which always adds at least one recipient in practice, but kept as a
++    // defensive fallback since `lastError` could otherwise surface as a non-Error thrown value.
++    throw lastError instanceof Error ? lastError : new Error("No recipient slot in this EnvelopedData could be decrypted with this key.");
++}
+diff --git a/dist/crypto/smimeMessage.d.ts b/dist/crypto/smimeMessage.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..de8fa18c07080ead6b9e3349f94bb056f5abadfe
+--- /dev/null
++++ b/dist/crypto/smimeMessage.d.ts
+@@ -0,0 +1,65 @@
++export interface ProtectedHeaders {
++    from: string;
++    to: string;
++    cc?: string;
++    /** An RFC 5322 date string (e.g. `new Date().toUTCString()`-shaped, `Date:`-header ready). */
++    date: string;
++    subject: string;
++    messageId: string;
++}
++/** RFC 9788's `hcp_baseline` Header Confidentiality Policy — the RFC's own required minimum default
++ * (Section 3.3). Applied to produce the OUTER, unprotected envelope's headers from the real
++ * (protected) ones; `From`/`To`/`Cc`/`Date` pass through unchanged, `Subject` is obscured. */
++export declare function applyBaselineOuterHeaders(headers: ProtectedHeaders): ProtectedHeaders;
++/** One MIME entity's worth of headers-beyond-Content-Type plus body, ready for a caller (the actual
++ * outbound-message compose step, built on top of this module) to combine with the outer envelope's
++ * own `From`/`To`/`Subject`/`Date`/`Message-ID`. */
++export interface MimePart {
++    /** The full `Content-Type` header value, including any parameters. */
++    contentType: string;
++    /** Any other headers this entity needs (`Content-Transfer-Encoding`, `Content-Disposition`, ...). */
++    additionalHeaders?: Record<string, string>;
++    body: string;
++}
++/**
++ * Builds a detached `multipart/signed` message with RFC 9788 header protection (`hp="clear"`) — per
++ * the spec, the only form signature-only messages may use (opaque signing is reserved for the
++ * sign-then-encrypt case in `buildEncryptedMessage()`, where no legacy client is ever exposed to it).
++ */
++export declare function buildSignedOnlyMessage(bodyContentType: string, bodyText: string, protectedHeaders: ProtectedHeaders, signingCertDer: Uint8Array, signingPrivateKey: CryptoKey): Promise<MimePart>;
++export interface ParsedSignedOnlyMessage {
++    verified: boolean;
++    signerCertificateDer?: Uint8Array;
++    protectedHeaders?: ProtectedHeaders;
++    bodyContentType?: string;
++    bodyText?: string;
++}
++/** Parses and verifies a `multipart/signed` message built by `buildSignedOnlyMessage()`. Returns
++ * `{ verified: false }` (never throws) for anything malformed — same "degrade to a failed-signature
++ * state, don't crash" contract as `smime.ts`'s own verify functions. */
++export declare function parseSignedOnlyMessage(contentType: string, body: string): Promise<ParsedSignedOnlyMessage>;
++/**
++ * Builds an `application/pkcs7-mime; smime-type="enveloped-data"` message with RFC 9788 header
++ * protection (`hp="cipher"`), optionally sign-then-encrypt when `signing` is supplied (opaque
++ * signing — see this module's own doc comment for why). Per the spec's "Encrypt to Self"
++ * requirement, `recipientCertDers` MUST include the sender's own encryption certificate.
++ */
++export declare function buildEncryptedMessage(bodyContentType: string, bodyText: string, protectedHeaders: ProtectedHeaders, outerHeaders: ProtectedHeaders, recipientCertDers: Uint8Array[], signing?: {
++    certDer: Uint8Array;
++    privateKey: CryptoKey;
++}): Promise<MimePart>;
++export interface ParsedEncryptedMessage {
++    decrypted: boolean;
++    /** Whether an inner (opaque) signature was present and verified - `undefined` when the message
++     * was encrypted without also being signed. */
++    signatureVerified?: boolean;
++    signerCertificateDer?: Uint8Array;
++    protectedHeaders?: ProtectedHeaders;
++    bodyContentType?: string;
++    bodyText?: string;
++}
++/** Decrypts (and, if present, verifies the inner signature of) a message built by
++ * `buildEncryptedMessage()`. Returns `{ decrypted: false }` (never throws) for anything malformed or
++ * undecryptable with the given key — the caller's own concern is distinguishing "wrong key" from
++ * "corrupt message," neither of which this function treats as exceptional. */
++export declare function parseEncryptedMessage(base64Body: string, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey): Promise<ParsedEncryptedMessage>;
+diff --git a/dist/crypto/smimeMessage.js b/dist/crypto/smimeMessage.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..66871dfcfb2ecf21670ce8c4912c893d61301bbb
+--- /dev/null
++++ b/dist/crypto/smimeMessage.js
+@@ -0,0 +1,260 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * MIME assembly around `smime.ts`'s CMS primitives, implementing `specs/end-to-end_encryption.md`'s
++ * "Header Protection" requirement — RFC 9788, not the older, spec-forbidden RFC 8551 §3.1
++ * `message/rfc822`-wrapping approach.
++ *
++ * RFC 9788's actual mechanism (verified against the RFC text directly, not assumed from memory,
++ * given how easy it is to get a narrow/recent spec wrong from recollection alone): protected header
++ * fields are **not** wrapped in a `multipart/mixed` gutter part. They become literal header lines
++ * prepended directly to the MIME entity that is signed/encrypted (the "Cryptographic Payload"),
++ * whose own `Content-Type` gains an `hp="clear"` (signed-only) or `hp="cipher"` (encrypted) parameter.
++ * For encrypted messages, `HP-Outer: <Field>: <value>` lines carry a copy of the outer envelope's
++ * headers inside the protected payload, so a recipient can detect outer-header tampering. The outer,
++ * unprotected envelope keeps real `From`/`To`/`Cc`/`Date` values but MUST obscure `Subject` to the
++ * literal `"[...]"` under `hcp_baseline` — RFC 9788's own required minimum default policy (a
++ * conformant MUA "MUST have a default HCP that offers confidentiality for the Subject Header Field at
++ * least" — Section 3.3); this module implements exactly that baseline, not the more ambitious
++ * `hcp_shy` policy (which also strips display names and normalizes Date to UTC).
++ *
++ * Combined sign-then-encrypt uses **opaque** signing (`smime.ts`'s `signOpaque()`), embedding the
++ * `hp="cipher"`-tagged content inside an `application/pkcs7-mime; smime-type="signed-data"` entity,
++ * which is then itself the plaintext encrypted into the final `enveloped-data` — matching the nesting
++ * RFC 9788's own worked example uses (outer enveloped-data → decrypts to signed-data → unwraps to the
++ * real `hp="cipher"` content), not a `multipart/signed` structure encrypted as a whole.
++ */
++import { fromBase64, toBase64 } from "./encoding.js";
++import { decryptEnvelopedData, encryptForRecipients, signDetached, signOpaque, verifyDetached, verifyOpaque, } from "./smime.js";
++const CRLF = "\r\n";
++/** RFC 2045's own line-length limit for base64-encoded body content. */
++const BASE64_LINE_WIDTH = 76;
++/** RFC 9788's `hcp_baseline` Header Confidentiality Policy — the RFC's own required minimum default
++ * (Section 3.3). Applied to produce the OUTER, unprotected envelope's headers from the real
++ * (protected) ones; `From`/`To`/`Cc`/`Date` pass through unchanged, `Subject` is obscured. */
++export function applyBaselineOuterHeaders(headers) {
++    return { ...headers, subject: "[...]" };
++}
++function base64Wrapped(bytes) {
++    const encoded = toBase64(bytes);
++    const lines = [];
++    for (let i = 0; i < encoded.length; i += BASE64_LINE_WIDTH) {
++        lines.push(encoded.slice(i, i + BASE64_LINE_WIDTH));
++    }
++    return lines.join(CRLF);
++}
++function generateBoundary() {
++    const bytes = crypto.getRandomValues(new Uint8Array(16));
++    return `----=_RapidMX_${Array.from(bytes)
++        .map((b) => b.toString(16).padStart(2, "0"))
++        .join("")}`;
++}
++function protectedHeaderLines(headers, hpOuter) {
++    const lines = [
++        `From: ${headers.from}`,
++        `To: ${headers.to}`,
++        ...(headers.cc ? [`Cc: ${headers.cc}`] : []),
++        `Date: ${headers.date}`,
++        `Subject: ${headers.subject}`,
++        `Message-ID: ${headers.messageId}`,
++    ];
++    if (hpOuter) {
++        // RFC 9788 Section 2.2.1's `hp-outer` field: the literal string "HP-Outer:" followed by the
++        // original field name and its (outer, possibly-obscured) value. Written on every encrypted
++        // message per the spec, but not yet read back and compared against the actual outer envelope
++        // on receipt (that comparison - detecting a tampered outer header - is real received-message
++        // work for a later pass, not implemented by parseEncryptedMessage() below yet).
++        lines.push(`HP-Outer: From: ${hpOuter.from}`);
++        lines.push(`HP-Outer: To: ${hpOuter.to}`);
++        if (hpOuter.cc) {
++            lines.push(`HP-Outer: Cc: ${hpOuter.cc}`);
++        }
++        lines.push(`HP-Outer: Date: ${hpOuter.date}`);
++        lines.push(`HP-Outer: Subject: ${hpOuter.subject}`);
++    }
++    return lines.join(CRLF);
++}
++/**
++ * Builds a detached `multipart/signed` message with RFC 9788 header protection (`hp="clear"`) — per
++ * the spec, the only form signature-only messages may use (opaque signing is reserved for the
++ * sign-then-encrypt case in `buildEncryptedMessage()`, where no legacy client is ever exposed to it).
++ */
++export async function buildSignedOnlyMessage(bodyContentType, bodyText, protectedHeaders, signingCertDer, signingPrivateKey) {
++    const boundary = generateBoundary();
++    const innerEntity = [protectedHeaderLines(protectedHeaders), `Content-Type: ${bodyContentType}; hp="clear"`, "", bodyText].join(CRLF);
++    const signature = await signDetached(new TextEncoder().encode(innerEntity), signingCertDer, signingPrivateKey);
++    const body = [
++        `--${boundary}`,
++        innerEntity,
++        `--${boundary}`,
++        `Content-Type: application/pkcs7-signature; name="smime.p7s"`,
++        `Content-Transfer-Encoding: base64`,
++        `Content-Disposition: attachment; filename="smime.p7s"`,
++        "",
++        base64Wrapped(signature),
++        `--${boundary}--`,
++    ].join(CRLF);
++    return { contentType: `multipart/signed; protocol="application/pkcs7-signature"; micalg=sha-256; boundary="${boundary}"`, body };
++}
++/** Parses and verifies a `multipart/signed` message built by `buildSignedOnlyMessage()`. Returns
++ * `{ verified: false }` (never throws) for anything malformed — same "degrade to a failed-signature
++ * state, don't crash" contract as `smime.ts`'s own verify functions. */
++export async function parseSignedOnlyMessage(contentType, body) {
++    const boundary = extractBoundary(contentType);
++    if (!boundary) {
++        return { verified: false };
++    }
++    const parts = splitOnBoundary(body, boundary);
++    if (parts.length < 2) {
++        return { verified: false };
++    }
++    const [innerEntity, signaturePart] = parts;
++    const signatureDer = extractBase64Body(signaturePart);
++    if (!signatureDer) {
++        return { verified: false };
++    }
++    const result = await verifyDetached(new TextEncoder().encode(innerEntity), signatureDer);
++    if (!result.valid) {
++        return { verified: false };
++    }
++    const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(innerEntity);
++    return {
++        verified: true,
++        signerCertificateDer: result.signerCertificateDer,
++        protectedHeaders: headersToProtectedHeaders(headers),
++        bodyContentType,
++        bodyText,
++    };
++}
++/**
++ * Builds an `application/pkcs7-mime; smime-type="enveloped-data"` message with RFC 9788 header
++ * protection (`hp="cipher"`), optionally sign-then-encrypt when `signing` is supplied (opaque
++ * signing — see this module's own doc comment for why). Per the spec's "Encrypt to Self"
++ * requirement, `recipientCertDers` MUST include the sender's own encryption certificate.
++ */
++export async function buildEncryptedMessage(bodyContentType, bodyText, protectedHeaders, outerHeaders, recipientCertDers, signing) {
++    const plaintextEntity = [
++        protectedHeaderLines(protectedHeaders, outerHeaders),
++        `Content-Type: ${bodyContentType}; hp="cipher"`,
++        "",
++        bodyText,
++    ].join(CRLF);
++    let contentToEncrypt;
++    if (signing) {
++        const signedDer = await signOpaque(new TextEncoder().encode(plaintextEntity), signing.certDer, signing.privateKey);
++        contentToEncrypt = new TextEncoder().encode([
++            `Content-Type: application/pkcs7-mime; smime-type="signed-data"; name="smime.p7m"`,
++            `Content-Transfer-Encoding: base64`,
++            "",
++            base64Wrapped(signedDer),
++        ].join(CRLF));
++    }
++    else {
++        contentToEncrypt = new TextEncoder().encode(plaintextEntity);
++    }
++    const envelopedDer = await encryptForRecipients(contentToEncrypt, recipientCertDers);
++    return {
++        contentType: `application/pkcs7-mime; smime-type="enveloped-data"; name="smime.p7m"`,
++        additionalHeaders: { "Content-Transfer-Encoding": "base64", "Content-Disposition": 'attachment; filename="smime.p7m"' },
++        body: base64Wrapped(envelopedDer),
++    };
++}
++/** Decrypts (and, if present, verifies the inner signature of) a message built by
++ * `buildEncryptedMessage()`. Returns `{ decrypted: false }` (never throws) for anything malformed or
++ * undecryptable with the given key — the caller's own concern is distinguishing "wrong key" from
++ * "corrupt message," neither of which this function treats as exceptional. */
++export async function parseEncryptedMessage(base64Body, recipientCertDer, recipientPrivateKey) {
++    const envelopedDer = decodeBase64Body(base64Body);
++    if (!envelopedDer) {
++        return { decrypted: false };
++    }
++    let decrypted;
++    try {
++        decrypted = await decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey);
++    }
++    catch {
++        return { decrypted: false };
++    }
++    const decoded = new TextDecoder().decode(decrypted);
++    const { headers: outerContentHeaders, body: outerContentBody } = splitHeadersAndBody(decoded);
++    const innerContentType = outerContentHeaders["content-type"];
++    if (innerContentType?.includes('smime-type="signed-data"')) {
++        const signedDer = decodeBase64Body(outerContentBody);
++        if (!signedDer) {
++            return { decrypted: false };
++        }
++        const verifyResult = await verifyOpaque(signedDer);
++        if (!verifyResult.valid || !verifyResult.content) {
++            return { decrypted: true, signatureVerified: false };
++        }
++        const plaintext = new TextDecoder().decode(verifyResult.content);
++        const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(plaintext);
++        return {
++            decrypted: true,
++            signatureVerified: true,
++            signerCertificateDer: verifyResult.signerCertificateDer,
++            protectedHeaders: headersToProtectedHeaders(headers),
++            bodyContentType,
++            bodyText,
++        };
++    }
++    const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(decoded);
++    return { decrypted: true, protectedHeaders: headersToProtectedHeaders(headers), bodyContentType, bodyText };
++}
++// ---------------------------------------------------------------------------
++// Small, targeted MIME parsing helpers - sufficient for entities this module
++// itself produces; not a general-purpose MIME parser.
++// ---------------------------------------------------------------------------
++function extractBoundary(contentType) {
++    const match = /boundary="([^"]+)"/.exec(contentType);
++    return match?.[1];
++}
++function splitOnBoundary(body, boundary) {
++    const delimiter = `--${boundary}`;
++    return body
++        .split(delimiter)
++        .map((part) => part.replace(/^\r\n/, "").replace(/\r\n$/, ""))
++        .filter((part) => part.length > 0 && part !== "--");
++}
++function extractBase64Body(part) {
++    const { body } = splitHeadersAndBody(part);
++    return decodeBase64Body(body);
++}
++function decodeBase64Body(base64Body) {
++    try {
++        return fromBase64(base64Body.replace(/[\r\n]/g, ""));
++    }
++    catch {
++        return undefined;
++    }
++}
++/** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
++ * the entity's own Content-Type value (if present) for convenience. */
++function splitHeadersAndBody(entity) {
++    const separatorIndex = entity.indexOf(`${CRLF}${CRLF}`);
++    const headerBlock = separatorIndex === -1 ? entity : entity.slice(0, separatorIndex);
++    const body = separatorIndex === -1 ? "" : entity.slice(separatorIndex + 2 * CRLF.length);
++    const headers = {};
++    for (const line of headerBlock.split(CRLF)) {
++        const colonIndex = line.indexOf(":");
++        if (colonIndex === -1) {
++            continue;
++        }
++        const name = line.slice(0, colonIndex).trim().toLowerCase();
++        const value = line.slice(colonIndex + 1).trim();
++        headers[name] = value;
++    }
++    return { headers, contentType: headers["content-type"], body };
++}
++function headersToProtectedHeaders(headers) {
++    return {
++        from: headers["from"] ?? "",
++        to: headers["to"] ?? "",
++        cc: headers["cc"],
++        date: headers["date"] ?? "",
++        subject: headers["subject"] ?? "",
++        messageId: headers["message-id"] ?? "",
++    };
++}
+diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
+index 9eba1e5013b5604ec48710251ce3adafbf5c2896..77b358e2ab3f47b490b3a3801ca8d2e1b92ee1fb 100644
+--- a/dist/mail/mailApi.d.ts
++++ b/dist/mail/mailApi.d.ts
+@@ -6,7 +6,9 @@
+  * repo's `.claude/NOTES.md`.
+  */
+ import { ListParams } from "../util/apiQuery.js";
++import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
+ export type { ListParams };
++export type { EncryptionPreference, PublicKey };
+ export interface Mailbox {
+     uid: string;
+     version: number;
+@@ -60,6 +62,14 @@ export interface Mailbox {
+      * requester, not the recipient. Always present (defaults `true`/`false` respectively), same caveat. */
+     autoSendReceiptsInternal?: boolean;
+     autoSendReceiptsExternal?: boolean;
++    /** This mailbox's own encryption preference, per `specs/end-to-end_encryption.md` — a client
++     * defaults to encrypting only when *both* sender and recipient report `"mutual"`. Absent is
++     * equivalent to `{ preferEncrypt: "nopreference" }` (no keys enrolled yet). */
++    encryptPreference?: EncryptionPreference;
++    /** This mailbox's published public keys (signing and/or encryption) — safe to expose publicly,
++     * per the spec's own `PublicKey` doc comment. Absent/empty means no keys enrolled yet
++     * (`KeyEnrollmentGate` handles that state). */
++    keys?: PublicKey[];
+ }
+ /** Lists mailboxes the caller can access (owned, shared with them, or — for a trusted caller — every one). */
+ export declare function listMailboxes(params?: ListParams): Promise<Mailbox[]>;
+@@ -290,6 +300,14 @@ export interface Message {
+     /** The per-recipient delivery/read roster on a *sent* message — the client-visible tracking indicator.
+      * `undefined` (not an empty array) when no receipt was ever requested for this message. */
+     receiptStatus?: MessageReceiptEntry[];
++    /** `true` when this message's body is S/MIME (CMS) encrypted — computed server-side by
++     * `@rapidmx/restapi`'s `ScanPipeline` from the actual stored MIME structure, not something a
++     * client ever sets directly. Says nothing about whether it's *signed* — see
++     * `specs/end-to-end_encryption.md`'s Message Security Indicators (encryption and signing are
++     * separate guarantees); signature verification happens client-side by decrypting/parsing the
++     * stored body, not from a flag this API exposes. Always present on a real `Message` (defaults
++     * `false` server-side), same optional-for-old-fixtures caveat as `Mailbox.oofEnabled`. */
++    encrypted?: boolean;
+ }
+ export interface MessageReceiptEntry {
+     recipientAddress: string;
+@@ -391,6 +409,27 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
+  * itself does no MIME composition). Does not send the message.
+  */
+ export declare function assembleDraft(messageUid: string, input: AssembleDraftInput): Promise<Message>;
++export interface AssembleDraftRawInput {
++    to: ComposeRecipientInput[];
++    cc?: ComposeRecipientInput[];
++    bcc?: ComposeRecipientInput[];
++    /** The message's own top-level `Subject` — for an encrypted message this MUST be the outer,
++     * RFC 9788 `hcp_baseline`-obscured value (`"[...]"`, see `crypto/smimeMessage.ts`'s
++     * `applyBaselineOuterHeaders()`), matching what's already in `rawMime`'s own outer header. */
++    subject: string;
++    /** The complete RFC 5322 message source, already finalized client-side — see
++     * `crypto/smimeMessage.ts`'s `buildSignedOnlyMessage()`/`buildEncryptedMessage()`, combined with
++     * the outer envelope headers (`From`/`To`/`Cc`/`Date`/`Message-ID`/`MIME-Version`) by the caller. */
++    rawMime: string;
++}
++/**
++ * Stores an already-signed/encrypted draft's raw MIME source as its `bodyBlobKey`, completely
++ * unmodified — the E2E counterpart to `assembleDraft()`, for when the message body was built
++ * client-side via `crypto/smimeMessage.ts` rather than from plain HTML. Does not send the message. A
++ * draft assembled this way cannot carry file attachments yet — see `BaseMailComposeRoute.assembleRaw()`'s
++ * own doc comment in `server`.
++ */
++export declare function assembleDraftRaw(messageUid: string, input: AssembleDraftRawInput): Promise<Message>;
+ /** Scans, relays, and moves an already-assembled draft into Sent Items. */
+ export declare function sendMessage(messageUid: string): Promise<Message>;
+ export interface ImpersonationResult {
+diff --git a/dist/mail/mailApi.js b/dist/mail/mailApi.js
+index bbea6c30708cf0767a11336b663b758e6eaaae58..74de7bb966631a8b1ebae590fe0d52779f035390 100644
+--- a/dist/mail/mailApi.js
++++ b/dist/mail/mailApi.js
+@@ -258,6 +258,19 @@ export function assembleDraft(messageUid, input) {
+         body: JSON.stringify(input),
+     });
+ }
++/**
++ * Stores an already-signed/encrypted draft's raw MIME source as its `bodyBlobKey`, completely
++ * unmodified — the E2E counterpart to `assembleDraft()`, for when the message body was built
++ * client-side via `crypto/smimeMessage.ts` rather than from plain HTML. Does not send the message. A
++ * draft assembled this way cannot carry file attachments yet — see `BaseMailComposeRoute.assembleRaw()`'s
++ * own doc comment in `server`.
++ */
++export function assembleDraftRaw(messageUid, input) {
++    return apiFetch(`/mail/compose/${encodeURIComponent(messageUid)}/assemble-raw`, {
++        method: "POST",
++        body: JSON.stringify(input),
++    });
++}
+ /** Scans, relays, and moves an already-assembled draft into Sent Items. */
+ export function sendMessage(messageUid) {
+     return apiFetch(`/mail/messages/${encodeURIComponent(messageUid)}/send`, { method: "POST" });
 diff --git a/package.json b/package.json
-index 752ddd38befaf38a75c5047b844511ff8ee4108e..c04c3afc208bbede1061f8de88d67e5337abb64c 100644
+index 752ddd38befaf38a75c5047b844511ff8ee4108e..3e8e87e1aea55b24402a7fd386a0e7990e853ca4 100644
 --- a/package.json
 +++ b/package.json
-@@ -36,8 +36,11 @@
+@@ -36,8 +36,13 @@
    },
    "dependencies": {
      "@emoji-mart/data": "^1.2.1",
 +    "@peculiar/x509": "^2.1.0",
++    "asn1js": "^3.0.10",
      "date-fns": "^4.4.0",
 +    "hash-wasm": "^4.12.0",
++    "pkijs": "^3.4.0",
      "react-icons": "^5.7.0",
 +    "reflect-metadata": "^0.2.2",
      "rrule": "^2.8.1"

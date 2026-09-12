@@ -7,14 +7,20 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import { enrollKey, getKeyVault, MasterKeyWrap } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { enrollKey, getKeyVault, MasterKeyWrap, PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import {
+    ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
+    MASTER_KEY_AAD_PURPOSE,
+    getUnlockedKeys,
+    unlockWithPassword,
+} from "@rapidmx/react-shared/crypto/keySession.js";
 import { buildAad, generateMasterKey, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
 import { DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "@rapidmx/react-shared/crypto/passwordUnlock.js";
 import { deriveFromRecoveryCode, generateRecoveryCode } from "@rapidmx/react-shared/crypto/recoveryCode.js";
 import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
 
-type Status = "checking" | "setup_password" | "enrolling" | "show_recovery_codes" | "ready";
+type Status = "checking" | "setup_password" | "enrolling" | "show_recovery_codes" | "unlock" | "unlocking" | "ready";
 
 const MIN_PASSWORD_LENGTH = 8;
 const RECOVERY_CODE_COUNT = 8;
@@ -29,7 +35,7 @@ async function provisionEncryptionKey(
     password: string,
 ): Promise<{ recoveryCodes: string[] }> {
     const mk = generateMasterKey();
-    const mkAad = buildAad(mailboxUid, "master-key");
+    const mkAad = buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE);
 
     const passwordSalt = generateSalt();
     const { wrappingKey: passwordWrappingKey } = await deriveFromPassword(password, passwordSalt, DEFAULT_ARGON2ID_PARAMS);
@@ -73,7 +79,7 @@ async function provisionEncryptionKey(
     // not blocked on it.
     const { keyPair, csrPem } = await generateKeyPairWithCsr(mailboxAddress, "encrypt");
     const privateKeyRaw = await exportPrivateKeyPkcs8(keyPair.privateKey);
-    const wrappedKeySealed = await sealWithKey(mk, privateKeyRaw, buildAad(mailboxUid, "encrypt-private-key"));
+    const wrappedKeySealed = await sealWithKey(mk, privateKeyRaw, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
 
     await enrollKey(mailboxUid, {
         useType: "encrypt",
@@ -91,6 +97,11 @@ export interface KeyEnrollmentGateProps {
      * position (see this component's own doc comment for why that matters). */
     mailboxUid?: string;
     mailboxAddress?: string;
+    /** The mailbox's currently-published public keys (`Mailbox.keys`) - needed to unlock an
+     * already-enrolled vault (see `unlockWithPassword()`'s own signature), not just to provision a new
+     * one. Treated as empty when undefined - a mailbox with no public keys published yet has nothing to
+     * unlock, so this only affects the already-enrolled path. */
+    mailboxKeys?: PublicKey[];
     children: React.ReactNode;
 }
 
@@ -109,7 +120,7 @@ export interface KeyEnrollmentGateProps {
  * `children` unchanged rather than blocking mail entirely - encryption is optional and gradual by design
  * (the spec's own "near zero frictionless experience" goal), not a hard prerequisite for reading mail.
  */
-export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, children }: KeyEnrollmentGateProps) {
+export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, mailboxKeys, children }: KeyEnrollmentGateProps) {
     const [status, setStatus] = useState<Status>(mailboxUid ? "checking" : "ready");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
@@ -121,11 +132,18 @@ export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, children
         if (!mailboxUid) {
             return;
         }
+        // A remount within the same browser session (e.g. navigating between pages) shouldn't re-prompt
+        // for a password the in-memory session store (`keySession.ts`) already has unwrapped - only a
+        // fresh session (reload, new tab, post-logout) has nothing there.
+        if (getUnlockedKeys(mailboxUid)) {
+            setStatus("ready");
+            return;
+        }
         let cancelled = false;
         getKeyVault(mailboxUid)
             .then((vault) => {
                 if (!cancelled) {
-                    setStatus(vault.wrappedKeys.length > 0 ? "ready" : "setup_password");
+                    setStatus(vault.wrappedKeys.length > 0 ? "unlock" : "setup_password");
                 }
             })
             .catch(() => {
@@ -137,6 +155,24 @@ export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, children
             cancelled = true;
         };
     }, [mailboxUid]);
+
+    async function handleUnlock(e: React.FormEvent) {
+        e.preventDefault();
+        setError(null);
+        setStatus("unlocking");
+        try {
+            // Only reachable via "unlock", which the effect above only ever sets once mailboxUid was
+            // defined.
+            await unlockWithPassword(mailboxUid!, mailboxKeys ?? [], password);
+            setStatus("ready");
+        } catch {
+            // Deliberately generic - see `unlockWithPassword()`'s own doc comment: it throws the same way
+            // for "no password wrap enrolled" and "wrong password" today, and this UI has no way to tell
+            // those apart without leaking which is which to a potential attacker guessing passwords.
+            setError("Incorrect password.");
+            setStatus("unlock");
+        }
+    }
 
     async function handleSetPassword(e: React.FormEvent) {
         e.preventDefault();
@@ -164,6 +200,37 @@ export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, children
 
     if (status === "checking") {
         return null;
+    }
+
+    if (status === "unlock" || status === "unlocking") {
+        const unlocking = status === "unlocking";
+        return (
+            <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
+                <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
+                    <h1 className="text-lg font-bold mb-2">Unlock your mailbox</h1>
+                    <p className="text-sm text-text-muted mb-5">
+                        Enter your encryption password to unlock signing and reading protected mail this session.
+                    </p>
+                    {error && <Alert>{error}</Alert>}
+                    <form onSubmit={handleUnlock}>
+                        <FormField label="Encryption password" htmlFor="key-unlock-password">
+                            <input
+                                id="key-unlock-password"
+                                type="password"
+                                className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                disabled={unlocking}
+                                autoComplete="current-password"
+                            />
+                        </FormField>
+                        <Button type="submit" loading={unlocking} disabled={unlocking}>
+                            Unlock
+                        </Button>
+                    </form>
+                </div>
+            </div>
+        );
     }
 
     if (status === "setup_password" || status === "enrolling") {

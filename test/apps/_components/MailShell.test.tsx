@@ -23,6 +23,15 @@ vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
     getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
     enrollKey: vi.fn(),
 }));
+// Treated as already-unlocked this session (see KeyEnrollmentGate's own getUnlockedKeys() short-circuit)
+// so these tests never hit its "Unlock your mailbox" password prompt - that flow is this component's own
+// concern, covered by KeyEnrollmentGate.test.tsx.
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+    MASTER_KEY_AAD_PURPOSE: "master-key",
+    ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
+    getUnlockedKeys: vi.fn().mockReturnValue({ masterKey: new Uint8Array(32) }),
+    unlockWithPassword: vi.fn(),
+}));
 
 const AUTH_SERVER_URL = "https://auth.example.com";
 
