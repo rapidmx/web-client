@@ -77,10 +77,20 @@ function ExportSection({ mailboxUid }: { mailboxUid?: string }) {
     const [creating, setCreating] = useState(false);
     const [createError, setCreateError] = useState<string | null>(null);
 
+    // The create form below isn't gated behind `loading`, so a fast create-then-reload can resolve before
+    // the initial mount fetch does; without this guard the mount fetch's now-stale response would land
+    // last and silently revert the list. Only the most-recently-issued load's response is ever applied.
+    const loadSeq = useRef(0);
     function loadRequests() {
+        const seq = ++loadSeq.current;
         return listExportRequests()
-            .then(setRequests)
-            .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your export requests."));
+            .then((data) => {
+                if (seq === loadSeq.current) setRequests(data);
+            })
+            .catch((err) => {
+                if (seq === loadSeq.current)
+                    setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your export requests.");
+            });
     }
 
     useEffect(() => {
@@ -182,10 +192,20 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
+    // Same stale-response guard as ExportSection's loadRequests() - the Upload button is enabled
+    // independently of this section's own `loading`, so a fast upload-then-reload can resolve before the
+    // initial mount fetch does.
+    const loadSeq = useRef(0);
     function loadRequests() {
+        const seq = ++loadSeq.current;
         return listImportRequests()
-            .then(setRequests)
-            .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your import requests."));
+            .then((data) => {
+                if (seq === loadSeq.current) setRequests(data);
+            })
+            .catch((err) => {
+                if (seq === loadSeq.current)
+                    setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your import requests.");
+            });
     }
 
     useEffect(() => {

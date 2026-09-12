@@ -179,6 +179,81 @@ describe("DataRequestsPage — export requests", () => {
 
         expect(await screen.findByText("Could not start this export.")).toBeInTheDocument();
     });
+
+    it("discards a stale initial-load response that resolves after a newer create-triggered reload", async () => {
+        // The create form isn't gated behind this section's own `loading`, so a slow initial mount fetch
+        // can still be in flight when the user creates a request and its own faster reload completes -
+        // without a sequencing guard, the stale initial response landing last would silently revert the
+        // list back to empty.
+        let resolveInitialLoad!: (response: Response) => void;
+        let getCallCount = 0;
+        mockShell((url, init) => {
+            if (url === "/api/mail/data-export-requests" && (init?.method ?? "GET") === "GET") {
+                getCallCount++;
+                if (getCallCount === 1) {
+                    return new Promise<Response>((resolve) => {
+                        resolveInitialLoad = resolve;
+                    });
+                }
+                return jsonResponse(200, [exportRequest()]);
+            }
+            if (url === "/api/mail/data-export-requests" && init?.method === "POST") return jsonResponse(200, exportRequest());
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        // This section's own list fetch never resolves yet in this test, so wait on the create form
+        // itself (rendered unconditionally, not gated behind this section's `loading`) rather than
+        // "No export requests." to know the shell has finished its own admin-access check and mounted.
+        await user.type(await screen.findByLabelText("Export mailbox UID"), "mb1");
+        await user.click(screen.getByRole("button", { name: "Create export" }));
+
+        // The create's own reload (the second GET call) resolves and updates `requests`, even though the
+        // page still shows "Loading…" until the still-pending initial mount fetch itself settles (only
+        // its own .finally() clears `loading`) - confirm the reload actually completed via the mock
+        // rather than the DOM, which won't reflect it until loading clears below.
+        await vi.waitFor(() => expect(getCallCount).toBe(2));
+
+        // Now let the stale initial load resolve with an empty list - since it's a strictly older call
+        // than the reload above, its response must be discarded rather than overwriting the fresher data
+        // once `loading` clears and the list actually renders.
+        resolveInitialLoad(jsonResponse(200, []));
+
+        expect(await screen.findByText(/mb1/)).toBeInTheDocument();
+        expect(screen.queryByText("No export requests.")).not.toBeInTheDocument();
+    });
+
+    it("discards a stale initial-load error that resolves after a newer, successful create-triggered reload", async () => {
+        // Same sequencing guard, exercised on the .catch() side: a slow initial load that eventually
+        // fails must not surface its error once a newer reload has already succeeded.
+        let resolveInitialLoad!: (response: Response) => void;
+        let getCallCount = 0;
+        mockShell((url, init) => {
+            if (url === "/api/mail/data-export-requests" && (init?.method ?? "GET") === "GET") {
+                getCallCount++;
+                if (getCallCount === 1) {
+                    return new Promise<Response>((resolve) => {
+                        resolveInitialLoad = resolve;
+                    });
+                }
+                return jsonResponse(200, [exportRequest()]);
+            }
+            if (url === "/api/mail/data-export-requests" && init?.method === "POST") return jsonResponse(200, exportRequest());
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        await user.type(await screen.findByLabelText("Export mailbox UID"), "mb1");
+        await user.click(screen.getByRole("button", { name: "Create export" }));
+        await vi.waitFor(() => expect(getCallCount).toBe(2));
+
+        resolveInitialLoad(jsonResponse(500, { message: "server unavailable" }));
+
+        expect(await screen.findByText("pending")).toBeInTheDocument();
+        expect(screen.queryByText("server unavailable")).not.toBeInTheDocument();
+    });
 });
 
 describe("DataRequestsPage — import requests", () => {
@@ -405,6 +480,84 @@ describe("DataRequestsPage — import requests", () => {
         await user.upload(screen.getByLabelText("Upload mail archive"), new File(["..."], "archive.mbox"));
 
         expect(await screen.findByText("Could not upload this file.")).toBeInTheDocument();
+    });
+
+    it("discards a stale initial-load response that resolves after a newer upload-triggered reload", async () => {
+        // Same "the Upload button isn't gated behind this section's own `loading`" race as the export
+        // section's own equivalent test - a slow initial mount fetch resolving after a faster
+        // upload-triggered reload must not revert the list.
+        let resolveInitialLoad!: (response: Response) => void;
+        let getCallCount = 0;
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [folder]);
+            if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") return jsonResponse(200, importRequest());
+            if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") {
+                getCallCount++;
+                if (getCallCount === 1) {
+                    return new Promise<Response>((resolve) => {
+                        resolveInitialLoad = resolve;
+                    });
+                }
+                return jsonResponse(200, [importRequest()]);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        // This section's own list fetch never resolves in this test, so wait on the mailbox UID field
+        // itself (rendered unconditionally) rather than "No import requests." to know the shell has
+        // finished its own admin-access check and mounted the page.
+        await user.type(await screen.findByLabelText("Import mailbox UID"), "mb1");
+        await user.tab();
+        await screen.findByLabelText("Import destination folder");
+        await user.upload(screen.getByLabelText("Upload mail archive"), new File(["..."], "archive.mbox"));
+
+        // The upload's own reload (the second GET call) resolves and updates `requests`, even though the
+        // page still shows "Loading…" until the still-pending initial mount fetch itself settles - confirm
+        // the reload actually completed via the mock rather than the DOM, which won't reflect it yet.
+        await vi.waitFor(() => expect(getCallCount).toBe(2));
+
+        // Now let the stale initial load resolve with an empty list - it must be discarded rather than
+        // overwriting the fresher data once `loading` clears and the list actually renders.
+        resolveInitialLoad(jsonResponse(200, []));
+
+        expect(await screen.findByText(/mb1/)).toBeInTheDocument();
+        expect(screen.queryByText("No import requests.")).not.toBeInTheDocument();
+    });
+
+    it("discards a stale initial-load error that resolves after a newer, successful upload-triggered reload", async () => {
+        // Same sequencing guard, exercised on the .catch() side: a slow initial load that eventually
+        // fails must not surface its error once a newer reload has already succeeded.
+        let resolveInitialLoad!: (response: Response) => void;
+        let getCallCount = 0;
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [folder]);
+            if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") return jsonResponse(200, importRequest());
+            if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") {
+                getCallCount++;
+                if (getCallCount === 1) {
+                    return new Promise<Response>((resolve) => {
+                        resolveInitialLoad = resolve;
+                    });
+                }
+                return jsonResponse(200, [importRequest()]);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        await user.type(await screen.findByLabelText("Import mailbox UID"), "mb1");
+        await user.tab();
+        await screen.findByLabelText("Import destination folder");
+        await user.upload(screen.getByLabelText("Upload mail archive"), new File(["..."], "archive.mbox"));
+        await vi.waitFor(() => expect(getCallCount).toBe(2));
+
+        resolveInitialLoad(jsonResponse(500, { message: "server unavailable" }));
+
+        expect(await screen.findByText(/mb1/)).toBeInTheDocument();
+        expect(screen.queryByText("server unavailable")).not.toBeInTheDocument();
     });
 });
 

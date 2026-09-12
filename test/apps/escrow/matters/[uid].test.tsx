@@ -510,18 +510,34 @@ describe("MatterDetailPage", () => {
 
     it("creates a new export request and reloads the list", async () => {
         let created = false;
+        const newExport = {
+            uid: "mer-new",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            matterId: "m1",
+            requestedByUserUid: "u1",
+            status: "pending" as const,
+        };
         mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, []),
             "POST /api/escrow/matter-export-requests": () => {
                 created = true;
-                return jsonResponse(200, {});
+                return jsonResponse(200, newExport);
             },
+            "/api/escrow/matter-export-requests": () => jsonResponse(200, created ? [newExport] : []),
         });
         const user = userEvent.setup();
         render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
         await screen.findByRole("heading", { name: "Smith v. Acme" });
+        expect(await screen.findByText("No export requests yet.")).toBeInTheDocument();
 
         await user.click(screen.getByRole("button", { name: "+ New export" }));
-        await vi.waitFor(() => expect(created).toBe(true));
+
+        // Confirms the list was actually re-fetched and re-rendered with the new request, not just that
+        // the create call itself resolved.
+        expect(await screen.findByText("pending")).toBeInTheDocument();
+        expect(screen.queryByText("No export requests yet.")).not.toBeInTheDocument();
     });
 
     it("shows an error message when creating an export fails", async () => {

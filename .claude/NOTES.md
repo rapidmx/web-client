@@ -791,3 +791,39 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   - This closes out the full seven-feature compliance-roadmap batch (Legal Hold, non-owner access
     auditing, retention policy, GDPR export, mailbox import, GDPR erasure, eDiscovery) across `server`,
     `react-shared`, and `web-client`.
+
+- **2026-09-12 (continued) — Adversarial review pass over the compliance-roadmap batch: a real race
+  condition, fixed; a weak test, strengthened.** Two independent reviewers each read the full
+  `cb8e585..99962f7` diff plus the react-shared wrappers/restapi contracts it calls. Verified findings:
+  - **Stale-response race** in every "create/upload" section whose form/button isn't gated behind the
+    section's own `loading` flag: `ExportRequestsSection`/`ImportRequestsSection` in `apps/admin/
+    data-requests/index.tsx`, and `ExportSection`/`ImportSection` in `apps/www/settings/privacy/index.tsx`.
+    Each has an unconditional mount-effect `loadRequests()` plus a second, independent `loadRequests()`
+    call after a successful create/upload - both unconditionally call `setRequests()` on resolution, with
+    no ordering guarantee between them. If the initial mount fetch is slower than the create-triggered one
+    (a slow admin-panel network, not an exotic race), its now-stale response lands last and silently
+    reverts the list, hiding the record the user just created until a manual page reload. Not present in
+    the erasure sections (their action controls render only inside their own `{loading ? ... : ...}`
+    branch) or in `apps/escrow/matters/[uid].tsx` (the whole page is gated behind one top-level
+    `if (loading) return <Loading/>`).
+    - Fix: each of the four `loadRequests()` functions now closes over a `useRef(0)` sequence counter,
+      incremented on every call; the response handler only calls `setRequests`/`setLoadError` if its own
+      captured sequence number still matches the ref's current value, so only the most-recently-issued
+      call's response is ever applied - a strictly-older response arriving late is silently discarded.
+    - Added a test per affected section (`test/apps/admin/data-requests/index.test.tsx`,
+      `test/apps/settings/privacy/index.test.tsx`) using a manually-controlled deferred `Promise` for the
+      first GET call so its resolution can be forced to land *after* the create/upload-triggered reload's
+      response has already been applied - confirming the guard actually discards the stale data rather
+      than just asserting the create call fired.
+  - **Weak test**, not a functional bug: `test/apps/escrow/matters/[uid].test.tsx`'s "creates a new export
+    request and reloads the list" only asserted a mock-local boolean flag was flipped by the POST handler,
+    never that the export list actually re-rendered with the new request - it would have passed unchanged
+    even if `reload()` silently failed after a successful POST. Strengthened to assert the "No export
+    requests yet." placeholder is replaced by the new request's own pending-status pill.
+  - Everything else both reviewers checked (Legal Hold 409 message surfacing, upload Content-Type/XSS,
+    download-link premature-render races, IDOR-shaped UID foot-guns, Enter-key modal bypass) was verified
+    clean against the real restapi contracts and this codebase's own components - explicitly noted as
+    "checked, nothing found" rather than omitted.
+  - A `server`-side finding from the same review round (the new `max_body_size` cap's memory footprint
+    against the deployed Helm resource limits) is that repo's own NOTES.md entry, same date - no
+    `web-client` change needed for it.
