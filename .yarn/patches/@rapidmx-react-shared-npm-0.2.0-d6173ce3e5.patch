@@ -4160,10 +4160,10 @@ index 0000000000000000000000000000000000000000..a620cdc61051fa0ce773ebf75ac979d2
 +export declare function searchEncryptedCandidates(parsed: ParsedSearchQuery, unlocked: UnlockedKeys | undefined, limit?: number): Promise<SearchResult[]>;
 diff --git a/dist/search/searchTier3.js b/dist/search/searchTier3.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..7121de8c1a39d773ba0c722b4c50804b688bd85e
+index 0000000000000000000000000000000000000000..6fef764d904128d7b711048d2cbcb3a327853c56
 --- /dev/null
 +++ b/dist/search/searchTier3.js
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,226 @@
 +import { evaluateMessageSecurity } from "../crypto/messageSecurity.js";
 +import { getMessageRawContent } from "../mail/mailApi.js";
 +import { SEARCH_FIELD_WEIGHTS } from "./searchScoring.js";
@@ -4258,7 +4258,16 @@ index 0000000000000000000000000000000000000000..7121de8c1a39d773ba0c722b4c50804b
 +}
 +/** Counts (case-insensitive, overlapping-safe-enough for scoring purposes) occurrences of every
 + * positive term/phrase in `queryText` within `haystack` - used only to weight a match's score, not to
-+ * decide whether it matches at all (`matchesFreeText()` already decided that). */
++ * decide whether it matches at all (`matchesFreeText()` already decided that).
++ *
++ * Returns the same flat `1` for a query with real free text that happens to be entirely `-negated`
++ * (e.g. `-spam -junk`) as for a true pure-operator query with no free text at all - there is no positive
++ * term to count occurrences of either way, so no content-relevance signal exists to differentiate on.
++ * This is not a scoring regression relative to Tier 1: `PostgresFullTextSearchProvider`'s own
++ * `ts_rank(search_vector, websearch_to_tsquery(...))` degrades identically for an all-negative tsquery
++ * (no positive lexeme contributes rank weight), so every Tier 1 result for the same query is equally
++ * flat before `normalizeServerScores()` sinks both tiers' batches to `0` together - consistent, not a
++ * one-sided disadvantage for Tier 3. */
 +function countTermOccurrences(queryText, haystack) {
 +    const terms = positiveTermTexts(queryText);
 +    if (terms.length === 0) {
