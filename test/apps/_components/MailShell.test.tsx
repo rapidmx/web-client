@@ -182,6 +182,25 @@ describe("MailShell", () => {
         ]);
     });
 
+    it("renders a well-known Archive folder (type: archive) with its label, sorted after Junk and before Deleted Items", async () => {
+        const junkFolder = { ...inboxFolder, uid: "f-junk", name: "Junk Email", type: "junk" as const, unreadCount: 0 };
+        const archiveWellKnownFolder = { ...inboxFolder, uid: "f-archive-wk", name: "Archive", type: "archive" as const, unreadCount: 0 };
+        const deletedFolder = { ...inboxFolder, uid: "f-deleted", name: "Deleted Items", type: "deleted_items" as const, unreadCount: 0 };
+        mockMailboxesAndFolders([mailboxA], [deletedFolder, archiveWellKnownFolder, junkFolder, inboxFolder]);
+        render(<MailShell userUid="u1">content</MailShell>);
+
+        await screen.findByText("Inbox");
+        expect(screen.getByText("Archive")).toBeInTheDocument();
+
+        const folderLinks = screen.getAllByRole("link").filter((el) => el.getAttribute("href")?.includes("folderUid="));
+        expect(folderLinks.map((el) => el.getAttribute("href"))).toEqual([
+            "/?mailboxUid=mb-a&folderUid=f-inbox",
+            "/?mailboxUid=mb-a&folderUid=f-junk",
+            "/?mailboxUid=mb-a&folderUid=f-archive-wk",
+            "/?mailboxUid=mb-a&folderUid=f-deleted",
+        ]);
+    });
+
     it("clicking Compose opens the floating Compose window for the resolved mailbox, without navigating away", async () => {
         const draft = {
             uid: "m1",

@@ -165,6 +165,7 @@ export default function ConversationThreadPane({ conversation, folders }: Conver
                             isInbox={folders.find((f) => f.uid === message.folderUid)?.type === "inbox"}
                             onClassified={(updated) => setMessages((prev) => ({ ...prev, [uid]: updated }))}
                             onReceiptHandled={(updated) => setMessages((prev) => ({ ...prev, [uid]: updated }))}
+                            onArchived={(updated) => setMessages((prev) => ({ ...prev, [uid]: updated }))}
                         />
                     </div>
                 );

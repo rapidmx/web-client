@@ -466,3 +466,29 @@ remains a separate future effort.
   sort-order behavior, not just its absence.
 - Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up
   `messageSecurity.ts`'s new `subject` field and the new `searchTier3.ts` module.
+
+### 2026-09-12 — Phase 2 of consuming restapi's 11 post-0.6.0 commits: Archive folder
+
+JP confirmed that batch (RFC 8823 ACME, Escrow Scoping, Labels, Archive, S3BlobStore) is done and asked
+for everything it unlocks to be implemented; sequenced smallest-first. See `server`'s/`react-shared`'s
+own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, deployment-only).
+
+- `MailShell.tsx`'s `FOLDER_LABELS`/`FOLDER_ORDER` gained `archive: "Archive"`, positioned after Junk
+  and before Deleted Items (Outlook/Gmail convention) - **restapi's `FolderType.ARCHIVE` was already
+  invisible in this sidebar** even before this session's own changes, since both constants are a fixed
+  allowlist and neither listed it. `MAIL_FOLDER_TYPES` (derived from `FOLDER_ORDER`) picks it up
+  automatically, no separate change needed there.
+- `MessageDetailPane.tsx` gained an "Archive" button alongside Reply/Reply All/Forward, calling the new
+  `archiveMessage()` (`react-shared`, same date). Hidden for Outbox (`isOutbox`, existing prop) and for
+  Drafts - **Drafts detection needed no new prop**: `draftsFolderUid` was already passed by every
+  caller (for the Outbox→Drafts cancel-scheduled-send flow), so `message.folderUid ===
+  draftsFolderUid` reuses it directly. New `onArchived` callback prop, same shape as `onRecalled`.
+- Caller wiring follows each view's own pre-existing convention exactly: `apps/www/index.tsx` (a
+  per-folder list) **removes** the archived message from state (same reasoning as its existing
+  `onScheduledSendCanceled` - the message moved out of the currently-viewed folder);
+  `ConversationThreadPane.tsx` (thread membership owned by the parent, not folder-scoped) **patches it
+  in place**, matching its own existing `onScheduledSendCanceled`; `messages/[uid].tsx` (a single-message
+  page) just `setMessage`s the updated copy directly.
+- No `server` route changes needed at all — `MessageRoute`/`MessageRouteMongo`/`SQL` is already a
+  one-line subclass of restapi's `BaseMessageRoute`, so the new `archive()` method came along for free
+  the moment `server`'s restapi patch (Phase 0) landed.

@@ -24,6 +24,7 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isInbox,
         onClassified,
         onReceiptHandled,
+        onArchived,
     }: {
         message: { uid: string; recallRequestedAt?: string; scheduledSendTime?: string } | null;
         attachments: { filename: string }[];
@@ -35,6 +36,7 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isInbox?: boolean;
         onClassified?: (updated: Record<string, unknown>) => void;
         onReceiptHandled?: (updated: Record<string, unknown>) => void;
+        onArchived?: (updated: Record<string, unknown>) => void;
     }) => (
         <div data-testid={`detail-${message?.uid}`}>
             {message ? `message:${message.uid}` : "no-message"} attachments:{attachments.map((a) => a.filename).join(",")}{" "}
@@ -61,6 +63,11 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
             {message && onReceiptHandled && (
                 <button type="button" onClick={() => onReceiptHandled({ ...message, deliveryReceiptPending: false })}>
                     simulate-receipt-handled-{message.uid}
+                </button>
+            )}
+            {message && onArchived && (
+                <button type="button" onClick={() => onArchived({ ...message, folderUid: "f-archive" })}>
+                    simulate-archive-{message.uid}
                 </button>
             )}
         </div>
@@ -446,6 +453,26 @@ describe("ConversationThreadPane", () => {
             await user.click(screen.getByRole("button", { name: "simulate-cancel-scheduled-send-m1" }));
 
             // m2 stays mounted/unaffected by m1's patch.
+            expect(screen.getByTestId("detail-m2")).toHaveTextContent("recallRequestedAt:unset");
+            expect(await screen.findByTestId("detail-m1")).toBeInTheDocument();
+        });
+
+        it("patches the archived message into state via onArchived without disturbing other messages", async () => {
+            mockFetch((url) => {
+                const uid = url.split("/").pop();
+                return jsonResponse(200, messageFixture({ uid, flags: { read: true, flagged: false, answered: false, forwarded: false } }));
+            });
+            const user = userEvent.setup();
+            render(<ConversationThreadPane conversation={conversationFixture()} folders={[inboxFolder, outboxFolder, draftsFolder]} />);
+
+            await screen.findByTestId("detail-m2");
+            await user.click(screen.getByText("Sender One")); // expand m1
+            await screen.findByTestId("detail-m1");
+
+            await user.click(screen.getByRole("button", { name: "simulate-archive-m1" }));
+
+            // m2 stays mounted/unaffected by m1's patch, and m1 remains mounted (patched in place, not
+            // removed - conversation membership is owned by the parent, not this component).
             expect(screen.getByTestId("detail-m2")).toHaveTextContent("recallRequestedAt:unset");
             expect(await screen.findByTestId("detail-m1")).toBeInTheDocument();
         });

@@ -11,6 +11,7 @@ import {
     MessageClassification,
     ReceiptType,
     approveReceipt,
+    archiveMessage,
     attachmentContentUrl,
     cancelScheduledSend,
     classifyMessage,
@@ -84,6 +85,12 @@ export interface MessageDetailPaneProps {
      * `isInbox`): `deliveryReceiptPending`/`readReceiptPending` already live directly on `message` and are
      * only ever `true` on a real delivered copy, so the banner below is self-gating. */
     onReceiptHandled?: (updated: Message) => void;
+    /** Called with the server's updated copy (now filed under the mailbox's Archive folder) after a
+     * successful archive — mirrors `onRecalled`'s identical shape. Archiving itself is offered for any
+     * message except one currently in Drafts or Outbox (mirrors `BaseMessageRoute.archive()`'s own
+     * server-side 400 guard); Drafts is detected via `draftsFolderUid` (already passed by every caller
+     * for the Outbox-cancel flow) rather than a new prop. */
+    onArchived?: (updated: Message) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -111,11 +118,14 @@ export default function MessageDetailPane({
     isInbox,
     onClassified,
     onReceiptHandled,
+    onArchived,
 }: MessageDetailPaneProps) {
     const { openCompose } = useCompose();
     const [confirming, setConfirming] = useState(false);
     const [recalling, setRecalling] = useState(false);
     const [canceling, setCanceling] = useState(false);
+    const [archiving, setArchiving] = useState(false);
+    const [archiveError, setArchiveError] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     // Kept separate from `error` (the Recall flow's own state) since this renders inline in the main
     // pane rather than inside a confirmation modal — the two flows never need to share one message.
@@ -234,6 +244,22 @@ export default function MessageDetailPane({
         }
     }
 
+    // Only ever invoked from the Archive button below, which itself only renders once `message` is
+    // loaded and this isn't a Drafts/Outbox message (the button's own guard mirrors
+    // `BaseMessageRoute.archive()`'s server-side 400) — same real invariant as `handleRecall` above.
+    async function handleArchive() {
+        setArchiving(true);
+        setArchiveError(null);
+        try {
+            const updated = await archiveMessage(message!.uid);
+            onArchived?.(updated);
+        } catch (err) {
+            setArchiveError(err instanceof ApiRequestError ? err.message : "Could not archive this message.");
+        } finally {
+            setArchiving(false);
+        }
+    }
+
     // Only ever invoked from the classification button below, which itself only renders once `message`
     // is loaded and `isInbox` is true — the non-null assertion reflects the same real invariant as
     // `handleRecall`/`handleCancelScheduledSend` above.
@@ -342,7 +368,24 @@ export default function MessageDetailPane({
                     <Button type="button" variant="secondary" className="!w-auto" onClick={handleForward}>
                         Forward
                     </Button>
+                    {!isOutbox && message.folderUid !== draftsFolderUid && (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto"
+                            loading={archiving}
+                            disabled={archiving}
+                            onClick={handleArchive}
+                        >
+                            Archive
+                        </Button>
+                    )}
                 </div>
+                {archiveError && (
+                    <div className="mt-2">
+                        <Alert>{archiveError}</Alert>
+                    </div>
+                )}
                 {isInbox && (
                     <div className="flex flex-wrap items-center gap-2 mt-2">
                         <Button

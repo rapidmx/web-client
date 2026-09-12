@@ -211,6 +211,35 @@ describe("MessageDetailPage", () => {
         });
     });
 
+    describe("archive", () => {
+        it("archives the message and reflects the server's updated folder in the page's own state", async () => {
+            // Already read, so `useMarkMessageRead` is a no-op — isolates this test to the archive flow.
+            const readMessage = { ...message, flags: { ...message.flags, read: true } };
+            const archivedMessage = { ...readMessage, folderUid: "f-archive" };
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url === "/api/mail/messages/m1/archive" && init?.method === "POST") return jsonResponse(200, archivedMessage);
+                if (url === "/api/mail/messages/m1") return jsonResponse(200, readMessage);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
+
+            await user.click(await screen.findByRole("button", { name: "Archive" }));
+
+            // The back link is derived from the message's own folderUid, so it moving to the Archive
+            // folder is directly observable once the page's state is patched via onArchived.
+            await waitFor(() =>
+                expect(screen.getByRole("link", { name: /Back to messages/ })).toHaveAttribute(
+                    "href",
+                    "/?mailboxUid=mb1&folderUid=f-archive",
+                ),
+            );
+        });
+    });
+
     describe("classify", () => {
         it("does not show the classify control for a message outside the Inbox", async () => {
             mockFetch((url) => {

@@ -37,6 +37,7 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isInbox,
         onClassified,
         onReceiptHandled,
+        onArchived,
     }: {
         message: Record<string, unknown> | null;
         isSentItems?: boolean;
@@ -47,6 +48,7 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isInbox?: boolean;
         onClassified?: (updated: Record<string, unknown>) => void;
         onReceiptHandled?: (updated: Record<string, unknown>) => void;
+        onArchived?: (updated: Record<string, unknown>) => void;
     }) => (
         <div data-testid="detail-pane">
             {message ? `message:${message.uid}` : "no-message"} sentItems:{String(!!isSentItems)} outbox:{String(!!isOutbox)}{" "}
@@ -72,6 +74,11 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
             {message && onReceiptHandled && (
                 <button type="button" onClick={() => onReceiptHandled({ ...message, deliveryReceiptPending: false })}>
                     simulate-receipt-handled
+                </button>
+            )}
+            {message && onArchived && (
+                <button type="button" onClick={() => onArchived({ ...message, folderUid: "f-archive" })}>
+                    simulate-archive
                 </button>
             )}
         </div>
@@ -475,6 +482,23 @@ describe("InboxPage", () => {
 
             // The canceled message moved out of the currently-viewed folder — unlike a recall, it's
             // removed from the list entirely, matching what a real folder switch would show.
+            expect(screen.queryByText("First")).not.toBeInTheDocument();
+            expect(screen.getByText("Second")).toBeInTheDocument();
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message");
+        });
+
+        it("removes the message from the list and clears the selection when it's archived", async () => {
+            const first = messageFixture({ uid: "m1", subject: "First" });
+            const second = messageFixture({ uid: "m2", subject: "Second" });
+            mockShellAndInbox([first, second]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+
+            await user.click(await screen.findByText("First"));
+            await user.click(await screen.findByRole("button", { name: "simulate-archive" }));
+
+            // The archived message moved out of the currently-viewed folder — same reasoning as the
+            // scheduled-send-cancel case above, removed from the list rather than patched in place.
             expect(screen.queryByText("First")).not.toBeInTheDocument();
             expect(screen.getByText("Second")).toBeInTheDocument();
             expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message");

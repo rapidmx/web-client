@@ -279,6 +279,67 @@ describe("MessageDetailPane", () => {
         });
     });
 
+    describe("archive", () => {
+        it("shows the Archive button for an ordinary message", () => {
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+            expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
+        });
+
+        it("hides the Archive button for an Outbox message", () => {
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isOutbox />);
+            expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+        });
+
+        it("hides the Archive button for a message currently in Drafts", () => {
+            render(
+                <MessageDetailPane
+                    message={messageFixture({ folderUid: "f-drafts" }) as any}
+                    attachments={[]}
+                    draftsFolderUid="f-drafts"
+                />,
+            );
+            expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+        });
+
+        it("archives the message and calls onArchived with the server's updated copy", async () => {
+            const updated = messageFixture({ folderUid: "f-archive" });
+            const fetchMock = mockFetch(() => jsonResponse(200, updated));
+            const onArchived = vi.fn();
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} onArchived={onArchived} />);
+
+            await user.click(screen.getByRole("button", { name: "Archive" }));
+
+            expect(fetchMock).toHaveBeenCalledWith(
+                "/api/mail/messages/m1/archive",
+                expect.objectContaining({ method: "POST" }),
+            );
+            await waitFor(() => expect(onArchived).toHaveBeenCalledWith(updated));
+        });
+
+        it("shows an error message when archiving fails", async () => {
+            mockFetch(() => jsonResponse(500, { message: "boom" }));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await user.click(screen.getByRole("button", { name: "Archive" }));
+
+            expect(await screen.findByText("boom")).toBeInTheDocument();
+        });
+
+        it("shows a generic error message when archiving fails with a non-API error", async () => {
+            mockFetch(() => {
+                throw new TypeError("network down");
+            });
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await user.click(screen.getByRole("button", { name: "Archive" }));
+
+            expect(await screen.findByText("Could not archive this message.")).toBeInTheDocument();
+        });
+    });
+
     describe("reply/forward", () => {
         it("Reply opens Compose prefilled with the sender's address, a 'Re:' subject, and a quoted body", async () => {
             mockComposeDraft();

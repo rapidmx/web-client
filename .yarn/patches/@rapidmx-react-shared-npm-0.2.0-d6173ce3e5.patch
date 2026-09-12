@@ -2405,7 +2405,7 @@ index 0000000000000000000000000000000000000000..6507d543d18d97693f23e9b9961c4031
 +    }, []);
 +}
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
-index 9eba1e5013b5604ec48710251ce3adafbf5c2896..86795e40adba78208c28030594b82ca341a57af0 100644
+index 9eba1e5013b5604ec48710251ce3adafbf5c2896..02cf6f51db21014b5178a65d7d53e8a5c381344c 100644
 --- a/dist/mail/mailApi.d.ts
 +++ b/dist/mail/mailApi.d.ts
 @@ -6,7 +6,9 @@
@@ -2455,7 +2455,21 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..86795e40adba78208c28030594b82ca3
  }
  export interface MessageReceiptEntry {
      recipientAddress: string;
-@@ -391,8 +416,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
+@@ -307,6 +332,13 @@ export declare function getMessage(uid: string): Promise<Message>;
+  * only visible effect here is `recallRequestedAt` getting set on the response.
+  */
+ export declare function recallMessage(uid: string): Promise<Message>;
++/**
++ * Moves a message into the mailbox's Archive folder (`FolderType.ARCHIVE`), lazily created on first use
++ * server-side — same pattern as Sent Items/Outbox, no client-side folder-creation step needed. Rejects
++ * (400, surfaced as an `ApiRequestError`) for a message currently in Drafts or Outbox. Idempotent —
++ * archiving an already-archived message is a no-op that still returns the message.
++ */
++export declare function archiveMessage(uid: string): Promise<Message>;
+ /**
+  * Moves a message between the Focused and Other halves of the Inbox — Outlook's "Move to Other" gesture.
+  * With `applyToSender: true` ("Always move to Other"), also upserts a standing `FocusedInboxOverride` for
+@@ -391,8 +423,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
   * itself does no MIME composition). Does not send the message.
   */
  export declare function assembleDraft(messageUid: string, input: AssembleDraftInput): Promise<Message>;
@@ -2494,10 +2508,26 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..86795e40adba78208c28030594b82ca3
      token: string;
      user: {
 diff --git a/dist/mail/mailApi.js b/dist/mail/mailApi.js
-index bbea6c30708cf0767a11336b663b758e6eaaae58..a216244f0c5b4909abf4efe378031dec54747fde 100644
+index bbea6c30708cf0767a11336b663b758e6eaaae58..ab22730125f1087940e749bbac3fb0869500c862 100644
 --- a/dist/mail/mailApi.js
 +++ b/dist/mail/mailApi.js
-@@ -258,10 +258,40 @@ export function assembleDraft(messageUid, input) {
+@@ -136,6 +136,15 @@ export function getMessage(uid) {
+ export function recallMessage(uid) {
+     return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/recall`, { method: "POST" });
+ }
++/**
++ * Moves a message into the mailbox's Archive folder (`FolderType.ARCHIVE`), lazily created on first use
++ * server-side — same pattern as Sent Items/Outbox, no client-side folder-creation step needed. Rejects
++ * (400, surfaced as an `ApiRequestError`) for a message currently in Drafts or Outbox. Idempotent —
++ * archiving an already-archived message is a no-op that still returns the message.
++ */
++export function archiveMessage(uid) {
++    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/archive`, { method: "POST" });
++}
+ /**
+  * Moves a message between the Focused and Other halves of the Inbox — Outlook's "Move to Other" gesture.
+  * With `applyToSender: true` ("Always move to Other"), also upserts a standing `FocusedInboxOverride` for
+@@ -258,10 +267,40 @@ export function assembleDraft(messageUid, input) {
          body: JSON.stringify(input),
      });
  }

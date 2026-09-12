@@ -65,6 +65,7 @@ function MessageDetailContent({ uid }: { uid: string }) {
             onReceiptHandled={setMessage}
             draftsFolderUid={draftsFolderUid}
             onScheduledSendCanceled={setMessage}
+            onArchived={setMessage}
         />
     );
 }

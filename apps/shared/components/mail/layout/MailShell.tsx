@@ -38,11 +38,12 @@ const FOLDER_LABELS: Record<string, string> = {
     drafts: "Drafts",
     outbox: "Outbox",
     junk: "Junk Email",
+    archive: "Archive",
     deleted_items: "Deleted Items",
 };
 
 /** Well-known folders sort first, in Gmail/Outlook's conventional order; anything else (incl. `user`) sorts after, alphabetically. */
-const FOLDER_ORDER = ["inbox", "drafts", "outbox", "sent_items", "junk", "deleted_items"];
+const FOLDER_ORDER = ["inbox", "drafts", "outbox", "sent_items", "junk", "archive", "deleted_items"];
 
 /**
  * A mailbox's `calendar`/`contacts`/`tasks`/`notes` folders back their own dedicated apps (see

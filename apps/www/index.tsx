@@ -455,6 +455,13 @@ function InboxContent() {
                             setMessages((prev) => prev.filter((m) => m.uid !== updated.uid));
                             setSelectedUid(null);
                         }}
+                        onArchived={(updated) => {
+                            // Same reasoning as onScheduledSendCanceled above — the message moved out of
+                            // whichever folder is currently being viewed (into Archive), so it's removed
+                            // from the list rather than patched in place.
+                            setMessages((prev) => prev.filter((m) => m.uid !== updated.uid));
+                            setSelectedUid(null);
+                        }}
                     />
                 )}
             </div>
