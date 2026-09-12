@@ -3,12 +3,25 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MessageDetailPane from "../../../apps/shared/components/mail/MessageDetailPane.js";
 import ComposeProvider from "../../../apps/shared/components/mail/compose/ComposeContext.js";
+
+// The real CMS/S-MIME crypto behind evaluateMessageSecurity() is already exercised end to end (against
+// real WebCrypto, under react-shared's own "node" test environment - see that repo's
+// test/crypto/messageSecurity.test.ts) - these tests only need to verify MessageDetailPane's own
+// responsibility: fetching a message's raw content, handing it to evaluateMessageSecurity(), and
+// rendering whichever result comes back. getUnlockedKeys() is stubbed alongside it since
+// evaluateMessageSecurity() is mocked anyway and never actually reads its return value here.
+const { evaluateMessageSecurity, getUnlockedKeys } = vi.hoisted(() => ({
+    evaluateMessageSecurity: vi.fn(),
+    getUnlockedKeys: vi.fn(),
+}));
+vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
 
 // `ComposeWindow`'s own exhaustive rendering (draft lifecycle, send, attachments...) is tested in its
 // own file — mocked here (`RichTextEditor` only, matching every other compose-adjacent test file's
@@ -84,6 +97,8 @@ function messageFixture(overrides: Record<string, unknown> = {}) {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    evaluateMessageSecurity.mockReset();
+    getUnlockedKeys.mockReset();
 });
 
 describe("MessageDetailPane", () => {
@@ -204,7 +219,10 @@ describe("MessageDetailPane", () => {
 
             await user.click(screen.getByRole("button", { name: "Cancel" }));
             expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-            expect(fetchMock).not.toHaveBeenCalled();
+            // Rendering any message always triggers its own security-evaluation fetch (unrelated to
+            // recall) - this test's own concern is that opening/closing the confirmation modal never
+            // calls the recall endpoint itself.
+            expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/recall"))).toBe(false);
         });
 
         it("also closes via the modal's own close button (Modal's onClose, distinct from the Cancel button)", async () => {
@@ -614,6 +632,129 @@ describe("MessageDetailPane", () => {
             await user.click(screen.getByRole("button", { name: "Send receipt" }));
 
             expect(await screen.findByText("Could not handle this receipt request.")).toBeInTheDocument();
+        });
+    });
+
+    describe("security indicator", () => {
+        function mockRawContent(raw = "raw mime text") {
+            return mockFetch((url) => (url === "/api/mail/messages/m1/raw" ? new Response(raw) : jsonResponse(200, {})));
+        }
+
+        it("shows no indicator until evaluateMessageSecurity resolves", async () => {
+            let resolveSecurity: ((result: { state: string }) => void) | undefined;
+            evaluateMessageSecurity.mockImplementation(() => new Promise((resolve) => (resolveSecurity = resolve)));
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await waitFor(() => expect(resolveSecurity).toBeDefined());
+            expect(screen.queryByText("Unprotected")).not.toBeInTheDocument();
+
+            resolveSecurity!({ state: "unprotected" });
+            expect(await screen.findByText("Unprotected")).toBeInTheDocument();
+        });
+
+        it.each([
+            ["unprotected", "Unprotected"],
+            ["encrypted", "Encrypted"],
+            ["signed_verified", "Signed & verified"],
+            ["encrypted_verified", "Encrypted & verified"],
+            ["signature_failed", "Signature failed"],
+        ] as const)("renders the %s state as '%s'", async (state, label) => {
+            evaluateMessageSecurity.mockResolvedValue({ state });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            expect(await screen.findByText(label)).toBeInTheDocument();
+        });
+
+        it("renders the decrypted, sanitized body via srcDoc instead of the server's /content URL", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted_verified", html: "<p>Secret</p><script>evil()</script>" });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await screen.findByText("Encrypted & verified");
+            const iframe = screen.getByTitle("Hello there");
+            expect(iframe).not.toHaveAttribute("src");
+            expect(iframe.getAttribute("srcdoc")).toContain("<p>Secret</p>");
+            expect(iframe.getAttribute("srcdoc")).not.toContain("<script>");
+        });
+
+        it("keeps using the server's /content URL when there is no decrypted html", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "unprotected" });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await screen.findByText("Unprotected");
+            const iframe = screen.getByTitle("Hello there");
+            expect(iframe).toHaveAttribute("src", "/api/mail/messages/m1/content");
+            expect(iframe).not.toHaveAttribute("srcdoc");
+        });
+
+        it("shows a decryptError alongside the indicator, still using the server's /content URL", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", decryptError: "This device doesn't have the key needed." });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            expect(await screen.findByText("This device doesn't have the key needed.")).toBeInTheDocument();
+            expect(screen.getByText("Encrypted")).toBeInTheDocument();
+            expect(screen.getByTitle("Hello there")).toHaveAttribute("src", "/api/mail/messages/m1/content");
+        });
+
+        it("degrades to unprotected, with no error shown, when fetching the raw content fails", async () => {
+            mockFetch(() => {
+                throw new TypeError("network down");
+            });
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            expect(await screen.findByText("Unprotected")).toBeInTheDocument();
+            expect(evaluateMessageSecurity).not.toHaveBeenCalled();
+        });
+
+        it("does not update state after unmounting before evaluateMessageSecurity settles", async () => {
+            let resolveSecurity: ((result: { state: string }) => void) | undefined;
+            evaluateMessageSecurity.mockImplementation(() => new Promise((resolve) => (resolveSecurity = resolve)));
+            mockRawContent();
+            const { unmount } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await waitFor(() => expect(resolveSecurity).toBeDefined());
+            unmount();
+            resolveSecurity!({ state: "unprotected" });
+            // No assertion beyond "this doesn't throw/warn" - see KeyEnrollmentGate.test.tsx's identical
+            // pattern for why: a regression here surfaces as a React console.error, not a thrown exception.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        it("does not update state after unmounting before a failed raw-content fetch settles", async () => {
+            let rejectFetch: ((err: Error) => void) | undefined;
+            mockFetch(() => new Promise((_resolve, reject) => (rejectFetch = reject)));
+            const { unmount } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await waitFor(() => expect(rejectFetch).toBeDefined());
+            unmount();
+            rejectFetch!(new Error("network error"));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        it("falls back to 'Message content' as the iframe title when a decrypted message has no subject", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted_verified", html: "<p>Secret</p>" });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture({ subject: "" }) as any} attachments={[]} />);
+
+            expect(await screen.findByTitle("Message content")).toHaveAttribute("srcdoc");
+        });
+
+        it("resets to no indicator when switching to a different message", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "signed_verified", html: "<p>Signed</p>" });
+            mockRawContent();
+            const { rerender } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+            await screen.findByText("Signed & verified");
+
+            let resolveNext: ((result: { state: string }) => void) | undefined;
+            evaluateMessageSecurity.mockImplementation(() => new Promise((resolve) => (resolveNext = resolve)));
+            rerender(<MessageDetailPane message={messageFixture({ uid: "m2", subject: "Other" }) as any} attachments={[]} />);
+
+            await waitFor(() => expect(resolveNext).toBeDefined());
+            expect(screen.queryByText("Signed & verified")).not.toBeInTheDocument();
         });
     });
 });

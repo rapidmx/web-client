@@ -970,6 +970,26 @@ describe("ComposeWindow", () => {
             });
         }
 
+        it("does not update state after unmounting before the mailbox/policy fetch settles", async () => {
+            let resolveMailbox: ((v: Response) => void) | undefined;
+            let resolvePolicy: ((v: Response) => void) | undefined;
+            mockCompose((url) => {
+                if (url === "/api/mail/mailboxes/mb1") return new Promise((resolve) => (resolveMailbox = resolve));
+                if (url === "/api/mail/encryption-policy") return new Promise((resolve) => (resolvePolicy = resolve));
+                return undefined;
+            });
+            const { unmount } = render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            await waitFor(() => expect(resolveMailbox).toBeDefined());
+            await waitFor(() => expect(resolvePolicy).toBeDefined());
+            unmount();
+            resolveMailbox!(jsonResponse(200, mailboxFixture));
+            resolvePolicy!(jsonResponse(200, automaticPolicy));
+            // No assertion beyond "this doesn't throw/warn" - see KeyEnrollmentGate.test.tsx's identical
+            // pattern for why: a regression here surfaces as a React console.error, not an exception.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
         it("does not render Sign/Encrypt checkboxes when no key has been unlocked this session", async () => {
             getUnlockedKeys.mockReturnValue(undefined);
             mockCryptoEndpoints();
@@ -1120,6 +1140,35 @@ describe("ComposeWindow", () => {
             expect(body.rawMime).toContain("application/pkcs7-mime");
             expect(body.rawMime).toContain('smime-type="enveloped-data"');
             expect(body.rawMime).not.toContain("Secret");
+        });
+
+        it("treats a failed key-lookup the same as no keys found, rather than crashing the send", async () => {
+            const own = fakeCertDer("alice-encrypt");
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                encryptionPrivateKey: fakeEncryptionKey,
+                encryptionCertDer: own,
+                encryptionFingerprint: "fp-own",
+            });
+            const fetchMock = mockCryptoEndpoints((url, init) => {
+                const method = init?.method ?? "GET";
+                if (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup")) return jsonResponse(500, { message: "lookup boom" });
+                if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "bob@example.com");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            // A recipient whose lookup failed is treated as "no usable key" - decideMessageEncryption()
+            // never auto-encrypts, and since the checkbox was never checked either, this just sends
+            // plaintext rather than surfacing the lookup failure as its own error.
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })),
+            );
         });
 
         it("blocks and offers to send in plaintext when a recipient has no usable encryption key and the user requests encryption", async () => {

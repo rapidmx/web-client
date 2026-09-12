@@ -192,3 +192,51 @@ with nowhere real to enroll it would be premature.
   more new dependencies for code this repo actually imports, mirror them here the same way until a
   real publish makes the patch unnecessary.
   at all.
+
+### 2026-09-11 (continued) — Compose sign/encrypt wiring, message-view decrypt/verify, and an unmount-guard lesson
+
+Wires up `react-shared`'s new `crypto/smime.ts`/`smimeMessage.ts`/`composeSecurity.ts`/
+`messageSecurity.ts`/`keySession.ts` (see that repo's own NOTES.md, same date) into this app's actual
+compose and message-reading UI - the rest of Phase 3 of the E2E encryption plan.
+
+- **`KeyEnrollmentGate` gained an actual unlock step.** It previously only handled first-time key
+  *provisioning* - once a mailbox had enrolled keys it rendered `children` immediately with no way to
+  ever unwrap them into a usable session. Now: `getUnlockedKeys(mailboxUid)` short-circuits straight
+  to `children` if this mailbox was already unlocked earlier this session; otherwise, once a fetched
+  vault shows `wrappedKeys.length > 0`, it prompts for the password and calls `unlockWithPassword()`
+  before rendering `children`.
+- **`ComposeWindow.tsx`** now fetches its own mailbox + the system encryption policy on mount, runs
+  compose-time discovery (`lookupKeys()`) against every recipient right before sending (deliberately
+  *not* live as addresses are typed - a real, disclosed scope boundary: a compose-time recipient
+  badge reflecting discovery results as you type is Phase 4's "Discovery & contacts UI" work, not
+  this pass), and decides sign/encrypt via `composeSecurity.ts`. The "Multiple Recipients"
+  all-or-nothing rule from the spec is enforced via an inline `encryptionBlocked` prompt (never a
+  silent split into an encrypted-for-some/plaintext-for-others send) with a "Send without encryption"
+  action. `cryptoContextReady` gates the Send/Send-later buttons alongside the pre-existing
+  `!draft` check - closes a real (if narrow) race where clicking Send before the mailbox/policy
+  fetch resolves would silently skip encryption the spec says should apply automatically.
+- **`MessageDetailPane.tsx`** now evaluates every message's security state (not just ones flagged
+  `Message.encrypted` - a signed-only message needs its raw MIME read too, since a sanitized HTML
+  body never carries the detached signature part) via a new server-local
+  `GET /mail/messages/:id/raw` route (added in `server`, alongside `@rapidmx/restapi`'s own
+  `MessageRoute` - that library's `GET /:id/content` deliberately never serves raw MIME, since a
+  browser navigating straight to it would be an XSS risk for ordinary mail; this new route labels its
+  response `message/rfc822`, never `text/html`, so a stray direct navigation can't render it). A
+  decrypted/verified body is client-sanitized with `dompurify` (new dependency) before being handed
+  to the reading-pane iframe via `srcDoc` instead of the ordinary `src="/content"` URL - the server's
+  own `sanitize-html` pass never ran against it, since the server never saw the plaintext.
+- **Real bug, caught only by the full suite, never in isolation**: the new
+  `getMailbox()`/`getEncryptionPolicy()` effect in `ComposeWindow.tsx` had no `cancelled` guard, so a
+  promise settling after unmount could still call `setMailbox`/`setEncryptionPolicy`/
+  `setCryptoContextReady`. One test's leftover in-flight promise landing during a *later*, unrelated
+  test was the actual symptom - the same class of bug `KeyEnrollmentGate` already had a guard for,
+  and now `MessageDetailPane.tsx`'s own new security-evaluation effect has one too. Lesson
+  reinforced: any effect performing async state updates needs this guard as a matter of course, not
+  just when a specific failure is observed - isolated single-file test runs will not catch its
+  absence.
+- Also found and fixed: **a `vi.mock()` factory throws synchronously the instant a missing export is
+  *called*** (not merely accessed) - a much louder, more useful failure than silently returning
+  `undefined`, but means every mock of `crypto/keyvaultApi.js` has to keep pace with new calls
+  `ComposeWindow.tsx` adds to it. `MailShell.test.tsx`'s own mock was missing
+  `getEncryptionPolicy`/`lookupKeys` for exactly this reason - its "clicking Compose" test mounts a
+  real `ComposeWindow`, which now calls both unconditionally on mount.

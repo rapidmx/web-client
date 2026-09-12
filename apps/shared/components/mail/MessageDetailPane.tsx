@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import DOMPurify from "dompurify";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attachment,
@@ -14,13 +15,34 @@ import {
     cancelScheduledSend,
     classifyMessage,
     declineReceipt,
+    getMessageRawContent,
     recallMessage,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { buildForwardQuote, buildReplyQuote, forwardSubject, replySubject } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
+import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { MessageSecurityResult, evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { useCompose } from "./compose/ComposeContext.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+
+/** Labels/styling for `specs/end-to-end_encryption.md`'s "Message Security Indicators" table - kept as
+ * plain data (not JSX) so `SecurityIndicator` below stays a trivial lookup. "Signature failed" MUST NOT
+ * read as a muted variant of "verified" (a failed signature is a stronger negative than no signature at
+ * all), and "Unprotected" MUST NOT read as an error - the class pairs below are chosen so those two
+ * never share styling with each other or with the verified states. */
+const SECURITY_INDICATOR: Record<MessageSecurityResult["state"], { label: string; className: string }> = {
+    unprotected: { label: "Unprotected", className: "bg-surface-alt text-text-muted" },
+    encrypted: { label: "Encrypted", className: "bg-primary/10 text-primary-dark" },
+    signed_verified: { label: "Signed & verified", className: "bg-success/10 text-success" },
+    encrypted_verified: { label: "Encrypted & verified", className: "bg-success/10 text-success" },
+    signature_failed: { label: "Signature failed", className: "bg-danger-bg text-danger" },
+};
+
+function SecurityIndicator({ state }: { state: MessageSecurityResult["state"] }) {
+    const { label, className } = SECURITY_INDICATOR[state];
+    return <span className={`text-xs font-medium shrink-0 py-1 px-2.5 rounded-pill ${className}`}>{label}</span>;
+}
 
 export interface MessageDetailPaneProps {
     message: Message | null;
@@ -105,6 +127,36 @@ export default function MessageDetailPane({
     // wouldn't distinguish which row's buttons should show a loading state.
     const [receiptBusy, setReceiptBusy] = useState<ReceiptType | null>(null);
     const [receiptError, setReceiptError] = useState<string | null>(null);
+    const [security, setSecurity] = useState<MessageSecurityResult | null>(null);
+
+    // Evaluates every message's security state, not just ones flagged `encrypted` - a detached
+    // `multipart/signed` message needs its raw MIME read too (a sanitized HTML body never carries the
+    // signature part) to tell "Signed & verified" apart from plain "Unprotected". A fetch/parse failure
+    // degrades to "Unprotected" rather than surfacing an error - the spec treats that as this module's
+    // safe default, not a distinct failure state of its own.
+    useEffect(() => {
+        if (!message) {
+            setSecurity(null);
+            return;
+        }
+        let cancelled = false;
+        setSecurity(null);
+        getMessageRawContent(message.uid)
+            .then((rawMime) => evaluateMessageSecurity(rawMime, getUnlockedKeys(message.mailboxUid)))
+            .then((result) => {
+                if (!cancelled) {
+                    setSecurity(result);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setSecurity({ state: "unprotected" });
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [message?.uid]);
 
     if (!message) {
         return <p className="p-8 text-sm text-text-muted">Select a message to read it.</p>;
@@ -219,7 +271,10 @@ export default function MessageDetailPane({
                     </a>
                 )}
                 <div className="flex items-start justify-between gap-3">
-                    <h1 className="text-lg font-bold tracking-tight">{message.subject || "(no subject)"}</h1>
+                    <div className="flex items-center gap-2 min-w-0">
+                        <h1 className="text-lg font-bold tracking-tight truncate">{message.subject || "(no subject)"}</h1>
+                        {security && <SecurityIndicator state={security.state} />}
+                    </div>
                     {isSentItems &&
                         (message.recallRequestedAt ? (
                             <span className="text-xs font-medium text-text-muted shrink-0 py-1 px-2.5 rounded-pill bg-surface-alt">
@@ -355,13 +410,31 @@ export default function MessageDetailPane({
                     </ul>
                 )}
             </div>
-            <iframe
-                key={message.uid}
-                title={message.subject || "Message content"}
-                src={`/api/mail/messages/${encodeURIComponent(message.uid)}/content`}
-                sandbox=""
-                className="flex-1 w-full border-0"
-            />
+            {security?.decryptError && (
+                <div className="px-4 pt-2">
+                    <Alert>{security.decryptError}</Alert>
+                </div>
+            )}
+            {security?.html !== undefined ? (
+                // A decrypted/verified body never came through the server's own sanitize-html pass (it
+                // couldn't - the server never saw the plaintext) - DOMPurify sanitizes it here, client-side,
+                // before it ever touches the DOM, on top of (not instead of) the iframe's own `sandbox=""`.
+                <iframe
+                    key={message.uid}
+                    title={message.subject || "Message content"}
+                    srcDoc={DOMPurify.sanitize(security.html)}
+                    sandbox=""
+                    className="flex-1 w-full border-0"
+                />
+            ) : (
+                <iframe
+                    key={message.uid}
+                    title={message.subject || "Message content"}
+                    src={`/api/mail/messages/${encodeURIComponent(message.uid)}/content`}
+                    sandbox=""
+                    className="flex-1 w-full border-0"
+                />
+            )}
 
             <Modal open={confirming} onClose={() => setConfirming(false)} title="Recall this message?">
                 <p className="text-sm text-text-muted mb-4">
