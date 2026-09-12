@@ -4,9 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { KeyVault, MasterKeyWrap, addMasterKeyWrap, getKeyVault, removeMasterKeyWrap } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { destroyUnlockedKeys, getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { KeyVault, MasterKeyWrap, addMasterKeyWrap, getKeyVault, rekey, removeMasterKeyWrap } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { destroyUnlockedKeys, getUnlockedKeys, unlockWithPassword } from "@rapidmx/react-shared/crypto/keySession.js";
 import { buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
+import { rewrapPrivateKeysUnderNewMasterKey } from "@rapidmx/react-shared/crypto/keyRotation.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import KeyEnrollmentGate from "../../../shared/components/layout/KeyEnrollmentGate.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -63,7 +64,15 @@ function EncryptionContent() {
 
     const [regenerating, setRegenerating] = useState(false);
     const [newRecoveryCodes, setNewRecoveryCodes] = useState<string[] | null>(null);
+    // Distinguishes the "Save your new recovery codes" screen's copy for the two different actions that
+    // land on it - a plain regeneration only invalidates old recovery codes, while a rotation also
+    // invalidates every other unlock method, which the copy needs to say plainly.
+    const [recoveryCodesReason, setRecoveryCodesReason] = useState<"regenerate" | "rotate">("regenerate");
     const [codesSaved, setCodesSaved] = useState(false);
+
+    const [rotationPassword, setRotationPassword] = useState("");
+    const [rotationConfirmPassword, setRotationConfirmPassword] = useState("");
+    const [rotating, setRotating] = useState(false);
 
     const [destroyed, setDestroyed] = useState(false);
 
@@ -135,6 +144,7 @@ function EncryptionContent() {
             for (const wrap of wraps) {
                 await addMasterKeyWrap(mailboxUid!, wrap);
             }
+            setRecoveryCodesReason("regenerate");
             setNewRecoveryCodes(codes);
             setCodesSaved(false);
             await loadVault();
@@ -142,6 +152,51 @@ function EncryptionContent() {
             setActionError(err instanceof ApiRequestError ? err.message : "Could not regenerate recovery codes.");
         } finally {
             setRegenerating(false);
+        }
+    }
+
+    /**
+     * Real revocation for a captured wrap (`keyvaultApi.ts`'s `rekey()` - see that function's own doc
+     * comment): re-wraps this mailbox's already-unlocked private keys under a brand new master key
+     * (`rewrapPrivateKeysUnderNewMasterKey()`), wraps that new MK under a freshly entered password and a
+     * fresh set of recovery codes, and atomically replaces the vault - the enrolled keypair/certificate
+     * itself is unchanged (restapi's own `rekey()` rejects anything else), only how it's protected.
+     * Every *other* unlock method this mailbox had (a second password, a passkey, an old set of recovery
+     * codes) stops working the instant this succeeds, since `rekey()` replaces `masterKeyWraps` wholesale
+     * - the whole point, for a captured-wrap scenario where it's unclear which method was compromised.
+     */
+    async function handleRotateKeys(e: FormEvent) {
+        e.preventDefault();
+        if (rotationPassword.length < MIN_PASSWORD_LENGTH) {
+            setActionError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+            return;
+        }
+        if (rotationPassword !== rotationConfirmPassword) {
+            setActionError("Passwords do not match.");
+            return;
+        }
+        setActionError(null);
+        setRotating(true);
+        try {
+            // Only reachable once `unlocked` is defined - see `handleAddPassword`'s identical note.
+            const { mk, wrappedKeys } = await rewrapPrivateKeysUnderNewMasterKey(mailboxUid!, unlocked!);
+            const passwordWrap = await buildPasswordWrap(mailboxUid!, mk, rotationPassword);
+            const { wraps: newRecoveryWraps, codes } = await buildRecoveryWraps(mailboxUid!, mk);
+            await rekey(mailboxUid!, { wrappedKeys, masterKeyWraps: [passwordWrap, ...newRecoveryWraps], keys: mailbox.keys ?? [] });
+            // Refreshes this session's own cached keys against the new MK, via the password we just set -
+            // the underlying private key material didn't change, but the stale MK in memory would silently
+            // build wrong future wraps (e.g. a second "Add a password") if left as-is.
+            await unlockWithPassword(mailboxUid!, mailbox.keys ?? [], rotationPassword);
+            setRotationPassword("");
+            setRotationConfirmPassword("");
+            setRecoveryCodesReason("rotate");
+            setNewRecoveryCodes(codes);
+            setCodesSaved(false);
+            await loadVault();
+        } catch (err) {
+            setActionError(err instanceof ApiRequestError ? err.message : "Could not rotate your encryption keys.");
+        } finally {
+            setRotating(false);
         }
     }
 
@@ -169,9 +224,11 @@ function EncryptionContent() {
                 <div className="max-w-xl">
                     <h1 className="text-lg font-bold tracking-tight mb-1">Save your new recovery codes</h1>
                     <p className="text-sm text-text-muted mb-4">
-                        Your old recovery codes no longer work. If you lose your password, these new codes are the
-                        only way to recover your encrypted mail. Each code can be used once. Store them somewhere
-                        safe — they will not be shown again.
+                        {recoveryCodesReason === "rotate"
+                            ? "Your keys have been rotated - every previous unlock method (password, recovery codes, or anything else on file) has stopped working. "
+                            : "Your old recovery codes no longer work. "}
+                        If you lose your password, these new codes are the only way to recover your encrypted mail.
+                        Each code can be used once. Store them somewhere safe — they will not be shown again.
                     </p>
                     <ul className="grid grid-cols-2 gap-2 mb-5 font-mono text-sm">
                         {newRecoveryCodes.map((code) => (
@@ -227,7 +284,7 @@ function EncryptionContent() {
                         Removing a method here stops it from being usable to unlock this mailbox going forward,
                         but it is <strong>not</strong> full revocation — anyone who already captured a wrapped
                         copy and knows its secret could still use it. For real revocation (e.g. after a lost
-                        device), rotate your keys entirely; that action isn&rsquo;t available from this page yet.
+                        device), rotate your keys entirely below instead.
                     </p>
                     {vault && vault.masterKeyWraps.length > 0 ? (
                         <ul className="flex flex-col gap-2">
@@ -303,6 +360,43 @@ function EncryptionContent() {
                         Regenerate recovery codes
                     </Button>
                 </div>
+
+                <form onSubmit={handleRotateKeys} className="flex flex-col gap-2 border-t border-border pt-6">
+                    <h2 className="text-sm font-semibold">Rotate keys</h2>
+                    <p className="text-xs text-text-muted mb-1">
+                        Real revocation, for when a device or an unlock method may have been compromised.
+                        Re-protects your existing encryption key under a brand new master key - your signing/
+                        encryption keypair itself doesn&rsquo;t change, so mail you&rsquo;ve already sent or
+                        received still decrypts normally. Every current unlock method (password, recovery codes,
+                        and anything else on file) stops working immediately; you&rsquo;ll set a new password and
+                        get new recovery codes below.
+                    </p>
+                    <input
+                        type="password"
+                        aria-label="New password for rotated keys"
+                        placeholder="New password"
+                        className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                        value={rotationPassword}
+                        onChange={(e) => setRotationPassword(e.target.value)}
+                        disabled={rotating}
+                        autoComplete="new-password"
+                    />
+                    <input
+                        type="password"
+                        aria-label="Confirm new password for rotated keys"
+                        placeholder="Confirm new password"
+                        className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                        value={rotationConfirmPassword}
+                        onChange={(e) => setRotationConfirmPassword(e.target.value)}
+                        disabled={rotating}
+                        autoComplete="new-password"
+                    />
+                    <div>
+                        <Button type="submit" variant="secondary" className="!w-auto text-danger" loading={rotating} disabled={rotating}>
+                            Rotate keys now
+                        </Button>
+                    </div>
+                </form>
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">This session</h2>

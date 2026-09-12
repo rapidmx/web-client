@@ -307,11 +307,35 @@ foundation, without a large new subsystem of its own:
   pressure. Two different async sources feeding the same page means every assertion needs to `await
   findByText` the *specific* thing it actually depends on, not just the first thing the test happened
   to await.
-- **Deliberately deferred, not built even partially** (all three would roughly double this page's own
-  scope): a full WebAuthn passkey-registration ceremony as a second "add a method" action (`
-  passkeyUnlock.ts`'s `registerPasskeyForUnlock()`/`deriveFromPasskey()` already exist and are already
-  used nowhere yet); a "rotate keys" action (`keyvaultApi.ts`'s `rekey()` - full atomic vault
-  replacement, the actual revocation mechanism for a captured wrap, per that function's own doc
-  comment); and idle-timeout configuration (this needs a session-wide activity-tracking mechanism
-  mounted somewhere like `AppShell.tsx`, not just a page-level setting with nothing enforcing it - a
-  control with no effect would be worse than no control). Revisit as a follow-up pass.
+- **Deliberately deferred, not built even partially**: a full WebAuthn passkey-registration ceremony as
+  a second "add a method" action (`passkeyUnlock.ts`'s `registerPasskeyForUnlock()`/`deriveFromPasskey()`
+  already exist and are still used nowhere yet); and idle-timeout configuration (needs a session-wide
+  activity-tracking mechanism mounted somewhere like `AppShell.tsx`, not just a page-level setting with
+  nothing enforcing it - a control with no effect would be worse than no control). Revisit as a
+  follow-up pass. "Rotate keys" (`rekey()`) landed the same day - see the entry directly below.
+
+### 2026-09-11 (continued) — Real key rotation ("Rotate keys")
+
+Closes the one deferred item from the entry above that JP asked for by name. New `react-shared`
+module `crypto/keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()` (see that repo's own NOTES.md,
+same date) does the actual re-wrapping; this page's own "Rotate keys" form is the orchestration:
+
+1. `rewrapPrivateKeysUnderNewMasterKey(mailboxUid, unlocked)` — fresh MK, existing private key(s)
+   re-wrapped under it (same keypair/certificate, unchanged - restapi's own `rekey()` route rejects
+   any `keys` entry that isn't byte-identical to what's already enrolled aside from `revokedAt`).
+2. `buildPasswordWrap()`/`buildRecoveryWraps()` (already-existing helpers, same as "Add a
+   password"/"Regenerate recovery codes") wrap the *new* MK under a freshly entered password and a
+   fresh set of recovery codes.
+3. `rekey(mailboxUid, { wrappedKeys, masterKeyWraps, keys: mailbox.keys })` — the one atomic call that
+   replaces the vault server-side. `keys` is passed through completely unchanged (restapi's own
+   validation requires it).
+4. `unlockWithPassword(mailboxUid, mailbox.keys, newPassword)` — re-primes this session's own
+   `keySession.ts` cache against the new MK via the password just set. Necessary: the underlying
+   private-key `CryptoKey` objects are still valid (same bytes), but the session's cached `masterKey`
+   is now stale and would silently build wrong wraps for any *later* action (a second "Add a
+   password," another rotation) if left as-is.
+
+Reuses the exact same "Save your new recovery codes" one-time-display screen "Regenerate recovery
+codes" already built, with a `recoveryCodesReason` flag swapping in different explanatory copy (a
+rotation also invalidates every *other* unlock method, not just recovery codes — the screen needs to
+say so plainly, not just "codes changed").
