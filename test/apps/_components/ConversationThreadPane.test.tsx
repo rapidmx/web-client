@@ -25,6 +25,7 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         onClassified,
         onReceiptHandled,
         onArchived,
+        onLabelsChanged,
     }: {
         message: { uid: string; recallRequestedAt?: string; scheduledSendTime?: string } | null;
         attachments: { filename: string }[];
@@ -37,6 +38,7 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         onClassified?: (updated: Record<string, unknown>) => void;
         onReceiptHandled?: (updated: Record<string, unknown>) => void;
         onArchived?: (updated: Record<string, unknown>) => void;
+        onLabelsChanged?: (updated: Record<string, unknown>) => void;
     }) => (
         <div data-testid={`detail-${message?.uid}`}>
             {message ? `message:${message.uid}` : "no-message"} attachments:{attachments.map((a) => a.filename).join(",")}{" "}
@@ -68,6 +70,11 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
             {message && onArchived && (
                 <button type="button" onClick={() => onArchived({ ...message, folderUid: "f-archive" })}>
                     simulate-archive-{message.uid}
+                </button>
+            )}
+            {message && onLabelsChanged && (
+                <button type="button" onClick={() => onLabelsChanged({ ...message, labelUids: ["l1"] })}>
+                    simulate-labels-changed-{message.uid}
                 </button>
             )}
         </div>
@@ -473,6 +480,24 @@ describe("ConversationThreadPane", () => {
 
             // m2 stays mounted/unaffected by m1's patch, and m1 remains mounted (patched in place, not
             // removed - conversation membership is owned by the parent, not this component).
+            expect(screen.getByTestId("detail-m2")).toHaveTextContent("recallRequestedAt:unset");
+            expect(await screen.findByTestId("detail-m1")).toBeInTheDocument();
+        });
+
+        it("patches the message into state via onLabelsChanged without disturbing other messages", async () => {
+            mockFetch((url) => {
+                const uid = url.split("/").pop();
+                return jsonResponse(200, messageFixture({ uid, flags: { read: true, flagged: false, answered: false, forwarded: false } }));
+            });
+            const user = userEvent.setup();
+            render(<ConversationThreadPane conversation={conversationFixture()} folders={[inboxFolder, outboxFolder, draftsFolder]} />);
+
+            await screen.findByTestId("detail-m2");
+            await user.click(screen.getByText("Sender One")); // expand m1
+            await screen.findByTestId("detail-m1");
+
+            await user.click(screen.getByRole("button", { name: "simulate-labels-changed-m1" }));
+
             expect(screen.getByTestId("detail-m2")).toHaveTextContent("recallRequestedAt:unset");
             expect(await screen.findByTestId("detail-m1")).toBeInTheDocument();
         });

@@ -492,3 +492,41 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
 - No `server` route changes needed at all — `MessageRoute`/`MessageRouteMongo`/`SQL` is already a
   one-line subclass of restapi's `BaseMessageRoute`, so the new `archive()` method came along for free
   the moment `server`'s restapi patch (Phase 0) landed.
+
+### 2026-09-12 (continued) — Phase 3 of consuming restapi's 11 post-0.6.0 commits: Labels
+
+- New `apps/www/settings/labels/index.tsx` (added to `SETTINGS_SECTIONS`) - a single self-contained
+  page (no separate `/new`/`[uid]` pages like Signatures/Filters/Booking-Types have) since a `Label` is
+  just `name`+`color`: one shared create/edit `Modal` (`react-shared`'s `Modal`/`FormField`/`Button`)
+  and a separate delete-confirmation `Modal`, matching this codebase's established "destructive actions
+  get a real confirmation dialog, never `window.confirm`" convention (confirmed nothing in this repo
+  uses `window.confirm` at all before choosing this).
+- `MessageDetailPane.tsx` gained a "Labels" button (hidden when the caller passes no `labels`, i.e.
+  this mailbox has none defined yet) opening a `Modal` with one checkbox per mailbox label, auto-saving
+  on every toggle via the new `setMessageLabels()` (no separate "Save" step - matches how classify/
+  receipt actions in this same component already auto-save). Applied labels also render as small
+  colored chips under the To line. New `labels`/`onLabelsChanged` props, `onLabelsChanged` **always**
+  patches in place (unlike `onArchived`) since changing labels never moves a message between folders.
+- All three callers (`apps/www/index.tsx`, `ConversationThreadPane.tsx`, `messages/[uid].tsx`) fetch
+  the mailbox's labels once (`listLabels`, mailbox-wide not folder-scoped) and pass them down; a fetch
+  failure just leaves `labels` empty (hiding the control) rather than blocking the rest of the page -
+  the same "small enhancement, not critical path" posture already established for Tier 3 search.
+- **Two real dead-guard removals, not just new code**: `apps/www/index.tsx`'s and `messages/[uid].tsx`'s
+  new labels-fetch effects initially guarded on `if (!mailboxUid) return;`, but coverage proved that
+  branch **unreachable** in both - `MailShell` never renders either component's children until
+  `mailboxUid` has already resolved (the exact same invariant `searchMessages(mailboxUid!, ...)`
+  already relies on a few lines away). Removed the guard and used `mailboxUid!` directly instead of
+  writing a test for a branch that can't occur, matching this codebase's own established "dead guard
+  the UI structurally can't trigger" removal precedent (`SettingsShell.tsx`'s own comment on the same
+  pattern).
+- Coverage note: closing the 100%-lines/functions gate needed tests that actually trigger each `Modal`'s
+  own `onClose` (its "×" button) - clicking a page's own "Cancel" button alone never exercises the
+  `onClose` prop itself, since Cancel has its own separate `onClick` calling the same state setter.
+  Three modals (Labels-assignment, Labels-settings create/edit, Labels-settings delete) all had this
+  exact same gap shape independently.
+- Deliberately **not built this pass**: clickable label filters in the folder sidebar (`MailShell.tsx`).
+  Typing `label:<uid>` directly into the existing search box already works today (this session's
+  earlier `queryGrammar.ts` work) - a one-click shortcut into that same query is a real but separable
+  UX improvement, not required for the core CRUD+assignment feature to be usable.
+- Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up
+  `labelsApi.ts`, `mailApi.ts`'s `Message.labelUids`/`setMessageLabels()`.

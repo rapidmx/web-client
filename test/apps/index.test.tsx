@@ -38,6 +38,7 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         onClassified,
         onReceiptHandled,
         onArchived,
+        onLabelsChanged,
     }: {
         message: Record<string, unknown> | null;
         isSentItems?: boolean;
@@ -49,6 +50,7 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         onClassified?: (updated: Record<string, unknown>) => void;
         onReceiptHandled?: (updated: Record<string, unknown>) => void;
         onArchived?: (updated: Record<string, unknown>) => void;
+        onLabelsChanged?: (updated: Record<string, unknown>) => void;
     }) => (
         <div data-testid="detail-pane">
             {message ? `message:${message.uid}` : "no-message"} sentItems:{String(!!isSentItems)} outbox:{String(!!isOutbox)}{" "}
@@ -79,6 +81,11 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
             {message && onArchived && (
                 <button type="button" onClick={() => onArchived({ ...message, folderUid: "f-archive" })}>
                     simulate-archive
+                </button>
+            )}
+            {message && onLabelsChanged && (
+                <button type="button" onClick={() => onLabelsChanged({ ...message, labelUids: ["l1"] })}>
+                    simulate-labels-changed
                 </button>
             )}
         </div>
@@ -502,6 +509,22 @@ describe("InboxPage", () => {
             expect(screen.queryByText("First")).not.toBeInTheDocument();
             expect(screen.getByText("Second")).toBeInTheDocument();
             expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message");
+        });
+
+        it("patches the message in place (does not remove it) when its labels change", async () => {
+            const first = messageFixture({ uid: "m1", subject: "First" });
+            const second = messageFixture({ uid: "m2", subject: "Second" });
+            mockShellAndInbox([first, second]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+
+            await user.click(await screen.findByText("First"));
+            await user.click(await screen.findByRole("button", { name: "simulate-labels-changed" }));
+
+            // Changing labels never moves a message between folders - unlike archive/scheduled-send-cancel
+            // above, it stays in the list.
+            expect(screen.getByText("First")).toBeInTheDocument();
+            expect(screen.getByText("Second")).toBeInTheDocument();
         });
 
         it("leaves other messages in the list untouched when marking one of several read", async () => {

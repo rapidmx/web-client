@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Message, MessageClassification, getMessage, listMessages } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
 import { ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
 import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
@@ -139,11 +140,24 @@ function InboxContent() {
     const [searchInput, setSearchInput] = useState("");
     const [searchQuery, setSearchQuery] = useState("");
     const [snippets, setSnippets] = useState<Record<string, string>>({});
+    const [labels, setLabels] = useState<Label[]>([]);
     const isSearching = viewMode === "date" && searchQuery.length > 0;
     const pageRef = useRef(0);
     const cursorRef = useRef<string | undefined>(undefined);
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
     const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+    // Labels are mailbox-wide, not folder-scoped - fetched once per mailbox rather than per message, and
+    // handed to every `MessageDetailPane` instance below. A failure here just means the Labels control
+    // stays hidden (an empty `labels` array) rather than blocking the rest of the inbox - it's a small
+    // enhancement, not critical path the way the message list itself is. No `mailboxUid` guard needed -
+    // `MailShell` never renders this component at all until `mailboxUid` has resolved (same invariant
+    // `searchMessages(mailboxUid!, ...)` below already relies on).
+    useEffect(() => {
+        listLabels(mailboxUid!, { limit: 200 })
+            .then(setLabels)
+            .catch(() => setLabels([]));
+    }, [mailboxUid]);
 
     // Debounce the raw input into the query actually searched, so every keystroke doesn't fire a request.
     useEffect(() => {
@@ -436,7 +450,7 @@ function InboxContent() {
             </div>
             <div className="hidden md:flex flex-1 min-w-0">
                 {viewMode === "conversation" ? (
-                    <ConversationThreadPane conversation={selectedConversation} folders={folders} />
+                    <ConversationThreadPane conversation={selectedConversation} folders={folders} labels={labels} />
                 ) : (
                     <MessageDetailPane
                         message={selected}
@@ -462,6 +476,8 @@ function InboxContent() {
                             setMessages((prev) => prev.filter((m) => m.uid !== updated.uid));
                             setSelectedUid(null);
                         }}
+                        labels={labels}
+                        onLabelsChanged={(updated) => setMessages((prev) => prev.map((m) => (m.uid === updated.uid ? updated : m)))}
                     />
                 )}
             </div>

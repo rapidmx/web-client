@@ -2404,8 +2404,98 @@ index 0000000000000000000000000000000000000000..6507d543d18d97693f23e9b9961c4031
 +        };
 +    }, []);
 +}
+diff --git a/dist/mail/labelsApi.d.ts b/dist/mail/labelsApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0bc5ca75234152726e2dfc4e09d87ea3749c5d9
+--- /dev/null
++++ b/dist/mail/labelsApi.d.ts
+@@ -0,0 +1,43 @@
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `Label` CRUD route (`BaseScopedChildRoute`,
++ * `scopeProperty: "mailboxUid"`) — mailbox-scoped, same pattern as `mailSignaturesApi.ts`. A label is
++ * applied to a message by setting `Message.labelUids` directly (an ordinary field, not read-only - see
++ * `mailApi.ts#setMessageLabels()`), the same way `MailFilterActionType.APPLY_LABEL` does it
++ * automatically for inbound mail; there is no separate "assign" endpoint.
++ */
++import { ListParams } from "../util/apiQuery.js";
++export type { ListParams };
++export interface Label {
++    uid: string;
++    version: number;
++    dateCreated: string;
++    dateModified: string;
++    mailboxUid: string;
++    name: string;
++    /** An optional hex-ish color hint (same loose convention as `Note.color`) - restapi doesn't
++     * validate its shape. */
++    color?: string;
++}
++export declare function listLabels(mailboxUid: string, params?: ListParams): Promise<Label[]>;
++export declare function getLabel(uid: string): Promise<Label>;
++export interface CreateLabelInput {
++    mailboxUid: string;
++    name: string;
++    color?: string;
++}
++export declare function createLabel(input: CreateLabelInput): Promise<Label>;
++export interface UpdateLabelInput {
++    uid: string;
++    version: number;
++    name?: string;
++    color?: string;
++}
++export declare function updateLabel(input: UpdateLabelInput): Promise<Label>;
++/**
++ * Deleting a label also strips its uid from every message's `labelUids` in this mailbox
++ * (`BaseLabelRoute.cleanUpDeletedLabel()`, a synchronous full-mailbox scan server-side) - the client
++ * has no separate cleanup step to perform, but a caller with an already-loaded message list should
++ * still drop the deleted uid from any locally-cached `labelUids` itself, since this call doesn't return
++ * the affected messages.
++ */
++export declare function deleteLabel(uid: string, version: number): Promise<void>;
+diff --git a/dist/mail/labelsApi.js b/dist/mail/labelsApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..e25106058e74c6b145e7612104d747add5b8f60b
+--- /dev/null
++++ b/dist/mail/labelsApi.js
+@@ -0,0 +1,35 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `Label` CRUD route (`BaseScopedChildRoute`,
++ * `scopeProperty: "mailboxUid"`) — mailbox-scoped, same pattern as `mailSignaturesApi.ts`. A label is
++ * applied to a message by setting `Message.labelUids` directly (an ordinary field, not read-only - see
++ * `mailApi.ts#setMessageLabels()`), the same way `MailFilterActionType.APPLY_LABEL` does it
++ * automatically for inbound mail; there is no separate "assign" endpoint.
++ */
++import { apiFetch } from "../util/api.js";
++import { buildQuery } from "../util/apiQuery.js";
++export function listLabels(mailboxUid, params = {}) {
++    return apiFetch(`/mail/labels?${buildQuery(params, { mailboxUid })}`);
++}
++export function getLabel(uid) {
++    return apiFetch(`/mail/labels/${encodeURIComponent(uid)}`);
++}
++export function createLabel(input) {
++    return apiFetch("/mail/labels", { method: "POST", body: JSON.stringify(input) });
++}
++export function updateLabel(input) {
++    return apiFetch(`/mail/labels/${encodeURIComponent(input.uid)}`, { method: "PUT", body: JSON.stringify(input) });
++}
++/**
++ * Deleting a label also strips its uid from every message's `labelUids` in this mailbox
++ * (`BaseLabelRoute.cleanUpDeletedLabel()`, a synchronous full-mailbox scan server-side) - the client
++ * has no separate cleanup step to perform, but a caller with an already-loaded message list should
++ * still drop the deleted uid from any locally-cached `labelUids` itself, since this call doesn't return
++ * the affected messages.
++ */
++export function deleteLabel(uid, version) {
++    return apiFetch(`/mail/labels/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
++}
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
-index 9eba1e5013b5604ec48710251ce3adafbf5c2896..02cf6f51db21014b5178a65d7d53e8a5c381344c 100644
+index 9eba1e5013b5604ec48710251ce3adafbf5c2896..3e1651473e849e56c9624a4b1d8644cd579847a7 100644
 --- a/dist/mail/mailApi.d.ts
 +++ b/dist/mail/mailApi.d.ts
 @@ -6,7 +6,9 @@
@@ -2433,7 +2523,7 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..02cf6f51db21014b5178a65d7d53e8a5
  }
  /** Lists mailboxes the caller can access (owned, shared with them, or — for a trusted caller — every one). */
  export declare function listMailboxes(params?: ListParams): Promise<Mailbox[]>;
-@@ -290,6 +300,21 @@ export interface Message {
+@@ -290,6 +300,25 @@ export interface Message {
      /** The per-recipient delivery/read roster on a *sent* message — the client-visible tracking indicator.
       * `undefined` (not an empty array) when no receipt was ever requested for this message. */
      receiptStatus?: MessageReceiptEntry[];
@@ -2452,10 +2542,14 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..02cf6f51db21014b5178a65d7d53e8a5
 +     * appends a footer after signing invalidates the signature, so composing a reply to one SHOULD
 +     * default signing off. `undefined` for ordinary mail — never computed or guessed client-side. */
 +    listUnsubscribeHeader?: string;
++    /** `Label.uid`s applied to this message (Gmail-style labels, `labelsApi.ts`) - either set directly
++     * (`setMessageLabels()`) or auto-applied server-side by a `MailFilterActionType.APPLY_LABEL` rule.
++     * `undefined`/empty means no labels. */
++    labelUids?: string[];
  }
  export interface MessageReceiptEntry {
      recipientAddress: string;
-@@ -307,6 +332,13 @@ export declare function getMessage(uid: string): Promise<Message>;
+@@ -307,6 +336,13 @@ export declare function getMessage(uid: string): Promise<Message>;
   * only visible effect here is `recallRequestedAt` getting set on the response.
   */
  export declare function recallMessage(uid: string): Promise<Message>;
@@ -2469,7 +2563,19 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..02cf6f51db21014b5178a65d7d53e8a5
  /**
   * Moves a message between the Focused and Other halves of the Inbox — Outlook's "Move to Other" gesture.
   * With `applyToSender: true` ("Always move to Other"), also upserts a standing `FocusedInboxOverride` for
-@@ -391,8 +423,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
+@@ -319,6 +355,11 @@ export declare function classifyMessage(uid: string, classifyAs: MessageClassifi
+  * routes replace the whole record rather than patch individual fields.
+  */
+ export declare function setMessageRead(message: Message, read: boolean): Promise<Message>;
++/** Sets a message's full `labelUids` list (not an add/remove delta - the caller computes the complete
++ * new set, same convention as `Note`/`Task` label-like fields elsewhere in restapi). Deleting a label
++ * elsewhere already strips it server-side from every message (`labelsApi.ts#deleteLabel()`'s own doc
++ * comment) - this is only for a user explicitly applying/removing labels on one message. */
++export declare function setMessageLabels(message: Message, labelUids: string[]): Promise<Message>;
+ /**
+  * Sets a draft's `scheduledSendTime` ahead of calling `sendMessage()` — `send()` itself is what actually
+  * checks the field and defers relay (moving the message into Outbox) instead of sending immediately,
+@@ -391,8 +432,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
   * itself does no MIME composition). Does not send the message.
   */
  export declare function assembleDraft(messageUid: string, input: AssembleDraftInput): Promise<Message>;
@@ -2508,7 +2614,7 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..02cf6f51db21014b5178a65d7d53e8a5
      token: string;
      user: {
 diff --git a/dist/mail/mailApi.js b/dist/mail/mailApi.js
-index bbea6c30708cf0767a11336b663b758e6eaaae58..ab22730125f1087940e749bbac3fb0869500c862 100644
+index bbea6c30708cf0767a11336b663b758e6eaaae58..8b2444bc24d50b3514140a8026f546639b6ddccb 100644
 --- a/dist/mail/mailApi.js
 +++ b/dist/mail/mailApi.js
 @@ -136,6 +136,15 @@ export function getMessage(uid) {
@@ -2527,7 +2633,24 @@ index bbea6c30708cf0767a11336b663b758e6eaaae58..ab22730125f1087940e749bbac3fb086
  /**
   * Moves a message between the Focused and Other halves of the Inbox — Outlook's "Move to Other" gesture.
   * With `applyToSender: true` ("Always move to Other"), also upserts a standing `FocusedInboxOverride` for
-@@ -258,10 +267,40 @@ export function assembleDraft(messageUid, input) {
+@@ -158,6 +167,16 @@ export function setMessageRead(message, read) {
+         body: JSON.stringify({ uid: message.uid, version: message.version, flags: { ...message.flags, read } }),
+     });
+ }
++/** Sets a message's full `labelUids` list (not an add/remove delta - the caller computes the complete
++ * new set, same convention as `Note`/`Task` label-like fields elsewhere in restapi). Deleting a label
++ * elsewhere already strips it server-side from every message (`labelsApi.ts#deleteLabel()`'s own doc
++ * comment) - this is only for a user explicitly applying/removing labels on one message. */
++export function setMessageLabels(message, labelUids) {
++    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
++        method: "PUT",
++        body: JSON.stringify({ uid: message.uid, version: message.version, labelUids }),
++    });
++}
+ /**
+  * Sets a draft's `scheduledSendTime` ahead of calling `sendMessage()` — `send()` itself is what actually
+  * checks the field and defers relay (moving the message into Outbox) instead of sending immediately,
+@@ -258,10 +277,40 @@ export function assembleDraft(messageUid, input) {
          body: JSON.stringify(input),
      });
  }

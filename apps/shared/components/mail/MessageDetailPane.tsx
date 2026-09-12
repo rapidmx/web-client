@@ -18,7 +18,9 @@ import {
     declineReceipt,
     getMessageRawContent,
     recallMessage,
+    setMessageLabels,
 } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import { buildForwardQuote, buildReplyQuote, forwardSubject, replySubject } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { MessageSecurityResult, evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
@@ -91,6 +93,14 @@ export interface MessageDetailPaneProps {
      * server-side 400 guard); Drafts is detected via `draftsFolderUid` (already passed by every caller
      * for the Outbox-cancel flow) rather than a new prop. */
     onArchived?: (updated: Message) => void;
+    /** Every label defined in this message's mailbox, for the label-assignment popover below — each
+     * caller fetches its own mailbox's labels the same way it already resolves `draftsFolderUid`
+     * (`listLabels()`). Absent/empty simply hides the Labels control - there's nothing to assign. */
+    labels?: Label[];
+    /** Called with the server's updated copy (carrying the new `labelUids`) after successfully toggling
+     * a label — always patches in place, never removes from a caller's list (unlike `onArchived`):
+     * changing labels never moves a message between folders. */
+    onLabelsChanged?: (updated: Message) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -119,6 +129,8 @@ export default function MessageDetailPane({
     onClassified,
     onReceiptHandled,
     onArchived,
+    labels,
+    onLabelsChanged,
 }: MessageDetailPaneProps) {
     const { openCompose } = useCompose();
     const [confirming, setConfirming] = useState(false);
@@ -126,6 +138,9 @@ export default function MessageDetailPane({
     const [canceling, setCanceling] = useState(false);
     const [archiving, setArchiving] = useState(false);
     const [archiveError, setArchiveError] = useState<string | null>(null);
+    const [labelsOpen, setLabelsOpen] = useState(false);
+    const [togglingLabelUid, setTogglingLabelUid] = useState<string | null>(null);
+    const [labelsError, setLabelsError] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     // Kept separate from `error` (the Recall flow's own state) since this renders inline in the main
     // pane rather than inside a confirmation modal — the two flows never need to share one message.
@@ -260,6 +275,25 @@ export default function MessageDetailPane({
         }
     }
 
+    // Only ever invoked from a checkbox in the Labels popover below, which itself only renders once
+    // `message` is loaded — auto-saves on every toggle (no separate "Save" step), computing the full
+    // new `labelUids` set from the message's current one since `setMessageLabels()` replaces the whole
+    // list rather than patching a single entry.
+    async function handleToggleLabel(labelUid: string) {
+        setTogglingLabelUid(labelUid);
+        setLabelsError(null);
+        try {
+            const current = message!.labelUids ?? [];
+            const next = current.includes(labelUid) ? current.filter((uid) => uid !== labelUid) : [...current, labelUid];
+            const updated = await setMessageLabels(message!, next);
+            onLabelsChanged?.(updated);
+        } catch (err) {
+            setLabelsError(err instanceof ApiRequestError ? err.message : "Could not update this message's labels.");
+        } finally {
+            setTogglingLabelUid(null);
+        }
+    }
+
     // Only ever invoked from the classification button below, which itself only renders once `message`
     // is loaded and `isInbox` is true — the non-null assertion reflects the same real invariant as
     // `handleRecall`/`handleCancelScheduledSend` above.
@@ -380,10 +414,31 @@ export default function MessageDetailPane({
                             Archive
                         </Button>
                     )}
+                    {labels && labels.length > 0 && (
+                        <Button type="button" variant="secondary" className="!w-auto" onClick={() => setLabelsOpen(true)}>
+                            Labels
+                        </Button>
+                    )}
                 </div>
                 {archiveError && (
                     <div className="mt-2">
                         <Alert>{archiveError}</Alert>
+                    </div>
+                )}
+                {labels && (message.labelUids?.length ?? 0) > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                        {message
+                            .labelUids!.map((uid) => labels.find((l) => l.uid === uid))
+                            .filter((l): l is Label => !!l)
+                            .map((l) => (
+                                <span
+                                    key={l.uid}
+                                    className="inline-flex items-center gap-1.5 text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt"
+                                >
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: l.color ?? "#6366f1" }} />
+                                    {l.name}
+                                </span>
+                            ))}
                     </div>
                 )}
                 {isInbox && (
@@ -512,6 +567,28 @@ export default function MessageDetailPane({
                         Cancel
                     </Button>
                 </div>
+            </Modal>
+            <Modal open={labelsOpen} onClose={() => setLabelsOpen(false)} title="Labels">
+                {labelsError && <Alert>{labelsError}</Alert>}
+                <ul className="flex flex-col gap-1">
+                    {(labels ?? []).map((l) => {
+                        const checked = message.labelUids?.includes(l.uid) ?? false;
+                        return (
+                            <li key={l.uid}>
+                                <label className="flex items-center gap-2 py-1.5 px-1 text-sm rounded-sm hover:bg-surface-alt">
+                                    <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        disabled={togglingLabelUid === l.uid}
+                                        onChange={() => handleToggleLabel(l.uid)}
+                                    />
+                                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: l.color ?? "#6366f1" }} />
+                                    {l.name}
+                                </label>
+                            </li>
+                        );
+                    })}
+                </ul>
             </Modal>
         </div>
     );

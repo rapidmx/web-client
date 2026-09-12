@@ -6,6 +6,7 @@ import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Attachment, Folder, Message, getMessage, listAttachments, setMessageRead } from "@rapidmx/react-shared/mail/mailApi.js";
 import { ConversationSummary } from "@rapidmx/react-shared/mail/conversationsApi.js";
+import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import MessageDetailPane from "./MessageDetailPane.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
@@ -15,6 +16,9 @@ export interface ConversationThreadPaneProps {
      * Sent Items copy of its reply), so each message's own recall eligibility is looked up individually
      * against its own `folderUid` rather than assuming one folder for the whole thread. */
     folders: Folder[];
+    /** The mailbox's labels, fetched once by the parent (`apps/www/index.tsx`) and passed through to
+     * every expanded message's own `MessageDetailPane` — see that component's own `labels` prop. */
+    labels?: Label[];
 }
 
 /**
@@ -25,7 +29,7 @@ export interface ConversationThreadPaneProps {
  * lightweight summary, since mounting a full `MessageDetailPane` (and its iframe) for every message in
  * a long thread up front would be wasteful.
  */
-export default function ConversationThreadPane({ conversation, folders }: ConversationThreadPaneProps) {
+export default function ConversationThreadPane({ conversation, folders, labels }: ConversationThreadPaneProps) {
     const [messages, setMessages] = useState<Record<string, Message>>({});
     const [attachmentsByUid, setAttachmentsByUid] = useState<Record<string, Attachment[]>>({});
     const [expandedUids, setExpandedUids] = useState<Set<string>>(new Set());
@@ -166,6 +170,8 @@ export default function ConversationThreadPane({ conversation, folders }: Conver
                             onClassified={(updated) => setMessages((prev) => ({ ...prev, [uid]: updated }))}
                             onReceiptHandled={(updated) => setMessages((prev) => ({ ...prev, [uid]: updated }))}
                             onArchived={(updated) => setMessages((prev) => ({ ...prev, [uid]: updated }))}
+                            labels={labels}
+                            onLabelsChanged={(updated) => setMessages((prev) => ({ ...prev, [uid]: updated }))}
                         />
                     </div>
                 );

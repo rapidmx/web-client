@@ -5,6 +5,7 @@
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Message, getMessage } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
 import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import MailShell, { MailShellProps, useMailShell } from "../../shared/components/mail/layout/MailShell.js";
 import MessageDetailPane from "../../shared/components/mail/MessageDetailPane.js";
@@ -23,10 +24,11 @@ export default function MessageDetailPage(props: MailShellProps & { params: { ui
 }
 
 function MessageDetailContent({ uid }: { uid: string }) {
-    const { folders } = useMailShell();
+    const { folders, mailboxUid } = useMailShell();
     const [message, setMessage] = useState<Message | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [labels, setLabels] = useState<Label[]>([]);
 
     useEffect(() => {
         setLoading(true);
@@ -36,6 +38,15 @@ function MessageDetailContent({ uid }: { uid: string }) {
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this message."))
             .finally(() => setLoading(false));
     }, [uid]);
+
+    // See `apps/www/index.tsx`'s identical effect's own doc comment - a failure here just hides the
+    // Labels control rather than blocking the rest of the page. No `mailboxUid` guard needed - `MailShell`
+    // never renders this component at all until `mailboxUid` has resolved.
+    useEffect(() => {
+        listLabels(mailboxUid!, { limit: 200 })
+            .then(setLabels)
+            .catch(() => setLabels([]));
+    }, [mailboxUid]);
 
     const attachments = useMessageAttachments(message);
     useMarkMessageRead(message, setMessage);
@@ -66,6 +77,8 @@ function MessageDetailContent({ uid }: { uid: string }) {
             draftsFolderUid={draftsFolderUid}
             onScheduledSendCanceled={setMessage}
             onArchived={setMessage}
+            labels={labels}
+            onLabelsChanged={setMessage}
         />
     );
 }

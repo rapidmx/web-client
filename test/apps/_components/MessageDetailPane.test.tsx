@@ -340,6 +340,135 @@ describe("MessageDetailPane", () => {
         });
     });
 
+    describe("labels", () => {
+        const labels = [
+            { uid: "l1", version: 0, dateCreated: "2026-01-01T00:00:00.000Z", dateModified: "2026-01-01T00:00:00.000Z", mailboxUid: "mb1", name: "Important", color: "#e11d48" },
+            { uid: "l2", version: 0, dateCreated: "2026-01-01T00:00:00.000Z", dateModified: "2026-01-01T00:00:00.000Z", mailboxUid: "mb1", name: "Later", color: "#0ea5e9" },
+        ];
+
+        it("hides the Labels button and chip row when no labels are passed", () => {
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+            expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument();
+        });
+
+        it("shows the Labels button when labels exist, even if none are applied to this message yet", () => {
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
+            expect(screen.getByRole("button", { name: "Labels" })).toBeInTheDocument();
+        });
+
+        it("renders a chip for each applied label, in labelUids order, and none for an unapplied label", () => {
+            render(
+                <MessageDetailPane
+                    message={messageFixture({ labelUids: ["l2", "l1"] }) as any}
+                    attachments={[]}
+                    labels={labels}
+                />,
+            );
+            const chips = screen.getAllByText(/Important|Later/);
+            expect(chips.map((el) => el.textContent)).toEqual(["Later", "Important"]);
+        });
+
+        it("shows no chip row at all when the message has no labelUids", () => {
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
+            expect(screen.queryByText("Important")).not.toBeInTheDocument();
+        });
+
+        it("opens the Labels modal, checking only the boxes for labels already applied", async () => {
+            const user = userEvent.setup();
+            render(
+                <MessageDetailPane message={messageFixture({ labelUids: ["l1"] }) as any} attachments={[]} labels={labels} />,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+
+            expect(screen.getByRole("dialog", { name: "Labels" })).toBeInTheDocument();
+            expect(screen.getByRole("checkbox", { name: /Important/ })).toBeChecked();
+            expect(screen.getByRole("checkbox", { name: /Later/ })).not.toBeChecked();
+        });
+
+        it("checking a label's box adds it and calls onLabelsChanged with the server's updated copy", async () => {
+            const updated = messageFixture({ labelUids: ["l2"] });
+            const fetchMock = mockFetch(() => jsonResponse(200, updated));
+            const onLabelsChanged = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <MessageDetailPane
+                    message={messageFixture() as any}
+                    attachments={[]}
+                    labels={labels}
+                    onLabelsChanged={onLabelsChanged}
+                />,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            await user.click(screen.getByRole("checkbox", { name: /Later/ }));
+
+            expect(fetchMock).toHaveBeenCalledWith(
+                "/api/mail/messages/m1",
+                expect.objectContaining({
+                    method: "PUT",
+                    body: JSON.stringify({ uid: "m1", version: 0, labelUids: ["l2"] }),
+                }),
+            );
+            await waitFor(() => expect(onLabelsChanged).toHaveBeenCalledWith(updated));
+        });
+
+        it("unchecking an applied label's box removes only that uid", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture({ labelUids: [] })));
+            const user = userEvent.setup();
+            render(
+                <MessageDetailPane
+                    message={messageFixture({ labelUids: ["l1", "l2"] }) as any}
+                    attachments={[]}
+                    labels={labels}
+                />,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
+
+            expect(fetchMock).toHaveBeenCalledWith(
+                "/api/mail/messages/m1",
+                expect.objectContaining({ body: JSON.stringify({ uid: "m1", version: 0, labelUids: ["l2"] }) }),
+            );
+        });
+
+        it("shows an error message in the modal when toggling a label fails", async () => {
+            mockFetch(() => jsonResponse(500, { message: "boom" }));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
+
+            expect(await screen.findByText("boom")).toBeInTheDocument();
+        });
+
+        it("shows a generic error message when toggling a label fails with a non-API error", async () => {
+            mockFetch(() => {
+                throw new TypeError("network down");
+            });
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
+
+            expect(await screen.findByText("Could not update this message's labels.")).toBeInTheDocument();
+        });
+
+        it("closes the Labels modal via its own close button", async () => {
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            expect(screen.getByRole("dialog", { name: "Labels" })).toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        });
+    });
+
     describe("reply/forward", () => {
         it("Reply opens Compose prefilled with the sender's address, a 'Re:' subject, and a quoted body", async () => {
             mockComposeDraft();
