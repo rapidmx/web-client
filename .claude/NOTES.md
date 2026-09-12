@@ -428,3 +428,41 @@ results) are a separate future effort. See `react-shared`'s own NOTES.md, same d
   convention in this same file. Lesson: a search-hit fixture in this test file MUST use a folder
   distinct from the initial listing's folder, or a stale pre-search render can silently satisfy an
   assertion meant to prove the search round-trip happened.
+
+### 2026-09-11 (continued) — search.md Tier 3: server-assisted narrowing over encrypted mail
+
+Investigation into Tier 2 (the local encrypted index) surfaced two real infrastructure blockers
+specific to this repo and `electron-client` (see `react-shared`'s own NOTES.md, same date, for the
+full writeup) - confirmed with JP to build **Tier 3 first** instead, which needs neither. Tier 2
+remains a separate future effort.
+
+- `apps/www/index.tsx`'s `searchMessages()` now runs `react-shared`'s new
+  `searchTier3.ts#searchEncryptedCandidates()` alongside the existing Tier 1 `searchMailbox()` call
+  (`Promise.all`) whenever there is no `cursor` (first page only - Tier 3 has no pagination wiring
+  yet, a deliberate scope trim carried over from that module's own doc comment), passing
+  `getUnlockedKeys(mailboxUid)` so it silently contributes nothing when this mailbox has no unlocked
+  keys this session.
+- New `mergeSearchResults()`: normalizes both tiers' scores independently via `searchScoring.ts`'s
+  `normalizeServerScores()` (a Postgres/OpenSearch score and Tier 3's own term-count score occupy
+  unrelated ranges - interleaving raw values would rank one tier arbitrarily above the other), then
+  merges by `entityUid` - a Tier 3 hit (genuinely content-verified) replaces a Tier 1 `metadataOnly`
+  guess for the same message rather than rendering both. Sorted by normalized score, highest first.
+- Deliberately **not** the spec's full "Progressive Results" UX (skeleton entries in place, capped
+  rendering, animated reordering) - real, separate UI work; this pass waits for both tiers to resolve
+  and renders one final merged list, same as how the search box already waits on one round-trip today.
+- New tests mock `@rapidmx/react-shared/search/searchTier3.js`/`crypto/keySession.js` at the module
+  boundary (same convention `MessageDetailPane.test.tsx` already established for
+  `evaluateMessageSecurity`/`getUnlockedKeys`) - real decryption is already proven end to end with real
+  WebCrypto in `react-shared`'s own `test/search/searchTier3.test.ts`, so these only verify
+  `InboxContent`'s own merge/render responsibility. Needed a `beforeEach` defaulting the mocked
+  `searchEncryptedCandidates()` to `[]` so every pre-existing search test (which predates Tier 3 and
+  doesn't configure it) still gets a real array back rather than `undefined` — `Promise.all` happily
+  wraps a non-promise `undefined` into a resolved value, so this failure mode is silent, not a thrown
+  error, until something downstream (`normalizeServerScores([...undefined])`) touches it.
+- Coverage note: closing the `apps/**` 100%-lines gate needed one more test than initially written -
+  `mergeSearchResults()`'s `.sort()` comparator was never actually invoked by any test using fewer
+  than two distinct merged results (`Array.prototype.sort` never calls its comparator for a 0- or
+  1-element array), so a 2-message, differently-scored merge test was needed to exercise the real
+  sort-order behavior, not just its absence.
+- Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up
+  `messageSecurity.ts`'s new `subject` field and the new `searchTier3.ts` module.

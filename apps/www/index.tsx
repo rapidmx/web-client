@@ -6,8 +6,11 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Message, MessageClassification, getMessage, listMessages } from "@rapidmx/react-shared/mail/mailApi.js";
 import { ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
-import { search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
+import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
 import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
+import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
+import { searchEncryptedCandidates } from "@rapidmx/react-shared/search/searchTier3.js";
+import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import MailShell, { MailShellProps, useMailShell } from "../shared/components/mail/layout/MailShell.js";
@@ -21,6 +24,31 @@ type ViewMode = "date" | "conversation";
 const MESSAGE_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
 
+/** Merges Tier 1 (server, possibly `metadataOnly` for an encrypted message) and Tier 3 (decrypted,
+ * content-verified) results into one ranked list, per `specs/search.md` §7's "client MUST re-score all
+ * results it can see... normalise into the same space rather than interleaving raw scores": both sides
+ * are normalized independently via `normalizeServerScores()` before merging, since a Postgres/OpenSearch
+ * score and this module's own term-count score occupy unrelated ranges. A uid present in both lists
+ * (Tier 1 found it via a `participants` coincidence, Tier 3 then genuinely verified its content) keeps
+ * only the Tier 3 entry - real content verification supersedes a metadata guess for the same message.
+ * Deliberately not the spec's full skeleton/reordering "Progressive Results" UX (§_Progressive
+ * Results_) - that's real, separate UI work; this returns one final merged list once both tiers
+ * resolve, same as how the search box already waits on one round-trip today. */
+function mergeSearchResults(tier1: SearchResult[], tier3: SearchResult[]): SearchResult[] {
+    const normalizedTier1 = normalizeServerScores(tier1);
+    const normalizedTier3 = normalizeServerScores(tier3);
+    const merged = new Map<string, { result: SearchResult; normalizedScore: number }>();
+    for (const entry of normalizedTier1) {
+        merged.set(entry.result.entityUid, entry);
+    }
+    for (const entry of normalizedTier3) {
+        merged.set(entry.result.entityUid, entry);
+    }
+    return Array.from(merged.values())
+        .sort((a, b) => b.normalizedScore - a.normalizedScore)
+        .map((entry) => entry.result);
+}
+
 /** Resolves one page of search hits into full `Message` records for display, plus each hit's own
  * `snippet` (keyed by message uid) for rendering in place of the plain `bodyPreview` while searching.
  *
@@ -32,29 +60,40 @@ const SEARCH_DEBOUNCE_MS = 300;
  * (contact/calendarEvent/note/task) has no `Message` to resolve via `getMessage()` below and is simply
  * dropped by the same eventually-consistent-index fallback that already existed, rather than rendered
  * (this inbox list only ever shows message rows; a real multi-entity-type results view is a separate,
- * larger UI project outside this pass). */
+ * larger UI project outside this pass).
+ *
+ * Tier 3 (`searchTier3.ts#searchEncryptedCandidates()`) runs alongside Tier 1 only for the first page
+ * (`cursor` absent) - it has no pagination wiring yet (a deliberate scope trim, see that module's own
+ * doc comment), so a `loadMore()` continuation stays Tier-1-only. Silently contributes nothing when
+ * this mailbox has no unlocked keys this session (`getUnlockedKeys()` returns `undefined`) - nothing
+ * for it to decrypt, same as `MessageDetailPane`'s own encrypted-message handling elsewhere. */
 async function searchMessages(
+    mailboxUid: string,
     rawQuery: string,
     cursor?: string,
 ): Promise<{ messages: Message[]; nextCursor?: string; snippets: Record<string, string> }> {
     const parsed = parseSearchQuery(rawQuery);
-    const page = await searchMailbox(parsed.text, {
-        types: parsed.entityTypes ?? ["message"],
-        cursor,
-        limit: MESSAGE_PAGE_SIZE,
-        from: parsed.from,
-        to: parsed.to,
-        cc: parsed.cc,
-        subject: parsed.subject,
-        hasAttachment: parsed.hasAttachment,
-        before: parsed.before,
-        after: parsed.after,
-        folderUid: parsed.folderUid,
-        flags: parsed.flags,
-        labels: parsed.labels,
-    });
+    const [page, tier3Results] = await Promise.all([
+        searchMailbox(parsed.text, {
+            types: parsed.entityTypes ?? ["message"],
+            cursor,
+            limit: MESSAGE_PAGE_SIZE,
+            from: parsed.from,
+            to: parsed.to,
+            cc: parsed.cc,
+            subject: parsed.subject,
+            hasAttachment: parsed.hasAttachment,
+            before: parsed.before,
+            after: parsed.after,
+            folderUid: parsed.folderUid,
+            flags: parsed.flags,
+            labels: parsed.labels,
+        }),
+        cursor ? Promise.resolve<SearchResult[]>([]) : searchEncryptedCandidates(parsed, getUnlockedKeys(mailboxUid)),
+    ]);
+    const mergedResults = mergeSearchResults(page.results, tier3Results);
     const resolved = await Promise.all(
-        page.results.map(async (hit) => {
+        mergedResults.map(async (hit) => {
             const message = await getMessage(hit.entityUid).catch(() => null);
             return message ? { message, snippet: hit.snippet } : null;
         }),
@@ -145,7 +184,7 @@ function InboxContent() {
         setError(null);
 
         if (isSearching) {
-            searchMessages(searchQuery)
+            searchMessages(mailboxUid!, searchQuery)
                 .then(({ messages: results, nextCursor, snippets: newSnippets }) => {
                     setMessages(results);
                     setSnippets(newSnippets);
@@ -173,7 +212,7 @@ function InboxContent() {
         setLoadingMore(true);
         try {
             if (isSearching) {
-                const { messages: more, nextCursor, snippets: moreSnippets } = await searchMessages(searchQuery, cursorRef.current);
+                const { messages: more, nextCursor, snippets: moreSnippets } = await searchMessages(mailboxUid!, searchQuery, cursorRef.current);
                 setMessages((prev) => [...prev, ...more]);
                 setSnippets((prev) => ({ ...prev, ...moreSnippets }));
                 setHasMore(!!nextCursor);

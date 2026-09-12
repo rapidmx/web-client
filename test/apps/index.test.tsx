@@ -5,9 +5,22 @@
 import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
 import InboxPage from "../../apps/www/index.js";
+
+// Tier 3 (`searchTier3.ts#searchEncryptedCandidates()`) does real WebCrypto decryption against real
+// unlocked keys - already exercised end to end with real crypto in react-shared's own
+// test/search/searchTier3.test.ts. Mocked here at the module boundary (same convention
+// MessageDetailPane.test.tsx already uses for `evaluateMessageSecurity`/`getUnlockedKeys`) so these
+// tests only verify `InboxContent`'s own concern: merging whatever Tier 3 returns with Tier 1's
+// results, not re-proving decryption correctness.
+const { searchEncryptedCandidates, getUnlockedKeys } = vi.hoisted(() => ({
+    searchEncryptedCandidates: vi.fn(),
+    getUnlockedKeys: vi.fn(),
+}));
+vi.mock("@rapidmx/react-shared/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
 
 // `MessageDetailPane`'s own exhaustive rendering (header fields, attachments, back link, iframe,
 // formatting) is tested in its own `MessageDetailPane.test.tsx` — mocked here to a thin stand-in so this
@@ -170,8 +183,18 @@ function mockShellAndInbox(
     });
 }
 
+// Every existing test predates Tier 3 and doesn't care about it - defaults its mock to "nothing to
+// contribute" so `mergeSearchResults()` sees a real (empty) array rather than `undefined`, matching
+// what the real `searchEncryptedCandidates()` returns when this mailbox has no unlocked keys. Tests
+// that actually exercise Tier 3 override this per-test before rendering.
+beforeEach(() => {
+    searchEncryptedCandidates.mockResolvedValue([]);
+});
+
 afterEach(() => {
     vi.unstubAllGlobals();
+    searchEncryptedCandidates.mockReset();
+    getUnlockedKeys.mockReset();
 });
 
 describe("InboxPage", () => {
@@ -775,6 +798,90 @@ describe("InboxPage", () => {
 
             await screen.findByText("Matched message");
             expect(screen.getByText("plain preview")).toBeInTheDocument();
+        });
+
+        // Tier 3 (specs/search.md - server-assisted narrowing over encrypted mail) is mocked at the
+        // module boundary (see the file-level `vi.mock("@rapidmx/react-shared/search/searchTier3.js")`
+        // above) - real decryption is already covered end to end with real crypto in react-shared's own
+        // test suite. These tests only verify InboxContent's own responsibility: merging whatever Tier 3
+        // returns with Tier 1's results.
+        describe("Tier 3 (encrypted candidate) merge", () => {
+            it("surfaces a message that Tier 1 never returned at all, found only via a decrypted Tier 3 candidate", async () => {
+                const tier3Hit = messageFixture({ uid: "m3", subject: "Encrypted match", folderUid: "f2" });
+                mockSearch([tier3Hit], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchEncryptedCandidates.mockResolvedValue([
+                    { entityType: "message", entityUid: "m3", score: 5, source: "candidate", metadataOnly: false, snippet: "…the budget…" },
+                ]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+                expect(await screen.findByText("Encrypted match")).toBeInTheDocument();
+                expect(screen.getByText("…the budget…")).toBeInTheDocument();
+            });
+
+            it("renders a uid returned by both tiers only once, preferring Tier 3's content-verified result", async () => {
+                const hit = messageFixture({ uid: "m2", subject: "Matched message", folderUid: "f2", bodyPreview: "plain preview" });
+                mockSearch([hit], (url) =>
+                    url.includes("q=budget")
+                        ? jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1, metadataOnly: true }] })
+                        : undefined,
+                );
+                searchEncryptedCandidates.mockResolvedValue([
+                    { entityType: "message", entityUid: "m2", score: 9, source: "candidate", metadataOnly: false, snippet: "verified snippet" },
+                ]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+                await screen.findByText("Matched message");
+                expect(screen.getAllByText("Matched message")).toHaveLength(1);
+                expect(screen.getByText("verified snippet")).toBeInTheDocument();
+                expect(screen.queryByText("plain preview")).not.toBeInTheDocument();
+            });
+
+            it("sorts merged results by normalized score, highest first", async () => {
+                const lowScore = messageFixture({ uid: "m-low", subject: "Low score match", folderUid: "f2" });
+                const highScore = messageFixture({ uid: "m-high", subject: "High score match", folderUid: "f2" });
+                mockSearch([lowScore, highScore], (url) =>
+                    url.includes("q=budget")
+                        ? jsonResponse(200, {
+                              results: [
+                                  { entityType: "message", entityUid: "m-low", score: 1 },
+                                  { entityType: "message", entityUid: "m-high", score: 10 },
+                              ],
+                          })
+                        : undefined,
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+                await screen.findByText("Low score match");
+                const rendered = screen.getAllByText(/score match/).map((el) => el.textContent);
+                expect(rendered).toEqual(["High score match", "Low score match"]);
+            });
+
+            it("does not call Tier 3 again for a loadMore continuation (no pagination wiring yet)", async () => {
+                const firstHit = messageFixture({ uid: "m2", subject: "First match", folderUid: "f2" });
+                mockSearch([firstHit], (url) =>
+                    url.includes("q=budget") ? jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1 }] }) : undefined,
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+                await screen.findByText("First match");
+
+                expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
+            });
         });
 
         it("clearing the search box returns to the normal folder listing", async () => {
