@@ -105,7 +105,7 @@ function HeaderButton({ label, onClick, icon: Icon }: { label: string; onClick: 
  * once.
  */
 export default function ComposeWindow({ session, onClose, onToggleMinimize }: ComposeWindowProps) {
-    const { id, mailboxUid, initialTo, initialCc, initialSubject, initialQuotedHtml, signatureContext, minimized } = session;
+    const { id, mailboxUid, initialTo, initialCc, initialSubject, initialQuotedHtml, signatureContext, suppressSigning, minimized } = session;
     const isMobile = useIsMobile();
 
     const windowRef = useRef<HTMLDivElement>(null);
@@ -131,7 +131,11 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
     const scheduleButtonRef = useRef<HTMLButtonElement>(null);
     const [mailbox, setMailbox] = useState<Mailbox | null>(null);
     const [encryptionPolicy, setEncryptionPolicy] = useState<EncryptionPolicy | null>(null);
-    const [signEnabled, setSignEnabled] = useState(true);
+    // Defaults off when replying to a detected mailing list (spec's own "Mailing lists" note under
+    // Digital Signatures - a list that appends a footer after signing invalidates the signature) - see
+    // `MessageDetailPane.tsx`'s handleReply()/handleReplyAll() for where this is computed. The user can
+    // still turn it back on; this only changes the default.
+    const [signEnabled, setSignEnabled] = useState(!suppressSigning);
     const [encryptRequested, setEncryptRequested] = useState(false);
     const [encryptionBlocked, setEncryptionBlocked] = useState<RecipientEncryptionStatus[] | null>(null);
     // Compose-time discovery (spec: "Discovery occurs ... when the user addresses a new message to a

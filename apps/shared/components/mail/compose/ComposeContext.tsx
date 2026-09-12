@@ -18,6 +18,8 @@ export interface ComposeSession {
     /** Which of a signature's two "default" flags to resolve against — `"new"` (the default) uses
      * `isDefaultForNewMessages`, `"reply_forward"` uses `isDefaultForReplyForward`. */
     signatureContext: "new" | "reply_forward";
+    /** See `OpenComposeInput.suppressSigning`'s own doc comment. */
+    suppressSigning?: boolean;
     minimized: boolean;
 }
 
@@ -34,6 +36,12 @@ export interface OpenComposeInput {
     /** See `ComposeSession.signatureContext`'s own doc comment. Defaults to `"new"` — every existing
      * caller (Contacts' "Email" action, the folder-sidebar "Compose" button) is a fresh compose. */
     signatureContext?: "new" | "reply_forward";
+    /** `true` when the caller (`MessageDetailPane.tsx`'s Reply/Reply All) has already determined, via
+     * `composeSecurity.ts`'s `isLikelyMailingList()`, that the message being replied to came from a
+     * mailing list — a list that appends a footer after signing invalidates the signature (spec's own
+     * "Mailing lists" note), so the new compose window defaults its Sign toggle off rather than on.
+     * The user can still turn it back on manually; this only changes the *default*. */
+    suppressSigning?: boolean;
 }
 
 export interface ComposeContextValue {
@@ -59,7 +67,7 @@ export default function ComposeProvider({ children }: PropsWithChildren) {
     const [sessions, setSessions] = useState<ComposeSession[]>([]);
     const isMobile = useIsMobile();
 
-    function openCompose({ mailboxUid, to, cc, subject, quotedHtml, signatureContext = "new" }: OpenComposeInput) {
+    function openCompose({ mailboxUid, to, cc, subject, quotedHtml, signatureContext = "new", suppressSigning }: OpenComposeInput) {
         setSessions((prev) => [
             ...prev,
             {
@@ -70,6 +78,7 @@ export default function ComposeProvider({ children }: PropsWithChildren) {
                 initialSubject: subject,
                 initialQuotedHtml: quotedHtml,
                 signatureContext,
+                suppressSigning,
                 minimized: false,
             },
         ]);

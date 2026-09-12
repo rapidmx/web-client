@@ -1097,10 +1097,10 @@ index 0000000000000000000000000000000000000000..98a969fe794ce1893e22dd7af7311b0d
 +}
 diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b7f2a25e2636cd5018cbb7ae2e2a90d2d7d71f7f
+index 0000000000000000000000000000000000000000..595e2ba98cb25f13020b1a2a0ce1c7cc38c86638
 --- /dev/null
 +++ b/dist/crypto/messageSecurity.d.ts
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,31 @@
 +export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
 +export interface MessageSecurityResult {
 +    state: MessageSecurityState;
@@ -1114,6 +1114,13 @@ index 0000000000000000000000000000000000000000..b7f2a25e2636cd5018cbb7ae2e2a90d2
 +     * `GET /:id/content` already produced (empty, per `BaseMailComposeRoute.assembleRaw()`'s design)
 +     * alongside this explanation, rather than a blank pane with no context. */
 +    decryptError?: string;
++    /** See `ParsedEncryptedMessage.headerTamperDetected`'s own doc comment - a deliberately separate,
++     * orthogonal signal from `state`, since RFC 9788's `HP-Outer` is written on every encrypted message
++     * regardless of whether it's also signed, and folding a header-mismatch into `"signature_failed"`
++     * would misrepresent an unsigned-but-tampered message as a signature problem it doesn't have.
++     * `undefined` for anything that isn't an encrypted message this device could decrypt (unprotected,
++     * signed-only, or an encrypted message that failed to decrypt at all - nothing to compare). */
++    headerTamperDetected?: boolean;
 +}
 +/**
 + * Evaluates one received message's raw MIME source (see `mailApi.ts`'s `getMessageRawContent()`) into
@@ -1127,10 +1134,10 @@ index 0000000000000000000000000000000000000000..b7f2a25e2636cd5018cbb7ae2e2a90d2
 +} | undefined, pinnedSignerFingerprint?: string): Promise<MessageSecurityResult>;
 diff --git a/dist/crypto/messageSecurity.js b/dist/crypto/messageSecurity.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..46e16590c1d8f098b840b93a915418f6929603a6
+index 0000000000000000000000000000000000000000..02fcf0d55ea00378b365a0ac22268afa11fe4037
 --- /dev/null
 +++ b/dist/crypto/messageSecurity.js
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,93 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1178,10 +1185,21 @@ index 0000000000000000000000000000000000000000..46e16590c1d8f098b840b93a915418f6
 + * "malformed input is the signature-failed case, not an exception" contract.
 + */
 +export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprint) {
-+    const { contentType, body } = splitHeadersAndBody(rawMime);
++    const { contentType, body, headers } = splitHeadersAndBody(rawMime);
 +    if (!contentType) {
 +        return { state: "unprotected" };
 +    }
++    // The received message's own *real* outer envelope - what `HP-Outer`'s field copies (written at
++    // send time, inside the encrypted content) are compared against to detect post-send tampering with
++    // the unprotected envelope. Built from whichever of these five headers this outer envelope actually
++    // has; a missing one is simply absent from the comparison (see `outerHeadersMatch()`).
++    const actualOuterHeaders = {
++        from: headers["from"],
++        to: headers["to"],
++        cc: headers["cc"],
++        date: headers["date"],
++        subject: headers["subject"],
++    };
 +    async function checkPinning(signerCertificateDer) {
 +        if (!pinnedSignerFingerprint || !signerCertificateDer) {
 +            return true;
@@ -1199,17 +1217,17 @@ index 0000000000000000000000000000000000000000..46e16590c1d8f098b840b93a915418f6
 +        if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
 +            return { state: "encrypted", decryptError: NO_KEY_ERROR };
 +        }
-+        const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey);
++        const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
 +        if (!parsed.decrypted) {
 +            return { state: "encrypted", decryptError: NO_KEY_ERROR };
 +        }
 +        if (parsed.signatureVerified === undefined) {
-+            return { state: "encrypted", html: parsed.bodyText };
++            return { state: "encrypted", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
 +        }
 +        if (parsed.signatureVerified && (await checkPinning(parsed.signerCertificateDer))) {
-+            return { state: "encrypted_verified", html: parsed.bodyText };
++            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
 +        }
-+        return { state: "signature_failed", html: parsed.bodyText };
++        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
 +    }
 +    return { state: "unprotected" };
 +}
@@ -1848,10 +1866,10 @@ index 0000000000000000000000000000000000000000..bfc6236869d92cc0017795be865296eb
 +}
 diff --git a/dist/crypto/smimeMessage.d.ts b/dist/crypto/smimeMessage.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..fb213638fba4ef92dd8a145f8c41191e6c126e5f
+index 0000000000000000000000000000000000000000..09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3
 --- /dev/null
 +++ b/dist/crypto/smimeMessage.d.ts
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,107 @@
 +export interface ProtectedHeaders {
 +    from: string;
 +    to: string;
@@ -1921,27 +1939,50 @@ index 0000000000000000000000000000000000000000..fb213638fba4ef92dd8a145f8c41191e
 +    protectedHeaders?: ProtectedHeaders;
 +    bodyContentType?: string;
 +    bodyText?: string;
++    /** `true` when `actualOuterHeaders` was supplied and disagrees with the `HP-Outer:` field copies
++     * found in the decrypted protected content - RFC 9788's own requirement to "visually distinguish a
++     * message whose outer and protected headers disagree" (a MITM or malicious intermediary rewrote the
++     * unprotected envelope after signing/encryption). `false` when both were supplied and agree.
++     * `undefined` when there's nothing to compare - no `actualOuterHeaders` given, or the message
++     * carries no `HP-Outer:` lines at all (a foreign sender's S/MIME implementation that doesn't write
++     * them, or a message from before this field existed). */
++    headerTamperDetected?: boolean;
 +}
++/** RFC 9788's `HP-Outer:` field-copy fields to actually compare - a subset of `ProtectedHeaders`
++ * (`messageId` has no `HP-Outer` counterpart; only the fields the outer envelope itself carries do).
++ * Exported so `messageSecurity.ts` can build one from a received message's real outer envelope. */
++export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to" | "cc" | "date" | "subject">>;
 +/** Decrypts (and, if present, verifies the inner signature of) a message built by
 + * `buildEncryptedMessage()`. Returns `{ decrypted: false }` (never throws) for anything malformed or
 + * undecryptable with the given key — the caller's own concern is distinguishing "wrong key" from
-+ * "corrupt message," neither of which this function treats as exceptional. */
-+export declare function parseEncryptedMessage(base64Body: string, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey): Promise<ParsedEncryptedMessage>;
++ * "corrupt message," neither of which this function treats as exceptional.
++ *
++ * `actualOuterHeaders` — the received message's real, unprotected outer envelope headers (as the
++ * caller itself read them, before ever calling this function) — enables the RFC 9788 `HP-Outer`
++ * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
++ */
++export declare function parseEncryptedMessage(base64Body: string, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey, actualOuterHeaders?: ComparableOuterHeaders): Promise<ParsedEncryptedMessage>;
 +/** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
 + * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
 + * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
-+ * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped. */
++ * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped.
++ *
++ * Also returns the raw, unparsed header block text as `rawHeaderBlock` — the flat `headers` map can
++ * only hold one value per (lowercased) name, which silently drops all but the last line for a
++ * repeated-name header like RFC 9788's `HP-Outer` (see `extractHpOuterHeaders()`, which parses
++ * `rawHeaderBlock` directly instead). */
 +export declare function splitHeadersAndBody(entity: string): {
 +    headers: Record<string, string>;
 +    contentType?: string;
 +    body: string;
++    rawHeaderBlock: string;
 +};
 diff --git a/dist/crypto/smimeMessage.js b/dist/crypto/smimeMessage.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b04811c20cc7
+index 0000000000000000000000000000000000000000..9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1
 --- /dev/null
 +++ b/dist/crypto/smimeMessage.js
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,337 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -2130,11 +2171,42 @@ index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b048
 +    ];
 +    return lines.join(CRLF);
 +}
++/** Extracts the outer-envelope header values RFC 9788's `HP-Outer: <Field>: <value>` mechanism embeds
++ * inside an encrypted message's protected content - one line per outer header, all sharing the literal
++ * field name `HP-Outer`, which `splitHeadersAndBody()`'s own flat header map can hold only the last of
++ * (a real bug if reused for this - JSON/`Record` keys aren't multi-valued). Scans the raw header block
++ * text directly instead. Returns `undefined` when no `HP-Outer:` lines are present at all, so a caller
++ * can distinguish "nothing to compare" from "compared and everything matched". */
++function extractHpOuterHeaders(rawHeaderBlock) {
++    const result = {};
++    let found = false;
++    for (const line of rawHeaderBlock.split(CRLF)) {
++        const match = /^HP-Outer:\s*(From|To|Cc|Date|Subject):\s*(.*)$/i.exec(line);
++        if (!match) {
++            continue;
++        }
++        found = true;
++        const field = match[1].toLowerCase();
++        result[field] = match[2].trim();
++    }
++    return found ? result : undefined;
++}
++/** `true` when every field `hpOuter` actually carries matches `actualOuterHeaders`' value for that same
++ * field - a field `hpOuter` doesn't carry (e.g. no `Cc` on this message) is not compared, since RFC
++ * 9788 never claims coverage for it either way. */
++function outerHeadersMatch(hpOuter, actualOuterHeaders) {
++    return Object.keys(hpOuter).every((field) => hpOuter[field] === actualOuterHeaders[field]);
++}
 +/** Decrypts (and, if present, verifies the inner signature of) a message built by
 + * `buildEncryptedMessage()`. Returns `{ decrypted: false }` (never throws) for anything malformed or
 + * undecryptable with the given key — the caller's own concern is distinguishing "wrong key" from
-+ * "corrupt message," neither of which this function treats as exceptional. */
-+export async function parseEncryptedMessage(base64Body, recipientCertDer, recipientPrivateKey) {
++ * "corrupt message," neither of which this function treats as exceptional.
++ *
++ * `actualOuterHeaders` — the received message's real, unprotected outer envelope headers (as the
++ * caller itself read them, before ever calling this function) — enables the RFC 9788 `HP-Outer`
++ * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
++ */
++export async function parseEncryptedMessage(base64Body, recipientCertDer, recipientPrivateKey, actualOuterHeaders) {
 +    const envelopedDer = decodeBase64Body(base64Body);
 +    if (!envelopedDer) {
 +        return { decrypted: false };
@@ -2146,8 +2218,15 @@ index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b048
 +    catch {
 +        return { decrypted: false };
 +    }
++    function compareTamper(rawHeaderBlock) {
++        const hpOuter = extractHpOuterHeaders(rawHeaderBlock);
++        if (!hpOuter || !actualOuterHeaders) {
++            return undefined;
++        }
++        return !outerHeadersMatch(hpOuter, actualOuterHeaders);
++    }
 +    const decoded = new TextDecoder().decode(decrypted);
-+    const { headers: outerContentHeaders, body: outerContentBody } = splitHeadersAndBody(decoded);
++    const { headers: outerContentHeaders, body: outerContentBody, rawHeaderBlock: outerRawHeaderBlock } = splitHeadersAndBody(decoded);
 +    const innerContentType = outerContentHeaders["content-type"];
 +    if (innerContentType?.includes('smime-type="signed-data"')) {
 +        const signedDer = decodeBase64Body(outerContentBody);
@@ -2159,7 +2238,7 @@ index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b048
 +            return { decrypted: true, signatureVerified: false };
 +        }
 +        const plaintext = new TextDecoder().decode(verifyResult.content);
-+        const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(plaintext);
++        const { headers, contentType: bodyContentType, body: bodyText, rawHeaderBlock } = splitHeadersAndBody(plaintext);
 +        return {
 +            decrypted: true,
 +            signatureVerified: true,
@@ -2167,10 +2246,17 @@ index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b048
 +            protectedHeaders: headersToProtectedHeaders(headers),
 +            bodyContentType,
 +            bodyText,
++            headerTamperDetected: compareTamper(rawHeaderBlock),
 +        };
 +    }
 +    const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(decoded);
-+    return { decrypted: true, protectedHeaders: headersToProtectedHeaders(headers), bodyContentType, bodyText };
++    return {
++        decrypted: true,
++        protectedHeaders: headersToProtectedHeaders(headers),
++        bodyContentType,
++        bodyText,
++        headerTamperDetected: compareTamper(outerRawHeaderBlock),
++    };
 +}
 +// ---------------------------------------------------------------------------
 +// Small, targeted MIME parsing helpers - sufficient for entities this module
@@ -2202,7 +2288,12 @@ index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b048
 +/** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
 + * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
 + * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
-+ * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped. */
++ * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped.
++ *
++ * Also returns the raw, unparsed header block text as `rawHeaderBlock` — the flat `headers` map can
++ * only hold one value per (lowercased) name, which silently drops all but the last line for a
++ * repeated-name header like RFC 9788's `HP-Outer` (see `extractHpOuterHeaders()`, which parses
++ * `rawHeaderBlock` directly instead). */
 +export function splitHeadersAndBody(entity) {
 +    const separatorIndex = entity.indexOf(`${CRLF}${CRLF}`);
 +    const headerBlock = separatorIndex === -1 ? entity : entity.slice(0, separatorIndex);
@@ -2217,7 +2308,7 @@ index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b048
 +        const value = line.slice(colonIndex + 1).trim();
 +        headers[name] = value;
 +    }
-+    return { headers, contentType: headers["content-type"], body };
++    return { headers, contentType: headers["content-type"], body, rawHeaderBlock: headerBlock };
 +}
 +function headersToProtectedHeaders(headers) {
 +    return {
@@ -2305,7 +2396,7 @@ index 0000000000000000000000000000000000000000..6507d543d18d97693f23e9b9961c4031
 +    }, []);
 +}
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
-index 9eba1e5013b5604ec48710251ce3adafbf5c2896..2e7e9ceec6a2f448505e89b19659ae645263801c 100644
+index 9eba1e5013b5604ec48710251ce3adafbf5c2896..86795e40adba78208c28030594b82ca341a57af0 100644
 --- a/dist/mail/mailApi.d.ts
 +++ b/dist/mail/mailApi.d.ts
 @@ -6,7 +6,9 @@
@@ -2333,7 +2424,7 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..2e7e9ceec6a2f448505e89b19659ae64
  }
  /** Lists mailboxes the caller can access (owned, shared with them, or — for a trusted caller — every one). */
  export declare function listMailboxes(params?: ListParams): Promise<Mailbox[]>;
-@@ -290,6 +300,14 @@ export interface Message {
+@@ -290,6 +300,21 @@ export interface Message {
      /** The per-recipient delivery/read roster on a *sent* message — the client-visible tracking indicator.
       * `undefined` (not an empty array) when no receipt was ever requested for this message. */
      receiptStatus?: MessageReceiptEntry[];
@@ -2345,10 +2436,17 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..2e7e9ceec6a2f448505e89b19659ae64
 +     * stored body, not from a flag this API exposes. Always present on a real `Message` (defaults
 +     * `false` server-side), same optional-for-old-fixtures caveat as `Mailbox.oofEnabled`. */
 +    encrypted?: boolean;
++    /** The raw RFC 2369/8058 `List-Unsubscribe` header value, if present — computed server-side by
++     * `@rapidmx/restapi`'s `ScanPipeline` from the stored MIME, the strongest single bulk-mail signal it
++     * captures. Used client-side to detect list traffic when replying, per
++     * `specs/end-to-end_encryption.md`'s "Mailing lists" note under Digital Signatures: a list that
++     * appends a footer after signing invalidates the signature, so composing a reply to one SHOULD
++     * default signing off. `undefined` for ordinary mail — never computed or guessed client-side. */
++    listUnsubscribeHeader?: string;
  }
  export interface MessageReceiptEntry {
      recipientAddress: string;
-@@ -391,8 +409,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
+@@ -391,8 +416,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
   * itself does no MIME composition). Does not send the message.
   */
  export declare function assembleDraft(messageUid: string, input: AssembleDraftInput): Promise<Message>;

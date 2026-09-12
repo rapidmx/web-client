@@ -346,6 +346,67 @@ describe("MessageDetailPane", () => {
             await user.click(screen.getByRole("button", { name: "Reply" }));
             expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
         });
+
+        // A list that appends a footer after signing invalidates the signature (specs/
+        // end-to-end_encryption.md's "Mailing lists" note under Digital Signatures) - Reply/Reply All
+        // default the new compose window's Sign toggle off when the message being replied to carries a
+        // List-Unsubscribe header, via isLikelyMailingList(). The Sign checkbox itself only renders once
+        // a signing key is unlocked, so these tests supply one via the shared getUnlockedKeys() mock.
+        describe("mailing-list signature suppression", () => {
+            function mockSigningKeyUnlocked() {
+                getUnlockedKeys.mockReturnValue({ signingPrivateKey: {} as any, signingCertDer: new Uint8Array() });
+            }
+
+            it("Reply to a message with a List-Unsubscribe header defaults the Sign checkbox off", async () => {
+                mockComposeDraft();
+                mockSigningKeyUnlocked();
+                const user = userEvent.setup();
+                const message = messageFixture({ listUnsubscribeHeader: "<mailto:list-unsubscribe@example.com>" });
+                render(
+                    <ComposeProvider>
+                        <MessageDetailPane message={message as any} attachments={[]} />
+                    </ComposeProvider>,
+                );
+
+                await user.click(screen.getByRole("button", { name: "Reply" }));
+
+                expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
+                expect(screen.getByRole("checkbox", { name: "Digitally sign this message" })).not.toBeChecked();
+            });
+
+            it("Reply All to a message with a List-Unsubscribe header defaults the Sign checkbox off", async () => {
+                mockComposeDraft();
+                mockSigningKeyUnlocked();
+                const user = userEvent.setup();
+                const message = messageFixture({ listUnsubscribeHeader: "<https://example.com/unsubscribe>" });
+                render(
+                    <ComposeProvider>
+                        <MessageDetailPane message={message as any} attachments={[]} />
+                    </ComposeProvider>,
+                );
+
+                await user.click(screen.getByRole("button", { name: "Reply All" }));
+
+                expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
+                expect(screen.getByRole("checkbox", { name: "Digitally sign this message" })).not.toBeChecked();
+            });
+
+            it("Reply to an ordinary message (no List-Unsubscribe) leaves the Sign checkbox on", async () => {
+                mockComposeDraft();
+                mockSigningKeyUnlocked();
+                const user = userEvent.setup();
+                render(
+                    <ComposeProvider>
+                        <MessageDetailPane message={messageFixture() as any} attachments={[]} />
+                    </ComposeProvider>,
+                );
+
+                await user.click(screen.getByRole("button", { name: "Reply" }));
+
+                expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
+                expect(screen.getByRole("checkbox", { name: "Digitally sign this message" })).toBeChecked();
+            });
+        });
     });
 
     describe("scheduled send cancellation", () => {
@@ -698,6 +759,37 @@ describe("MessageDetailPane", () => {
             expect(await screen.findByText("This device doesn't have the key needed.")).toBeInTheDocument();
             expect(screen.getByText("Encrypted")).toBeInTheDocument();
             expect(screen.getByTitle("Hello there")).toHaveAttribute("src", "/api/mail/messages/m1/content");
+        });
+
+        // RFC 9788's own "MUST visually distinguish" requirement for a message whose outer envelope
+        // disagrees with what was actually signed/encrypted (HP-Outer tamper detection) - deliberately a
+        // separate banner from the 5-state SecurityIndicator badge above, not a 6th state, since this can
+        // co-occur with any of the encrypted/encrypted_verified/signature_failed states.
+        it("shows a header-tamper warning banner when headerTamperDetected is true", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted_verified", html: "<p>hi</p>", headerTamperDetected: true });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await screen.findByText("Encrypted & verified");
+            expect(screen.getByText(/don't match what the sender actually signed or encrypted/)).toBeInTheDocument();
+        });
+
+        it("shows no header-tamper banner when headerTamperDetected is false", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted_verified", html: "<p>hi</p>", headerTamperDetected: false });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await screen.findByText("Encrypted & verified");
+            expect(screen.queryByText(/don't match what the sender actually signed or encrypted/)).not.toBeInTheDocument();
+        });
+
+        it("shows no header-tamper banner when headerTamperDetected is undefined (nothing to compare)", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", html: "<p>hi</p>" });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await screen.findByText("Encrypted");
+            expect(screen.queryByText(/don't match what the sender actually signed or encrypted/)).not.toBeInTheDocument();
         });
 
         it("degrades to unprotected, with no error shown, when fetching the raw content fails", async () => {

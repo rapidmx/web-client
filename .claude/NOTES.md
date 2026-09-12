@@ -363,3 +363,37 @@ every app (Mail/Calendar/Contacts/Tasks/Settings) actually renders through.
   case rather than a general `minutes / 60` pluralization branch — the only >= 60 option
   `IDLE_TIMEOUT_OPTIONS_MINUTES` actually offers today is exactly 60, so the general form's plural
   branch was untestable dead code, not a real gap.
+
+### 2026-09-11 (continued) — Mailing-list signature suppression + HP-Outer tamper-detection banner
+
+Two more items off the "remaining E2E pieces implementable at the current restapi version" list (see
+`react-shared`'s and `server`'s own NOTES.md, same date, for the other pieces: DNSSEC DnsResolver, and
+confirming Rotation Notification's receive side needed no client work at all).
+
+- `ComposeContext.tsx`'s `OpenComposeInput`/`ComposeSession` gained `suppressSigning?: boolean`.
+  `MessageDetailPane.tsx`'s `handleReply()`/`handleReplyAll()` (not `handleForward()` - forwarding
+  isn't a reply-to-a-list situation) now pass `suppressSigning: isLikelyMailingList({ listUnsubscribe:
+  message!.listUnsubscribeHeader })` - `react-shared`'s new `Message.listUnsubscribeHeader` field
+  (`ScanPipeline` already captured this server-side, just never exposed it) feeding a compose-security
+  function that already existed but had no real caller yet. `ComposeWindow.tsx` seeds `signEnabled`
+  from `!suppressSigning` - a default only, the user can still turn signing back on.
+  `specs/end-to-end_encryption.md`'s own "Mailing lists" note under Digital Signatures: a list that
+  appends a footer after signing invalidates the signature.
+- `MessageDetailPane.tsx` renders a second, separate `Alert` banner when
+  `security?.headerTamperDetected` is true (see `react-shared`'s `messageSecurity.ts`/`smimeMessage.ts`
+  changes, same date, for where this field comes from) - deliberately not folded into the existing
+  5-state `SecurityIndicator` badge, since header tampering can co-occur with any of
+  encrypted/encrypted_verified/signature_failed and isn't itself one of the spec's five defined states.
+  Satisfies RFC 9788's "MUST visually distinguish a message whose outer and protected headers disagree"
+  as its own independent signal.
+- Considered and explicitly dropped from scope: a client-local `hcp_shy` (stricter Header
+  Confidentiality Policy) toggle. Re-read `specs/end-to-end_encryption.md`'s actual "Header Protection"
+  section before building it - the RapidMX spec itself only says signed messages "MUST use header
+  protection as defined in RFC 9788" with no mention of `hcp_shy`/`hcp_baseline` by name; that
+  terminology came from RFC 9788 itself (verified earlier this session via WebFetch), not from a
+  RapidMX requirement. `applyBaselineOuterHeaders()` (react-shared) already implements RFC 9788's
+  actual default policy. Building a stricter opt-in tier would be speculative scope creation, not spec
+  compliance - not implemented.
+- Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up both this
+  and the HP-Outer/`listUnsubscribeHeader` react-shared changes in one pass (deliberately batched
+  rather than one patch cycle per change).

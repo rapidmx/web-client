@@ -21,6 +21,7 @@ import {
 import { buildForwardQuote, buildReplyQuote, forwardSubject, replySubject } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { MessageSecurityResult, evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
+import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { useCompose } from "./compose/ComposeContext.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -172,6 +173,7 @@ export default function MessageDetailPane({
             subject: replySubject(message!.subject),
             quotedHtml: buildReplyQuote(message!),
             signatureContext: "reply_forward",
+            suppressSigning: isLikelyMailingList({ listUnsubscribe: message!.listUnsubscribeHeader }),
         });
     }
 
@@ -184,6 +186,7 @@ export default function MessageDetailPane({
             subject: replySubject(message!.subject),
             quotedHtml: buildReplyQuote(message!),
             signatureContext: "reply_forward",
+            suppressSigning: isLikelyMailingList({ listUnsubscribe: message!.listUnsubscribeHeader }),
         });
     }
 
@@ -311,6 +314,15 @@ export default function MessageDetailPane({
                 {cancelError && (
                     <div className="mt-2">
                         <Alert>{cancelError}</Alert>
+                    </div>
+                )}
+                {security?.headerTamperDetected && (
+                    <div className="mt-2">
+                        <Alert>
+                            This message's visible From/To/Cc/Date/Subject don't match what the sender actually signed or
+                            encrypted — an intermediary may have altered them after sending. Treat the fields shown above with
+                            caution.
+                        </Alert>
                     </div>
                 )}
                 <p className="text-sm text-text-muted mt-1">
