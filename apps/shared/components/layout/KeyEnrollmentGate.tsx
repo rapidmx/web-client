@@ -7,27 +7,19 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import { enrollKey, getKeyVault, MasterKeyWrap, PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { enrollKey, getKeyVault, PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
-    MASTER_KEY_AAD_PURPOSE,
     getUnlockedKeys,
     unlockWithPassword,
 } from "@rapidmx/react-shared/crypto/keySession.js";
 import { buildAad, generateMasterKey, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
-import { DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "@rapidmx/react-shared/crypto/passwordUnlock.js";
-import { deriveFromRecoveryCode, generateRecoveryCode } from "@rapidmx/react-shared/crypto/recoveryCode.js";
-import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
+import { buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
 
 type Status = "checking" | "setup_password" | "enrolling" | "show_recovery_codes" | "unlock" | "unlocking" | "ready";
 
 const MIN_PASSWORD_LENGTH = 8;
-const RECOVERY_CODE_COUNT = 8;
-/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
- * high-entropy, see `recoveryCode.ts`'s own doc comment), just a direct HKDF derivation. */
-const RECOVERY_KDF_LABEL = "hkdf-sha256";
-const WRAP_SCHEME_VERSION = 1;
 
 async function provisionEncryptionKey(
     mailboxUid: string,
@@ -35,42 +27,8 @@ async function provisionEncryptionKey(
     password: string,
 ): Promise<{ recoveryCodes: string[] }> {
     const mk = generateMasterKey();
-    const mkAad = buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE);
-
-    const passwordSalt = generateSalt();
-    const { wrappingKey: passwordWrappingKey } = await deriveFromPassword(password, passwordSalt, DEFAULT_ARGON2ID_PARAMS);
-    const passwordSealed = await sealWithKey(passwordWrappingKey, mk, mkAad);
-    const passwordWrap: MasterKeyWrap = {
-        method: "password",
-        ciphertext: passwordSealed.ciphertext,
-        nonce: passwordSealed.nonce,
-        salt: toBase64(passwordSalt),
-        kdf: argon2idKdfLabel(DEFAULT_ARGON2ID_PARAMS),
-        schemeVersion: WRAP_SCHEME_VERSION,
-        createdAt: Date.now(),
-    };
-
-    const recoveryCodes: string[] = [];
-    const recoveryWraps: MasterKeyWrap[] = [];
-    for (let i = 0; i < RECOVERY_CODE_COUNT; i++) {
-        const code = generateRecoveryCode();
-        const salt = generateSalt();
-        const wrappingKey = await deriveFromRecoveryCode(code, salt);
-        const sealed = await sealWithKey(wrappingKey, mk, mkAad);
-        recoveryCodes.push(code);
-        recoveryWraps.push({
-            method: "recovery",
-            // Not derived from the code itself - an id derived from the code would let anyone who saw a
-            // wrap's methodId narrow down which physical recovery code it corresponds to.
-            methodId: `recovery-${i + 1}`,
-            ciphertext: sealed.ciphertext,
-            nonce: sealed.nonce,
-            salt: toBase64(salt),
-            kdf: RECOVERY_KDF_LABEL,
-            schemeVersion: WRAP_SCHEME_VERSION,
-            createdAt: Date.now(),
-        });
-    }
+    const passwordWrap = await buildPasswordWrap(mailboxUid, mk, password);
+    const { wraps: recoveryWraps, codes: recoveryCodes } = await buildRecoveryWraps(mailboxUid, mk);
 
     // Only the encryption key is provisioned here. The signing key's spec-required public-CA enrolment
     // (RFC 8823 ACME automation) doesn't exist yet in @rapidmx/restapi - see server's own NOTES.md - so

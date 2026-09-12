@@ -32,25 +32,36 @@ vi.mock("@rapidmx/react-shared/crypto/masterKey.js", () => ({
     buildAad: (mailboxUid: string, purpose: string) => new TextEncoder().encode(`${mailboxUid}:${purpose}`),
     sealWithKey: async () => ({ ciphertext: "ct", nonce: "n" }),
 }));
-vi.mock("@rapidmx/react-shared/crypto/passwordUnlock.js", () => ({
-    DEFAULT_ARGON2ID_PARAMS: { memorySize: 8, iterations: 1, parallelism: 1 },
-    argon2idKdfLabel: () => "argon2id:m=8,t=1,p=1",
-    generateSalt: () => new Uint8Array(16),
-    deriveFromPassword: async () => ({ authProof: "proof", wrappingKey: new Uint8Array(32) }),
-}));
-vi.mock("@rapidmx/react-shared/crypto/recoveryCode.js", () => ({
-    generateRecoveryCode: (() => {
-        let n = 0;
-        return () => `CODE-${++n}`;
-    })(),
-    deriveFromRecoveryCode: async () => new Uint8Array(32),
+vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({
+    buildPasswordWrap: async () => ({
+        method: "password",
+        ciphertext: "ct",
+        nonce: "n",
+        salt: "salt",
+        kdf: "argon2id:m=8,t=1,p=1",
+        schemeVersion: 1,
+        createdAt: 0,
+    }),
+    buildRecoveryWraps: async () => {
+        const codes = Array.from({ length: 8 }, (_, i) => `CODE-${i + 1}`);
+        return {
+            codes,
+            wraps: codes.map((_, i) => ({
+                method: "recovery",
+                methodId: `recovery-${i + 1}`,
+                ciphertext: "ct",
+                nonce: "n",
+                salt: "salt",
+                kdf: "hkdf-sha256",
+                schemeVersion: 1,
+                createdAt: 0,
+            })),
+        };
+    },
 }));
 vi.mock("@rapidmx/react-shared/crypto/keys.js", () => ({
     generateKeyPairWithCsr: async () => ({ keyPair: { privateKey: {}, publicKey: {} }, csrPem: "csr-pem" }),
     exportPrivateKeyPkcs8: async () => new Uint8Array(10),
-}));
-vi.mock("@rapidmx/react-shared/crypto/encoding.js", () => ({
-    toBase64: (bytes: Uint8Array) => `base64(${bytes.length}bytes)`,
 }));
 
 afterEach(() => {

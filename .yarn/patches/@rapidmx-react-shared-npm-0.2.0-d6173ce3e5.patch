@@ -836,6 +836,109 @@ index 0000000000000000000000000000000000000000..da85967d8e3474b387cff2da2432bdb2
 +    }, baseKey, lengthBytes * 8);
 +    return new Uint8Array(bits);
 +}
+diff --git a/dist/crypto/masterKeyWraps.d.ts b/dist/crypto/masterKeyWraps.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..0861e1d9de6557d6aac4c57d9b8851e1f386ce66
+--- /dev/null
++++ b/dist/crypto/masterKeyWraps.d.ts
+@@ -0,0 +1,22 @@
++import type { MasterKeyWrap } from "./keyvaultApi.js";
++import { Argon2idParams } from "./passwordUnlock.js";
++/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
++ * high-entropy, see `recoveryCode.ts`'s own doc comment), just a direct HKDF derivation. */
++export declare const RECOVERY_KDF_LABEL = "hkdf-sha256";
++export declare const WRAP_SCHEME_VERSION = 1;
++export declare const RECOVERY_CODE_COUNT = 8;
++/** Wraps `mk` under `password` (fresh Argon2id salt every time, even when replacing an existing
++ * password wrap). `params` defaults to this module's own recommended parameters - overridable only so
++ * tests can substitute cheaper ones; production callers should omit it and let the default (which can
++ * be raised over time, per `passwordUnlock.ts`'s own doc comment on why each wrap stores the exact
++ * parameters it was created with) apply. */
++export declare function buildPasswordWrap(mailboxUid: string, mk: Uint8Array, password: string, params?: Argon2idParams): Promise<MasterKeyWrap>;
++/** Generates `count` fresh recovery codes and wraps `mk` under each, returning both the wraps (to
++ * upload) and the plaintext codes (to show the user exactly once - callers must never persist these
++ * themselves). Each wrap's `methodId` is a sequence label, deliberately not derived from the code
++ * itself - that would let anyone who saw a wrap's `methodId` narrow down which physical code it
++ * corresponds to. */
++export declare function buildRecoveryWraps(mailboxUid: string, mk: Uint8Array, count?: number): Promise<{
++    wraps: MasterKeyWrap[];
++    codes: string[];
++}>;
+diff --git a/dist/crypto/masterKeyWraps.js b/dist/crypto/masterKeyWraps.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..98a969fe794ce1893e22dd7af7311b0de0f0eb4b
+--- /dev/null
++++ b/dist/crypto/masterKeyWraps.js
+@@ -0,0 +1,69 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Builds a fresh `MasterKeyWrap` for the password and recovery-code unlock methods, given an
++ * already-generated (or already-unwrapped) master key (MK). Extracted from `web-client`'s
++ * `KeyEnrollmentGate.tsx` (first-sign-in provisioning) so its Settings page's "add a password
++ * method"/"regenerate recovery codes" actions - which wrap the *same* MK a second time, not a freshly
++ * generated one - can reuse the exact same wrap-construction logic rather than a second, potentially
++ * drifting copy of it.
++ */
++import { toBase64 } from "./encoding.js";
++import { buildAad, sealWithKey } from "./masterKey.js";
++import { MASTER_KEY_AAD_PURPOSE } from "./keySession.js";
++import { DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "./passwordUnlock.js";
++import { deriveFromRecoveryCode, generateRecoveryCode } from "./recoveryCode.js";
++/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
++ * high-entropy, see `recoveryCode.ts`'s own doc comment), just a direct HKDF derivation. */
++export const RECOVERY_KDF_LABEL = "hkdf-sha256";
++export const WRAP_SCHEME_VERSION = 1;
++export const RECOVERY_CODE_COUNT = 8;
++/** Wraps `mk` under `password` (fresh Argon2id salt every time, even when replacing an existing
++ * password wrap). `params` defaults to this module's own recommended parameters - overridable only so
++ * tests can substitute cheaper ones; production callers should omit it and let the default (which can
++ * be raised over time, per `passwordUnlock.ts`'s own doc comment on why each wrap stores the exact
++ * parameters it was created with) apply. */
++export async function buildPasswordWrap(mailboxUid, mk, password, params = DEFAULT_ARGON2ID_PARAMS) {
++    const salt = generateSalt();
++    const { wrappingKey } = await deriveFromPassword(password, salt, params);
++    const sealed = await sealWithKey(wrappingKey, mk, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
++    return {
++        method: "password",
++        ciphertext: sealed.ciphertext,
++        nonce: sealed.nonce,
++        salt: toBase64(salt),
++        kdf: argon2idKdfLabel(params),
++        schemeVersion: WRAP_SCHEME_VERSION,
++        createdAt: Date.now(),
++    };
++}
++/** Generates `count` fresh recovery codes and wraps `mk` under each, returning both the wraps (to
++ * upload) and the plaintext codes (to show the user exactly once - callers must never persist these
++ * themselves). Each wrap's `methodId` is a sequence label, deliberately not derived from the code
++ * itself - that would let anyone who saw a wrap's `methodId` narrow down which physical code it
++ * corresponds to. */
++export async function buildRecoveryWraps(mailboxUid, mk, count = RECOVERY_CODE_COUNT) {
++    const aad = buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE);
++    const codes = [];
++    const wraps = [];
++    for (let i = 0; i < count; i++) {
++        const code = generateRecoveryCode();
++        const salt = generateSalt();
++        const wrappingKey = await deriveFromRecoveryCode(code, salt);
++        const sealed = await sealWithKey(wrappingKey, mk, aad);
++        codes.push(code);
++        wraps.push({
++            method: "recovery",
++            methodId: `recovery-${i + 1}`,
++            ciphertext: sealed.ciphertext,
++            nonce: sealed.nonce,
++            salt: toBase64(salt),
++            kdf: RECOVERY_KDF_LABEL,
++            schemeVersion: WRAP_SCHEME_VERSION,
++            createdAt: Date.now(),
++        });
++    }
++    return { wraps, codes };
++}
 diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..b7f2a25e2636cd5018cbb7ae2e2a90d2d7d71f7f
