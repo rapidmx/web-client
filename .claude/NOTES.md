@@ -763,3 +763,31 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   - Full react-shared rebuild + patch cycle to pick up `mail/erasureRequestApi.ts`.
   - This closes out all seven features in restapi's compliance-roadmap batch except Group F (eDiscovery
     Matter export/search), which is Phase 7, not yet built.
+
+- **2026-09-12 (continued) — Phase 7 of consuming restapi's next batch: eDiscovery, Matter export +
+  Matter-scoped search (Group F).** Extended `apps/escrow/matters/[uid].tsx` (already a holder-facing
+  page, never admin/self-service) with two new sections:
+  - **"Export this matter"**: a "+ New export" button (`createMatterExportRequest`) plus the matter's own
+    list of past export requests, filtered client-side the same "no server-side single-matter filter,
+    fetch a generous page and filter locally" way `REQUESTS_FETCH_LIMIT`'s existing doc comment already
+    covers for access requests - `listMatterExportRequests()` has the identical held-scopes-derived
+    scoping, not a per-matter one. Status pill + `errorMessage` on `failed`, a plain
+    `<a href={matterExportRequestDownloadUrl(uid)}>` Download link once `ready` (same native-download
+    pattern as Phase 4/6's export links).
+  - **"Search this matter's custodians"**: a single free-text input (the existing operator grammar - e.g.
+    `from:alice@example.com` - already works here since `searchMatter()` reuses
+    `search/searchApi.ts`'s own `buildSearchParams()` verbatim, not a separate parser) + Search button,
+    results rendered grouped under an `<h3>` per `mailboxUid` - no merged cross-mailbox ranking or
+    pagination beyond one page per custodian, matching the route's own documented scope trim.
+  - `reload()` widened from a two-item to a three-item `Promise.all` (added `listMatterExportRequests()`);
+    every pre-existing test in `test/apps/escrow/matters/[uid].test.tsx` needed a default
+    `/api/escrow/matter-export-requests` mock response added to the shared `mockMatterFetch()` helper,
+    plus the two tests that bypass that helper with their own inline `mockFetch()` fallback chains, since
+    the new third fetch call was otherwise unmocked and threw. Two new tests written against grouped
+    search results initially collided with existing "pending"/"mb1" text already on the page from the
+    access-request section and the matter's own custodian-mailbox list - fixed by scoping those two
+    assertions to `getByRole("heading", {level: 3, name: ...})` for the search results and by stubbing
+    access-requests to `[]` in the export-list test, rather than loosening the assertions.
+  - This closes out the full seven-feature compliance-roadmap batch (Legal Hold, non-owner access
+    auditing, retention policy, GDPR export, mailbox import, GDPR erasure, eDiscovery) across `server`,
+    `react-shared`, and `web-client`.

@@ -326,6 +326,110 @@ index 0000000000000000000000000000000000000000..1cae8f60c59c6ade9feab381e1cad005
 +export function deleteEscrowScope(uid, version) {
 +    return apiFetch(`/escrow/scopes/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 +}
+diff --git a/dist/admin/matterExportApi.d.ts b/dist/admin/matterExportApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1f75c92aaf8f7fe49621ec34651c92f800bd65db
+--- /dev/null
++++ b/dist/admin/matterExportApi.d.ts
+@@ -0,0 +1,20 @@
++export type MatterExportStatus = "pending" | "ready" | "failed";
++export interface MatterExportRequest {
++    uid: string;
++    version: number;
++    dateCreated: string;
++    dateModified: string;
++    matterId: string;
++    requestedByUserUid: string;
++    status: MatterExportStatus;
++    blobKey?: string;
++    errorMessage?: string;
++}
++export declare function createMatterExportRequest(matterId: string): Promise<MatterExportRequest>;
++/** Scoped server-side to matters under scopes the caller holds — never all requests, even for a trusted
++ * admin who isn't also a holder. */
++export declare function listMatterExportRequests(): Promise<MatterExportRequest[]>;
++export declare function getMatterExportRequest(uid: string): Promise<MatterExportRequest>;
++/** A plain URL, not a fetch wrapper — same "let the browser download it natively" pattern
++ * `dataExportApi.ts`'s `exportRequestDownloadUrl()` already establishes. 404s until `status === "ready"`. */
++export declare function matterExportRequestDownloadUrl(uid: string): string;
+diff --git a/dist/admin/matterExportApi.js b/dist/admin/matterExportApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..195f82f61322b0be33fa3d843374106aa422730d
+--- /dev/null
++++ b/dist/admin/matterExportApi.js
+@@ -0,0 +1,33 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s eDiscovery Matter export (`BaseMatterExportRequestRoute`,
++ * mounted at `escrow/matter-export-requests`) — holder-gated throughout (`requireEscrowHolder()` against
++ * the matter's own `escrowScopeId`), never admin-gated. Lives under `admin/` only because that's where
++ * every other Matter/Escrow-family wrapper in this package lives (see `mattersApi.ts`'s own doc
++ * comment) — consumed exclusively by `apps/escrow`. Export runs asynchronously (restapi's own
++ * `MatterExportJob`, not this client) — `createMatterExportRequest()` only stages a `pending` request;
++ * poll `listMatterExportRequests()` for `status` to become `"ready"` (or `"failed"`).
++ */
++import { apiFetch } from "../util/api.js";
++export function createMatterExportRequest(matterId) {
++    return apiFetch(`/escrow/matter-export-requests`, {
++        method: "POST",
++        body: JSON.stringify({ matterId }),
++    });
++}
++/** Scoped server-side to matters under scopes the caller holds — never all requests, even for a trusted
++ * admin who isn't also a holder. */
++export function listMatterExportRequests() {
++    return apiFetch(`/escrow/matter-export-requests`);
++}
++export function getMatterExportRequest(uid) {
++    return apiFetch(`/escrow/matter-export-requests/${encodeURIComponent(uid)}`);
++}
++/** A plain URL, not a fetch wrapper — same "let the browser download it natively" pattern
++ * `dataExportApi.ts`'s `exportRequestDownloadUrl()` already establishes. 404s until `status === "ready"`. */
++export function matterExportRequestDownloadUrl(uid) {
++    return `/api/escrow/matter-export-requests/${encodeURIComponent(uid)}/download`;
++}
+diff --git a/dist/admin/matterSearchApi.d.ts b/dist/admin/matterSearchApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e5819ba9c33fb09e8948d5e7b802cbce59ace9ea
+--- /dev/null
++++ b/dist/admin/matterSearchApi.d.ts
+@@ -0,0 +1,3 @@
++import { SearchParams, SearchResultPage } from "../search/searchApi.js";
++export type { SearchParams, SearchResultPage };
++export declare function searchMatter(matterId: string, text: string, params?: SearchParams): Promise<Record<string, SearchResultPage>>;
+diff --git a/dist/admin/matterSearchApi.js b/dist/admin/matterSearchApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc1dbe928a6128566a422403e1b5e4509b759e9b
+--- /dev/null
++++ b/dist/admin/matterSearchApi.js
+@@ -0,0 +1,24 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrapper over `@rapidmx/restapi`'s eDiscovery Matter-scoped search (`BaseMatterSearchRoute`,
++ * mounted at `escrow/matter-search`) — holder-gated (`requireEscrowHolder()` against the matter's own
++ * `escrowScopeId`). Lives under `admin/` only because that's where every other Matter/Escrow-family
++ * wrapper in this package lives — consumed exclusively by `apps/escrow`.
++ *
++ * Reuses the exact same query-param grammar/shape `search/searchApi.ts`'s own `search()` already speaks
++ * (`SearchParams`/`buildSearchParams()`) — this route is a fan-out of the same underlying
++ * `SearchProvider`, once per the matter's own custodian mailboxes, not a new search capability. `before`/
++ * `after` are always clamped server-side to the matter's own date range, regardless of what's supplied.
++ * There is no merged cross-mailbox ranking or cursor-based pagination — the response is keyed by
++ * `mailboxUid`, one page per custodian, matching how a holder-facing review UI groups results anyway.
++ */
++import { apiFetch } from "../util/api.js";
++import { buildSearchParams } from "../search/searchApi.js";
++export function searchMatter(matterId, text, params = {}) {
++    const query = buildSearchParams(text, params);
++    query.set("matterId", matterId);
++    return apiFetch(`/escrow/matter-search?${query.toString()}`);
++}
 diff --git a/dist/admin/mattersApi.d.ts b/dist/admin/mattersApi.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..faa6416c28cc6bd80df89f63704555ee999d8538
@@ -3747,7 +3851,7 @@ index 0000000000000000000000000000000000000000..628642650cd59af2beb137db8dda2ba3
 +    };
 +}
 diff --git a/dist/search/searchApi.d.ts b/dist/search/searchApi.d.ts
-index 78817f85cba496a9d5431b211d55940921fa518f..d8163f3bfbf13ceafe3a8336028c2206818d98af 100644
+index 78817f85cba496a9d5431b211d55940921fa518f..c5146c2ac6150512598c56237fdac5cec431cd58 100644
 --- a/dist/search/searchApi.d.ts
 +++ b/dist/search/searchApi.d.ts
 @@ -1,10 +1,20 @@
@@ -3771,7 +3875,7 @@ index 78817f85cba496a9d5431b211d55940921fa518f..d8163f3bfbf13ceafe3a8336028c2206
  }
  export interface SearchResultPage {
      results: SearchResult[];
-@@ -15,5 +25,53 @@ export interface SearchParams {
+@@ -15,5 +25,57 @@ export interface SearchParams {
      types?: SearchEntityType[];
      cursor?: string;
      limit?: number;
@@ -3796,6 +3900,10 @@ index 78817f85cba496a9d5431b211d55940921fa518f..d8163f3bfbf13ceafe3a8336028c2206
 +    /** `label:` — one or more `Label.uid`s, matched as an AND (all must be present). */
 +    labels?: string[];
  }
++/** Exported so `admin/matterSearchApi.ts` can build the identical query-param set against a different
++ * base path (`escrow/matter-search`, plus its own required `matterId`) — `BaseMatterSearchRoute` reuses
++ * this exact same query-param grammar verbatim, per its own doc comment. */
++export declare function buildSearchParams(text: string, params: SearchParams): URLSearchParams;
  export declare function search(text: string, params?: SearchParams): Promise<SearchResultPage>;
 +/**
 + * Requests a Tier 3 candidate set (`specs/search.md` §6/§12) — identifiers only, ranked purely on
@@ -3826,10 +3934,10 @@ index 78817f85cba496a9d5431b211d55940921fa518f..d8163f3bfbf13ceafe3a8336028c2206
 +}
 +export declare function candidates(params?: CandidateParams): Promise<CandidateResultPage>;
 diff --git a/dist/search/searchApi.js b/dist/search/searchApi.js
-index 9d4da11d4e7da61bbc59f5f2a3b7c705740f895d..a87296fd949076c3ea2f713454242020e365abc4 100644
+index 9d4da11d4e7da61bbc59f5f2a3b7c705740f895d..8ca651f1418ad32942601e9d73b52300d90fa4c3 100644
 --- a/dist/search/searchApi.js
 +++ b/dist/search/searchApi.js
-@@ -7,9 +7,15 @@
+@@ -7,9 +7,18 @@
   * `src/mongo/routes/SearchRoute.ts`/`src/sql/routes/SearchRoute.ts`), the full-text search endpoint across
   * a mailbox's messages/contacts/calendar events/notes/tasks. Always scoped server-side to the caller's own
   * mailbox — there is no `mailboxUid` param to pass here.
@@ -3842,11 +3950,14 @@ index 9d4da11d4e7da61bbc59f5f2a3b7c705740f895d..a87296fd949076c3ea2f713454242020
   */
  import { apiFetch } from "../util/api.js";
 -export function search(text, params = {}) {
-+function buildSearchParams(text, params) {
++/** Exported so `admin/matterSearchApi.ts` can build the identical query-param set against a different
++ * base path (`escrow/matter-search`, plus its own required `matterId`) — `BaseMatterSearchRoute` reuses
++ * this exact same query-param grammar verbatim, per its own doc comment. */
++export function buildSearchParams(text, params) {
      const query = new URLSearchParams({ q: text });
      if (params.types?.length) {
          query.set("types", params.types.join(","));
-@@ -20,5 +26,72 @@ export function search(text, params = {}) {
+@@ -20,5 +29,72 @@ export function search(text, params = {}) {
      if (params.limit) {
          query.set("limit", String(params.limit));
      }

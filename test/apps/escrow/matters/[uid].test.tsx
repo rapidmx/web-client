@@ -68,6 +68,7 @@ function mockMatterFetch(overrides: Record<string, (init?: RequestInit) => Respo
         // own doc comment. Distinct from the `/api/escrow/matters/m1` single-matter fetch above.
         if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
         if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, [pendingRequest, otherMatterRequest]);
+        if (url === "/api/escrow/matter-export-requests") return jsonResponse(200, []);
         throw new Error(`unexpected ${key}`);
     });
 }
@@ -97,6 +98,7 @@ describe("MatterDetailPage", () => {
             if (url === "/api/escrow/matters/m1") return jsonResponse(200, matterWithoutDescription);
             if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, []);
+            if (url === "/api/escrow/matter-export-requests") return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
@@ -136,6 +138,7 @@ describe("MatterDetailPage", () => {
             if (url === "/api/escrow/matters/m1") return jsonResponse(200, null);
             if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, []);
+            if (url === "/api/escrow/matter-export-requests") return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
@@ -466,5 +469,149 @@ describe("MatterDetailPage", () => {
         await user.click(within(dialog).getByRole("button", { name: "Close" }));
 
         expect(screen.queryByRole("dialog", { name: "Escrow key material" })).not.toBeInTheDocument();
+    });
+
+    it("shows 'No export requests yet.' when there are none for this matter", async () => {
+        mockMatterFetch();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        expect(await screen.findByText("No export requests yet.")).toBeInTheDocument();
+    });
+
+    it("renders export requests filtered to this matter, with status pills and a Download link once ready", async () => {
+        const pendingExport = {
+            uid: "mer1",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            matterId: "m1",
+            requestedByUserUid: "u1",
+            status: "pending" as const,
+        };
+        const readyExport = { ...pendingExport, uid: "mer2", status: "ready" as const, blobKey: "blob1" };
+        const failedExport = { ...pendingExport, uid: "mer3", status: "failed" as const, errorMessage: "blob store unavailable" };
+        const otherMatterExport = { ...pendingExport, uid: "mer99", matterId: "m2" };
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, []),
+            "/api/escrow/matter-export-requests": () =>
+                jsonResponse(200, [pendingExport, readyExport, failedExport, otherMatterExport]),
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        expect(await screen.findByText("pending")).toBeInTheDocument();
+        expect(screen.getByText("ready")).toBeInTheDocument();
+        expect(screen.getByText("failed")).toBeInTheDocument();
+        expect(screen.getByText(/blob store unavailable/)).toBeInTheDocument();
+        expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute(
+            "href",
+            "/api/escrow/matter-export-requests/mer2/download",
+        );
+    });
+
+    it("creates a new export request and reloads the list", async () => {
+        let created = false;
+        mockMatterFetch({
+            "POST /api/escrow/matter-export-requests": () => {
+                created = true;
+                return jsonResponse(200, {});
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New export" }));
+        await vi.waitFor(() => expect(created).toBe(true));
+    });
+
+    it("shows an error message when creating an export fails", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/matter-export-requests": () => jsonResponse(403, { message: "not a holder" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New export" }));
+        expect(await screen.findByText("not a holder")).toBeInTheDocument();
+    });
+
+    it("shows a generic error message when creating an export fails with a non-API error", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/matter-export-requests": () => {
+                throw new TypeError("network down");
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New export" }));
+        expect(await screen.findByText("Could not start this export.")).toBeInTheDocument();
+    });
+
+    it("the Search button is disabled until text is entered, then searches and groups results by mailboxUid", async () => {
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, []),
+            "/api/escrow/matter-search": () =>
+                jsonResponse(200, {
+                    mb1: { results: [{ entityType: "message", entityUid: "msg1", score: 1, snippet: "quarterly budget" }] },
+                    mb2: { results: [] },
+                }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        expect(screen.getByRole("button", { name: "Search" })).toBeDisabled();
+
+        await user.type(screen.getByLabelText("Search this matter"), "budget");
+        expect(screen.getByRole("button", { name: "Search" })).toBeEnabled();
+        await user.click(screen.getByRole("button", { name: "Search" }));
+
+        expect(await screen.findByRole("heading", { name: "mb1", level: 3 })).toBeInTheDocument();
+        expect(screen.getByText(/quarterly budget/)).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "mb2", level: 3 })).toBeInTheDocument();
+        expect(screen.getByText("No matches.")).toBeInTheDocument();
+    });
+
+    it("shows a message when no custodian mailboxes could be searched", async () => {
+        mockMatterFetch({ "/api/escrow/matter-search": () => jsonResponse(200, {}) });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.type(screen.getByLabelText("Search this matter"), "budget");
+        await user.click(screen.getByRole("button", { name: "Search" }));
+
+        expect(await screen.findByText("No custodian mailboxes could be searched.")).toBeInTheDocument();
+    });
+
+    it("shows an error message when searching fails", async () => {
+        mockMatterFetch({ "/api/escrow/matter-search": () => jsonResponse(400, { message: "invalid query" }) });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.type(screen.getByLabelText("Search this matter"), "budget");
+        await user.click(screen.getByRole("button", { name: "Search" }));
+
+        expect(await screen.findByText("invalid query")).toBeInTheDocument();
+    });
+
+    it("shows a generic error message when searching fails with a non-API error", async () => {
+        mockMatterFetch({
+            "/api/escrow/matter-search": () => {
+                throw new TypeError("network down");
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.type(screen.getByLabelText("Search this matter"), "budget");
+        await user.click(screen.getByRole("button", { name: "Search" }));
+
+        expect(await screen.findByText("Could not search this matter.")).toBeInTheDocument();
     });
 });

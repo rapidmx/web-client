@@ -13,6 +13,13 @@ import {
     getAccessRequestMaterial,
     listAccessRequests,
 } from "@rapidmx/react-shared/admin/escrowAccessRequestsApi.js";
+import {
+    createMatterExportRequest,
+    listMatterExportRequests,
+    matterExportRequestDownloadUrl,
+    MatterExportRequest,
+} from "@rapidmx/react-shared/admin/matterExportApi.js";
+import { searchMatter, SearchResultPage } from "@rapidmx/react-shared/admin/matterSearchApi.js";
 import EscrowShell, { EscrowShellProps } from "../../shared/components/escrow/layout/EscrowShell.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -29,6 +36,12 @@ const INPUT_CLASS =
 // paginating a second, matter-scoped list UI on top of an already-scoped one; a holder with more than this
 // many *total* in-flight requests across every matter they hold is not the common case this v1 targets.
 const REQUESTS_FETCH_LIMIT = 200;
+
+function statusBadgeClass(status: string): string {
+    if (status === "denied" || status === "failed") return "bg-danger-bg text-danger";
+    if (status === "pending") return "bg-surface-alt text-text-muted";
+    return "bg-success text-white";
+}
 
 export default function MatterDetailPage(props: Omit<EscrowShellProps, "active"> & { params: { uid: string } }) {
     return (
@@ -61,13 +74,26 @@ function MatterDetailContent({ uid }: { uid: string }) {
     const [materialError, setMaterialError] = useState<string | null>(null);
     const [loadingMaterial, setLoadingMaterial] = useState(false);
 
+    const [exportRequests, setExportRequests] = useState<MatterExportRequest[]>([]);
+    const [creatingExport, setCreatingExport] = useState(false);
+    const [exportError, setExportError] = useState<string | null>(null);
+
+    const [searchText, setSearchText] = useState("");
+    const [searching, setSearching] = useState(false);
+    const [searchError, setSearchError] = useState<string | null>(null);
+    const [searchResults, setSearchResults] = useState<Record<string, SearchResultPage> | null>(null);
+
+    // Same "no server-side single-matter filter, fetch a generous page and filter client-side" shape
+    // REQUESTS_FETCH_LIMIT's own doc comment already establishes for access requests -
+    // listMatterExportRequests() has the identical held-scopes-derived scoping, not a per-matter one.
     function reload() {
         setLoading(true);
         setError(null);
-        Promise.all([getMatter(uid), listAccessRequests({ limit: REQUESTS_FETCH_LIMIT })])
-            .then(([loadedMatter, allRequests]) => {
+        Promise.all([getMatter(uid), listAccessRequests({ limit: REQUESTS_FETCH_LIMIT }), listMatterExportRequests()])
+            .then(([loadedMatter, allRequests, allExportRequests]) => {
                 setMatter(loadedMatter);
                 setRequests(allRequests.filter((r) => r.matterId === uid));
+                setExportRequests(allExportRequests.filter((r) => r.matterId === uid));
             })
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this matter."))
             .finally(() => setLoading(false));
@@ -163,6 +189,33 @@ function MatterDetailContent({ uid }: { uid: string }) {
 
     function closeMaterialModal() {
         setMaterialFor(null);
+    }
+
+    async function handleCreateExport() {
+        setExportError(null);
+        setCreatingExport(true);
+        try {
+            await createMatterExportRequest(uid);
+            reload();
+        } catch (err) {
+            setExportError(err instanceof ApiRequestError ? err.message : "Could not start this export.");
+        } finally {
+            setCreatingExport(false);
+        }
+    }
+
+    async function handleSearch(e: FormEvent) {
+        e.preventDefault();
+        setSearchError(null);
+        setSearching(true);
+        try {
+            const results = await searchMatter(uid, searchText);
+            setSearchResults(results);
+        } catch (err) {
+            setSearchError(err instanceof ApiRequestError ? err.message : "Could not search this matter.");
+        } finally {
+            setSearching(false);
+        }
     }
 
     if (loading) {
@@ -294,6 +347,99 @@ function MatterDetailContent({ uid }: { uid: string }) {
                         ))}
                     </ul>
                 )}
+            </div>
+
+            <div className="bg-surface border border-border rounded-md p-6">
+                <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-base font-bold uppercase tracking-wide">Export this matter</h2>
+                    <Button type="button" className="!w-auto" loading={creatingExport} disabled={creatingExport} onClick={handleCreateExport}>
+                        + New export
+                    </Button>
+                </div>
+                <p className="text-xs text-text-muted mb-3">
+                    Exports messages (narrowed to this matter&rsquo;s own date range), plus full contacts,
+                    calendar events, tasks, and notes, from every custodian mailbox actually assigned to this
+                    matter&rsquo;s escrow scope, as one combined NDJSON file.
+                </p>
+                {exportError && <Alert>{exportError}</Alert>}
+                {exportRequests.length === 0 ? (
+                    <p className="text-sm text-text-muted">No export requests yet.</p>
+                ) : (
+                    <ul className="flex flex-col gap-2">
+                        {exportRequests.map((request) => (
+                            <li
+                                key={request.uid}
+                                className="flex items-center justify-between gap-3 text-sm py-1.5 px-3 bg-surface-alt rounded-sm"
+                            >
+                                <span>
+                                    {new Date(request.dateCreated).toLocaleString()}
+                                    {request.status === "failed" && request.errorMessage && (
+                                        <span className="text-danger"> — {request.errorMessage}</span>
+                                    )}
+                                </span>
+                                <span className="flex items-center gap-3">
+                                    <span
+                                        className={`text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill ${statusBadgeClass(request.status)}`}
+                                    >
+                                        {request.status}
+                                    </span>
+                                    {request.status === "ready" && (
+                                        <a
+                                            href={matterExportRequestDownloadUrl(request.uid)}
+                                            className="text-primary-dark hover:underline font-medium"
+                                        >
+                                            Download
+                                        </a>
+                                    )}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+
+            <div className="bg-surface border border-border rounded-md p-6">
+                <h2 className="text-base font-bold uppercase tracking-wide mb-3">Search this matter&rsquo;s custodians</h2>
+                <form onSubmit={handleSearch} className="flex gap-3 mb-4">
+                    <input
+                        aria-label="Search this matter"
+                        className={INPUT_CLASS}
+                        value={searchText}
+                        onChange={(e) => setSearchText(e.target.value)}
+                        placeholder="Free text or an operator filter, e.g. from:alice@example.com"
+                    />
+                    <Button type="submit" className="!w-auto shrink-0" loading={searching} disabled={searching || !searchText.trim()}>
+                        Search
+                    </Button>
+                </form>
+                {searchError && <Alert>{searchError}</Alert>}
+                {searchResults &&
+                    (Object.keys(searchResults).length === 0 ? (
+                        <p className="text-sm text-text-muted">No custodian mailboxes could be searched.</p>
+                    ) : (
+                        <div className="flex flex-col gap-4">
+                            {Object.entries(searchResults).map(([mailboxUid, page]) => (
+                                <div key={mailboxUid}>
+                                    <h3 className="text-sm font-semibold mb-2">{mailboxUid}</h3>
+                                    {page.results.length === 0 ? (
+                                        <p className="text-xs text-text-muted">No matches.</p>
+                                    ) : (
+                                        <ul className="flex flex-col gap-1">
+                                            {page.results.map((result) => (
+                                                <li
+                                                    key={`${result.entityType}-${result.entityUid}`}
+                                                    className="text-sm py-1 px-2 bg-surface-alt rounded-sm"
+                                                >
+                                                    {result.entityType} &middot; {result.entityUid}
+                                                    {result.snippet && <span className="text-text-muted"> — {result.snippet}</span>}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    ))}
             </div>
 
             <Modal open={showNewRequest} onClose={() => setShowNewRequest(false)} title="New access request">
