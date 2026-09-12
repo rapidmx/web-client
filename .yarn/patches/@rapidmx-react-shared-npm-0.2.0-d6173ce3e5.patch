@@ -836,6 +836,124 @@ index 0000000000000000000000000000000000000000..da85967d8e3474b387cff2da2432bdb2
 +    }, baseKey, lengthBytes * 8);
 +    return new Uint8Array(bits);
 +}
+diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7f2a25e2636cd5018cbb7ae2e2a90d2d7d71f7f
+--- /dev/null
++++ b/dist/crypto/messageSecurity.d.ts
+@@ -0,0 +1,24 @@
++export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
++export interface MessageSecurityResult {
++    state: MessageSecurityState;
++    /** The verified/decrypted plaintext HTML this module recovered - still needs client-side
++     * sanitization before touching the DOM (this module does none itself; see `MessageDetailPane.tsx`).
++     * Absent for `"unprotected"` (the caller should keep using the server's own sanitized `/content`
++     * body) and for an encrypted message this device couldn't open (see `decryptError`). */
++    html?: string;
++    /** Present only when the message was encrypted but this device couldn't decrypt it (a wrong or
++     * since-rotated key, or corrupt/foreign data) - the caller should keep showing whatever
++     * `GET /:id/content` already produced (empty, per `BaseMailComposeRoute.assembleRaw()`'s design)
++     * alongside this explanation, rather than a blank pane with no context. */
++    decryptError?: string;
++}
++/**
++ * Evaluates one received message's raw MIME source (see `mailApi.ts`'s `getMessageRawContent()`) into
++ * a security state + recovered plaintext. Never throws — a parse failure, wrong key, or unrecognized
++ * content type all degrade to a result the caller can render directly, matching `smime.ts`'s own
++ * "malformed input is the signature-failed case, not an exception" contract.
++ */
++export declare function evaluateMessageSecurity(rawMime: string, unlocked: {
++    encryptionPrivateKey?: CryptoKey;
++    encryptionCertDer?: Uint8Array;
++} | undefined, pinnedSignerFingerprint?: string): Promise<MessageSecurityResult>;
+diff --git a/dist/crypto/messageSecurity.js b/dist/crypto/messageSecurity.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..46e16590c1d8f098b840b93a915418f6929603a6
+--- /dev/null
++++ b/dist/crypto/messageSecurity.js
+@@ -0,0 +1,82 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
++ * "Message Security Indicators" five states, and recovers the plaintext body when applicable. Reads the
++ * outer envelope's own `Content-Type` (via `smimeMessage.ts`'s `splitHeadersAndBody()`) to decide
++ * whether the message is one this system's own `buildSignedOnlyMessage()`/`buildEncryptedMessage()`
++ * shape (`multipart/signed`, `application/pkcs7-mime; smime-type="enveloped-data"`) or neither.
++ *
++ * **Trust Model gap, disclosed not silent**: the spec's own Trust Model requires validating a signature
++ * "against the known public key in the Contact's record" (TOFU pinning), not merely checking that the
++ * embedded certificate's signature is mathematically self-consistent. `evaluateMessageSecurity()` takes
++ * an optional `pinnedSignerFingerprint` for exactly this - when supplied, a cryptographically valid
++ * signature whose embedded certificate doesn't match it is downgraded to `"signature_failed"` rather
++ * than trusted. No caller passes it yet (Contact key-pinning UI is Phase 4's "Discovery & contacts UI"
++ * work, not this pass) - every signature this module verifies today is checked for mathematical
++ * validity only, not against a pinned identity.
++ */
++import { computeCertFingerprint } from "./smime.js";
++import { parseEncryptedMessage, parseSignedOnlyMessage, splitHeadersAndBody } from "./smimeMessage.js";
++function isSignedOnlyContentType(contentType) {
++    return contentType.toLowerCase().trimStart().startsWith("multipart/signed");
++}
++/** Matches `buildEncryptedMessage()`'s own output shape, and leniently accepts the equivalent legacy/
++ * AEAD `smime-type` values a foreign S/MIME sender could produce (mirrors `@rapidmx/restapi`'s own
++ * server-side `SmimeUtils.isEncryptedBody()` classification, so the two systems agree on what counts as
++ * encrypted). */
++function isEncryptedContentType(contentType) {
++    const value = contentType.toLowerCase();
++    if (value.trimStart().startsWith("multipart/encrypted")) {
++        return true;
++    }
++    if (!value.includes("pkcs7-mime")) {
++        return false;
++    }
++    return /smime-type\s*=\s*"?(enveloped-data|authenveloped-data)"?/.test(value);
++}
++const NO_KEY_ERROR = "This device doesn't have the key needed to decrypt this message.";
++/**
++ * Evaluates one received message's raw MIME source (see `mailApi.ts`'s `getMessageRawContent()`) into
++ * a security state + recovered plaintext. Never throws — a parse failure, wrong key, or unrecognized
++ * content type all degrade to a result the caller can render directly, matching `smime.ts`'s own
++ * "malformed input is the signature-failed case, not an exception" contract.
++ */
++export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprint) {
++    const { contentType, body } = splitHeadersAndBody(rawMime);
++    if (!contentType) {
++        return { state: "unprotected" };
++    }
++    async function checkPinning(signerCertificateDer) {
++        if (!pinnedSignerFingerprint || !signerCertificateDer) {
++            return true;
++        }
++        return (await computeCertFingerprint(signerCertificateDer)) === pinnedSignerFingerprint;
++    }
++    if (isSignedOnlyContentType(contentType)) {
++        const parsed = await parseSignedOnlyMessage(contentType, body);
++        if (!parsed.verified || !(await checkPinning(parsed.signerCertificateDer))) {
++            return { state: "signature_failed" };
++        }
++        return { state: "signed_verified", html: parsed.bodyText };
++    }
++    if (isEncryptedContentType(contentType)) {
++        if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
++            return { state: "encrypted", decryptError: NO_KEY_ERROR };
++        }
++        const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey);
++        if (!parsed.decrypted) {
++            return { state: "encrypted", decryptError: NO_KEY_ERROR };
++        }
++        if (parsed.signatureVerified === undefined) {
++            return { state: "encrypted", html: parsed.bodyText };
++        }
++        if (parsed.signatureVerified && (await checkPinning(parsed.signerCertificateDer))) {
++            return { state: "encrypted_verified", html: parsed.bodyText };
++        }
++        return { state: "signature_failed", html: parsed.bodyText };
++    }
++    return { state: "unprotected" };
++}
 diff --git a/dist/crypto/passkeyUnlock.d.ts b/dist/crypto/passkeyUnlock.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..f97f98fa40a61e8422886cd8af228c9f905e4337
@@ -1155,10 +1273,10 @@ index 0000000000000000000000000000000000000000..ac7f897fd95d6c05874a8e5856e98c7b
 +}
 diff --git a/dist/crypto/smime.d.ts b/dist/crypto/smime.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e1c292598887e4ee6988b7e15e5f8791b872d99c
+index 0000000000000000000000000000000000000000..d064b7e9ba1dcb45cbe921f0177ae7ae6fd67450
 --- /dev/null
 +++ b/dist/crypto/smime.d.ts
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,74 @@
 +/**
 + * The CMS (S/MIME) engine behind `specs/end-to-end_encryption.md`'s "Message Format" requirement
 + * ("RapidMX MUST use S/MIME (CMS) as the on-the-wire message format for both signatures and
@@ -1226,12 +1344,19 @@ index 0000000000000000000000000000000000000000..e1c292598887e4ee6988b7e15e5f8791
 + * — the same shape as trying every wrapped-key entry in `KeyVault.masterKeyWraps` until one unwraps.
 + */
 +export declare function decryptEnvelopedData(envelopedDer: Uint8Array, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey): Promise<Uint8Array>;
++/** SHA-256 fingerprint of a DER certificate, hex encoded — matches `keyvaultApi.ts`'s own `PublicKey.
++ * fingerprint` format exactly, so a value computed here is directly comparable against one already on
++ * a `Mailbox`/`Contact` record. Used by `messageSecurity.ts` to compare a received message's embedded
++ * signer certificate against a pinned `Contact` key per the spec's Trust Model (TOFU) — `verifyDetached()`/
++ * `verifyOpaque()` only prove a signature is mathematically valid, never that the certificate belongs to
++ * who the message claims (see `VerifyResult`'s own doc comment). */
++export declare function computeCertFingerprint(certDer: Uint8Array): Promise<string>;
 diff --git a/dist/crypto/smime.js b/dist/crypto/smime.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..24376d983d331c71e5c2139766608bf984830607
+index 0000000000000000000000000000000000000000..bfc6236869d92cc0017795be865296eb0f7a079e
 --- /dev/null
 +++ b/dist/crypto/smime.js
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,230 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1450,12 +1575,24 @@ index 0000000000000000000000000000000000000000..24376d983d331c71e5c2139766608bf9
 +    // defensive fallback since `lastError` could otherwise surface as a non-Error thrown value.
 +    throw lastError instanceof Error ? lastError : new Error("No recipient slot in this EnvelopedData could be decrypted with this key.");
 +}
++/** SHA-256 fingerprint of a DER certificate, hex encoded — matches `keyvaultApi.ts`'s own `PublicKey.
++ * fingerprint` format exactly, so a value computed here is directly comparable against one already on
++ * a `Mailbox`/`Contact` record. Used by `messageSecurity.ts` to compare a received message's embedded
++ * signer certificate against a pinned `Contact` key per the spec's Trust Model (TOFU) — `verifyDetached()`/
++ * `verifyOpaque()` only prove a signature is mathematically valid, never that the certificate belongs to
++ * who the message claims (see `VerifyResult`'s own doc comment). */
++export async function computeCertFingerprint(certDer) {
++    const digest = await crypto.subtle.digest(DIGEST_ALGORITHM, toArrayBuffer(certDer));
++    return Array.from(new Uint8Array(digest))
++        .map((b) => b.toString(16).padStart(2, "0"))
++        .join("");
++}
 diff --git a/dist/crypto/smimeMessage.d.ts b/dist/crypto/smimeMessage.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..de8fa18c07080ead6b9e3349f94bb056f5abadfe
+index 0000000000000000000000000000000000000000..fb213638fba4ef92dd8a145f8c41191e6c126e5f
 --- /dev/null
 +++ b/dist/crypto/smimeMessage.d.ts
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,84 @@
 +export interface ProtectedHeaders {
 +    from: string;
 +    to: string;
@@ -1506,6 +1643,16 @@ index 0000000000000000000000000000000000000000..de8fa18c07080ead6b9e3349f94bb056
 +    certDer: Uint8Array;
 +    privateKey: CryptoKey;
 +}): Promise<MimePart>;
++/**
++ * Combines a `MimePart` (from `buildSignedOnlyMessage()`/`buildEncryptedMessage()`) with the outer
++ * envelope's own headers into one complete RFC 5322 message source, ready for `mailApi.ts`'s
++ * `assembleDraftRaw()`. `outerHeaders` MUST be the already-obscured headers for an encrypted message
++ * (`applyBaselineOuterHeaders()`'s output) - this function does no obscuring itself, it only serializes
++ * whatever headers it's given. Deliberately excludes `Bcc`: that recipient list is submission-only and
++ * must never appear as a message header (see `AssembleDraftRawInput`'s own doc comment - `bcc` is passed
++ * to that call separately, never baked into `rawMime`).
++ */
++export declare function assembleOutboundMime(outerHeaders: ProtectedHeaders, part: MimePart): string;
 +export interface ParsedEncryptedMessage {
 +    decrypted: boolean;
 +    /** Whether an inner (opaque) signature was present and verified - `undefined` when the message
@@ -1521,12 +1668,21 @@ index 0000000000000000000000000000000000000000..de8fa18c07080ead6b9e3349f94bb056
 + * undecryptable with the given key — the caller's own concern is distinguishing "wrong key" from
 + * "corrupt message," neither of which this function treats as exceptional. */
 +export declare function parseEncryptedMessage(base64Body: string, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey): Promise<ParsedEncryptedMessage>;
++/** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
++ * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
++ * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
++ * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped. */
++export declare function splitHeadersAndBody(entity: string): {
++    headers: Record<string, string>;
++    contentType?: string;
++    body: string;
++};
 diff --git a/dist/crypto/smimeMessage.js b/dist/crypto/smimeMessage.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..66871dfcfb2ecf21670ce8c4912c893d61301bbb
+index 0000000000000000000000000000000000000000..be1a1414416228bd12444740d6b1b04811c20cc7
 --- /dev/null
 +++ b/dist/crypto/smimeMessage.js
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,287 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1690,6 +1846,31 @@ index 0000000000000000000000000000000000000000..66871dfcfb2ecf21670ce8c4912c893d
 +        body: base64Wrapped(envelopedDer),
 +    };
 +}
++/**
++ * Combines a `MimePart` (from `buildSignedOnlyMessage()`/`buildEncryptedMessage()`) with the outer
++ * envelope's own headers into one complete RFC 5322 message source, ready for `mailApi.ts`'s
++ * `assembleDraftRaw()`. `outerHeaders` MUST be the already-obscured headers for an encrypted message
++ * (`applyBaselineOuterHeaders()`'s output) - this function does no obscuring itself, it only serializes
++ * whatever headers it's given. Deliberately excludes `Bcc`: that recipient list is submission-only and
++ * must never appear as a message header (see `AssembleDraftRawInput`'s own doc comment - `bcc` is passed
++ * to that call separately, never baked into `rawMime`).
++ */
++export function assembleOutboundMime(outerHeaders, part) {
++    const lines = [
++        `From: ${outerHeaders.from}`,
++        `To: ${outerHeaders.to}`,
++        ...(outerHeaders.cc ? [`Cc: ${outerHeaders.cc}`] : []),
++        `Date: ${outerHeaders.date}`,
++        `Subject: ${outerHeaders.subject}`,
++        `Message-ID: ${outerHeaders.messageId}`,
++        `MIME-Version: 1.0`,
++        `Content-Type: ${part.contentType}`,
++        ...Object.entries(part.additionalHeaders ?? {}).map(([key, value]) => `${key}: ${value}`),
++        "",
++        part.body,
++    ];
++    return lines.join(CRLF);
++}
 +/** Decrypts (and, if present, verifies the inner signature of) a message built by
 + * `buildEncryptedMessage()`. Returns `{ decrypted: false }` (never throws) for anything malformed or
 + * undecryptable with the given key — the caller's own concern is distinguishing "wrong key" from
@@ -1760,8 +1941,10 @@ index 0000000000000000000000000000000000000000..66871dfcfb2ecf21670ce8c4912c893d
 +    }
 +}
 +/** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
-+ * the entity's own Content-Type value (if present) for convenience. */
-+function splitHeadersAndBody(entity) {
++ * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
++ * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
++ * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped. */
++export function splitHeadersAndBody(entity) {
 +    const separatorIndex = entity.indexOf(`${CRLF}${CRLF}`);
 +    const headerBlock = separatorIndex === -1 ? entity : entity.slice(0, separatorIndex);
 +    const body = separatorIndex === -1 ? "" : entity.slice(separatorIndex + 2 * CRLF.length);
@@ -1788,7 +1971,7 @@ index 0000000000000000000000000000000000000000..66871dfcfb2ecf21670ce8c4912c893d
 +    };
 +}
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
-index 9eba1e5013b5604ec48710251ce3adafbf5c2896..77b358e2ab3f47b490b3a3801ca8d2e1b92ee1fb 100644
+index 9eba1e5013b5604ec48710251ce3adafbf5c2896..2e7e9ceec6a2f448505e89b19659ae645263801c 100644
 --- a/dist/mail/mailApi.d.ts
 +++ b/dist/mail/mailApi.d.ts
 @@ -6,7 +6,9 @@
@@ -1831,7 +2014,7 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..77b358e2ab3f47b490b3a3801ca8d2e1
  }
  export interface MessageReceiptEntry {
      recipientAddress: string;
-@@ -391,6 +409,27 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
+@@ -391,8 +409,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
   * itself does no MIME composition). Does not send the message.
   */
  export declare function assembleDraft(messageUid: string, input: AssembleDraftInput): Promise<Message>;
@@ -1858,12 +2041,22 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..77b358e2ab3f47b490b3a3801ca8d2e1
 +export declare function assembleDraftRaw(messageUid: string, input: AssembleDraftRawInput): Promise<Message>;
  /** Scans, relays, and moves an already-assembled draft into Sent Items. */
  export declare function sendMessage(messageUid: string): Promise<Message>;
++/**
++ * Fetches a message's raw RFC 5322 MIME source — for client-side E2E decrypt/signature-verification
++ * only (`crypto/smimeMessage.ts`), never for display. Bypasses `apiFetch()` (which only ever decodes a
++ * JSON response body): this server-local route (`BaseMessageRawContentRoute.ts` in `server`, mounted
++ * alongside `@rapidmx/restapi`'s own `MessageRoute`) returns `message/rfc822`, not JSON — the one thing
++ * that library's own `GET /:id/content` deliberately never serves (see that route's own doc comment).
++ */
++export declare function getMessageRawContent(messageUid: string): Promise<string>;
  export interface ImpersonationResult {
+     token: string;
+     user: {
 diff --git a/dist/mail/mailApi.js b/dist/mail/mailApi.js
-index bbea6c30708cf0767a11336b663b758e6eaaae58..74de7bb966631a8b1ebae590fe0d52779f035390 100644
+index bbea6c30708cf0767a11336b663b758e6eaaae58..a216244f0c5b4909abf4efe378031dec54747fde 100644
 --- a/dist/mail/mailApi.js
 +++ b/dist/mail/mailApi.js
-@@ -258,6 +258,19 @@ export function assembleDraft(messageUid, input) {
+@@ -258,10 +258,40 @@ export function assembleDraft(messageUid, input) {
          body: JSON.stringify(input),
      });
  }
@@ -1883,17 +2076,39 @@ index bbea6c30708cf0767a11336b663b758e6eaaae58..74de7bb966631a8b1ebae590fe0d5277
  /** Scans, relays, and moves an already-assembled draft into Sent Items. */
  export function sendMessage(messageUid) {
      return apiFetch(`/mail/messages/${encodeURIComponent(messageUid)}/send`, { method: "POST" });
+ }
++/**
++ * Fetches a message's raw RFC 5322 MIME source — for client-side E2E decrypt/signature-verification
++ * only (`crypto/smimeMessage.ts`), never for display. Bypasses `apiFetch()` (which only ever decodes a
++ * JSON response body): this server-local route (`BaseMessageRawContentRoute.ts` in `server`, mounted
++ * alongside `@rapidmx/restapi`'s own `MessageRoute`) returns `message/rfc822`, not JSON — the one thing
++ * that library's own `GET /:id/content` deliberately never serves (see that route's own doc comment).
++ */
++export async function getMessageRawContent(messageUid) {
++    const res = await fetch(`/api/mail/messages/${encodeURIComponent(messageUid)}/raw`);
++    if (!res.ok) {
++        const contentType = res.headers.get("content-type") ?? "";
++        const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
++        const message = (body && (body.message || body.error)) || res.statusText || "Could not load this message's raw content.";
++        throw new ApiRequestError(message, res.status, body?.code);
++    }
++    return res.text();
++}
+ /**
+  * Trusted-role-only: starts an admin "log in as user" session. In production this calls auth-server
+  * directly (not this app's own API) since only auth-server can mint a token carrying `userUid`'s real
 diff --git a/package.json b/package.json
-index 752ddd38befaf38a75c5047b844511ff8ee4108e..3e8e87e1aea55b24402a7fd386a0e7990e853ca4 100644
+index 752ddd38befaf38a75c5047b844511ff8ee4108e..46e2b1ed9b458266ccc40599f21e5d210f993c8a 100644
 --- a/package.json
 +++ b/package.json
-@@ -36,8 +36,13 @@
+@@ -36,8 +36,14 @@
    },
    "dependencies": {
      "@emoji-mart/data": "^1.2.1",
 +    "@peculiar/x509": "^2.1.0",
 +    "asn1js": "^3.0.10",
      "date-fns": "^4.4.0",
++    "dompurify": "^3.4.15",
 +    "hash-wasm": "^4.12.0",
 +    "pkijs": "^3.4.0",
      "react-icons": "^5.7.0",

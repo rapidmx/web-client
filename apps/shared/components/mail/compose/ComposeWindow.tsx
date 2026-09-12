@@ -16,10 +16,13 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attachment,
     ComposeRecipientInput,
+    Mailbox,
     Message,
     assembleDraft,
+    assembleDraftRaw,
     attachmentContentUrl,
     createDraft,
+    getMailbox,
     listFolders,
     sendMessage,
     setMessageRequestReceipt,
@@ -27,11 +30,17 @@ import {
     uploadAttachment,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
+import { decideMessageEncryption, resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
+import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { EncryptionPolicy, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
+import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } from "@rapidmx/react-shared/crypto/smimeMessage.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import type { ComposeSession } from "./ComposeContext.js";
 import RichTextEditor from "./RichTextEditor.js";
 import ScheduleSendPicker from "./ScheduleSendPicker.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 export interface ComposeWindowProps {
     session: ComposeSession;
@@ -120,6 +129,54 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
     const [requestReceipt, setRequestReceipt] = useState(false);
     const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
     const scheduleButtonRef = useRef<HTMLButtonElement>(null);
+    const [mailbox, setMailbox] = useState<Mailbox | null>(null);
+    const [encryptionPolicy, setEncryptionPolicy] = useState<EncryptionPolicy | null>(null);
+    const [signEnabled, setSignEnabled] = useState(true);
+    const [encryptRequested, setEncryptRequested] = useState(false);
+    const [encryptionBlocked, setEncryptionBlocked] = useState<RecipientEncryptionStatus[] | null>(null);
+
+    // Best-effort, same as the signature-list fetch below: a mailbox with no keys enrolled yet (or a
+    // failed fetch) just means sign/encrypt stay unavailable for this compose session, never a blocking
+    // error - encryption is optional and gradual by design (see `KeyEnrollmentGate`'s own doc comment).
+    // `cryptoContextReady` (below) gates Send/Send-later until both calls have settled either way, so a
+    // send that happens to race this fetch can't silently skip encryption the spec says should apply.
+    const [cryptoContextReady, setCryptoContextReady] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+        setCryptoContextReady(false);
+        let mailboxSettled = false;
+        let policySettled = false;
+        function checkReady() {
+            if (!cancelled && mailboxSettled && policySettled) {
+                setCryptoContextReady(true);
+            }
+        }
+        getMailbox(mailboxUid)
+            .then((result) => {
+                if (!cancelled) {
+                    setMailbox(result);
+                }
+            })
+            .catch(() => undefined)
+            .finally(() => {
+                mailboxSettled = true;
+                checkReady();
+            });
+        getEncryptionPolicy()
+            .then((result) => {
+                if (!cancelled) {
+                    setEncryptionPolicy(result);
+                }
+            })
+            .catch(() => undefined)
+            .finally(() => {
+                policySettled = true;
+                checkReady();
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [mailboxUid]);
 
     useEffect(() => {
         listFolders(mailboxUid)
@@ -239,9 +296,94 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         }
     }
 
+    /**
+     * Builds this draft's final body — plaintext, signed-only, or signed+encrypted per
+     * `specs/end-to-end_encryption.md` — then stores it via `assembleDraft()`/`assembleDraftRaw()`.
+     * Shared by `handleSend()`/`handleScheduleSend()` (and the "Send without encryption" conflict button
+     * rendered below, via `forcePlaintext`) so the sign/encrypt decision lives in exactly one place.
+     *
+     * Returns `"blocked"` (never throws for this case) when encryption was requested but not every
+     * recipient can currently be encrypted to — the spec's "Multiple Recipients" all-or-nothing rule.
+     * Sets `encryptionBlocked` as a side effect so the window can render that prompt; callers must stop
+     * (not send) when they get this back.
+     *
+     * Discovery (`lookupKeys()`) and the resulting sign/encrypt decision only run at this, the final
+     * pre-send step — not live as recipients are typed. A compose-time recipient-entry indicator (key
+     * icons, live discovery as each address is entered) is Phase 4's "Discovery & contacts UI" work, not
+     * this pass; this still satisfies the spec's "MUST be called lazily at compose time, not on receipt"
+     * requirement, just without a live UI reflecting it before Send is clicked.
+     */
+    async function assembleForSend(
+        toRecipients: ComposeRecipientInput[],
+        ccRecipients: ComposeRecipientInput[],
+        bccRecipients: ComposeRecipientInput[],
+        forcePlaintext: boolean,
+    ): Promise<Message | "blocked"> {
+        const unlocked = getUnlockedKeys(mailboxUid);
+        // `mailbox` is required to build protected headers (own From address) whenever signing or
+        // encrypting - not just guarded on the encryption branch below, since a signed-only message
+        // needs it too. A mailbox fetch failure just means no crypto for this send, never a crash.
+        const canSign = signEnabled && !!mailbox && !!unlocked?.signingPrivateKey && !!unlocked.signingCertDer;
+        const canEncryptSelf = !!unlocked?.encryptionPrivateKey && !!unlocked.encryptionCertDer;
+        const allRecipients = [...toRecipients, ...ccRecipients, ...bccRecipients];
+
+        let wantEncrypt = false;
+        let recipientCertDers: Uint8Array[] = [];
+        if (!forcePlaintext && canEncryptSelf && mailbox && encryptionPolicy && allRecipients.length > 0) {
+            const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
+            const lookups = await Promise.all(allRecipients.map((r) => lookupKeys(mailboxUid, r.address).catch(() => undefined)));
+            const statuses = allRecipients.map((r, i) =>
+                resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, r.address, lookups[i]),
+            );
+            const decision = decideMessageEncryption(statuses);
+            wantEncrypt = encryptRequested || decision.autoEncrypt;
+            if (wantEncrypt) {
+                if (!decision.canEncryptAll) {
+                    setEncryptionBlocked(decision.blockedRecipients);
+                    return "blocked";
+                }
+                recipientCertDers = [unlocked!.encryptionCertDer!, ...statuses.map((s) => fromBase64(s.encryptCert!.publicKey))];
+            }
+        }
+
+        if ((wantEncrypt || canSign) && attachments.length > 0) {
+            // Matches BaseMailComposeRoute.assembleRaw()'s own server-side rejection, surfaced here with a
+            // clearer explanation than that route's generic 400 rather than via a round trip.
+            throw new ApiRequestError("A signed or encrypted message cannot include file attachments yet - remove them before sending.", 400);
+        }
+
+        if (!wantEncrypt && !canSign) {
+            // See the old compose page's identical note: `sanitize-html` is Node-oriented and the server-side
+            // gate in `BaseMailComposeRoute.assemble()` is the sole authoritative sanitizer regardless, so no
+            // client-side pass is done here either.
+            return assembleDraft(draft!.uid, { to: toRecipients, cc: ccRecipients, bcc: bccRecipients, subject, html });
+        }
+
+        const domain = mailbox!.primarySmtpAddress.split("@")[1] ?? "localhost";
+        const protectedHeaders: ProtectedHeaders = {
+            from: mailbox!.displayName
+                ? `"${mailbox!.displayName.replace(/"/g, '\\"')}" <${mailbox!.primarySmtpAddress}>`
+                : mailbox!.primarySmtpAddress,
+            to: toRecipients.map((r) => r.address).join(", "),
+            cc: ccRecipients.length > 0 ? ccRecipients.map((r) => r.address).join(", ") : undefined,
+            date: new Date().toUTCString(),
+            subject,
+            messageId: `<${crypto.randomUUID()}@${domain}>`,
+        };
+        const bodyContentType = 'text/html; charset="utf-8"';
+        const signing = canSign ? { certDer: unlocked!.signingCertDer!, privateKey: unlocked!.signingPrivateKey! } : undefined;
+
+        const outerHeaders = wantEncrypt ? applyBaselineOuterHeaders(protectedHeaders) : protectedHeaders;
+        const mimePart = wantEncrypt
+            ? await buildEncryptedMessage(bodyContentType, html, protectedHeaders, outerHeaders, recipientCertDers, signing)
+            : await buildSignedOnlyMessage(bodyContentType, html, protectedHeaders, signing!.certDer, signing!.privateKey);
+        const rawMime = assembleOutboundMime(outerHeaders, mimePart);
+        return assembleDraftRaw(draft!.uid, { to: toRecipients, cc: ccRecipients, bcc: bccRecipients, subject: outerHeaders.subject, rawMime });
+    }
+
     // Same reasoning as `handleFilesSelected` above: the Send button is itself `disabled` until `draft`
     // resolves, so this is never reachable with a null `draft`.
-    async function handleSend() {
+    async function handleSend(forcePlaintext = false) {
         const toRecipients = parseAddresses(to);
         if (toRecipients.length === 0) {
             setSendError("At least one recipient is required.");
@@ -251,16 +393,10 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         setSending(true);
         setSendError(null);
         try {
-            // See the old compose page's identical note: `sanitize-html` is Node-oriented and the server-side
-            // gate in `BaseMailComposeRoute.assemble()` is the sole authoritative sanitizer regardless, so no
-            // client-side pass is done here either.
-            const assembled = await assembleDraft(draft!.uid, {
-                to: toRecipients,
-                cc: parseAddresses(cc),
-                bcc: parseAddresses(bcc),
-                subject,
-                html,
-            });
+            const assembled = await assembleForSend(toRecipients, parseAddresses(cc), parseAddresses(bcc), forcePlaintext);
+            if (assembled === "blocked") {
+                return;
+            }
             const withReceipt = requestReceipt ? await setMessageRequestReceipt(assembled, true) : assembled;
             await sendMessage(withReceipt.uid);
             onClose();
@@ -287,13 +423,10 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         setSending(true);
         setSendError(null);
         try {
-            const assembled = await assembleDraft(draft!.uid, {
-                to: toRecipients,
-                cc: parseAddresses(cc),
-                bcc: parseAddresses(bcc),
-                subject,
-                html,
-            });
+            const assembled = await assembleForSend(toRecipients, parseAddresses(cc), parseAddresses(bcc), false);
+            if (assembled === "blocked") {
+                return;
+            }
             const withReceipt = requestReceipt ? await setMessageRequestReceipt(assembled, true) : assembled;
             const scheduled = await setMessageScheduledSendTime(withReceipt, scheduledSendTimeIso);
             await sendMessage(scheduled.uid);
@@ -304,6 +437,10 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
             setSending(false);
         }
     }
+
+    // A plain read from keySession.ts's module-level session store, not React state - see that module's
+    // own doc comment. Cheap enough to read fresh on every render rather than caching in state.
+    const unlockedKeys = getUnlockedKeys(mailboxUid);
 
     const title = subject.trim() || "New Message";
     const titleId = `compose-title-${id}`;
@@ -393,6 +530,28 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
                     </div>
                 )}
 
+                {encryptionBlocked && (
+                    <div className="px-3 pt-2">
+                        <Alert>
+                            <p className="mb-2">
+                                This message can&rsquo;t be encrypted for everyone: {encryptionBlocked.map((r) => r.address).join(", ")}
+                                {encryptionBlocked[0]?.prohibitedReason ? ` — ${encryptionBlocked[0].prohibitedReason}` : " has no encryption key on file"}.
+                                Remove {encryptionBlocked.length > 1 ? "these recipients" : "this recipient"} from To/Cc/Bcc, or send the
+                                whole message in plaintext.
+                            </p>
+                            <Button
+                                type="button"
+                                onClick={() => {
+                                    setEncryptionBlocked(null);
+                                    void handleSend(true);
+                                }}
+                            >
+                                Send without encryption
+                            </Button>
+                        </Alert>
+                    </div>
+                )}
+
                 <div className={FIELD_ROW}>
                     <label htmlFor={`compose-to-${id}`} className="text-xs text-text-muted shrink-0">
                         To
@@ -462,12 +621,28 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
                     Request a read receipt
                 </label>
 
+                {/* Only rendered once this session actually has a usable signing/encryption key - see
+                    `assembleForSend()`'s own doc comment for why signing rarely shows today (no signing
+                    certificate exists until RFC 8823 ACME enrollment lands). */}
+                {unlockedKeys?.signingPrivateKey && (
+                    <label className="flex items-center gap-1.5 px-3 pb-1 text-xs text-text-muted">
+                        <input type="checkbox" checked={signEnabled} onChange={(e) => setSignEnabled(e.target.checked)} />
+                        Digitally sign this message
+                    </label>
+                )}
+                {unlockedKeys?.encryptionPrivateKey && (
+                    <label className="flex items-center gap-1.5 px-3 pb-1 text-xs text-text-muted">
+                        <input type="checkbox" checked={encryptRequested} onChange={(e) => setEncryptRequested(e.target.checked)} />
+                        Encrypt this message
+                    </label>
+                )}
+
                 <div className="shrink-0 flex items-center gap-1 px-3 py-2 border-t border-border">
                     <div className="flex items-center rounded-pill bg-primary text-white overflow-hidden">
                         <button
                             type="button"
-                            onClick={handleSend}
-                            disabled={!draft || sending}
+                            onClick={() => handleSend()}
+                            disabled={!draft || sending || !cryptoContextReady}
                             className="py-1.5 pl-5 pr-3 font-semibold text-sm hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >
                             {sending ? "Sending…" : "Send"}
@@ -478,7 +653,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
                             aria-label="Send later"
                             aria-haspopup="true"
                             aria-expanded={schedulePickerOpen}
-                            disabled={!draft || sending}
+                            disabled={!draft || sending || !cryptoContextReady}
                             onClick={() => setSchedulePickerOpen((o) => !o)}
                             className="py-1.5 px-2 border-l border-white/30 hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >

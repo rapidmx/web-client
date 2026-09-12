@@ -7,8 +7,41 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
+import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import ComposeWindow from "../../../apps/shared/components/mail/compose/ComposeWindow.js";
 import type { ComposeSession } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
+
+const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
+
+// The actual CMS/S-MIME crypto (pkijs's ECDH-ES multi-recipient key agreement in particular) is already
+// exercised end to end, against real WebCrypto, by react-shared's own smime.test.ts/smimeMessage.test.ts
+// - deliberately run under Vitest's "node" environment there, not jsdom (see that repo's vitest.config.ts).
+// jsdom's own WebCrypto shim does not reliably support pkijs's ECDH recipient path (confirmed by direct
+// reproduction: a real encryptForRecipients() call under this file's jsdom environment throws deep inside
+// pkijs's KDF step) - and re-proving CMS correctness here would be redundant with that suite anyway. These
+// tests instead stub out buildSignedOnlyMessage()/buildEncryptedMessage() (the two functions that actually
+// touch pkijs) and verify ComposeWindow's own responsibility: deciding *when* to call them, with what
+// headers/certs, and wiring the result into assembleDraftRaw() - real, unmocked - correctly.
+// applyBaselineOuterHeaders()/assembleOutboundMime() are pure string logic with no crypto, so they're kept
+// real via importOriginal, rather than re-implementing their behavior a second time here.
+const { buildSignedOnlyMessage, buildEncryptedMessage } = vi.hoisted(() => ({
+    buildSignedOnlyMessage: vi.fn(),
+    buildEncryptedMessage: vi.fn(),
+}));
+vi.mock("@rapidmx/react-shared/crypto/smimeMessage.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/smimeMessage.js")>()),
+    buildSignedOnlyMessage,
+    buildEncryptedMessage,
+}));
+
+/** A fake DER certificate distinguishable in test assertions - never actually parsed as X.509 here,
+ * since buildSignedOnlyMessage()/buildEncryptedMessage() are mocked above. */
+function fakeCertDer(label: string): Uint8Array {
+    return new TextEncoder().encode(`FAKE-CERT:${label}`);
+}
+const fakeSigningKey = { fake: "signing-key" } as unknown as CryptoKey;
+const fakeEncryptionKey = { fake: "encryption-key" } as unknown as CryptoKey;
 
 // Exposes `onUploadImage` via a button so tests can drive `ComposeWindow`'s own upload-handling logic
 // directly (success/failure/not-ready-yet) without needing a real TipTap editor — `ComposeToolbar`'s
@@ -105,6 +138,9 @@ function signatureFixture(overrides: Record<string, unknown> = {}) {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    getUnlockedKeys.mockReset();
+    buildSignedOnlyMessage.mockReset();
+    buildEncryptedMessage.mockReset();
 });
 
 describe("ComposeWindow", () => {
@@ -898,6 +934,381 @@ describe("ComposeWindow", () => {
 
             resolveSignatures!();
             expect(await screen.findByTestId("html-editor")).toBeInTheDocument();
+        });
+    });
+
+    describe("end-to-end encryption/signing", () => {
+        const mailboxFixture = {
+            uid: "mb1",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            ownerUserUid: "u1",
+            primarySmtpAddress: "u1@example.com",
+            aliasAddresses: [],
+            displayName: "User One",
+            timezone: "UTC",
+            quotaBytes: 1_000_000_000,
+            usedBytes: 0,
+            encryptPreference: { preferEncrypt: "mutual" as const },
+        };
+        const automaticPolicy = { encryptSameOrg: "automatic", encryptFederated: "automatic", encryptExternal: "automatic" };
+
+        function mockCryptoEndpoints(
+            extra?: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined,
+            overrides?: { mailbox?: unknown; policy?: unknown },
+        ) {
+            return mockCompose((url, init) => {
+                const custom = extra?.(url, init);
+                if (custom) return custom;
+                const method = init?.method ?? "GET";
+                if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, overrides?.mailbox ?? mailboxFixture);
+                if (url === "/api/mail/encryption-policy") return jsonResponse(200, overrides?.policy ?? automaticPolicy);
+                if (url === "/api/mail/compose/m1/assemble-raw" && method === "POST") return jsonResponse(200, draft);
+                if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
+                return undefined;
+            });
+        }
+
+        it("does not render Sign/Encrypt checkboxes when no key has been unlocked this session", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            mockCryptoEndpoints();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            expect(screen.queryByLabelText(/Digitally sign/)).not.toBeInTheDocument();
+            expect(screen.queryByLabelText(/Encrypt this message/)).not.toBeInTheDocument();
+        });
+
+        it("sends a detached-signed message when a signing key is unlocked, with the real Subject visible in the outer envelope", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                signingPrivateKey: fakeSigningKey,
+                signingCertDer: fakeCertDer("alice-sign"),
+                signingFingerprint: "fp-sign",
+            });
+            buildSignedOnlyMessage.mockResolvedValue({
+                contentType: 'multipart/signed; protocol="application/pkcs7-signature"; micalg=sha-256; boundary="b1"',
+                body: "SIGNED-BODY",
+            });
+            const fetchMock = mockCryptoEndpoints();
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            expect(await screen.findByLabelText("Digitally sign this message")).toBeChecked();
+            await user.type(screen.getByLabelText("To"), "b@example.com");
+            await user.click(screen.getByRole("button", { name: "Cc Bcc" }));
+            await user.type(screen.getByLabelText("Cc"), "cc@example.com");
+            await user.type(screen.getByLabelText("Subject"), "Hi there");
+            await user.type(screen.getByTestId("html-editor"), "<p>hello</p>");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble-raw", expect.objectContaining({ method: "POST" })),
+            );
+            expect(buildSignedOnlyMessage).toHaveBeenCalledWith(
+                'text/html; charset="utf-8"',
+                "<p>hello</p>",
+                expect.objectContaining({
+                    from: expect.stringContaining("u1@example.com"),
+                    to: "b@example.com",
+                    cc: "cc@example.com",
+                    subject: "Hi there",
+                }),
+                fakeCertDer("alice-sign"),
+                fakeSigningKey,
+            );
+            const call = fetchMock.mock.calls.find((c) => c[0] === "/api/mail/compose/m1/assemble-raw")!;
+            const body = JSON.parse((call[1] as RequestInit).body as string);
+            // Signing alone never obscures the Subject - only an encrypted message's outer envelope does.
+            expect(body.subject).toBe("Hi there");
+            expect(body.rawMime).toContain("Subject: Hi there");
+            expect(body.rawMime).toContain("multipart/signed");
+            expect(body.rawMime).toContain("SIGNED-BODY");
+        });
+
+        it("does not sign when the Sign checkbox is unchecked", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                signingPrivateKey: fakeSigningKey,
+                signingCertDer: fakeCertDer("alice-sign"),
+                signingFingerprint: "fp-sign",
+            });
+            const fetchMock = mockCompose((url, init) => {
+                const method = init?.method ?? "GET";
+                if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailboxFixture);
+                if (url === "/api/mail/encryption-policy") return jsonResponse(200, automaticPolicy);
+                if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
+                if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.click(await screen.findByLabelText("Digitally sign this message"));
+            await user.type(screen.getByLabelText("To"), "b@example.com");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })),
+            );
+        });
+
+        it("auto-encrypts (without checking the box) when both parties prefer mutual and policy is automatic, and always encrypts to self", async () => {
+            const ownEncryptCert = fakeCertDer("alice-encrypt");
+            const bobCert = fakeCertDer("bob-encrypt");
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                encryptionPrivateKey: fakeEncryptionKey,
+                encryptionCertDer: ownEncryptCert,
+                encryptionFingerprint: "fp-own",
+            });
+            buildEncryptedMessage.mockResolvedValue({
+                contentType: 'application/pkcs7-mime; smime-type="enveloped-data"; name="smime.p7m"',
+                additionalHeaders: { "Content-Transfer-Encoding": "base64" },
+                body: "ENCRYPTED-BASE64-BODY",
+            });
+            const fetchMock = mockCryptoEndpoints((url) => {
+                if (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup")) {
+                    return jsonResponse(200, {
+                        keys: [
+                            {
+                                publicKey: toBase64(bobCert),
+                                type: "x509",
+                                useType: "encrypt",
+                                fingerprint: "fp-bob",
+                                notBefore: Date.now() - 1000,
+                                notAfter: Date.now() + 1_000_000,
+                            },
+                        ],
+                        encryptPreference: { preferEncrypt: "mutual" },
+                    });
+                }
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            expect(await screen.findByLabelText("Encrypt this message")).not.toBeChecked();
+            await user.type(screen.getByLabelText("To"), "bob@example.com");
+            await user.type(screen.getByLabelText("Subject"), "Secret");
+            await user.type(screen.getByTestId("html-editor"), "<p>hello</p>");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble-raw", expect.objectContaining({ method: "POST" })),
+            );
+            expect(buildEncryptedMessage).toHaveBeenCalledTimes(1);
+            const [bodyContentType, bodyText, protectedHeaders, outerHeaders, recipientCertDers, signing] =
+                buildEncryptedMessage.mock.calls[0];
+            expect(bodyContentType).toBe('text/html; charset="utf-8"');
+            expect(bodyText).toBe("<p>hello</p>");
+            expect(protectedHeaders).toMatchObject({ subject: "Secret", to: "bob@example.com" });
+            expect(outerHeaders).toMatchObject({ subject: "[...]", to: "bob@example.com" });
+            // Per the spec's "Encrypt to Self": the sender's own cert MUST be included alongside the
+            // recipient's, so the sender's own stored Sent copy is decryptable too.
+            expect((recipientCertDers as Uint8Array[]).map((c) => toBase64(c))).toEqual([toBase64(ownEncryptCert), toBase64(bobCert)]);
+            expect(signing).toBeUndefined();
+            const call = fetchMock.mock.calls.find((c) => c[0] === "/api/mail/compose/m1/assemble-raw")!;
+            const body = JSON.parse((call[1] as RequestInit).body as string);
+            // RFC 9788 hcp_baseline: the outer envelope's own Subject is obscured even though the real
+            // one travels protected inside the encrypted payload.
+            expect(body.subject).toBe("[...]");
+            expect(body.rawMime).toContain("application/pkcs7-mime");
+            expect(body.rawMime).toContain('smime-type="enveloped-data"');
+            expect(body.rawMime).not.toContain("Secret");
+        });
+
+        it("blocks and offers to send in plaintext when a recipient has no usable encryption key and the user requests encryption", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                encryptionPrivateKey: fakeEncryptionKey,
+                encryptionCertDer: fakeCertDer("alice-encrypt"),
+                encryptionFingerprint: "fp-own",
+            });
+            const fetchMock = mockCryptoEndpoints((url, init) => {
+                const method = init?.method ?? "GET";
+                if (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup")) return jsonResponse(200, { keys: [] });
+                if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "nokey1@example.com, nokey2@example.com");
+            await user.click(await screen.findByLabelText("Encrypt this message"));
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            const blockedAlert = await screen.findByText(/can.t be encrypted for everyone/);
+            expect(blockedAlert.textContent).toContain("has no encryption key on file");
+            expect(blockedAlert.textContent).toContain("these recipients");
+            expect(screen.queryByRole("dialog")).toBeInTheDocument(); // still open, not sent
+            expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/compose/m1/assemble-raw")).toBe(false);
+
+            await user.click(screen.getByRole("button", { name: "Send without encryption" }));
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })),
+            );
+        });
+
+        it("explains why, per-recipient, when policy prohibits encryption for that recipient's tier", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                encryptionPrivateKey: fakeEncryptionKey,
+                encryptionCertDer: fakeCertDer("alice-encrypt"),
+                encryptionFingerprint: "fp-own",
+            });
+            mockCryptoEndpoints(
+                (url) => (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup") ? jsonResponse(200, { keys: [] }) : undefined),
+                { policy: { encryptSameOrg: "automatic", encryptFederated: "prohibited", encryptExternal: "prohibited" } },
+            );
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "far@other.com");
+            await user.click(await screen.findByLabelText("Encrypt this message"));
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            const blockedAlert = await screen.findByText(/can.t be encrypted for everyone/);
+            expect(blockedAlert.textContent).toContain("organization's encryption policy");
+            expect(blockedAlert.textContent).toContain("this recipient");
+        });
+
+        it("runs discovery but still sends plaintext when policy is optional and the recipient doesn't prefer mutual encryption", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                encryptionPrivateKey: fakeEncryptionKey,
+                encryptionCertDer: fakeCertDer("alice-encrypt"),
+                encryptionFingerprint: "fp-own",
+            });
+            const fetchMock = mockCryptoEndpoints(
+                (url, init) => {
+                    const method = init?.method ?? "GET";
+                    if (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup")) {
+                        return jsonResponse(200, {
+                            keys: [
+                                {
+                                    publicKey: toBase64(fakeCertDer("bob-encrypt")),
+                                    type: "x509",
+                                    useType: "encrypt",
+                                    fingerprint: "fp-bob",
+                                    notBefore: Date.now() - 1000,
+                                    notAfter: Date.now() + 1_000_000,
+                                },
+                            ],
+                            encryptPreference: { preferEncrypt: "nopreference" },
+                        });
+                    }
+                    if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
+                    return undefined;
+                },
+                { policy: { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" } },
+            );
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            expect(await screen.findByLabelText("Encrypt this message")).not.toBeChecked();
+            await user.type(screen.getByLabelText("To"), "bob@example.com");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })),
+            );
+            expect(buildEncryptedMessage).not.toHaveBeenCalled();
+        });
+
+        it("uses the bare address as the From header when the mailbox has no display name", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                signingPrivateKey: fakeSigningKey,
+                signingCertDer: fakeCertDer("alice-sign"),
+                signingFingerprint: "fp-sign",
+            });
+            buildSignedOnlyMessage.mockResolvedValue({ contentType: 'multipart/signed; boundary="b1"', body: "SIGNED-BODY" });
+            mockCryptoEndpoints(undefined, { mailbox: { ...mailboxFixture, displayName: "" } });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "b@example.com");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            await waitFor(() => expect(buildSignedOnlyMessage).toHaveBeenCalled());
+            expect(buildSignedOnlyMessage).toHaveBeenCalledWith(
+                expect.anything(),
+                expect.anything(),
+                expect.objectContaining({ from: "u1@example.com" }),
+                expect.anything(),
+                expect.anything(),
+            );
+        });
+
+        it("rejects signing/encrypting a message that already has an attachment, with a clear explanation", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                signingPrivateKey: fakeSigningKey,
+                signingCertDer: fakeCertDer("alice-sign"),
+                signingFingerprint: "fp-sign",
+            });
+            const attachment = {
+                uid: "a1",
+                version: 0,
+                dateCreated: "2026-01-01T00:00:00.000Z",
+                dateModified: "2026-01-01T00:00:00.000Z",
+                messageUid: "m1",
+                folderUid: "f-drafts",
+                mailboxUid: "mb1",
+                filename: "photo.png",
+                mimeType: "image/png",
+                sizeBytes: 10,
+                isInline: false,
+            };
+            mockCryptoEndpoints((url, init) => {
+                const method = init?.method ?? "GET";
+                if (url.startsWith("/api/mail/attachments/upload") && method === "POST") return jsonResponse(200, attachment);
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByLabelText("Attach files")).not.toBeDisabled());
+
+            const file = new File(["pixels"], "photo.png", { type: "image/png" });
+            await user.upload(screen.getByLabelText("Attach files"), file);
+            await waitFor(() => expect(screen.getByText("photo.png")).toBeInTheDocument());
+
+            await user.type(screen.getByLabelText("To"), "b@example.com");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            expect(await screen.findByText(/cannot include file attachments yet/)).toBeInTheDocument();
+        });
+
+        it("also blocks a scheduled send when encryption is requested but not every recipient has a usable key", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                encryptionPrivateKey: fakeEncryptionKey,
+                encryptionCertDer: fakeCertDer("alice-encrypt"),
+                encryptionFingerprint: "fp-own",
+            });
+            const fetchMock = mockCryptoEndpoints((url) => (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup") ? jsonResponse(200, { keys: [] }) : undefined));
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send later" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "nokey@example.com");
+            await user.click(await screen.findByLabelText("Encrypt this message"));
+            await user.click(screen.getByRole("button", { name: "Send later" }));
+            const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+            await user.type(screen.getByLabelText("Send at"), new Date(future.getTime() - future.getTimezoneOffset() * 60_000).toISOString().slice(0, 16));
+            await user.click(screen.getAllByRole("button", { name: "Send later" })[1]);
+
+            expect(await screen.findByText(/can.t be encrypted for everyone/)).toBeInTheDocument();
+            expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/compose/m1/assemble-raw")).toBe(false);
         });
     });
 });

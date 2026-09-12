@@ -19,9 +19,14 @@ import MailShell, { useMailShell } from "../../../apps/shared/components/mail/la
 // MailShell's own behavior, not encryption enrollment, so "already enrolled" is the correct default
 // throughout - a mailbox with no keys enrolled yet is KeyEnrollmentGate's own concern, covered by its
 // own dedicated test file.
+// getEncryptionPolicy()/lookupKeys() are also stubbed here since ComposeWindow.tsx (mounted by clicking
+// this shell's own Compose button) calls both unconditionally on mount, regardless of whether a
+// mailbox's encryption keys are unlocked - the same real-module-under-jsdom concern as getKeyVault above.
 vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
     getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
     enrollKey: vi.fn(),
+    getEncryptionPolicy: vi.fn().mockResolvedValue({ encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" }),
+    lookupKeys: vi.fn().mockResolvedValue({ keys: [] }),
 }));
 // Treated as already-unlocked this session (see KeyEnrollmentGate's own getUnlockedKeys() short-circuit)
 // so these tests never hit its "Unlock your mailbox" password prompt - that flow is this component's own
@@ -198,6 +203,7 @@ describe("MailShell", () => {
         };
         const fetchMock = mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url === "/api/mail/mailboxes/mb-a") return jsonResponse(200, mailboxA);
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
             if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [draftsFolder, inboxFolder]);
             if (url === "/api/mail/messages" && (init?.method ?? "GET") === "POST") return jsonResponse(200, draft);
