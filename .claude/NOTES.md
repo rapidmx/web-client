@@ -272,3 +272,46 @@ out to be **unimplementable against the current restapi release** (see below), n
   (tracked, expected to land later), this specific mechanism doesn't exist in restapi at all yet - the
   banner above is informational-only, with no action button pretending to do something the server
   can't currently accept. Revisit once restapi adds a real resolution endpoint.
+
+### 2026-09-11 (continued) — Phase 5 (partial): Settings > Encryption page
+
+New `apps/www/settings/encryption/index.tsx` (added to `SETTINGS_SECTIONS`), covering the subset of
+Phase 5 buildable against the current `@rapidmx/restapi` release and this session's own crypto/
+foundation, without a large new subsystem of its own:
+
+- **Status**: this mailbox's enrolled keys (fingerprint, sign/encrypt, revoked) straight from the
+  already-loaded `Mailbox.keys` - no extra fetch.
+- **Unlock methods**: lists `KeyVault.masterKeyWraps` (own `getKeyVault()` fetch) with a Remove action
+  per method (`removeMasterKeyWrap()`) and the spec-required "not true revocation" caveat displayed
+  inline, not just implied. An `escrow` wrap never gets a Remove button (restapi's own route rejects
+  removing one through this endpoint anyway - see `BaseKeyVaultRoute.removeMasterKeyWrap()`'s own
+  403).
+- **Add a password**: reuses `masterKeyWraps.ts`'s `buildPasswordWrap()` against this session's already-
+  unlocked MK (`getUnlockedKeys()`), then `addMasterKeyWrap()`.
+- **Regenerate recovery codes**: removes every existing `recovery`-method wrap by its own `methodId`
+  (`removeMasterKeyWrap()` requires one whenever more than one wrap shares a method - recovery always
+  has several), then `buildRecoveryWraps()` + `addMasterKeyWrap()` per new one, then the same one-time-
+  display-plus-confirm-checkbox UI `KeyEnrollmentGate`'s own first-enrollment flow already uses.
+- **Destroy keys now**: purely local - `destroyUnlockedKeys(mailboxUid)` (`keySession.ts`), no server
+  call. Shows a confirmation screen instead of a reload, since there's no clean way to re-run
+  `KeyEnrollmentGate`'s own mount-time unlock check without one.
+- **`SettingsShell` doesn't already gate its children behind `KeyEnrollmentGate`** the way `MailShell`
+  does (a user can reach Settings without ever opening Mail this session) - this page wraps its own
+  content in `KeyEnrollmentGate` a second time instead, which is safe by that component's own design
+  (short-circuits to `children` immediately once a mailbox is unlocked anywhere else this session too).
+- **Real, disclosed-not-silent test flake found while adding coverage**: a test asserting on
+  vault-derived content (`vault.masterKeyWraps`, populated by this page's own separate `getKeyVault()`
+  effect) via a bare `screen.getByText(...)` right after an `await screen.findByText(...)` for
+  *mailbox-key*-derived content (`Mailbox.keys`, already available before this page even mounts) raced
+  the still-pending vault fetch - passed in isolation, failed under the full suite's added scheduling
+  pressure. Two different async sources feeding the same page means every assertion needs to `await
+  findByText` the *specific* thing it actually depends on, not just the first thing the test happened
+  to await.
+- **Deliberately deferred, not built even partially** (all three would roughly double this page's own
+  scope): a full WebAuthn passkey-registration ceremony as a second "add a method" action (`
+  passkeyUnlock.ts`'s `registerPasskeyForUnlock()`/`deriveFromPasskey()` already exist and are already
+  used nowhere yet); a "rotate keys" action (`keyvaultApi.ts`'s `rekey()` - full atomic vault
+  replacement, the actual revocation mechanism for a captured wrap, per that function's own doc
+  comment); and idle-timeout configuration (this needs a session-wide activity-tracking mechanism
+  mounted somewhere like `AppShell.tsx`, not just a page-level setting with nothing enforcing it - a
+  control with no effect would be worse than no control). Revisit as a follow-up pass.
