@@ -31,10 +31,9 @@ async function provisionEncryptionKey(
     const { wraps: recoveryWraps, codes: recoveryCodes } = await buildRecoveryWraps(mailboxUid, mk);
 
     // Only the encryption key is provisioned here. The signing key's spec-required public-CA enrolment
-    // (RFC 8823 ACME automation) doesn't exist yet in @rapidmx/restapi - see server's own NOTES.md - so
-    // automatically generating a signing keypair here would have nowhere real to enroll it. Digital
-    // Signatures are deferred until that lands; encryption (this mailbox's own protective capability) is
-    // not blocked on it.
+    // (RFC 8823 ACME automation) is a real but genuinely asynchronous flow (a live email round-trip with
+    // a public CA, likely minutes) - it's a deliberate opt-in action in Settings > Encryption
+    // ("Enable digital signatures"), not something to block first-sign-in mailbox setup on.
     const { keyPair, csrPem } = await generateKeyPairWithCsr(mailboxAddress, "encrypt");
     const privateKeyRaw = await exportPrivateKeyPkcs8(keyPair.privateKey);
     const wrappedKeySealed = await sealWithKey(mk, privateKeyRaw, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));

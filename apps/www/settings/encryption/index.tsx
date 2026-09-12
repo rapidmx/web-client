@@ -4,17 +4,40 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { KeyVault, MasterKeyWrap, addMasterKeyWrap, getKeyVault, rekey, removeMasterKeyWrap } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { destroyUnlockedKeys, getUnlockedKeys, unlockWithPassword } from "@rapidmx/react-shared/crypto/keySession.js";
+import {
+    KeyVault,
+    MasterKeyWrap,
+    PublicKey,
+    addMasterKeyWrap,
+    checkSignEnrollmentStatus,
+    findActivePublicKey,
+    getKeyVault,
+    rekey,
+    removeMasterKeyWrap,
+    startSignEnrollment,
+} from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import {
+    SIGNING_PRIVATE_KEY_AAD_PURPOSE,
+    destroyUnlockedKeys,
+    getUnlockedKeys,
+    unlockWithPassword,
+} from "@rapidmx/react-shared/crypto/keySession.js";
 import { IDLE_TIMEOUT_OPTIONS_MINUTES, getIdleTimeoutMinutes, setIdleTimeoutMinutes } from "@rapidmx/react-shared/crypto/idleTimeout.js";
+import { buildAad, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
 import { buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
 import { rewrapPrivateKeysUnderNewMasterKey } from "@rapidmx/react-shared/crypto/keyRotation.js";
+import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
+import { getMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import KeyEnrollmentGate from "../../../shared/components/layout/KeyEnrollmentGate.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 const MIN_PASSWORD_LENGTH = 8;
+
+// RFC 8823 ACME issuance is a real email round-trip with a public CA - "likely minutes," not seconds -
+// so this polls infrequently rather than hammering the endpoint.
+const SIGNING_ENROLLMENT_POLL_INTERVAL_MS = 15_000;
 
 const METHOD_LABELS: Record<string, string> = {
     password: "Password",
@@ -87,6 +110,75 @@ function EncryptionContent() {
 
     const [destroyed, setDestroyed] = useState(false);
     const [idleTimeoutMinutes, setIdleTimeoutMinutesState] = useState(() => getIdleTimeoutMinutes());
+
+    // `mailbox.keys` comes from `SettingsShell`'s one-time `listMailboxes()` fetch - once an ACME
+    // enrollment issues, the server has installed a new signing key that fetch never saw. Only this
+    // page refetches (via `getMailbox()`) to notice; `null` means "no fresher data yet, use mailbox.keys".
+    const [refreshedKeys, setRefreshedKeys] = useState<PublicKey[] | null>(null);
+    const displayedKeys = refreshedKeys ?? mailbox.keys ?? [];
+    const activeSigningKey = findActivePublicKey(displayedKeys, "sign");
+
+    const [signingStatus, setSigningStatus] = useState<"idle" | "enrolling" | "pending">("idle");
+    const [signingEnrollmentId, setSigningEnrollmentId] = useState<string | null>(null);
+    const [signingError, setSigningError] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (signingStatus !== "pending" || !signingEnrollmentId) {
+            return;
+        }
+        let cancelled = false;
+        const interval = setInterval(async () => {
+            try {
+                const result = await checkSignEnrollmentStatus(mailboxUid!, signingEnrollmentId);
+                if (cancelled) {
+                    return;
+                }
+                if (result.status === "issued") {
+                    setSigningStatus("idle");
+                    setSigningEnrollmentId(null);
+                    const refreshed = await getMailbox(mailboxUid!);
+                    if (!cancelled) {
+                        setRefreshedKeys(refreshed.keys ?? []);
+                    }
+                } else if (result.status === "failed") {
+                    setSigningStatus("idle");
+                    setSigningEnrollmentId(null);
+                    setSigningError(result.error ?? "Signing certificate enrollment failed.");
+                }
+                // "pending" leaves state as-is - the interval below just tries again.
+            } catch {
+                // Transient network error - keep polling rather than surfacing a one-off failure.
+            }
+        }, SIGNING_ENROLLMENT_POLL_INTERVAL_MS);
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+        };
+    }, [signingStatus, signingEnrollmentId, mailboxUid]);
+
+    async function handleEnrollSigning() {
+        setSigningError(null);
+        setSigningStatus("enrolling");
+        try {
+            // Only reachable once `unlocked` is defined - see `handleAddPassword`'s identical note.
+            const { keyPair, csrPem } = await generateKeyPairWithCsr(mailbox.primarySmtpAddress, "sign");
+            const privateKeyRaw = await exportPrivateKeyPkcs8(keyPair.privateKey);
+            const wrappedKeySealed = await sealWithKey(
+                unlocked!.masterKey,
+                privateKeyRaw,
+                buildAad(mailboxUid!, SIGNING_PRIVATE_KEY_AAD_PURPOSE),
+            );
+            const { enrollmentId } = await startSignEnrollment(mailboxUid!, {
+                csr: csrPem,
+                wrappedKey: { ciphertext: wrappedKeySealed.ciphertext, nonce: wrappedKeySealed.nonce, algorithm: "AES-256-GCM" },
+            });
+            setSigningEnrollmentId(enrollmentId);
+            setSigningStatus("pending");
+        } catch (err) {
+            setSigningError(err instanceof ApiRequestError ? err.message : "Could not start signing certificate enrollment.");
+            setSigningStatus("idle");
+        }
+    }
 
     function handleIdleTimeoutChange(e: React.ChangeEvent<HTMLSelectElement>) {
         const minutes = Number(e.target.value);
@@ -282,9 +374,9 @@ function EncryptionContent() {
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">Encryption keys</h2>
-                    {mailbox.keys && mailbox.keys.length > 0 ? (
+                    {displayedKeys.length > 0 ? (
                         <ul className="flex flex-col gap-1 text-sm">
-                            {mailbox.keys.map((key) => (
+                            {displayedKeys.map((key) => (
                                 <li key={key.fingerprint} className="font-mono text-xs">
                                     {key.useType === "sign" ? "Signing" : "Encryption"} key: {key.fingerprint}
                                     {key.revokedAt && <span className="text-danger"> (revoked)</span>}
@@ -293,6 +385,40 @@ function EncryptionContent() {
                         </ul>
                     ) : (
                         <p className="text-sm text-text-muted">No keys enrolled yet.</p>
+                    )}
+                </div>
+
+                <div>
+                    <h2 className="text-sm font-semibold mb-2">Digital signatures</h2>
+                    {activeSigningKey ? (
+                        <p className="text-sm text-text-muted">
+                            Enabled — outgoing mail from this mailbox is signed with a publicly-trusted
+                            certificate.
+                        </p>
+                    ) : signingStatus === "pending" ? (
+                        <p className="text-sm text-text-muted">
+                            Requested — a public certificate authority issues this via an automated email
+                            exchange, which can take a few minutes. You can leave this page; it finishes in
+                            the background and takes effect automatically once issued.
+                        </p>
+                    ) : (
+                        <div className="flex flex-col gap-2">
+                            <p className="text-xs text-text-muted">
+                                Lets recipients verify that mail from this mailbox is genuinely from you.
+                                Optional — encryption already works without it.
+                            </p>
+                            {signingError && <Alert>{signingError}</Alert>}
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                className="!w-auto"
+                                loading={signingStatus === "enrolling"}
+                                disabled={signingStatus === "enrolling"}
+                                onClick={handleEnrollSigning}
+                            >
+                                Enable digital signatures
+                            </Button>
+                        </div>
                     )}
                 </div>
 

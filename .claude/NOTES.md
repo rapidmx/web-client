@@ -530,3 +530,32 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   UX improvement, not required for the core CRUD+assignment feature to be usable.
 - Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up
   `labelsApi.ts`, `mailApi.ts`'s `Message.labelUids`/`setMessageLabels()`.
+
+- **2026-09-12 (continued) — Phase 4 of consuming restapi's 11 post-0.6.0 commits: RFC 8823 ACME
+  signing-certificate enrollment.** Settings > Encryption (`apps/www/settings/encryption/index.tsx`)
+  gained a "Digital signatures" section: when the mailbox has no active signing key yet, an "Enable
+  digital signatures" button generates a P-256 keypair + CSR (`generateKeyPairWithCsr(address, "sign")`
+  - already generic across `useType`, no `react-shared` change needed there), wraps the private key
+  under the already-unlocked MK (`sealWithKey`/`buildAad` with `SIGNING_PRIVATE_KEY_AAD_PURPOSE`, the
+  exact same shape `keySession.ts` already unwraps it with), and calls `startSignEnrollment()`. This is
+  genuinely asynchronous - a live email round-trip with a public CA, "likely minutes" - so the button
+  isn't a blocking spinner: it flips to a "Requested" message and a `setInterval`-based poll (every 15s,
+  `checkSignEnrollmentStatus()`) takes over, tearing down on unmount via a `cancelled` flag (two separate
+  guarded await points - the status check itself and the follow-up mailbox re-fetch - both needed their
+  own test to hit the branch where the component unmounts mid-flight).
+  - `mailbox.keys` comes from `SettingsShell`'s one-time `listMailboxes()` fetch, taken at page load -
+    once ACME issues a cert, the server auto-installs it (restapi's own `AcmeEnrollmentDriverJob`, no
+    further client call), but that original fetch never sees it. This page re-fetches via the existing
+    `getMailbox(uid)` once polling reports `"issued"` and merges the result into local state
+    (`refreshedKeys`) rather than plumbing a refresh callback back up through `SettingsShellContext` -
+    scoped to this one page, not a shared concern yet.
+  - `KeyEnrollmentGate.tsx`'s `provisionEncryptionKey()` had a stale comment claiming automated signing
+    enrollment "doesn't exist yet" - updated to explain why it's still a deliberate Settings opt-in
+    rather than something to fold into first-sign-in mailbox setup (the async CA round-trip shouldn't
+    block that gate).
+  - A manual-backend deployment's `SigningCertificateEnrollment` throws when this is called (see
+    `server`'s own NOTES.md) - this page has no capability-detection endpoint to hide the button on such
+    a deployment, so clicking it there just surfaces whatever error message the server returns, same as
+    every other ApiRequestError path on this page.
+  - Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up
+    `keyvaultApi.ts`'s `startSignEnrollment`/`checkSignEnrollmentStatus`.

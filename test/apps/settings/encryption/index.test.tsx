@@ -3,21 +3,28 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import SettingsEncryptionPage from "../../../../apps/www/settings/encryption/index.js";
 
-const { getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey } = vi.hoisted(() => ({
+const { getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus } = vi.hoisted(() => ({
     getKeyVault: vi.fn(),
     addMasterKeyWrap: vi.fn(),
     removeMasterKeyWrap: vi.fn(),
     enrollKey: vi.fn(),
     rekey: vi.fn(),
+    startSignEnrollment: vi.fn(),
+    checkSignEnrollmentStatus: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey }));
+vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => {
+    // `findActivePublicKey` is a pure function this page also imports - kept real (via importOriginal)
+    // rather than added to every test's mock list, unlike the network-calling functions below.
+    const actual = await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>();
+    return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus };
+});
 
 const { rewrapPrivateKeysUnderNewMasterKey } = vi.hoisted(() => ({ rewrapPrivateKeysUnderNewMasterKey: vi.fn() }));
 vi.mock("@rapidmx/react-shared/crypto/keyRotation.js", () => ({ rewrapPrivateKeysUnderNewMasterKey }));
@@ -30,6 +37,7 @@ const { getUnlockedKeys, destroyUnlockedKeys, unlockWithPassword } = vi.hoisted(
 vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
+    SIGNING_PRIVATE_KEY_AAD_PURPOSE: "sign-private-key",
     getUnlockedKeys,
     unlockWithPassword,
     destroyUnlockedKeys,
@@ -40,6 +48,18 @@ const { buildPasswordWrap, buildRecoveryWraps } = vi.hoisted(() => ({
     buildRecoveryWraps: vi.fn(),
 }));
 vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({ buildPasswordWrap, buildRecoveryWraps }));
+
+const { generateKeyPairWithCsr, exportPrivateKeyPkcs8 } = vi.hoisted(() => ({
+    generateKeyPairWithCsr: vi.fn(),
+    exportPrivateKeyPkcs8: vi.fn(),
+}));
+vi.mock("@rapidmx/react-shared/crypto/keys.js", () => ({ generateKeyPairWithCsr, exportPrivateKeyPkcs8 }));
+
+const { sealWithKey, buildAad } = vi.hoisted(() => ({
+    sealWithKey: vi.fn(),
+    buildAad: vi.fn(),
+}));
+vi.mock("@rapidmx/react-shared/crypto/masterKey.js", () => ({ sealWithKey, buildAad }));
 
 const mailbox = {
     uid: "mb1",
@@ -94,17 +114,24 @@ function mockShell(extra?: (url: string, init?: RequestInit) => Response | undef
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
     getKeyVault.mockReset();
     addMasterKeyWrap.mockReset();
     removeMasterKeyWrap.mockReset();
     enrollKey.mockReset();
     rekey.mockReset();
+    startSignEnrollment.mockReset();
+    checkSignEnrollmentStatus.mockReset();
     getUnlockedKeys.mockReset();
     destroyUnlockedKeys.mockReset();
     unlockWithPassword.mockReset();
     buildPasswordWrap.mockReset();
     buildRecoveryWraps.mockReset();
     rewrapPrivateKeysUnderNewMasterKey.mockReset();
+    generateKeyPairWithCsr.mockReset();
+    exportPrivateKeyPkcs8.mockReset();
+    sealWithKey.mockReset();
+    buildAad.mockReset();
     localStorage.clear();
 });
 
@@ -581,5 +608,250 @@ describe("SettingsEncryptionPage", () => {
         expect(destroyUnlockedKeys).toHaveBeenCalledWith("mb1");
         expect(await screen.findByText(/removed from this session/)).toBeInTheDocument();
         expect(screen.queryByText("Password")).not.toBeInTheDocument();
+    });
+
+    it("shows 'Enabled' for digital signatures when an active signing key already exists", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        const signedMailbox = { ...mailbox, keys: [...mailbox.keys, { ...mailbox.keys[0], useType: "sign" as const, fingerprint: "sign-fp" }] };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [signedMailbox]) : undefined));
+        render(<SettingsEncryptionPage userUid="u1" />);
+
+        expect(await screen.findByText(/Enabled — outgoing mail/)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Enable digital signatures" })).not.toBeInTheDocument();
+    });
+
+    it("enables digital signatures: generates a keypair, wraps it under MK, and starts enrollment", async () => {
+        const unlockedFixture = { masterKey: new Uint8Array(32) };
+        getUnlockedKeys.mockReturnValue(unlockedFixture);
+        getKeyVault.mockResolvedValue(vault);
+        const keyPair = { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey };
+        generateKeyPairWithCsr.mockResolvedValue({ keyPair, csrPem: "csr-pem" });
+        exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1, 2, 3]));
+        buildAad.mockReturnValue(new Uint8Array([9]));
+        sealWithKey.mockResolvedValue({ ciphertext: "sealed-ct", nonce: "sealed-n" });
+        startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+
+        expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+        expect(generateKeyPairWithCsr).toHaveBeenCalledWith("u1@example.com", "sign");
+        expect(exportPrivateKeyPkcs8).toHaveBeenCalledWith(keyPair.privateKey);
+        expect(buildAad).toHaveBeenCalledWith("mb1", "sign-private-key");
+        expect(sealWithKey).toHaveBeenCalledWith(unlockedFixture.masterKey, expect.any(Uint8Array), expect.any(Uint8Array));
+        expect(startSignEnrollment).toHaveBeenCalledWith("mb1", {
+            csr: "csr-pem",
+            wrappedKey: { ciphertext: "sealed-ct", nonce: "sealed-n", algorithm: "AES-256-GCM" },
+        });
+    });
+
+    it("shows the server's own message when starting signing enrollment fails", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+        exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+        buildAad.mockReturnValue(new Uint8Array([9]));
+        sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        startSignEnrollment.mockRejectedValue(new ApiRequestError("automated signing enrollment is not enabled", 400));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+
+        expect(await screen.findByText("automated signing enrollment is not enabled")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Enable digital signatures" })).toBeInTheDocument();
+    });
+
+    it("shows a generic error when starting signing enrollment fails with a non-API error", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        generateKeyPairWithCsr.mockRejectedValue(new Error("boom"));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+
+        expect(await screen.findByText("Could not start signing certificate enrollment.")).toBeInTheDocument();
+    });
+
+    it("polls enrollment status and shows the new signing key once issued", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+        exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+        buildAad.mockReturnValue(new Uint8Array([9]));
+        sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+        checkSignEnrollmentStatus.mockResolvedValueOnce({ status: "pending" }).mockResolvedValueOnce({ status: "issued", certificate: "cert-pem" });
+        const issuedMailbox = { ...mailbox, keys: [...mailbox.keys, { ...mailbox.keys[0], useType: "sign" as const, fingerprint: "new-sign-fp" }] };
+        mockShell((url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(200, issuedMailbox) : undefined));
+
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+        expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        expect(checkSignEnrollmentStatus).toHaveBeenCalledTimes(1);
+        expect(checkSignEnrollmentStatus).toHaveBeenCalledWith("mb1", "enr-1");
+        expect(screen.getByText(/Requested/)).toBeInTheDocument();
+
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
+        expect(screen.getByText(/Enabled — outgoing mail/)).toBeInTheDocument();
+    });
+
+    it("shows the failure reason and returns to the enroll button when enrollment fails during polling", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+        exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+        buildAad.mockReturnValue(new Uint8Array([9]));
+        sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+        checkSignEnrollmentStatus.mockResolvedValue({ status: "failed", error: "the CA rejected this request" });
+        mockShell();
+
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+        expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        expect(await screen.findByText("the CA rejected this request")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Enable digital signatures" })).toBeInTheDocument();
+    });
+
+    it("ignores a poll response that resolves after the component has unmounted", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+        exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+        buildAad.mockReturnValue(new Uint8Array([9]));
+        sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+        let resolveStatus: ((value: { status: "issued"; certificate: string }) => void) | undefined;
+        checkSignEnrollmentStatus.mockReturnValue(
+            new Promise((resolve) => {
+                resolveStatus = resolve;
+            }),
+        );
+        mockShell();
+
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        const { unmount } = render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+        expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+
+        // Starts the poll's in-flight checkSignEnrollmentStatus() call (left pending above), then
+        // unmounts before it resolves - exercising the effect's own `cancelled` guard, which is what
+        // stops a late resolution from calling setState on an unmounted component.
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        unmount();
+        await act(async () => {
+            resolveStatus!({ status: "issued", certificate: "cert-pem" });
+            await Promise.resolve();
+        });
+    });
+
+    it("skips applying the refreshed mailbox keys if the component unmounts while re-fetching it", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+        exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+        buildAad.mockReturnValue(new Uint8Array([9]));
+        sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+        checkSignEnrollmentStatus.mockResolvedValue({ status: "issued", certificate: "cert-pem" });
+        let resolveMailboxFetch: ((res: Response) => void) | undefined;
+        mockShell((url) => {
+            if (url === "/api/mail/mailboxes/mb1") {
+                return new Promise<Response>((resolve) => {
+                    resolveMailboxFetch = resolve;
+                });
+            }
+            return undefined;
+        });
+
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        const { unmount } = render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+        expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+
+        // Fires the poll, which resolves "issued" and starts the follow-up getMailbox() re-fetch (left
+        // pending above) - unmounting here, before that resolves, exercises the same `cancelled` guard
+        // that protects the mailbox refresh, not just the status check itself.
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        unmount();
+        await act(async () => {
+            resolveMailboxFetch!(jsonResponse(200, mailbox));
+            await Promise.resolve();
+        });
+    });
+
+    it("shows a default message when a failed enrollment carries no reason", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+        exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+        buildAad.mockReturnValue(new Uint8Array([9]));
+        sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+        checkSignEnrollmentStatus.mockResolvedValue({ status: "failed" });
+        mockShell();
+
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+        expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        expect(await screen.findByText("Signing certificate enrollment failed.")).toBeInTheDocument();
+    });
+
+    it("treats a refreshed mailbox with no keys at all as having none", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+        exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+        buildAad.mockReturnValue(new Uint8Array([9]));
+        sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+        checkSignEnrollmentStatus.mockResolvedValue({ status: "issued", certificate: "cert-pem" });
+        mockShell((url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(200, { ...mailbox, keys: undefined }) : undefined));
+
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+        expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        expect(await screen.findByText("No keys enrolled yet.")).toBeInTheDocument();
     });
 });
