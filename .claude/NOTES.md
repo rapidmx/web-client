@@ -700,3 +700,15 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   doesn't invent a clear-field affordance the API can't honor. `AdminShell` gained a `retentionPolicy`
   nav entry (`HiOutlineClock`). Full react-shared rebuild + patch cycle to pick up
   `admin/retentionPolicyApi.ts`.
+
+- **2026-09-12 (continued) — Phase 4 of consuming restapi's next batch: GDPR data export (Group D1).**
+  New Settings page `apps/www/settings/privacy/index.tsx` ("Privacy & Data") - its first section,
+  "Export my data": a format picker (JSON/Mbox), a "Request export" button, and a list of the caller's
+  own past requests with a status pill (mirroring the status-pill styling already established in
+  `apps/escrow/matters/[uid].tsx`'s access-request list) and a "Download" link that only appears once
+  `status === "ready"`. The download link is a plain `<a href={exportRequestDownloadUrl(uid)}>` - no JS
+  fetch/blob handling - the browser downloads it natively via the endpoint's own
+  `content-disposition: attachment` header. Added a `privacy` entry to `SettingsShell`'s
+  `SETTINGS_SECTIONS`, same pattern as `encryption`/`labels`. Admin-mediated export creation/browsing is
+  deferred to the shared `apps/admin/data-requests` page built in Phase 6, alongside import and erasure.
+  Full react-shared rebuild + patch cycle to pick up `mail/dataExportApi.ts`.
