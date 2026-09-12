@@ -1,0 +1,470 @@
+// @vitest-environment jsdom
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
+///////////////////////////////////////////////////////////////////////////////
+import React from "react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { jsonResponse, mockFetch } from "../../testUtils.js";
+import MatterDetailPage from "../../../../apps/escrow/matters/[uid].js";
+
+const matter = {
+    uid: "m1",
+    version: 0,
+    dateCreated: "2026-01-01T00:00:00.000Z",
+    dateModified: "2026-01-01T00:00:00.000Z",
+    name: "Smith v. Acme",
+    description: "Wrongful termination",
+    escrowScopeId: "es1",
+    custodianMailboxUids: ["mb1", "mb2"],
+    dateRangeStart: "2025-01-01T00:00:00.000Z",
+    dateRangeEnd: "2025-12-31T00:00:00.000Z",
+};
+
+const pendingRequest = {
+    uid: "ar1",
+    version: 0,
+    dateCreated: "2026-01-01T00:00:00.000Z",
+    dateModified: "2026-01-01T00:00:00.000Z",
+    matterId: "m1",
+    mailboxUid: "mb1",
+    requestedByUserUid: "u1",
+    approvals: [{ holderUserUid: "u1", approvedAt: "2026-01-01T00:00:00.000Z" }],
+    requiredHoldersAtCreation: 2,
+    status: "pending" as const,
+};
+
+const approvedRequest = {
+    ...pendingRequest,
+    uid: "ar2",
+    approvals: [
+        { holderUserUid: "u1", approvedAt: "2026-01-01T00:00:00.000Z" },
+        { holderUserUid: "u2", approvedAt: "2026-01-02T00:00:00.000Z" },
+    ],
+    status: "approved" as const,
+};
+
+const otherMatterRequest = { ...pendingRequest, uid: "ar99", matterId: "m2" };
+
+// Override keys of the form "METHOD path" match a specific method+path pair exactly; a bare "path" (no
+// leading METHOD) matches by prefix instead, since the real GET calls it stands in for
+// (`/escrow/access-requests`, `/escrow/audit-log`) always carry a `?limit=...&page=...` query string a
+// plain `===` could never match.
+function mockMatterFetch(overrides: Record<string, (init?: RequestInit) => Response> = {}) {
+    return mockFetch((url, init) => {
+        const key = `${init?.method ?? "GET"} ${url}`;
+        // Longest pattern first, so a specific sub-resource override (e.g. the `/material` sub-route)
+        // is tried before a shorter, bare list-endpoint override whose prefix it happens to share.
+        const sortedOverrides = Object.entries(overrides).sort(([a], [b]) => b.length - a.length);
+        for (const [pattern, handler] of sortedOverrides) {
+            const hasMethod = /^[A-Z]+ /.test(pattern);
+            if (hasMethod ? key === pattern : url === pattern || url.startsWith(pattern)) {
+                return handler(init);
+            }
+        }
+        if (url === "/api/escrow/matters/m1") return jsonResponse(200, matter);
+        // The shell's own reachability probe (a plain GET against the list endpoint) - see `EscrowShell`'s
+        // own doc comment. Distinct from the `/api/escrow/matters/m1` single-matter fetch above.
+        if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
+        if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, [pendingRequest, otherMatterRequest]);
+        throw new Error(`unexpected ${key}`);
+    });
+}
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
+
+describe("MatterDetailPage", () => {
+    it("renders the matter's details and only its own matter's access requests (filtering out other matters')", async () => {
+        mockMatterFetch();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+
+        expect(await screen.findByRole("heading", { name: "Smith v. Acme" })).toBeInTheDocument();
+        expect(screen.getByText("Wrongful termination")).toBeInTheDocument();
+        expect(screen.getByText("mb1, mb2")).toBeInTheDocument();
+        expect(screen.getByText("Open")).toBeInTheDocument();
+        expect(screen.getByText("mb1")).toBeInTheDocument();
+        expect(screen.queryByText("ar99")).not.toBeInTheDocument();
+        // Only one row rendered (ar1) - ar99 belongs to a different matter and must not appear.
+        expect(screen.getAllByText(/approvals/)).toHaveLength(1);
+    });
+
+    it("shows 'None' for the description when the matter has none", async () => {
+        const { description, ...matterWithoutDescription } = matter;
+        mockFetch((url) => {
+            if (url === "/api/escrow/matters/m1") return jsonResponse(200, matterWithoutDescription);
+            if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
+            if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, []);
+            throw new Error(`unexpected ${url}`);
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+
+        expect(await screen.findByRole("heading", { name: "Smith v. Acme" })).toBeInTheDocument();
+        expect(screen.getByText("None")).toBeInTheDocument();
+    });
+
+    it("shows an error message when the matter fails to load", async () => {
+        // The shell's own reachability probe must succeed independently of the matter fetch this test is
+        // actually about - see `EscrowShell`'s own doc comment. Without this split, both the shell's and
+        // this page's own error text would coincidentally read "not found", masking whichever one this
+        // test actually meant to exercise (confirmed via raw v8 branch coverage: the page's own
+        // `err instanceof ApiRequestError` consequent was never truly reached under the original,
+        // unsplit version of this test).
+        mockFetch((url) => {
+            if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
+            return jsonResponse(404, { message: "not found" });
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        expect(await screen.findByText("not found")).toBeInTheDocument();
+    });
+
+    it("shows a generic error message when loading fails with a non-API error", async () => {
+        mockFetch((url) => {
+            // The shell's own reachability probe must succeed independently of the matter/request fetches
+            // this test is actually about - see `EscrowShell`'s own doc comment.
+            if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
+            throw new TypeError("network down");
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        expect(await screen.findByText("Could not load this matter.")).toBeInTheDocument();
+    });
+
+    it("falls back to 'Matter not found.' when the load succeeds with no matter and no error", async () => {
+        mockFetch((url) => {
+            if (url === "/api/escrow/matters/m1") return jsonResponse(200, null);
+            if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
+            if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, []);
+            throw new Error(`unexpected ${url}`);
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        expect(await screen.findByText("Matter not found.")).toBeInTheDocument();
+    });
+
+    it("shows 'No access requests yet.' when there are none for this matter", async () => {
+        mockMatterFetch({ "/api/escrow/access-requests": () => jsonResponse(200, []) });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        expect(await screen.findByText("No access requests yet.")).toBeInTheDocument();
+    });
+
+    it("closes the matter", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/matters/m1/close": () => jsonResponse(200, { ...matter, closedAt: "2026-02-01T00:00:00.000Z" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Close matter" }));
+
+        expect(await screen.findByText(/^Closed/)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Close matter" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "+ New access request" })).not.toBeInTheDocument();
+    });
+
+    it("shows an error message when closing fails", async () => {
+        mockMatterFetch({ "POST /api/escrow/matters/m1/close": () => jsonResponse(403, { message: "not a holder" }) });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Close matter" }));
+        expect(await screen.findByText("not a holder")).toBeInTheDocument();
+    });
+
+    it("shows a generic error message when closing fails with a non-API error", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/matters/m1/close": () => {
+                throw new TypeError("network down");
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Close matter" }));
+        expect(await screen.findByText("Could not close this matter.")).toBeInTheDocument();
+    });
+
+    it("validates the mailbox uid before creating a new access request", async () => {
+        mockMatterFetch();
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New access request" }));
+        await user.click(screen.getByRole("button", { name: "Create request" }));
+
+        expect(await screen.findByText("A mailbox uid is required.")).toBeInTheDocument();
+    });
+
+    it("creates a new access request and closes the modal, reloading the list", async () => {
+        let created = false;
+        mockMatterFetch({
+            "POST /api/escrow/access-requests": () => {
+                created = true;
+                return jsonResponse(200, { ...pendingRequest, uid: "ar-new" });
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New access request" }));
+        await user.type(screen.getByLabelText("Mailbox uid"), "mb1");
+        await user.click(screen.getByRole("button", { name: "Create request" }));
+
+        await vi.waitFor(() => expect(created).toBe(true));
+        expect(screen.queryByRole("dialog", { name: "New access request" })).not.toBeInTheDocument();
+    });
+
+    it("shows an error message in the new-request modal when creation fails", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/access-requests": () => jsonResponse(400, { message: "not a custodian" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New access request" }));
+        await user.type(screen.getByLabelText("Mailbox uid"), "mb3");
+        await user.click(screen.getByRole("button", { name: "Create request" }));
+
+        expect(await screen.findByText("not a custodian")).toBeInTheDocument();
+    });
+
+    it("shows a generic error message in the new-request modal when creation fails with a non-API error", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/access-requests": () => {
+                throw new TypeError("network down");
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New access request" }));
+        await user.type(screen.getByLabelText("Mailbox uid"), "mb1");
+        await user.click(screen.getByRole("button", { name: "Create request" }));
+
+        expect(await screen.findByText("Could not create this access request.")).toBeInTheDocument();
+    });
+
+    it("the new-request modal's Cancel button closes it", async () => {
+        mockMatterFetch();
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New access request" }));
+        const dialog = screen.getByRole("dialog", { name: "New access request" });
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByRole("dialog", { name: "New access request" })).not.toBeInTheDocument();
+    });
+
+    it("the new-request modal's own close (×) button also closes it", async () => {
+        mockMatterFetch();
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "+ New access request" }));
+        const dialog = screen.getByRole("dialog", { name: "New access request" });
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+
+        expect(screen.queryByRole("dialog", { name: "New access request" })).not.toBeInTheDocument();
+    });
+
+    it("approves a pending request", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/approve": () => jsonResponse(200, { ...pendingRequest, status: "approved" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Approve" }));
+
+        expect(await screen.findByText("approved")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Get material" })).toBeInTheDocument();
+    });
+
+    it("approving one request leaves the other visible requests for this matter unchanged", async () => {
+        // Two requests under the same matter (ar1 pending, ar2 already approved) - approving ar1 must
+        // update only its own row, exercising the `setRequests()` map's "leave this other row as-is"
+        // branch for ar2 (`r.uid === updated.uid` false).
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, [pendingRequest, approvedRequest]),
+            "POST /api/escrow/access-requests/ar1/approve": () => jsonResponse(200, { ...pendingRequest, status: "approved" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        // ar2 already shows its own "Get material" action before anything is clicked.
+        expect(await screen.findAllByRole("button", { name: "Get material" })).toHaveLength(1);
+        await user.click(screen.getByRole("button", { name: "Approve" }));
+
+        // ar1 is now approved too (both rows render "Get material"), and ar2's own row is still present
+        // and untouched - not reset, not removed.
+        expect(await screen.findAllByRole("button", { name: "Get material" })).toHaveLength(2);
+    });
+
+    it("denying one request leaves the other visible requests for this matter unchanged", async () => {
+        // Same "other row" map branch as above, exercised via denyAccessRequest() instead of approve.
+        const secondPending = { ...pendingRequest, uid: "ar2", mailboxUid: "mb2" };
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, [pendingRequest, secondPending]),
+            "POST /api/escrow/access-requests/ar1/deny": () => jsonResponse(200, { ...pendingRequest, status: "denied" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        expect(await screen.findAllByRole("button", { name: "Deny" })).toHaveLength(2);
+        await user.click(screen.getAllByRole("button", { name: "Deny" })[0]);
+
+        // ar1 is now denied; ar2 stays pending, still showing its own Approve/Deny actions untouched.
+        expect(await screen.findByText("denied")).toBeInTheDocument();
+        expect(screen.getByText("pending")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    });
+
+    it("shows an error message when approving fails", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/approve": () => jsonResponse(400, { message: "already approved" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Approve" }));
+        expect(await screen.findByText("already approved")).toBeInTheDocument();
+    });
+
+    it("shows a generic error message when approving fails with a non-API error", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/approve": () => {
+                throw new TypeError("network down");
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Approve" }));
+        expect(await screen.findByText("Could not approve this request.")).toBeInTheDocument();
+    });
+
+    it("denies a pending request", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/deny": () => jsonResponse(200, { ...pendingRequest, status: "denied" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Deny" }));
+        expect(await screen.findByText("denied")).toBeInTheDocument();
+    });
+
+    it("shows an error message when denying fails", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/deny": () => jsonResponse(409, { message: "not pending" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Deny" }));
+        expect(await screen.findByText("not pending")).toBeInTheDocument();
+    });
+
+    it("shows a generic error message when denying fails with a non-API error", async () => {
+        mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/deny": () => {
+                throw new TypeError("network down");
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Deny" }));
+        expect(await screen.findByText("Could not deny this request.")).toBeInTheDocument();
+    });
+
+    it("gets material for an approved request and renders it as raw JSON", async () => {
+        const material = {
+            masterKeyWraps: [
+                {
+                    method: "escrow",
+                    escrowScopeId: "es1",
+                    ciphertext: "cipher",
+                    nonce: "nonce",
+                    salt: "salt",
+                    kdf: "argon2id:m=65536,t=3,p=4",
+                    schemeVersion: 1,
+                    createdAt: 1735689600000,
+                },
+            ],
+        };
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, [approvedRequest]),
+            "/api/escrow/access-requests/ar2/material": () => jsonResponse(200, material),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Get material" }));
+
+        expect(await screen.findByText(/"method": "escrow"/)).toBeInTheDocument();
+    });
+
+    it("shows an error message when getting material fails", async () => {
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, [approvedRequest]),
+            "/api/escrow/access-requests/ar2/material": () => jsonResponse(403, { message: "dual control not met" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Get material" }));
+        expect(await screen.findByText("dual control not met")).toBeInTheDocument();
+    });
+
+    it("shows a generic error message when getting material fails with a non-API error", async () => {
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, [approvedRequest]),
+            "/api/escrow/access-requests/ar2/material": () => {
+                throw new TypeError("network down");
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Get material" }));
+        expect(await screen.findByText("Could not read this request's material.")).toBeInTheDocument();
+    });
+
+    it("the material modal closes via its own close button", async () => {
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, [approvedRequest]),
+            "/api/escrow/access-requests/ar2/material": () => jsonResponse(200, { masterKeyWraps: [] }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Get material" }));
+        const dialog = await screen.findByRole("dialog", { name: "Escrow key material" });
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+
+        expect(screen.queryByRole("dialog", { name: "Escrow key material" })).not.toBeInTheDocument();
+    });
+});

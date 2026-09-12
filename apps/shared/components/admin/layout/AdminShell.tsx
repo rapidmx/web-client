@@ -8,6 +8,7 @@ import {
     HiOutlineClipboardDocumentList,
     HiOutlineGlobeAlt,
     HiOutlineInboxStack,
+    HiOutlineKey,
     HiOutlinePaintBrush,
     HiOutlineQueueList,
     HiOutlineShieldCheck,
@@ -30,6 +31,7 @@ export type AdminSection =
     | "auditLog"
     | "distributionLists"
     | "transportRules"
+    | "escrowScopes"
     | "branding";
 
 export interface AdminShellProps {
@@ -68,6 +70,12 @@ const NAV_ITEMS: NavItem[] = [
         href: "/admin/transport-rules",
         label: "Transport Rules",
         icon: HiOutlineShieldCheck,
+    },
+    {
+        id: "escrowScopes",
+        href: "/admin/escrow-scopes",
+        label: "Escrow Scopes",
+        icon: HiOutlineKey,
     },
     { id: "branding", href: "/admin/branding", label: "Branding", icon: HiOutlinePaintBrush },
 ];

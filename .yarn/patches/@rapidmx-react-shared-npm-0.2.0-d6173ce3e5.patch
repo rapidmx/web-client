@@ -1,3 +1,432 @@
+diff --git a/dist/admin/escrowAccessRequestsApi.d.ts b/dist/admin/escrowAccessRequestsApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..105f38a9446a2151513cf65b2b8b861f6ce7c32b
+--- /dev/null
++++ b/dist/admin/escrowAccessRequestsApi.d.ts
+@@ -0,0 +1,73 @@
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `EscrowAccessRequest` route (`BaseEscrowAccessRequestRoute`) —
++ * a bespoke (non-`CRUDRoute`) route: no `update`/`delete`/`count`, and `create()` only ever accepts
++ * `{matterId, mailboxUid}` (everything else is derived server-side). Holder-gated throughout, same as
++ * `mattersApi.ts`. `find()`/`findById()` auto-scope to matters under scopes the caller holds; `approve()`/
++ * `deny()` mutate in place and return the updated request; `material()` is only ever readable once the
++ * request is `approved`/`fulfilled`, and returns still-encrypted `MasterKeyWraps` this server can't
++ * decrypt either — see `EscrowAccessMaterial`'s own doc comment.
++ */
++import { ListParams } from "../util/apiQuery.js";
++export type { ListParams };
++export interface EscrowAccessRequestApproval {
++    holderUserUid: string;
++    /** ISO 8601 timestamp. */
++    approvedAt: string;
++}
++export type EscrowAccessRequestStatus = "pending" | "approved" | "denied" | "fulfilled";
++export interface EscrowAccessRequest {
++    uid: string;
++    version: number;
++    dateCreated: string;
++    dateModified: string;
++    matterId: string;
++    mailboxUid: string;
++    requestedByUserUid: string;
++    approvals: EscrowAccessRequestApproval[];
++    /** Snapshotted from `EscrowScope.requiredHolders` at creation time — see this type's own restapi doc
++     * comment on why it's never re-read live. */
++    requiredHoldersAtCreation: number;
++    status: EscrowAccessRequestStatus;
++    /** Set the first time `getAccessRequestMaterial()` is successfully called — informational only. */
++    fulfilledAt?: string;
++    deniedByUserUid?: string;
++    deniedAt?: string;
++}
++/** Mirrors `@rapidmx/restapi`'s `MasterKeyWrap` — same shape `crypto/keyvaultApi.ts` already defines for
++ * the mailbox-owner side of this feature, duplicated here rather than cross-imported (same convention
++ * every other `*Api.ts` wrapper in this package already follows for overlapping wire shapes). */
++export interface MasterKeyWrap {
++    method: "password" | "passkey" | "recovery" | "escrow";
++    methodId?: string;
++    escrowScopeId?: string;
++    ciphertext: string;
++    nonce: string;
++    salt: string;
++    kdf: string;
++    schemeVersion: number;
++    createdAt: number;
++}
++/** The wire shape `getAccessRequestMaterial()` returns — only ever the escrow-method wraps scoped to the
++ * matter's own escrow scope, never `wrappedKeys` or any other unlock method. This app deliberately never
++ * attempts to decrypt these — they're surfaced as-is for the holder to copy into their own offline
++ * tooling, per `specs/end-to-end_encryption.md`'s "this server never holds the scope's private key". */
++export interface EscrowAccessMaterial {
++    masterKeyWraps: MasterKeyWrap[];
++}
++export declare function listAccessRequests(params?: ListParams): Promise<EscrowAccessRequest[]>;
++export declare function getAccessRequest(uid: string): Promise<EscrowAccessRequest>;
++export interface CreateAccessRequestInput {
++    matterId: string;
++    mailboxUid: string;
++}
++/** The requester's own creation counts as their first approval — auto-approved immediately if
++ * `EscrowScope.requiredHolders` is `1`. */
++export declare function createAccessRequest(input: CreateAccessRequestInput): Promise<EscrowAccessRequest>;
++/** 409s if the request isn't `pending`; 400s if the caller already approved it. */
++export declare function approveAccessRequest(uid: string): Promise<EscrowAccessRequest>;
++/** 409s if the request isn't `pending`. */
++export declare function denyAccessRequest(uid: string): Promise<EscrowAccessRequest>;
++/** 403s ("Dual control threshold not yet met.") unless the request is `approved`/`fulfilled`. Marks the
++ * request `fulfilled` server-side as a side effect of a successful call, and records an
++ * `EscrowAuditAction.MATERIAL_READ` entry — see `escrowAuditLogApi.ts`. */
++export declare function getAccessRequestMaterial(uid: string): Promise<EscrowAccessMaterial>;
+diff --git a/dist/admin/escrowAccessRequestsApi.js b/dist/admin/escrowAccessRequestsApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..e14d909f101f6d7651c4d3d4e7a19e4ead8e2d10
+--- /dev/null
++++ b/dist/admin/escrowAccessRequestsApi.js
+@@ -0,0 +1,40 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `EscrowAccessRequest` route (`BaseEscrowAccessRequestRoute`) —
++ * a bespoke (non-`CRUDRoute`) route: no `update`/`delete`/`count`, and `create()` only ever accepts
++ * `{matterId, mailboxUid}` (everything else is derived server-side). Holder-gated throughout, same as
++ * `mattersApi.ts`. `find()`/`findById()` auto-scope to matters under scopes the caller holds; `approve()`/
++ * `deny()` mutate in place and return the updated request; `material()` is only ever readable once the
++ * request is `approved`/`fulfilled`, and returns still-encrypted `MasterKeyWraps` this server can't
++ * decrypt either — see `EscrowAccessMaterial`'s own doc comment.
++ */
++import { apiFetch } from "../util/api.js";
++import { buildQuery } from "../util/apiQuery.js";
++export function listAccessRequests(params = {}) {
++    return apiFetch(`/escrow/access-requests?${buildQuery(params)}`);
++}
++export function getAccessRequest(uid) {
++    return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}`);
++}
++/** The requester's own creation counts as their first approval — auto-approved immediately if
++ * `EscrowScope.requiredHolders` is `1`. */
++export function createAccessRequest(input) {
++    return apiFetch("/escrow/access-requests", { method: "POST", body: JSON.stringify(input) });
++}
++/** 409s if the request isn't `pending`; 400s if the caller already approved it. */
++export function approveAccessRequest(uid) {
++    return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}/approve`, { method: "POST" });
++}
++/** 409s if the request isn't `pending`. */
++export function denyAccessRequest(uid) {
++    return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}/deny`, { method: "POST" });
++}
++/** 403s ("Dual control threshold not yet met.") unless the request is `approved`/`fulfilled`. Marks the
++ * request `fulfilled` server-side as a side effect of a successful call, and records an
++ * `EscrowAuditAction.MATERIAL_READ` entry — see `escrowAuditLogApi.ts`. */
++export function getAccessRequestMaterial(uid) {
++    return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}/material`);
++}
+diff --git a/dist/admin/escrowAuditLogApi.d.ts b/dist/admin/escrowAuditLogApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b5687b04c25e7a3ac5f987d7301a65e66f13c131
+--- /dev/null
++++ b/dist/admin/escrowAuditLogApi.d.ts
+@@ -0,0 +1,48 @@
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `EscrowAuditLogEntry` route (`BaseEscrowAuditLogRoute`) — read
++ * only, same posture as `auditLogApi.ts`: `create`/`update`/`delete`/`truncate` unconditionally 403 for
++ * every caller, trusted included (the only writer is restapi's own internal `recordEscrowAuditEntry()`),
++ * so there is no write function here to mirror. `find`/`get` auto-scope to matters under scopes the
++ * caller holds (unfiltered for a trusted admin); `verifyAuditChain()` (`GET /verify`) is
++ * `@RequiresTrustedRole()`-only server-side — this wrapper applies no gating of its own, the server
++ * enforces it and a non-trusted caller simply gets a 403 `ApiRequestError` back.
++ */
++import { ListParams } from "../util/apiQuery.js";
++export type { ListParams };
++/** The lifecycle event an `EscrowAuditLogEntry` records — deliberately excludes a denied request (nothing
++ * was ever granted or used there); that goes through the ordinary `AuditLogEntry` (`auditLogApi.ts`)
++ * instead. */
++export type EscrowAuditAction = "escrow_access_request.created" | "escrow_access_request.approved" | "escrow_access_request.material_read";
++export interface EscrowAuditLogEntry {
++    uid: string;
++    version: number;
++    dateCreated: string;
++    dateModified: string;
++    /** Monotonic, global (not per-scope) sequence number. */
++    sequence: number;
++    /** The immediately-preceding entry's `hash` — `undefined` only for the very first entry
++     * (`sequence === 0`). */
++    previousHash?: string;
++    /** SHA-256 hex digest over this entry's own content plus `previousHash`. */
++    hash: string;
++    action: EscrowAuditAction;
++    holderUserUid: string;
++    matterId: string;
++    mailboxUid: string;
++    requestId: string;
++    /** ISO 8601 timestamp. */
++    occurredAt: string;
++    details?: Record<string, unknown>;
++}
++export declare function listAuditLogEntries(params?: ListParams): Promise<EscrowAuditLogEntry[]>;
++export declare function getAuditLogEntry(uid: string): Promise<EscrowAuditLogEntry>;
++export interface EscrowAuditVerificationResult {
++    valid: boolean;
++    /** The lowest `sequence` at which the chain breaks, if `valid` is `false`. */
++    brokenAtSequence?: number;
++}
++/** Walks the entire hash chain end to end. `@RequiresTrustedRole()`-only server-side, deliberately not
++ * holder-accessible — the chain is global across every scope, so `brokenAtSequence` would leak the
++ * existence/volume of *other* scopes' escrow activity to a holder who only has standing to know about
++ * their own scope. A non-trusted caller gets a 403 `ApiRequestError`, same as any other gated endpoint. */
++export declare function verifyAuditChain(): Promise<EscrowAuditVerificationResult>;
+diff --git a/dist/admin/escrowAuditLogApi.js b/dist/admin/escrowAuditLogApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..e452b27add4c0638294e7a00b69b0aa8d8c5f837
+--- /dev/null
++++ b/dist/admin/escrowAuditLogApi.js
+@@ -0,0 +1,28 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `EscrowAuditLogEntry` route (`BaseEscrowAuditLogRoute`) — read
++ * only, same posture as `auditLogApi.ts`: `create`/`update`/`delete`/`truncate` unconditionally 403 for
++ * every caller, trusted included (the only writer is restapi's own internal `recordEscrowAuditEntry()`),
++ * so there is no write function here to mirror. `find`/`get` auto-scope to matters under scopes the
++ * caller holds (unfiltered for a trusted admin); `verifyAuditChain()` (`GET /verify`) is
++ * `@RequiresTrustedRole()`-only server-side — this wrapper applies no gating of its own, the server
++ * enforces it and a non-trusted caller simply gets a 403 `ApiRequestError` back.
++ */
++import { apiFetch } from "../util/api.js";
++import { buildQuery } from "../util/apiQuery.js";
++export function listAuditLogEntries(params = {}) {
++    return apiFetch(`/escrow/audit-log?${buildQuery(params)}`);
++}
++export function getAuditLogEntry(uid) {
++    return apiFetch(`/escrow/audit-log/${encodeURIComponent(uid)}`);
++}
++/** Walks the entire hash chain end to end. `@RequiresTrustedRole()`-only server-side, deliberately not
++ * holder-accessible — the chain is global across every scope, so `brokenAtSequence` would leak the
++ * existence/volume of *other* scopes' escrow activity to a holder who only has standing to know about
++ * their own scope. A non-trusted caller gets a 403 `ApiRequestError`, same as any other gated endpoint. */
++export function verifyAuditChain() {
++    return apiFetch("/escrow/audit-log/verify");
++}
+diff --git a/dist/admin/escrowScopesApi.d.ts b/dist/admin/escrowScopesApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..95d7cdffd41aef3f6da99570f60150ff45cbbc4d
+--- /dev/null
++++ b/dist/admin/escrowScopesApi.d.ts
+@@ -0,0 +1,65 @@
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `EscrowScope` CRUD route (`BaseEscrowScopeRoute`) —
++ * trusted-role-only for every action (create/update/delete/find/count/findById). Configuring *who counts
++ * as a holder*, the dual-control threshold, and the scope's own public key is an administrative act,
++ * deliberately separate from actually holding the eDiscovery/compliance role (see `mattersApi.ts`,
++ * `specs/end-to-end_encryption.md`'s "Separation of duties") — this file is consumed only by
++ * `apps/admin/escrow-scopes/*`, never by the holder-facing `apps/escrow` area.
++ */
++import { ListParams } from "../util/apiQuery.js";
++export type { ListParams };
++/** A scope's own public key — mirrors `@rapidmx/restapi`'s `EscrowScopePublicKey` exactly. An admin
++ * pastes in the fields of an already-issued certificate here; nothing in this app generates a keypair. */
++export interface EscrowScopePublicKey {
++    /** Base64-encoded public key (DER-encoded X.509 certificate, or raw key material). */
++    publicKey: string;
++    type: string;
++    /** SHA-256 fingerprint of the key, hex encoded. */
++    fingerprint: string;
++    /** UTC timestamp (epoch ms) at which this key becomes valid. */
++    notBefore: number;
++    /** UTC timestamp (epoch ms) at which this key expires. */
++    notAfter: number;
++    /** UTC timestamp (epoch ms) at which this key was revoked, if applicable. */
++    revokedAt?: number;
++}
++export interface EscrowScope {
++    uid: string;
++    version: number;
++    dateCreated: string;
++    dateModified: string;
++    name: string;
++    description?: string;
++    publicKey: EscrowScopePublicKey;
++    /** Uids of every user in the eDiscovery/compliance role for this scope. At least one required. */
++    holderUserUids: string[];
++    /** M in "M-of-N dual control" — must be between 1 and `holderUserUids.length` inclusive. */
++    requiredHolders: number;
++    notifySubjectOnAccess: boolean;
++}
++export declare function listEscrowScopes(params?: ListParams): Promise<EscrowScope[]>;
++export declare function getEscrowScope(uid: string): Promise<EscrowScope>;
++export interface CreateEscrowScopeInput {
++    name: string;
++    description?: string;
++    publicKey: EscrowScopePublicKey;
++    holderUserUids: string[];
++    requiredHolders: number;
++    notifySubjectOnAccess?: boolean;
++}
++export declare function createEscrowScope(input: CreateEscrowScopeInput): Promise<EscrowScope>;
++export interface UpdateEscrowScopeInput {
++    uid: string;
++    version: number;
++    name?: string;
++    description?: string;
++    publicKey?: EscrowScopePublicKey;
++    holderUserUids?: string[];
++    requiredHolders?: number;
++    notifySubjectOnAccess?: boolean;
++}
++export declare function updateEscrowScope(input: UpdateEscrowScopeInput): Promise<EscrowScope>;
++/** 409s if a `Matter` still references this scope (`BaseEscrowScopeRoute.delete()`'s own referencing-Matter
++ * guard) — the caller is expected to surface that `ApiRequestError` as-is, same as every other CRUD wrapper
++ * in this package. */
++export declare function deleteEscrowScope(uid: string, version: number): Promise<void>;
+diff --git a/dist/admin/escrowScopesApi.js b/dist/admin/escrowScopesApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..1cae8f60c59c6ade9feab381e1cad005aa2c06ed
+--- /dev/null
++++ b/dist/admin/escrowScopesApi.js
+@@ -0,0 +1,38 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `EscrowScope` CRUD route (`BaseEscrowScopeRoute`) —
++ * trusted-role-only for every action (create/update/delete/find/count/findById). Configuring *who counts
++ * as a holder*, the dual-control threshold, and the scope's own public key is an administrative act,
++ * deliberately separate from actually holding the eDiscovery/compliance role (see `mattersApi.ts`,
++ * `specs/end-to-end_encryption.md`'s "Separation of duties") — this file is consumed only by
++ * `apps/admin/escrow-scopes/*`, never by the holder-facing `apps/escrow` area.
++ */
++import { apiFetch } from "../util/api.js";
++import { buildQuery } from "../util/apiQuery.js";
++export function listEscrowScopes(params = {}) {
++    return apiFetch(`/escrow/scopes?${buildQuery(params)}`);
++}
++export function getEscrowScope(uid) {
++    return apiFetch(`/escrow/scopes/${encodeURIComponent(uid)}`);
++}
++export function createEscrowScope(input) {
++    return apiFetch("/escrow/scopes", {
++        method: "POST",
++        body: JSON.stringify({ notifySubjectOnAccess: false, ...input }),
++    });
++}
++export function updateEscrowScope(input) {
++    return apiFetch(`/escrow/scopes/${encodeURIComponent(input.uid)}`, {
++        method: "PUT",
++        body: JSON.stringify(input),
++    });
++}
++/** 409s if a `Matter` still references this scope (`BaseEscrowScopeRoute.delete()`'s own referencing-Matter
++ * guard) — the caller is expected to surface that `ApiRequestError` as-is, same as every other CRUD wrapper
++ * in this package. */
++export function deleteEscrowScope(uid, version) {
++    return apiFetch(`/escrow/scopes/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
++}
+diff --git a/dist/admin/mattersApi.d.ts b/dist/admin/mattersApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..faa6416c28cc6bd80df89f63704555ee999d8538
+--- /dev/null
++++ b/dist/admin/mattersApi.d.ts
+@@ -0,0 +1,52 @@
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `Matter` CRUD route (`BaseMatterRoute`) — deliberately
++ * **holder-gated, not admin-gated**, unlike every other file in `admin/`: a trusted administrator who
++ * isn't a holder of the matter's own `escrowScopeId` gets the same 403 as anyone else (see
++ * `escrowScopesApi.ts`, `specs/end-to-end_encryption.md`'s "Separation of duties"). Lives under `admin/`
++ * only because that's where every other CRUD-wrapper module in this package lives, not because it's an
++ * admin-only feature — it's consumed exclusively by `apps/escrow`, never `apps/admin`.
++ */
++import { ListParams } from "../util/apiQuery.js";
++export type { ListParams };
++export interface Matter {
++    uid: string;
++    version: number;
++    dateCreated: string;
++    dateModified: string;
++    name: string;
++    description?: string;
++    /** Immutable after creation — see `BaseMatterRoute.update()`. */
++    escrowScopeId: string;
++    custodianMailboxUids: string[];
++    /** ISO 8601 timestamp. */
++    dateRangeStart: string;
++    /** ISO 8601 timestamp. */
++    dateRangeEnd: string;
++    /** Once set, this matter is permanently closed — one-way, see `closeMatter()`. */
++    closedAt?: string;
++}
++export declare function listMatters(params?: ListParams): Promise<Matter[]>;
++export declare function getMatter(uid: string): Promise<Matter>;
++export interface CreateMatterInput {
++    name: string;
++    description?: string;
++    escrowScopeId: string;
++    custodianMailboxUids: string[];
++    dateRangeStart: string;
++    dateRangeEnd: string;
++}
++export declare function createMatter(input: CreateMatterInput): Promise<Matter>;
++export interface UpdateMatterInput {
++    uid: string;
++    version: number;
++    name?: string;
++    description?: string;
++    custodianMailboxUids?: string[];
++    dateRangeStart?: string;
++    dateRangeEnd?: string;
++}
++export declare function updateMatter(input: UpdateMatterInput): Promise<Matter>;
++export declare function deleteMatter(uid: string, version: number): Promise<void>;
++/** One-way — `BaseMatterRoute.close()` 400s if the matter is already closed, and once closed no further
++ * `updateMatter()`/`createAccessRequest()` against it will succeed. */
++export declare function closeMatter(uid: string): Promise<Matter>;
+diff --git a/dist/admin/mattersApi.js b/dist/admin/mattersApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..f1e9be8cf0ffadb1f9cae2af985fe07e1f55dd6b
+--- /dev/null
++++ b/dist/admin/mattersApi.js
+@@ -0,0 +1,37 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `Matter` CRUD route (`BaseMatterRoute`) — deliberately
++ * **holder-gated, not admin-gated**, unlike every other file in `admin/`: a trusted administrator who
++ * isn't a holder of the matter's own `escrowScopeId` gets the same 403 as anyone else (see
++ * `escrowScopesApi.ts`, `specs/end-to-end_encryption.md`'s "Separation of duties"). Lives under `admin/`
++ * only because that's where every other CRUD-wrapper module in this package lives, not because it's an
++ * admin-only feature — it's consumed exclusively by `apps/escrow`, never `apps/admin`.
++ */
++import { apiFetch } from "../util/api.js";
++import { buildQuery } from "../util/apiQuery.js";
++export function listMatters(params = {}) {
++    return apiFetch(`/escrow/matters?${buildQuery(params)}`);
++}
++export function getMatter(uid) {
++    return apiFetch(`/escrow/matters/${encodeURIComponent(uid)}`);
++}
++export function createMatter(input) {
++    return apiFetch("/escrow/matters", { method: "POST", body: JSON.stringify(input) });
++}
++export function updateMatter(input) {
++    return apiFetch(`/escrow/matters/${encodeURIComponent(input.uid)}`, {
++        method: "PUT",
++        body: JSON.stringify(input),
++    });
++}
++export function deleteMatter(uid, version) {
++    return apiFetch(`/escrow/matters/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
++}
++/** One-way — `BaseMatterRoute.close()` 400s if the matter is already closed, and once closed no further
++ * `updateMatter()`/`createAccessRequest()` against it will succeed. */
++export function closeMatter(uid) {
++    return apiFetch(`/escrow/matters/${encodeURIComponent(uid)}/close`, { method: "POST" });
++}
 diff --git a/dist/contacts/contactsApi.d.ts b/dist/contacts/contactsApi.d.ts
 index 325ea9e5b51bbc2a4758215c1013b6c91a803fd3..535b446cce3b3cf086dc849d521c8c856bebae7f 100644
 --- a/dist/contacts/contactsApi.d.ts

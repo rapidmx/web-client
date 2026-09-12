@@ -584,3 +584,53 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     `mailApi.ts`'s `Mailbox.escrowScopeId`.
   - Admin/holder UI (EscrowScope/Matter/EscrowAccessRequest CRUD + audit log viewer) is Phase 5c, not yet
     built - tracked as the next step in this batch.
+
+- **2026-09-12 (continued) — Phase 5c of consuming restapi's 11 post-0.6.0 commits: Escrow Scoping,
+  admin/holder UI.** Two new UI areas, split by role per the spec's own "Separation of duties" (holding
+  escrow is distinct from server administration - a trusted admin with no holder grant on a scope gets the
+  same 403 as anyone else from every holder-gated restapi route).
+  - **Admin: `EscrowScope` CRUD**, under the existing `apps/admin` (trusted-role-gated the same way as
+    every other admin page): `apps/admin/escrow-scopes/{index,new/index,[uid]}.tsx`, mirroring
+    `transport-rules`'s own list/create/edit shape. A new shared sub-form,
+    `apps/shared/components/admin/escrowScopes/EscrowScopeKeyAndHoldersFields.tsx`, holds the public-key
+    fields (an admin pastes in an already-issued certificate's fields - nothing here generates a keypair),
+    the `holderUserUids` list, and the `requiredHolders` dual-control threshold. `AdminShell.tsx` gained a
+    nav entry (`HiOutlineKey`).
+  - A new reusable `apps/shared/components/forms/StringListField.tsx` (add/remove controlled string-list
+    field) backs `holderUserUids` here and `custodianMailboxUids` on the Matter form below -
+    `MemberListCard`'s existing list-editing pattern wasn't reusable as-is (it self-persists via its own
+    API call per change; this needed a plain controlled field the surrounding form owns instead).
+  - **Holder-facing: a brand-new top-level `apps/escrow` app**, parallel to `apps/admin`, not nested under
+    it. `apps/shared/components/escrow/layout/EscrowShell.tsx` is its shell - see that file's own doc
+    comment for why its access gate is structurally weaker than `AdminShell`'s: there is no clean canary
+    endpoint that 403s a non-holder (`GET /escrow/matters` returns `200 []` for any authenticated caller
+    who holds nothing, the same as a holder of zero matters), so the shell only confirms "signed in and
+    the API is reachable," and every actual holder-gated action (create a Matter, approve/deny a request,
+    read material) enforces server-side and surfaces its own 403 on the specific page that attempted it -
+    a deliberate, documented trim, not an oversight.
+  - `apps/escrow/index.tsx` (Matters list), `matters/new/index.tsx` (create - takes `escrowScopeId` as a
+    plain text field, not a picker: `EscrowScope` is trusted-admin-only end to end, so there is no
+    holder-readable "list scopes I hold" endpoint anywhere to populate one from), `matters/[uid].tsx`
+    (detail: info, its access requests, a "New access request" modal, approve/deny on pending requests,
+    and "Get material" once approved - rendered as raw JSON in a `<pre>` block, not a viewer, since this
+    app deliberately never attempts to decrypt anything, matching the posture established everywhere else
+    in this session), `audit-log/index.tsx` (read-only list of the caller's own visible entries, plus a
+    "Verify chain integrity" action shown only to a trusted caller, calling `verifyAuditChain()` and
+    rendering its `{valid, brokenAtSequence?}` result plainly).
+  - **Known v1 boundary, not fixed here**: `BaseEscrowAccessRequestRoute.find()` always applies its own
+    held-scopes-derived filter, ignoring any client-supplied `matterId` - the Matter detail page fetches
+    one `limit=200` page and filters client-side, so a holder with more than 200 total in-flight requests
+    across every matter they hold won't see all of them on a single matter's page. Flagged, not built
+    around, given the size of everything else in this phase.
+  - A real bug surfaced (and fixed) while chasing a raw v8 branch-coverage gap, not just a coverage
+    exercise: a Matter-detail test that mocked every URL as a 404 passed only because `EscrowShell`'s own
+    reachability-probe error UI (which never renders `{children}`) happened to also read "not found," so
+    the page's *own* `err instanceof ApiRequestError` branch had a real zero-call count despite the
+    assertion passing. Fixed by giving that test a shell probe that succeeds independently of the page's
+    own (deliberately failing) fetch, the same split already used by the sibling "non-API error" test.
+  - Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up the four
+    new `src/admin/escrow*Api.ts`/`mattersApi.ts` wrappers.
+  - `server` needed a new mount for `apps/escrow` itself (`EscrowConsoleRoute`, mongo + sql) or it would
+    have been unreachable dead code - see that repo's own NOTES.md, same date.
+  - This closes out all five phases of consuming restapi's 11 post-`v0.6.0` commits (S3BlobStore, Archive
+    folder, Label entity, RFC 8823 ACME signing enrollment, Escrow Scoping).
