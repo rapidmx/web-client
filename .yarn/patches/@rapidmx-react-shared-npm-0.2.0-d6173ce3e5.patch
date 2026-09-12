@@ -3417,6 +3417,97 @@ index bbea6c30708cf0767a11336b663b758e6eaaae58..8b2444bc24d50b3514140a8026f54663
  /**
   * Trusted-role-only: starts an admin "log in as user" session. In production this calls auth-server
   * directly (not this app's own API) since only auth-server can mint a token carrying `userUid`'s real
+diff --git a/dist/mail/mailboxImportApi.d.ts b/dist/mail/mailboxImportApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a9805f1642a12c21f2430f86461c23ee19bd6d4e
+--- /dev/null
++++ b/dist/mail/mailboxImportApi.d.ts
+@@ -0,0 +1,35 @@
++export type MailboxImportFormat = "mbox" | "pst";
++export type MailboxImportStatus = "pending" | "processing" | "completed" | "failed";
++export interface MailboxImportRequest {
++    uid: string;
++    version: number;
++    dateCreated: string;
++    dateModified: string;
++    mailboxUid: string;
++    requestedByUserUid: string;
++    targetFolderUid: string;
++    format: MailboxImportFormat;
++    sourceBlobKey: string;
++    status: MailboxImportStatus;
++    importedCount?: number;
++    failedCount?: number;
++    errorMessage?: string;
++}
++export interface UploadMailboxImportInput {
++    format: MailboxImportFormat;
++    targetFolderUid: string;
++    /** Only honored when the caller is a trusted admin — an ordinary caller's own mailbox is always
++     * used, regardless of what (if anything) is supplied here. */
++    mailboxUid?: string;
++}
++/**
++ * Uploads `file`'s raw bytes as a new mailbox-import request. Bypasses `apiFetch` — that helper always
++ * forces `Content-Type: application/json`, which would corrupt binary content; this sends the file's own
++ * bytes directly instead, matching `BaseMailboxImportRoute.create()`'s expectation of a raw request body
++ * with `format`/`targetFolderUid`/`mailboxUid` as query-string parameters, not a JSON body — the same
++ * shape `mailApi.ts`'s `uploadAttachment()` already establishes for a raw-bytes upload.
++ */
++export declare function uploadMailboxImport(file: File, input: UploadMailboxImportInput): Promise<MailboxImportRequest>;
++/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
++export declare function listImportRequests(): Promise<MailboxImportRequest[]>;
++export declare function getImportRequest(uid: string): Promise<MailboxImportRequest>;
+diff --git a/dist/mail/mailboxImportApi.js b/dist/mail/mailboxImportApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..874a256eb31ad9f177616ac17bf8350a0548cd64
+--- /dev/null
++++ b/dist/mail/mailboxImportApi.js
+@@ -0,0 +1,44 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s GDPR data-portability import (`BaseMailboxImportRoute`,
++ * mounted at `mail/mailbox-import-requests`) — the counterpart to `dataExportApi.ts`. Import runs
++ * asynchronously (restapi's own `MailboxImportJob`, not this client) — `uploadMailboxImport()` only
++ * stages the upload and returns the `pending` request; poll `getImportRequest()`/`listImportRequests()`
++ * for `status` to become `"completed"` (with `importedCount`/`failedCount`) or `"failed"`.
++ */
++import { ApiRequestError, apiFetch } from "../util/api.js";
++/**
++ * Uploads `file`'s raw bytes as a new mailbox-import request. Bypasses `apiFetch` — that helper always
++ * forces `Content-Type: application/json`, which would corrupt binary content; this sends the file's own
++ * bytes directly instead, matching `BaseMailboxImportRoute.create()`'s expectation of a raw request body
++ * with `format`/`targetFolderUid`/`mailboxUid` as query-string parameters, not a JSON body — the same
++ * shape `mailApi.ts`'s `uploadAttachment()` already establishes for a raw-bytes upload.
++ */
++export async function uploadMailboxImport(file, input) {
++    const params = new URLSearchParams({ format: input.format, targetFolderUid: input.targetFolderUid });
++    if (input.mailboxUid) {
++        params.set("mailboxUid", input.mailboxUid);
++    }
++    const res = await fetch(`/api/mail/mailbox-import-requests?${params.toString()}`, {
++        method: "POST",
++        headers: { "Content-Type": input.format === "pst" ? "application/vnd.ms-outlook" : "application/mbox" },
++        body: file,
++    });
++    const contentType = res.headers.get("content-type") ?? "";
++    const responseBody = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
++    if (!res.ok) {
++        const message = (responseBody && (responseBody.message || responseBody.error)) || res.statusText || "Upload failed.";
++        throw new ApiRequestError(message, res.status, responseBody?.code);
++    }
++    return responseBody;
++}
++/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
++export function listImportRequests() {
++    return apiFetch(`/mail/mailbox-import-requests`);
++}
++export function getImportRequest(uid) {
++    return apiFetch(`/mail/mailbox-import-requests/${encodeURIComponent(uid)}`);
++}
 diff --git a/dist/search/queryGrammar.d.ts b/dist/search/queryGrammar.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..7ae5d71169840dac91cebd632b35f7f177e32baa

@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -37,12 +37,44 @@ function exportRequest(overrides: Record<string, unknown> = {}) {
     };
 }
 
+const folder = {
+    uid: "f1",
+    version: 0,
+    dateCreated: "2026-01-01T00:00:00.000Z",
+    dateModified: "2026-01-01T00:00:00.000Z",
+    mailboxUid: "mb1",
+    name: "Inbox",
+    type: "inbox" as const,
+    unreadCount: 0,
+    totalCount: 0,
+};
+
+const secondFolder = { ...folder, uid: "f2", name: "Archive", type: "user" as const };
+
+function importRequest(overrides: Record<string, unknown> = {}) {
+    return {
+        uid: "mir1",
+        version: 0,
+        dateCreated: "2026-01-01T00:00:00.000Z",
+        dateModified: "2026-01-01T00:00:00.000Z",
+        mailboxUid: "mb1",
+        requestedByUserUid: "u1",
+        targetFolderUid: "f1",
+        format: "mbox" as const,
+        sourceBlobKey: "mailbox-imports/abc",
+        status: "pending" as const,
+        ...overrides,
+    };
+}
+
 function mockShell(extra?: (url: string, init?: RequestInit) => Response | undefined) {
     return mockFetch((url, init) => {
         const custom = extra?.(url, init);
         if (custom) return custom;
         if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
         if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+        if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [folder, secondFolder]);
+        if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
         throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
     });
 }
@@ -149,5 +181,167 @@ describe("SettingsPrivacyPage", () => {
         await user.click(screen.getByRole("button", { name: "Request export" }));
 
         expect(await screen.findByText("Could not start this export.")).toBeInTheDocument();
+    });
+
+    it("shows an empty state when there are no import requests", async () => {
+        mockShell();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText("No import requests yet.")).toBeInTheDocument();
+    });
+
+    it("lists existing import requests, showing counts once completed", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, [importRequest({ status: "completed", importedCount: 42, failedCount: 3 })]);
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText(/42 imported, 3 failed/)).toBeInTheDocument();
+    });
+
+    it("hides the destination-folder picker and disables uploading when the mailbox has no mail-type folders", async () => {
+        mockShell((url) => (url.startsWith("/api/mail/folders") ? jsonResponse(200, [{ ...folder, type: "calendar" as const }]) : undefined));
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByText("No import requests yet.");
+
+        expect(screen.queryByLabelText("Destination folder")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Upload Mbox or PST file" })).toBeDisabled();
+    });
+
+    it("defaults imported count to 0 and omits the failed-count clause when both are unset", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, [importRequest({ status: "completed", importedCount: undefined, failedCount: undefined })]);
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText(/— 0 imported/)).toBeInTheDocument();
+        expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
+    });
+
+    it("shows the failure reason for a failed import request", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, [importRequest({ status: "failed", errorMessage: "The requested mailbox no longer exists." })]);
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText(/The requested mailbox no longer exists\./)).toBeInTheDocument();
+    });
+
+    it("shows the server's own message when loading import requests fails", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(500, { message: "server unavailable" });
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText("server unavailable")).toBeInTheDocument();
+    });
+
+    it("shows a generic message when loading import requests fails with a non-API error", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") {
+                throw new TypeError("network down");
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        expect(await screen.findByText("Could not load your import requests.")).toBeInTheDocument();
+    });
+
+    it("changes the destination folder, uploads a file (via the visible button), infers the mbox format, and reloads the list", async () => {
+        const fetchMock = mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") return jsonResponse(200, importRequest());
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByLabelText("Destination folder");
+
+        await user.selectOptions(screen.getByLabelText("Destination folder"), "f2");
+        // Exercises the visible button's own onClick (delegates to the hidden file input), separately
+        // from the actual file-selection simulation below - same two-step precedent
+        // apps/admin/branding/index.test.tsx already established for its own hidden file inputs.
+        await user.click(screen.getByRole("button", { name: "Upload Mbox or PST file" }));
+
+        const file = new File(["From x\n"], "archive.mbox");
+        await user.upload(screen.getByLabelText("Upload mail archive"), file);
+
+        const postCall = await vi.waitFor(() => {
+            const call = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+            expect(call).toBeDefined();
+            return call!;
+        });
+        expect(postCall[0] as string).toContain("format=mbox");
+        expect(postCall[0] as string).toContain("targetFolderUid=f2");
+    });
+
+    it("infers the pst format from a .pst filename", async () => {
+        const fetchMock = mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") {
+                return jsonResponse(200, importRequest({ format: "pst" }));
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByLabelText("Destination folder");
+
+        const file = new File(["..."], "archive.pst");
+        const user = userEvent.setup();
+        await user.upload(screen.getByLabelText("Upload mail archive"), file);
+
+        const postCall = await vi.waitFor(() => {
+            const call = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+            expect(call).toBeDefined();
+            return call!;
+        });
+        expect(postCall[0] as string).toContain("format=pst");
+    });
+
+    it("does nothing when the file input change fires with no file selected", async () => {
+        const fetchMock = mockShell();
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByLabelText("Destination folder");
+
+        fireEvent.change(screen.getByLabelText("Upload mail archive"), { target: { files: [] } });
+
+        expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    });
+
+    it("shows the server's own message when uploading fails", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") {
+                return jsonResponse(400, { message: "targetFolderUid is required." });
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByLabelText("Destination folder");
+
+        const file = new File(["..."], "archive.mbox");
+        const user = userEvent.setup();
+        await user.upload(screen.getByLabelText("Upload mail archive"), file);
+
+        expect(await screen.findByText("targetFolderUid is required.")).toBeInTheDocument();
+    });
+
+    it("shows a generic message when uploading fails with a non-API error", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") throw new TypeError("network down");
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByLabelText("Destination folder");
+
+        const file = new File(["..."], "archive.mbox");
+        const user = userEvent.setup();
+        await user.upload(screen.getByLabelText("Upload mail archive"), file);
+
+        expect(await screen.findByText("Could not upload this file.")).toBeInTheDocument();
     });
 });

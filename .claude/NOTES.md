@@ -712,3 +712,24 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   `SETTINGS_SECTIONS`, same pattern as `encryption`/`labels`. Admin-mediated export creation/browsing is
   deferred to the shared `apps/admin/data-requests` page built in Phase 6, alongside import and erasure.
   Full react-shared rebuild + patch cycle to pick up `mail/dataExportApi.ts`.
+
+- **2026-09-12 (continued) — Phase 5 of consuming restapi's next batch: Mailbox import, Mbox + PST
+  (Group D2).** Second section on the Privacy & Data settings page, "Import mail": a destination-folder
+  `<select>` (populated via the already-existing `listFolders()`, filtered to exclude
+  calendar/contacts/tasks/notes-type folders - importing mail into those wouldn't make sense), a hidden
+  file input plus a visible "Upload Mbox or PST file" button (same two-element pattern
+  `apps/admin/branding/index.tsx` already established for its own file uploads), and a status list
+  showing `importedCount`/`failedCount` once `completed` or `errorMessage` once `failed`. The upload
+  format (`mbox` vs `pst`) is inferred client-side from the picked file's own extension - the server takes
+  it as an explicit query param with no server-side content sniffing, so getting this wrong would import
+  nothing rather than auto-correct, but every real Mbox/PST export tool already names its files correctly
+  by convention.
+  - Removed a `(current) => current || ...` functional-updater guard on the initial destination-folder
+    selection after confirming it was genuinely dead: this effect only runs once per mount (`[mailboxUid]`
+    never changes without a full page reload in this MPA), so "preserve an already-selected folder across
+    a second run" can never actually happen - same "remove a guard the surrounding architecture makes
+    unreachable, don't write an untestable test for it" precedent already established earlier this
+    session for `MailShell`-gated effects.
+  - Admin-mediated import (into someone else's mailbox) is deferred to the shared
+    `apps/admin/data-requests` page built in Phase 6, alongside export and erasure.
+  - Full react-shared rebuild + patch cycle to pick up `mail/mailboxImportApi.ts`.
