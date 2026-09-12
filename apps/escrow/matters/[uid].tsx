@@ -20,6 +20,7 @@ import {
     MatterExportRequest,
 } from "@rapidmx/react-shared/admin/matterExportApi.js";
 import { searchMatter, SearchResultPage } from "@rapidmx/react-shared/admin/matterSearchApi.js";
+import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import EscrowShell, { EscrowShellProps } from "../../shared/components/escrow/layout/EscrowShell.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -209,7 +210,26 @@ function MatterDetailContent({ uid }: { uid: string }) {
         setSearchError(null);
         setSearching(true);
         try {
-            const results = await searchMatter(uid, searchText);
+            // Same "parse the operator grammar once, client-side, before hitting the server" convention
+            // apps/www/index.tsx's own inbox search already establishes - searchMatter()/buildSearchParams()
+            // expect the caller to have already extracted operators into discrete params, not embedded in
+            // the raw `q` text (see queryGrammar.ts's own doc comment). Passing the unparsed box text
+            // straight through, as this previously did, silently treated e.g. "from:alice@example.com" as
+            // four literal free-text words instead of a sender filter.
+            const parsed = parseSearchQuery(searchText);
+            const results = await searchMatter(uid, parsed.text, {
+                types: parsed.entityTypes,
+                from: parsed.from,
+                to: parsed.to,
+                cc: parsed.cc,
+                subject: parsed.subject,
+                hasAttachment: parsed.hasAttachment,
+                before: parsed.before,
+                after: parsed.after,
+                folderUid: parsed.folderUid,
+                flags: parsed.flags,
+                labels: parsed.labels,
+            });
             setSearchResults(results);
         } catch (err) {
             setSearchError(err instanceof ApiRequestError ? err.message : "Could not search this matter.");

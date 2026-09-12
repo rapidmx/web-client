@@ -827,3 +827,17 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   - A `server`-side finding from the same review round (the new `max_body_size` cap's memory footprint
     against the deployed Helm resource limits) is that repo's own NOTES.md entry, same date - no
     `web-client` change needed for it.
+
+- **2026-09-12 (continued) — Fixed a real bug in `apps/escrow/matters/[uid].tsx`'s Matter search
+  section, found while auditing outstanding spec work: `handleSearch()` passed the raw search-box text
+  straight to `searchMatter()` with no operator-grammar parsing at all - unlike the inbox search UI
+  (`apps/www/index.tsx`), which calls `queryGrammar.ts#parseSearchQuery()` first and forwards the
+  structured fields separately. `searchMatter()`/`buildSearchParams()` expect exactly that split (operators
+  already extracted into discrete params, only the free-text remainder in `q`) - so typing e.g.
+  `from:alice@example.com` into this box did nothing useful; it was sent as four literal free-text words,
+  not a sender filter. This directly contradicted this repo's own Phase 7 NOTES.md entry, which claimed
+  the operator grammar "already works here" - it never actually went through the parser. Fixed by mirroring
+  the inbox UI's own `parseSearchQuery()` → structured-`SearchParams` conversion. Added a regression test
+  asserting the actual request URL carries `q=budget&from=alice%40example.com`, not the raw unparsed text.
+  Rebuilt/refreshed the `react-shared` patch alongside this to also pick up a related Tier 3 free-text
+  fix (quotes/negation/OR parity with Tier 1) - see that repo's own NOTES.md, same date.

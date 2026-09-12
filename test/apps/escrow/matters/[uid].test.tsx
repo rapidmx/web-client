@@ -591,6 +591,28 @@ describe("MatterDetailPage", () => {
         expect(screen.getByText("No matches.")).toBeInTheDocument();
     });
 
+    it("parses operator syntax out of the search box before sending it, rather than as literal free text", async () => {
+        const fetchMock = mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, []),
+            "/api/escrow/matter-search": () => jsonResponse(200, {}),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.type(screen.getByLabelText("Search this matter"), "from:alice@example.com budget");
+        await user.click(screen.getByRole("button", { name: "Search" }));
+
+        const call = await vi.waitFor(() => {
+            const found = fetchMock.mock.calls.find(([url]) => (url as string).startsWith("/api/escrow/matter-search?"));
+            expect(found).toBeDefined();
+            return found!;
+        });
+        const url = new URL(call[0] as string, "http://localhost");
+        expect(url.searchParams.get("q")).toBe("budget");
+        expect(url.searchParams.get("from")).toBe("alice@example.com");
+    });
+
     it("shows a message when no custodian mailboxes could be searched", async () => {
         mockMatterFetch({ "/api/escrow/matter-search": () => jsonResponse(200, {}) });
         const user = userEvent.setup();
