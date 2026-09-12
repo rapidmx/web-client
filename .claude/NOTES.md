@@ -559,3 +559,28 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     every other ApiRequestError path on this page.
   - Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up
     `keyvaultApi.ts`'s `startSignEnrollment`/`checkSignEnrollmentStatus`.
+
+- **2026-09-12 (continued) — Phase 5b of consuming restapi's 11 post-0.6.0 commits: Escrow Scoping,
+  mailbox-owner wrapping.** Settings > Encryption gained an "Escrow" section, shown only when
+  `mailbox.escrowScopeId` is set (an admin-only assignment - nothing to show otherwise):
+  - No existing `escrow`-method wrap yet → an explanatory disclosure ("nothing has been protected yet...
+    an authorized holder cannot recover this mailbox's encrypted mail until you complete this step") plus
+    an "Add escrow protection" button. Clicking it calls the new `getEscrowInfo(mailboxUid)` (`server`'s
+    own gap-filling proxy - see that repo's and `react-shared`'s NOTES.md for why it exists), then
+    `buildEscrowWrap(unlocked.masterKey, escrowScopeId, fromBase64(publicKey.publicKey))`, then submits
+    the result via the existing `addMasterKeyWrap()` and reloads the vault.
+  - An existing escrow wrap → a plain disclosure that this mailbox is under legal/compliance escrow, per
+    the spec's own transparency requirement ("the client MUST display escrow status to the user in
+    account settings") - no action needed, no "Remove" (mirrors the "Unlock methods" list below, which
+    already hides Remove for `method: "escrow"`, since removing it client-side wouldn't reflect any real
+    change in what an admin/holder can still do).
+  - Deliberately an explicit, disclosed opt-in action, not automatic on page load - wrapping MK is a
+    real cryptographic act (however routine), and the "add" button plus its own disclosure text is where
+    that consequence is actually shown to the user, not buried in a background effect.
+  - `mail/mailApi.ts`'s `Mailbox` interface gained `escrowScopeId?: string`, needed for this section's own
+    render guard.
+  - Full react-shared rebuild + `yarn patch`/`patch-commit`/`yarn install` cycle run to pick up
+    `keyvaultApi.ts`'s `getEscrowInfo()`, `masterKeyWraps.ts`'s `buildEscrowWrap()`, and
+    `mailApi.ts`'s `Mailbox.escrowScopeId`.
+  - Admin/holder UI (EscrowScope/Matter/EscrowAccessRequest CRUD + audit log viewer) is Phase 5c, not yet
+    built - tracked as the next step in this batch.

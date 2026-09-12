@@ -11,6 +11,7 @@ import {
     addMasterKeyWrap,
     checkSignEnrollmentStatus,
     findActivePublicKey,
+    getEscrowInfo,
     getKeyVault,
     rekey,
     removeMasterKeyWrap,
@@ -23,8 +24,9 @@ import {
     unlockWithPassword,
 } from "@rapidmx/react-shared/crypto/keySession.js";
 import { IDLE_TIMEOUT_OPTIONS_MINUTES, getIdleTimeoutMinutes, setIdleTimeoutMinutes } from "@rapidmx/react-shared/crypto/idleTimeout.js";
+import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import { buildAad, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
-import { buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
+import { buildEscrowWrap, buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
 import { rewrapPrivateKeysUnderNewMasterKey } from "@rapidmx/react-shared/crypto/keyRotation.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
 import { getMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -121,6 +123,27 @@ function EncryptionContent() {
     const [signingStatus, setSigningStatus] = useState<"idle" | "enrolling" | "pending">("idle");
     const [signingEnrollmentId, setSigningEnrollmentId] = useState<string | null>(null);
     const [signingError, setSigningError] = useState<string | null>(null);
+
+    const hasEscrowWrap = vault?.masterKeyWraps.some((w) => w.method === "escrow") ?? false;
+    const [wrappingEscrow, setWrappingEscrow] = useState(false);
+    const [escrowError, setEscrowError] = useState<string | null>(null);
+
+    async function handleWrapEscrow() {
+        setEscrowError(null);
+        setWrappingEscrow(true);
+        try {
+            // Only reachable when mailbox.escrowScopeId is set (see the render guard below) and
+            // `unlocked` is defined - see `handleAddPassword`'s identical note on the latter.
+            const escrowInfo = await getEscrowInfo(mailboxUid!);
+            const wrap = await buildEscrowWrap(unlocked!.masterKey, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
+            await addMasterKeyWrap(mailboxUid!, wrap);
+            await loadVault();
+        } catch (err) {
+            setEscrowError(err instanceof ApiRequestError ? err.message : "Could not add escrow protection for this mailbox.");
+        } finally {
+            setWrappingEscrow(false);
+        }
+    }
 
     useEffect(() => {
         if (signingStatus !== "pending" || !signingEnrollmentId) {
@@ -421,6 +444,39 @@ function EncryptionContent() {
                         </div>
                     )}
                 </div>
+
+                {mailbox.escrowScopeId && (
+                    <div>
+                        <h2 className="text-sm font-semibold mb-2">Escrow</h2>
+                        {hasEscrowWrap ? (
+                            <p className="text-sm text-text-muted">
+                                This mailbox is under legal/compliance escrow — an authorized holder in your
+                                organization can recover its encrypted mail if needed. This does not weaken
+                                protection against anyone else.
+                            </p>
+                        ) : (
+                            <div className="flex flex-col gap-2">
+                                <p className="text-xs text-text-muted">
+                                    Your organization has assigned this mailbox to an escrow scope, but nothing
+                                    has been protected yet — an authorized holder cannot recover this mailbox's
+                                    encrypted mail until you complete this step. This does not weaken protection
+                                    against anyone else.
+                                </p>
+                                {escrowError && <Alert>{escrowError}</Alert>}
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className="!w-auto"
+                                    loading={wrappingEscrow}
+                                    disabled={wrappingEscrow}
+                                    onClick={handleWrapEscrow}
+                                >
+                                    Add escrow protection
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">Unlock methods</h2>

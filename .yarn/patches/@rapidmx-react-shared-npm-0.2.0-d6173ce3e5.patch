@@ -658,10 +658,10 @@ index 0000000000000000000000000000000000000000..509f0888cb0a588e1a404f15baacb2da
 +}
 diff --git a/dist/crypto/keyvaultApi.d.ts b/dist/crypto/keyvaultApi.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b1ad63459f0bf34673c7536c3991c02e38dbfe2
+index 0000000000000000000000000000000000000000..45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce
 --- /dev/null
 +++ b/dist/crypto/keyvaultApi.d.ts
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,176 @@
 +/** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
 + * `@rapidmx/restapi`'s `PublicKey` type exactly. */
 +export interface PublicKey {
@@ -775,6 +775,32 @@ index 0000000000000000000000000000000000000000..6b1ad63459f0bf34673c7536c3991c02
 +/** Reports the current status of a previously started automated enrollment — see
 + * `startSignEnrollment()`. */
 +export declare function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult>;
++/** An escrow scope's public key, exposed only via `getEscrowInfo()` below. Mirrors `@rapidmx/restapi`'s
++ * `EscrowScopePublicKey` exactly - the same shape as `PublicKey` minus `useType` (an escrow scope's key
++ * is only ever used for encryption, never signing). */
++export interface EscrowScopePublicKey {
++    /** Base64-encoded DER X.509 certificate. */
++    publicKey: string;
++    type: string;
++    fingerprint: string;
++    notBefore: number;
++    notAfter: number;
++    revokedAt?: number;
++}
++/** The wire shape `GET /mail/mailboxes/:id/escrow-info` returns - see that route's own doc comment
++ * (`server`'s `BaseEscrowInfoRoute`) for why this exists as a `server`-only proxy rather than a restapi
++ * route: `@rapidmx/restapi`'s own `GET /escrow-scopes/:id` is trusted-admin-only, with no lighter
++ * alternative a mailbox owner could use to read the one scope their own mailbox is assigned to. */
++export interface EscrowInfo {
++    escrowScopeId: string;
++    publicKey: EscrowScopePublicKey;
++}
++/** Fetches `{escrowScopeId, publicKey}` for the `EscrowScope` this mailbox is currently assigned to
++ * (`Mailbox.escrowScopeId`, an admin-only assignment - see `EscrowInfo`'s own doc comment). 404s if the
++ * mailbox has no escrow scope assigned, the scope no longer exists, or the caller can't access this
++ * mailbox. Used by `crypto/masterKeyWraps.ts`'s `buildEscrowWrap()` to get the certificate MK is wrapped
++ * against. */
++export declare function getEscrowInfo(mailboxUid: string): Promise<EscrowInfo>;
 +/** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
 + * independent of key enrollment. Requires an already-initialized vault. */
 +export declare function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap): Promise<KeyVault>;
@@ -814,10 +840,10 @@ index 0000000000000000000000000000000000000000..6b1ad63459f0bf34673c7536c3991c02
 +export declare function updateEncryptionPolicy(patch: Partial<EncryptionPolicy>): Promise<EncryptionPolicy>;
 diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..37a6eba90beab08011494a95c68e019ae5beb311
+index 0000000000000000000000000000000000000000..0acb10931ab44256e926ea4dd88cf0b0ba0beb7f
 --- /dev/null
 +++ b/dist/crypto/keyvaultApi.js
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,107 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -871,6 +897,14 @@ index 0000000000000000000000000000000000000000..37a6eba90beab08011494a95c68e019a
 + * `startSignEnrollment()`. */
 +export function checkSignEnrollmentStatus(mailboxUid, enrollmentId) {
 +    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`);
++}
++/** Fetches `{escrowScopeId, publicKey}` for the `EscrowScope` this mailbox is currently assigned to
++ * (`Mailbox.escrowScopeId`, an admin-only assignment - see `EscrowInfo`'s own doc comment). 404s if the
++ * mailbox has no escrow scope assigned, the scope no longer exists, or the caller can't access this
++ * mailbox. Used by `crypto/masterKeyWraps.ts`'s `buildEscrowWrap()` to get the certificate MK is wrapped
++ * against. */
++export function getEscrowInfo(mailboxUid) {
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/escrow-info`);
 +}
 +/** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
 + * independent of key enrollment. Requires an already-initialized vault. */
@@ -1042,10 +1076,10 @@ index 0000000000000000000000000000000000000000..da85967d8e3474b387cff2da2432bdb2
 +}
 diff --git a/dist/crypto/masterKeyWraps.d.ts b/dist/crypto/masterKeyWraps.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..0861e1d9de6557d6aac4c57d9b8851e1f386ce66
+index 0000000000000000000000000000000000000000..dc3e4cc507f1d84403e177ee9c27caa2d9b4f70e
 --- /dev/null
 +++ b/dist/crypto/masterKeyWraps.d.ts
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,45 @@
 +import type { MasterKeyWrap } from "./keyvaultApi.js";
 +import { Argon2idParams } from "./passwordUnlock.js";
 +/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
@@ -1068,12 +1102,35 @@ index 0000000000000000000000000000000000000000..0861e1d9de6557d6aac4c57d9b8851e1
 +    wraps: MasterKeyWrap[];
 +    codes: string[];
 +}>;
++/** `nonce`/`salt` labels for an escrow wrap - see `buildEscrowWrap()`'s own doc comment for why these
++ * are fixed placeholders rather than freshly generated values, unlike every other wrap method. */
++export declare const ESCROW_KDF_LABEL = "cms-enveloped-data";
++/**
++ * Wraps `mk` for the `escrow` unlock method: encrypts it as a CMS `EnvelopedData` structure to the
++ * escrow scope's own X.509 public-key certificate (`keyvaultApi.ts`'s `getEscrowInfo()` return value) -
++ * the exact same "encrypt to a recipient's certificate" operation `smime.ts`'s `encryptForRecipients()`
++ * already implements for message bodies, just applied to MK instead. Matches
++ * `specs/end-to-end_encryption.md`'s `wrap_escrow = AEAD(escrow scope public key, MK)` pseudocode.
++ *
++ * Unlike `buildPasswordWrap()`/`buildRecoveryWraps()`, there is no separately-generated salt or nonce
++ * here - CMS `EnvelopedData` already embeds everything a holder's own offline tooling needs to unwrap
++ * (the content-encryption algorithm, its IV, and the ECDH key-agreement material) inside the ciphertext
++ * itself. `nonce`/`salt` are still populated with a fixed, documented placeholder rather than left empty
++ * because restapi's own `validateMasterKeyWrap()` requires every `MasterKeyWrap` field to be a non-empty
++ * string regardless of method - they carry no cryptographic meaning for this method and a holder's
++ * unwrap tooling must never read them.
++ *
++ * This client never has (and this function never touches) the scope's *private* key - only a holder's
++ * own external tooling can ever unwrap the result. `escrowScopeId` is required so `resolveAllowEscrow()`
++ * (server-side) can confirm it matches the mailbox's actually-assigned scope before persisting.
++ */
++export declare function buildEscrowWrap(mk: Uint8Array, escrowScopeId: string, scopePublicKeyCertDer: Uint8Array): Promise<MasterKeyWrap>;
 diff --git a/dist/crypto/masterKeyWraps.js b/dist/crypto/masterKeyWraps.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..98a969fe794ce1893e22dd7af7311b0de0f0eb4b
+index 0000000000000000000000000000000000000000..f5fda62c5e172ffb953851284876a297a79e0cd0
 --- /dev/null
 +++ b/dist/crypto/masterKeyWraps.js
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,107 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1091,6 +1148,7 @@ index 0000000000000000000000000000000000000000..98a969fe794ce1893e22dd7af7311b0d
 +import { MASTER_KEY_AAD_PURPOSE } from "./keySession.js";
 +import { DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "./passwordUnlock.js";
 +import { deriveFromRecoveryCode, generateRecoveryCode } from "./recoveryCode.js";
++import { encryptForRecipients } from "./smime.js";
 +/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
 + * high-entropy, see `recoveryCode.ts`'s own doc comment), just a direct HKDF derivation. */
 +export const RECOVERY_KDF_LABEL = "hkdf-sha256";
@@ -1142,6 +1200,43 @@ index 0000000000000000000000000000000000000000..98a969fe794ce1893e22dd7af7311b0d
 +        });
 +    }
 +    return { wraps, codes };
++}
++/** `nonce`/`salt` labels for an escrow wrap - see `buildEscrowWrap()`'s own doc comment for why these
++ * are fixed placeholders rather than freshly generated values, unlike every other wrap method. */
++export const ESCROW_KDF_LABEL = "cms-enveloped-data";
++const ESCROW_NONCE_PLACEHOLDER = "n/a";
++const ESCROW_SALT_PLACEHOLDER = "n/a";
++/**
++ * Wraps `mk` for the `escrow` unlock method: encrypts it as a CMS `EnvelopedData` structure to the
++ * escrow scope's own X.509 public-key certificate (`keyvaultApi.ts`'s `getEscrowInfo()` return value) -
++ * the exact same "encrypt to a recipient's certificate" operation `smime.ts`'s `encryptForRecipients()`
++ * already implements for message bodies, just applied to MK instead. Matches
++ * `specs/end-to-end_encryption.md`'s `wrap_escrow = AEAD(escrow scope public key, MK)` pseudocode.
++ *
++ * Unlike `buildPasswordWrap()`/`buildRecoveryWraps()`, there is no separately-generated salt or nonce
++ * here - CMS `EnvelopedData` already embeds everything a holder's own offline tooling needs to unwrap
++ * (the content-encryption algorithm, its IV, and the ECDH key-agreement material) inside the ciphertext
++ * itself. `nonce`/`salt` are still populated with a fixed, documented placeholder rather than left empty
++ * because restapi's own `validateMasterKeyWrap()` requires every `MasterKeyWrap` field to be a non-empty
++ * string regardless of method - they carry no cryptographic meaning for this method and a holder's
++ * unwrap tooling must never read them.
++ *
++ * This client never has (and this function never touches) the scope's *private* key - only a holder's
++ * own external tooling can ever unwrap the result. `escrowScopeId` is required so `resolveAllowEscrow()`
++ * (server-side) can confirm it matches the mailbox's actually-assigned scope before persisting.
++ */
++export async function buildEscrowWrap(mk, escrowScopeId, scopePublicKeyCertDer) {
++    const envelopedDer = await encryptForRecipients(mk, [scopePublicKeyCertDer]);
++    return {
++        method: "escrow",
++        escrowScopeId,
++        ciphertext: toBase64(envelopedDer),
++        nonce: ESCROW_NONCE_PLACEHOLDER,
++        salt: ESCROW_SALT_PLACEHOLDER,
++        kdf: ESCROW_KDF_LABEL,
++        schemeVersion: WRAP_SCHEME_VERSION,
++        createdAt: Date.now(),
++    };
 +}
 diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
 new file mode 100644
@@ -2543,7 +2638,7 @@ index 0000000000000000000000000000000000000000..e25106058e74c6b145e7612104d747ad
 +    return apiFetch(`/mail/labels/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 +}
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
-index 9eba1e5013b5604ec48710251ce3adafbf5c2896..3e1651473e849e56c9624a4b1d8644cd579847a7 100644
+index 9eba1e5013b5604ec48710251ce3adafbf5c2896..8261e09318c4d07619b79e12df0968ba9917dd17 100644
 --- a/dist/mail/mailApi.d.ts
 +++ b/dist/mail/mailApi.d.ts
 @@ -6,7 +6,9 @@
@@ -2556,7 +2651,7 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..3e1651473e849e56c9624a4b1d8644cd
  export interface Mailbox {
      uid: string;
      version: number;
-@@ -60,6 +62,14 @@ export interface Mailbox {
+@@ -60,6 +62,20 @@ export interface Mailbox {
       * requester, not the recipient. Always present (defaults `true`/`false` respectively), same caveat. */
      autoSendReceiptsInternal?: boolean;
      autoSendReceiptsExternal?: boolean;
@@ -2568,10 +2663,16 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..3e1651473e849e56c9624a4b1d8644cd
 +     * per the spec's own `PublicKey` doc comment. Absent/empty means no keys enrolled yet
 +     * (`KeyEnrollmentGate` handles that state). */
 +    keys?: PublicKey[];
++    /** The `EscrowScope` this mailbox is currently assigned to, if any — an admin-only assignment
++     * (`specs/end-to-end_encryption.md`'s Escrow Scoping). Assigning this alone does **not** create any
++     * `MasterKeyWrap` — the mailbox owner must separately wrap MK against the scope's public key (see
++     * `crypto/keyvaultApi.ts`'s `getEscrowInfo()` and `crypto/masterKeyWraps.ts`'s `buildEscrowWrap()`).
++     * Absent means this mailbox has no escrow scope assigned. */
++    escrowScopeId?: string;
  }
  /** Lists mailboxes the caller can access (owned, shared with them, or — for a trusted caller — every one). */
  export declare function listMailboxes(params?: ListParams): Promise<Mailbox[]>;
-@@ -290,6 +300,25 @@ export interface Message {
+@@ -290,6 +306,25 @@ export interface Message {
      /** The per-recipient delivery/read roster on a *sent* message — the client-visible tracking indicator.
       * `undefined` (not an empty array) when no receipt was ever requested for this message. */
      receiptStatus?: MessageReceiptEntry[];
@@ -2597,7 +2698,7 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..3e1651473e849e56c9624a4b1d8644cd
  }
  export interface MessageReceiptEntry {
      recipientAddress: string;
-@@ -307,6 +336,13 @@ export declare function getMessage(uid: string): Promise<Message>;
+@@ -307,6 +342,13 @@ export declare function getMessage(uid: string): Promise<Message>;
   * only visible effect here is `recallRequestedAt` getting set on the response.
   */
  export declare function recallMessage(uid: string): Promise<Message>;
@@ -2611,7 +2712,7 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..3e1651473e849e56c9624a4b1d8644cd
  /**
   * Moves a message between the Focused and Other halves of the Inbox — Outlook's "Move to Other" gesture.
   * With `applyToSender: true` ("Always move to Other"), also upserts a standing `FocusedInboxOverride` for
-@@ -319,6 +355,11 @@ export declare function classifyMessage(uid: string, classifyAs: MessageClassifi
+@@ -319,6 +361,11 @@ export declare function classifyMessage(uid: string, classifyAs: MessageClassifi
   * routes replace the whole record rather than patch individual fields.
   */
  export declare function setMessageRead(message: Message, read: boolean): Promise<Message>;
@@ -2623,7 +2724,7 @@ index 9eba1e5013b5604ec48710251ce3adafbf5c2896..3e1651473e849e56c9624a4b1d8644cd
  /**
   * Sets a draft's `scheduledSendTime` ahead of calling `sendMessage()` — `send()` itself is what actually
   * checks the field and defers relay (moving the message into Outbox) instead of sending immediately,
-@@ -391,8 +432,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
+@@ -391,8 +438,37 @@ export declare function createDraft(mailboxUid: string, folderUid: string): Prom
   * itself does no MIME composition). Does not send the message.
   */
  export declare function assembleDraft(messageUid: string, input: AssembleDraftInput): Promise<Message>;

@@ -10,7 +10,16 @@ import { jsonResponse, mockFetch } from "../../testUtils.js";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import SettingsEncryptionPage from "../../../../apps/www/settings/encryption/index.js";
 
-const { getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus } = vi.hoisted(() => ({
+const {
+    getKeyVault,
+    addMasterKeyWrap,
+    removeMasterKeyWrap,
+    enrollKey,
+    rekey,
+    startSignEnrollment,
+    checkSignEnrollmentStatus,
+    getEscrowInfo,
+} = vi.hoisted(() => ({
     getKeyVault: vi.fn(),
     addMasterKeyWrap: vi.fn(),
     removeMasterKeyWrap: vi.fn(),
@@ -18,12 +27,13 @@ const { getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, st
     rekey: vi.fn(),
     startSignEnrollment: vi.fn(),
     checkSignEnrollmentStatus: vi.fn(),
+    getEscrowInfo: vi.fn(),
 }));
 vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => {
     // `findActivePublicKey` is a pure function this page also imports - kept real (via importOriginal)
     // rather than added to every test's mock list, unlike the network-calling functions below.
     const actual = await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>();
-    return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus };
+    return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus, getEscrowInfo };
 });
 
 const { rewrapPrivateKeysUnderNewMasterKey } = vi.hoisted(() => ({ rewrapPrivateKeysUnderNewMasterKey: vi.fn() }));
@@ -43,11 +53,12 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
     destroyUnlockedKeys,
 }));
 
-const { buildPasswordWrap, buildRecoveryWraps } = vi.hoisted(() => ({
+const { buildPasswordWrap, buildRecoveryWraps, buildEscrowWrap } = vi.hoisted(() => ({
     buildPasswordWrap: vi.fn(),
     buildRecoveryWraps: vi.fn(),
+    buildEscrowWrap: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({ buildPasswordWrap, buildRecoveryWraps }));
+vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({ buildPasswordWrap, buildRecoveryWraps, buildEscrowWrap }));
 
 const { generateKeyPairWithCsr, exportPrivateKeyPkcs8 } = vi.hoisted(() => ({
     generateKeyPairWithCsr: vi.fn(),
@@ -122,11 +133,13 @@ afterEach(() => {
     rekey.mockReset();
     startSignEnrollment.mockReset();
     checkSignEnrollmentStatus.mockReset();
+    getEscrowInfo.mockReset();
     getUnlockedKeys.mockReset();
     destroyUnlockedKeys.mockReset();
     unlockWithPassword.mockReset();
     buildPasswordWrap.mockReset();
     buildRecoveryWraps.mockReset();
+    buildEscrowWrap.mockReset();
     rewrapPrivateKeysUnderNewMasterKey.mockReset();
     generateKeyPairWithCsr.mockReset();
     exportPrivateKeyPkcs8.mockReset();
@@ -830,6 +843,99 @@ describe("SettingsEncryptionPage", () => {
 
         await act(() => vi.advanceTimersByTimeAsync(15_000));
         expect(await screen.findByText("Signing certificate enrollment failed.")).toBeInTheDocument();
+    });
+
+    it("shows no Escrow section when the mailbox has no escrow scope assigned", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        mockShell();
+        render(<SettingsEncryptionPage userUid="u1" />);
+
+        await screen.findByText("Password");
+        expect(screen.queryByRole("heading", { name: "Escrow" })).not.toBeInTheDocument();
+    });
+
+    it("offers 'Add escrow protection' when the mailbox is assigned a scope but has no escrow wrap yet", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        render(<SettingsEncryptionPage userUid="u1" />);
+
+        expect(await screen.findByRole("heading", { name: "Escrow" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Add escrow protection" })).toBeInTheDocument();
+    });
+
+    it("shows the already-protected message when the mailbox already has an escrow wrap", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue({
+            wrappedKeys: vault.wrappedKeys,
+            masterKeyWraps: [
+                ...vault.masterKeyWraps,
+                { method: "escrow" as const, escrowScopeId: "scope-1", ciphertext: "ct", nonce: "n/a", salt: "n/a", kdf: "cms-enveloped-data", schemeVersion: 1, createdAt: 0 },
+            ],
+        });
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        render(<SettingsEncryptionPage userUid="u1" />);
+
+        expect(await screen.findByText(/under legal\/compliance escrow/)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Add escrow protection" })).not.toBeInTheDocument();
+    });
+
+    it("adds escrow protection: fetches the scope's public key, builds the wrap, submits it, and reloads the vault", async () => {
+        const unlockedFixture = { masterKey: new Uint8Array(32) };
+        getUnlockedKeys.mockReturnValue(unlockedFixture);
+        const escrowWrap = { method: "escrow" as const, escrowScopeId: "scope-1", ciphertext: "ct", nonce: "n/a", salt: "n/a", kdf: "cms-enveloped-data", schemeVersion: 1, createdAt: 0 };
+        getKeyVault.mockResolvedValueOnce(vault).mockResolvedValueOnce({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, escrowWrap] });
+        getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } });
+        buildEscrowWrap.mockResolvedValue(escrowWrap);
+        addMasterKeyWrap.mockResolvedValue(vault);
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Add escrow protection" });
+
+        await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
+
+        expect(getEscrowInfo).toHaveBeenCalledWith("mb1");
+        await waitFor(() =>
+            expect(buildEscrowWrap).toHaveBeenCalledWith(unlockedFixture.masterKey, "scope-1", expect.any(Uint8Array)),
+        );
+        expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", escrowWrap);
+        expect(await screen.findByText(/under legal\/compliance escrow/)).toBeInTheDocument();
+    });
+
+    it("shows the server's own message when fetching escrow info fails", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        getEscrowInfo.mockRejectedValue(new ApiRequestError("this mailbox's escrow scope no longer exists", 404));
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Add escrow protection" });
+
+        await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
+
+        expect(await screen.findByText("this mailbox's escrow scope no longer exists")).toBeInTheDocument();
+    });
+
+    it("shows a generic error when adding escrow protection fails with a non-API error", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } });
+        buildEscrowWrap.mockRejectedValue(new Error("boom"));
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Add escrow protection" });
+
+        await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
+
+        expect(await screen.findByText("Could not add escrow protection for this mailbox.")).toBeInTheDocument();
     });
 
     it("treats a refreshed mailbox with no keys at all as having none", async () => {
