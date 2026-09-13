@@ -33,32 +33,33 @@ describe("searchTier2 (local index)", () => {
     it("returns no results and no coverage without unlocked keys, without touching the RPC client at all", async () => {
         const outcome = await searchLocalIndex("mb1", parsedQuery(), undefined);
 
-        expect(outcome).toEqual({ results: [] });
+        expect(outcome).toEqual({ results: [], hasMore: false });
         expect(initLocalIndex).not.toHaveBeenCalled();
     });
 
-    it("derives the index key, initializes the connection, and returns negated-score, already-sourced results plus coverage", async () => {
+    it("derives the index key, initializes the connection, and returns negated-score, already-sourced results plus coverage/hasMore", async () => {
         deriveLocalIndexKey.mockResolvedValue(new Uint8Array(32).fill(7));
-        searchLocal.mockResolvedValue([{ entityUid: "m1", score: -3.2, snippet: "…the budget…" }]);
+        searchLocal.mockResolvedValue({ hits: [{ entityUid: "m1", score: -3.2, snippet: "…the budget…" }], hasMore: true });
         getLocalCoverage.mockResolvedValue({ indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 12, building: false });
 
-        const outcome = await searchLocalIndex("mb1", parsedQuery(), unlocked, 25);
+        const outcome = await searchLocalIndex("mb1", parsedQuery(), unlocked, 25, 25);
 
         expect(deriveLocalIndexKey).toHaveBeenCalledWith(unlocked.masterKey, "mb1");
         expect(initLocalIndex).toHaveBeenCalledWith({ mailboxUid: "mb1", indexKey: expect.any(Uint8Array) });
-        expect(searchLocal).toHaveBeenCalledWith("mb1", expect.objectContaining({ text: "budget" }), 25);
+        expect(searchLocal).toHaveBeenCalledWith("mb1", expect.objectContaining({ text: "budget" }), 25, 25);
         // Negated: SQLite's bm25() is "more negative is better," the opposite of every other tier's own
         // score convention - see searchTier2.ts's own doc comment on why this negates exactly once, here.
         expect(outcome.results).toEqual([
             { entityType: "message", entityUid: "m1", score: 3.2, snippet: "…the budget…", source: "local", metadataOnly: false },
         ]);
         expect(outcome.coverage).toEqual({ indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 12, building: false });
+        expect(outcome.hasMore).toBe(true);
     });
 
     it("degrades to no results (never rejects) when the local index throws for any reason", async () => {
         deriveLocalIndexKey.mockResolvedValue(new Uint8Array(32));
         initLocalIndex.mockRejectedValue(new Error("Worker is not defined"));
 
-        await expect(searchLocalIndex("mb1", parsedQuery(), unlocked)).resolves.toEqual({ results: [] });
+        await expect(searchLocalIndex("mb1", parsedQuery(), unlocked)).resolves.toEqual({ results: [], hasMore: false });
     });
 });

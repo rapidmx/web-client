@@ -841,3 +841,70 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   asserting the actual request URL carries `q=budget&from=alice%40example.com`, not the raw unparsed text.
   Rebuilt/refreshed the `react-shared` patch alongside this to also pick up a related Tier 3 free-text
   fix (quotes/negation/OR parity with Tier 1) - see that repo's own NOTES.md, same date.
+
+- **2026-09-13 — Implemented the two items the Tier 2 search work had explicitly deferred: `specs/
+  search.md` §8's composite pagination cursor, and §_Progressive Results_' skeleton/reorder/prune UX.**
+  Both live entirely in `apps/www/index.tsx` plus small, self-contained additions to the Tier 2 worker -
+  no `react-shared` change was needed for either, deliberately, to avoid that package's own
+  publish+patch cycle (see this file's many earlier entries on that friction).
+  - **Composite cursor (§8)**: `apps/www/index.tsx` now encodes/decodes a `CompositeCursor` (`tier1Cursor`,
+    `tier2Offset`, `tier3Offset`, a `fingerprint` guarding against replay against a different query) and
+    threads it through both the fresh-search pass and `loadMore()`. Tier 1 keeps using the server's own
+    opaque cursor unchanged. Tier 2 gained real `OFFSET` pagination: `localIndexWorker.ts#search()` now
+    takes an `offset`, fetches `limit + 1` rows to detect `hasMore` without a separate `COUNT(*)`, and
+    returns `{ hits, hasMore }` (was a bare array) - threaded through `localIndexRpcClient.ts`/
+    `searchTier2.ts`'s `Tier2SearchOutcome.hasMore`. Tier 3 (`searchEncryptedCandidates()` in
+    `react-shared`, deliberately left untouched) doesn't get a real cursor at all - instead, its one
+    decrypt-and-match pass per distinct (mailbox, query, "Search all mail" toggle, unlocked-or-not) is
+    fetched once at a larger bound (`TIER3_CANDIDATE_LIMIT = 200`) and cached in a `Map` ref
+    (`Tier3Cache`), with every page after the first just slicing further into that same array - avoids
+    both a `react-shared` signature change and repeat decrypt cost, at the price of a search whose true
+    candidate set exceeds 200 simply running out of pages (`hasMore` reflects this honestly).
+    - **Real bug caught before it shipped**: the Tier 3 cache key initially didn't include whether the
+      search ran with `unlocked` present. An on-demand unlock mid-search (`handleUnlockSearch()`) re-runs
+      the same query, and without that dimension the second pass silently reused the *locked* pass's
+      cached-empty Tier 3 result instead of actually re-fetching with real keys - caught by the existing
+      "shows an unlock banner... and includes Tier 3 results once unlocked" test, which started failing
+      the moment the cache was introduced. Fixed by adding an `unlocked: boolean` dimension to
+      `tier3CacheKey()`.
+    - Tier 3's own candidate window is also tightened to `before: coverage.indexedFrom` (Tier 2's already-
+      covered range) by default, via `tightenBeforeToCoverage()` - re-decrypting what Tier 2 already fully
+      covers would be pure waste. "Search all mail" (a new button next to the results count, shown once
+      Tier 2 has reported) sets a `searchAllMail` flag that removes this bound for one re-run.
+  - **Progressive Results**: the search effect no longer `Promise.all()`s all three tiers before setting
+    any state. Tier 1 + Tier 2 fire together; the moment they resolve, results render immediately with any
+    Tier 1 `metadataOnly` hit not yet confirmed by Tier 2 shown as a shimmering skeleton row (real
+    `Skeleton` component, not the old static "Encrypted message" text) at its Tier-1-assigned position -
+    per the spec's own precise wording, a Tier 3 candidate Tier 1 never itself surfaced has no provisional
+    score/position and is deliberately never pre-rendered as a skeleton, only appearing once Tier 3
+    actually confirms it. Tier 3 then runs (bounded as above) and does the final pass: anything still
+    unconfirmed gets pruned outright rather than lingering as a permanent skeleton. A `tier1Done && tier2Done
+    && tier3Done` gate withholds a hard result count ("n of ??" until settled, then "n results"). Every
+    async stage is guarded by a monotonic `searchRunIdRef` (same pattern as `settings/privacy`'s
+    `ExportSection.loadSeq`) so a stale in-flight pass from an already-superseded query can't clobber
+    newer state. `loadMore()` pages are deliberately *not* progressive (fetched and appended in one shot,
+    same as before this work) - reordering/growing skeletons under content a reader has already scrolled
+    past would be worse UX than the first-page-only progressive reveal this implements; documented inline
+    as a deliberate scope trim.
+  - **Tooling gotcha hit while writing this**: an `Edit` tool call containing the literal 6-character
+    escape sequence `\u0000` inside a JSON `old_string`/`new_string` parameter gets decoded as an actual
+    NUL byte (0x00) written into the file, not preserved as literal backslash-u-0000 text - happened
+    while writing `tier3CacheKey()`'s original separator. The corrupted file still round-tripped through
+    `Read` (which silently renders embedded NUL as visually-empty/space-like output) and `tsc`/`vitest`
+    without any visible error, so it went unnoticed until a later, unrelated `Edit` call on a *different*
+    line inexplicably failed its exact-string match. Found via `Buffer.indexOf(0)` on the raw file bytes.
+    Fixed by a small Node script swapping the two literal NUL bytes for a plain `|` separator (`latin1`
+    read+write round-trip, which preserves every other byte - including this file's own em dashes/
+    ellipses - exactly). Lesson: never rely on a visual `Read` diff to confirm a suspected encoding issue;
+    check the actual bytes.
+  - **Verification**: `tsc --noEmit` clean; full `web-client` suite green (121 files/1392 tests, confirmed
+    across two separate full runs - one run's 2 unrelated failures, in `index.test.tsx`'s plain-folder
+    infinite-scroll test and an unrelated `settings/filters/new` test, did not reproduce on a second full
+    run or in isolation, matching this file's own prior notes on this suite's pre-existing test-order
+    flakiness). The real `OFFSET`/`LIMIT + 1` SQL added to `localIndexWorker.ts#search()` can't be
+    exercised by vitest at all (no environment here implements OPFS/Worker) - verified instead against the
+    *real* `@journeyapps/wa-sqlite` engine (real FTS5, real `bm25()`) via a disposable static-file-served
+    page driven by Playwright: 12 rows, 3 pages of `limit=5`, confirmed no gaps/overlap across pages and
+    correct `hasMore` on each. Added test coverage in `test/apps/index.test.tsx` for the composite cursor
+    (Tier 2 offset threading + Tier 3 cache reuse across a `loadMore()`) and Progressive Results (skeleton
+    render/prune, settled-count gate, "Search all mail" removing Tier 3's bound).

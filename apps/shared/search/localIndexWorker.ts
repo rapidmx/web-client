@@ -72,6 +72,10 @@ export interface SearchParams {
     mailboxUid: string;
     parsed: ParsedSearchQuery;
     limit: number;
+    /** How many matches to skip before returning `limit` more - §8's composite pagination cursor's own
+     * "the local index position consumed so far" component, threaded straight through to SQL `OFFSET`.
+     * Defaults to `0` for a first page. */
+    offset?: number;
 }
 
 export interface LocalSearchHit {
@@ -81,6 +85,13 @@ export interface LocalSearchHit {
      * way every other tier's raw score is, before merging (spec §7). */
     score: number;
     snippet?: string;
+}
+
+export interface LocalSearchPage {
+    hits: LocalSearchHit[];
+    /** `true` when at least one more match exists beyond this page - detected by fetching `limit + 1`
+     * rows and trimming the extra one, rather than a separate `COUNT(*)` query. */
+    hasMore: boolean;
 }
 
 export interface Coverage {
@@ -276,7 +287,7 @@ async function removeEntity({ mailboxUid, entityUid }: RemoveEntityParams): Prom
     }
 }
 
-async function search({ mailboxUid, parsed, limit }: SearchParams): Promise<LocalSearchHit[]> {
+async function search({ mailboxUid, parsed, limit, offset = 0 }: SearchParams): Promise<LocalSearchPage> {
     const connection = requireConnection(mailboxUid);
     const { where, params } = buildSearchPredicates(parsed, mailboxUid);
     const matchExpr = buildMatchExpression(parsed);
@@ -287,15 +298,18 @@ async function search({ mailboxUid, parsed, limit }: SearchParams): Promise<Loca
     // to handle) - fails soft to "this tier found nothing," matching how every other tier already
     // degrades on its own per-candidate/per-provider failures, rather than breaking the whole search.
     try {
+        // Fetches one extra row beyond `limit` so `hasMore` below can be determined without a second,
+        // separate COUNT(*) query - trimmed back off before returning.
+        const fetchLimit = limit + 1;
         const sql = matchExpr
             ? `SELECT e.entity_uid, bm25(entities_fts, ${BM25_WEIGHTS_SQL}) AS rank,
                       snippet(entities_fts, 2, '', '', '…', 24) AS snip
                FROM entities_fts f JOIN entities e ON e.rowid = f.rowid
                WHERE entities_fts MATCH ? AND ${where}
-               ORDER BY rank LIMIT ?`
+               ORDER BY rank LIMIT ? OFFSET ?`
             : `SELECT e.entity_uid, 0 AS rank, NULL AS snip FROM entities e WHERE ${where}
-               ORDER BY e.date_for_sort DESC LIMIT ?`;
-        const bindings = matchExpr ? [matchExpr, ...params, limit] : [...params, limit];
+               ORDER BY e.date_for_sort DESC LIMIT ? OFFSET ?`;
+        const bindings = matchExpr ? [matchExpr, ...params, fetchLimit, offset] : [...params, fetchLimit, offset];
         for await (const stmt of connection.sqlite3.statements(connection.db, sql)) {
             connection.sqlite3.bind_collection(stmt, bindings);
             while ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
@@ -307,9 +321,13 @@ async function search({ mailboxUid, parsed, limit }: SearchParams): Promise<Loca
             }
         }
     } catch {
-        return [];
+        return { hits: [], hasMore: false };
     }
-    return hits;
+    const hasMore = hits.length > limit;
+    if (hasMore) {
+        hits.length = limit;
+    }
+    return { hits, hasMore };
 }
 
 async function coverage(mailboxUid: string): Promise<Coverage> {

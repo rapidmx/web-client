@@ -19,7 +19,7 @@ import type {
     InitParams,
     LocalIndexRequest,
     LocalIndexResponse,
-    LocalSearchHit,
+    LocalSearchPage,
     RemoveEntityParams,
     SearchParams,
     SetBuildingParams,
@@ -78,8 +78,8 @@ export function removeLocalEntity(mailboxUid: string, entityUid: string): Promis
     return call("removeEntity", { mailboxUid, entityUid } satisfies RemoveEntityParams);
 }
 
-export function searchLocal(mailboxUid: string, parsed: ParsedSearchQuery, limit: number): Promise<LocalSearchHit[]> {
-    return call("search", { mailboxUid, parsed, limit } satisfies SearchParams);
+export function searchLocal(mailboxUid: string, parsed: ParsedSearchQuery, limit: number, offset = 0): Promise<LocalSearchPage> {
+    return call("search", { mailboxUid, parsed, limit, offset } satisfies SearchParams);
 }
 
 export function getLocalCoverage(mailboxUid: string): Promise<Coverage> {

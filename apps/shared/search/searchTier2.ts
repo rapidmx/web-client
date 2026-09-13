@@ -14,8 +14,8 @@
  * and when anything about the local index itself fails (Worker/WASM/OPFS unsupported or unavailable in
  * this browser, a corrupted index mid-rebuild, a query timeout). This tier's own storage engine is
  * strictly best-effort infrastructure Tier 1 doesn't depend on - a caller `Promise.all()`-ing this
- * alongside Tier 1/Tier 3 (`apps/www/index.tsx`'s `searchMessages()`) must never see the *whole search*
- * fail just because this one, most novel piece had a bad moment.
+ * alongside Tier 1/Tier 3 (`apps/www/index.tsx`'s own search orchestration) must never see the *whole
+ * search* fail just because this one, most novel piece had a bad moment.
  */
 import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
@@ -29,6 +29,10 @@ export interface Tier2SearchOutcome {
     /** `undefined` when `unlocked` was absent - there's no local index to report coverage for at all in
      * that case, distinct from a real, empty (just-built) index. */
     coverage?: Coverage;
+    /** `true` when at least one more match exists beyond `results` - §8's composite pagination cursor's
+     * own per-tier continuation signal. Always `false` alongside the `unlocked`-absent/error
+     * degradations below - there is nothing more to page through either way. */
+    hasMore: boolean;
 }
 
 /** Ensures this mailbox's local index connection is open before it's queried - idempotent
@@ -45,14 +49,15 @@ export async function searchLocalIndex(
     parsed: ParsedSearchQuery,
     unlocked: UnlockedKeys | undefined,
     limit = 50,
+    offset = 0,
 ): Promise<Tier2SearchOutcome> {
     if (!unlocked) {
-        return { results: [] };
+        return { results: [], hasMore: false };
     }
     try {
         await ensureInitialized(mailboxUid, unlocked);
-        const [hits, coverage] = await Promise.all([searchLocal(mailboxUid, parsed, limit), getLocalCoverage(mailboxUid)]);
-        const results: SearchResult[] = hits.map((hit) => ({
+        const [page, coverage] = await Promise.all([searchLocal(mailboxUid, parsed, limit, offset), getLocalCoverage(mailboxUid)]);
+        const results: SearchResult[] = page.hits.map((hit) => ({
             entityType: "message",
             entityUid: hit.entityUid,
             // Negated: bm25()'s own convention is "more negative is a better match" (SQLite), the
@@ -65,10 +70,10 @@ export async function searchLocalIndex(
             source: "local",
             metadataOnly: false,
         }));
-        return { results, coverage };
+        return { results, coverage, hasMore: page.hasMore };
     } catch {
         // See this function's own doc comment - a broken local index degrades to "nothing to contribute
         // this time," never a rejected search.
-        return { results: [] };
+        return { results: [], hasMore: false };
     }
 }

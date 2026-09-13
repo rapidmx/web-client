@@ -9,7 +9,7 @@ import { Message, MessageClassification, getMessage, getMessageRawContent, listM
 import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
 import { ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
-import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
+import { parseSearchQuery, type ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
 import { searchEncryptedCandidates } from "@rapidmx/react-shared/search/searchTier3.js";
 import { searchLocalIndex } from "../shared/search/searchTier2.js";
@@ -23,6 +23,7 @@ import MessageDetailPane from "../shared/components/mail/MessageDetailPane.js";
 import ConversationList from "../shared/components/mail/ConversationList.js";
 import ConversationThreadPane from "../shared/components/mail/ConversationThreadPane.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Skeleton from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import { useUnlockPrompt } from "../shared/components/layout/UnlockPromptProvider.js";
 
 type ViewMode = "date" | "conversation";
@@ -108,9 +109,11 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
  * Tier 3 both represent genuine, content-verified scores for the same message, so which one "wins" on
  * overlap doesn't change correctness, only which of two equally-valid scores is shown; either supersedes
  * Tier 1's metadata-only guess for the same uid.
- * Deliberately not the spec's full skeleton/reordering "Progressive Results" UX (§_Progressive
- * Results_) - that's real, separate UI work; this returns one final merged list once every tier
- * resolves, same as how the search box already waits on one round-trip today. */
+ *
+ * Called progressively - once per tier as it resolves, each time with whatever tiers have reported so
+ * far (an empty array for the rest) - by `InboxContent`'s own search orchestration below, per §_Progressive
+ * Results_' "reordering is permitted and preferred over appending." This function itself stays pure and
+ * stateless; it has no notion of "in progress" versus "final." */
 function mergeSearchResults(tier1: SearchResult[], tier2: SearchResult[], tier3: SearchResult[]): SearchResult[] {
     const normalizedTier1 = normalizeServerScores(tier1);
     const normalizedTier2 = normalizeServerScores(tier2);
@@ -130,75 +133,152 @@ function mergeSearchResults(tier1: SearchResult[], tier2: SearchResult[], tier3:
         .map((entry) => entry.result);
 }
 
-/** Resolves one page of search hits into full `Message` records for display, plus each hit's own
- * `snippet` (keyed by message uid) for rendering in place of the plain `bodyPreview` while searching.
- *
- * `rawQuery` is parsed once, client-side, via `queryGrammar.ts`'s `parseSearchQuery()` — the operator
- * grammar (`from:`/`to:`/`subject:`/`has:attachment`/`before:`/`after:`/`in:`/`is:`/`label:`/`type:`,
- * `specs/search.md` §14) is extracted into structured filters passed to the server, while the
- * remaining free text (quotes, `-` negation, `OR` all preserved) still drives ranking as `q`.
- * `type:` narrows `entityTypes`; when absent this still defaults to `["message"]` — a non-message hit
+/** `type:` narrows `entityTypes`; when absent this still defaults to `["message"]` — a non-message hit
  * (contact/calendarEvent/note/task) has no `Message` to resolve via `getMessage()` below and is simply
  * dropped by the same eventually-consistent-index fallback that already existed, rather than rendered
  * (this inbox list only ever shows message rows; a real multi-entity-type results view is a separate,
- * larger UI project outside this pass).
+ * larger UI project outside this pass). Shared by both the fresh-search orchestration and `loadMore()`
+ * below, which each build this from the same `ParsedSearchQuery` differently only in `cursor`. */
+function tier1SearchParams(parsed: ParsedSearchQuery, cursor: string | undefined) {
+    return {
+        types: parsed.entityTypes ?? ["message"],
+        cursor,
+        limit: MESSAGE_PAGE_SIZE,
+        from: parsed.from,
+        to: parsed.to,
+        cc: parsed.cc,
+        subject: parsed.subject,
+        hasAttachment: parsed.hasAttachment,
+        before: parsed.before,
+        after: parsed.after,
+        folderUid: parsed.folderUid,
+        flags: parsed.flags,
+        labels: parsed.labels,
+    };
+}
+
+/** How many of Tier 1's own `metadataOnly` hits (§7: "an encrypted entity matched only on server-visible
+ * metadata... MUST be rendered as skeleton entries in place... using the metadata score as a provisional
+ * position") are shown as skeleton rows at once - §_Progressive Results_' "Skeletons MUST be capped, at
+ * approximately one and a half pages." A non-`metadataOnly` Tier 1 hit (a real, already-scored content
+ * match — always the case for unencrypted mail) is never a skeleton and is never subject to this cap.
  *
- * Tier 2 (`searchTier2.ts#searchLocalIndex()`, the local encrypted index) and Tier 3
- * (`searchTier3.ts#searchEncryptedCandidates()`, server-narrowed candidates) both run alongside Tier 1
- * only for the first page (`cursor` absent) - neither has pagination wiring yet (Tier 3's own deliberate
- * scope trim, documented in that module; Tier 2's local FTS5 query likewise only returns its own
- * top-`limit` page today), so a `loadMore()` continuation stays Tier-1-only. Both silently contribute
- * nothing when this mailbox has no unlocked keys this session (`getUnlockedKeys()` returns `undefined`) -
- * nothing for either to decrypt/query, same as `MessageDetailPane`'s own encrypted-message handling
- * elsewhere. `coverage` (from Tier 2) is `undefined` in that same case, and on any later page. */
-async function searchMessages(
-    mailboxUid: string,
-    rawQuery: string,
-    cursor?: string,
-): Promise<{ messages: Message[]; nextCursor?: string; snippets: Record<string, string>; coverage?: Coverage }> {
-    const parsed = parseSearchQuery(rawQuery);
-    const unlocked = getUnlockedKeys(mailboxUid);
-    const [page, tier2, tier3Results] = await Promise.all([
-        searchMailbox(parsed.text, {
-            types: parsed.entityTypes ?? ["message"],
-            cursor,
-            limit: MESSAGE_PAGE_SIZE,
-            from: parsed.from,
-            to: parsed.to,
-            cc: parsed.cc,
-            subject: parsed.subject,
-            hasAttachment: parsed.hasAttachment,
-            before: parsed.before,
-            after: parsed.after,
-            folderUid: parsed.folderUid,
-            flags: parsed.flags,
-            labels: parsed.labels,
-        }),
-        cursor ? Promise.resolve({ results: [] as SearchResult[], coverage: undefined }) : searchLocalIndex(mailboxUid, parsed, unlocked),
-        cursor ? Promise.resolve<SearchResult[]>([]) : searchEncryptedCandidates(parsed, unlocked),
-    ]);
-    const mergedResults = mergeSearchResults(page.results, tier2.results, tier3Results);
-    const resolved = await Promise.all(
-        mergedResults.map(async (hit) => {
+ * A Tier 3 candidate that Tier 1 did *not* already surface has no provisional score/position of its own
+ * under the spec's own wording above, so it is deliberately never pre-rendered as a skeleton here either
+ * - it simply appears, fully resolved, once Tier 3 confirms it (see `InboxContent`'s search
+ * orchestration). */
+const SKELETON_CAP = Math.round(MESSAGE_PAGE_SIZE * 1.5);
+
+function capSkeletons(tier1Hits: SearchResult[]): SearchResult[] {
+    let skeletonsSeen = 0;
+    return tier1Hits.filter((hit) => {
+        if (!hit.metadataOnly) {
+            return true;
+        }
+        skeletonsSeen += 1;
+        return skeletonsSeen <= SKELETON_CAP;
+    });
+}
+
+/** How many candidates Tier 3 pulls per distinct search - larger than one page's worth so several
+ * `loadMore()` pages can be sliced from one decrypt pass (see `Tier3Cache` below) instead of a second,
+ * separately expensive server round trip and re-decrypt for the same query. Bounded, not unlimited - per
+ * this module's own `tier1SearchParams()` sibling, Tier 3's own candidate-narrowing is already the
+ * "heaviest single client-side cost" tier (`specs/search.md` §9's identical framing for attachment
+ * extraction); a query whose true candidate set exceeds this simply pages out once this cache is
+ * exhausted; `loadMore()` reflects that honestly via `hasMore`. */
+const TIER3_CANDIDATE_LIMIT = 200;
+
+/** One entry per distinct (mailbox, query, "search all mail" toggle, unlocked-or-not) combination this
+ * tab has already run Tier 3 for - keyed by `tier3CacheKey()` below. Tier 3's decrypt-and-match pass
+ * (`searchEncryptedCandidates()`) is by far this search's most expensive step, so it runs once per
+ * combination; every subsequent `loadMore()` page for that same combination slices further into the
+ * same already-decrypted array. Session-scoped, per tab, with no explicit eviction - a small map that's
+ * simply never read again once the query changes, the same shape `InboxContent`'s own `decryptedRows`
+ * state already accepts for a similar "worth keeping around, not worth actively pruning" tradeoff.
+ *
+ * The unlocked-or-not dimension matters: re-running an identical query right after an on-demand unlock
+ * (`handleUnlockSearch()`) MUST NOT reuse the "nothing to contribute" entry that same query cached while
+ * still locked - `searchEncryptedCandidates()` degrades to `[]` for an absent `unlocked`, and that empty
+ * result is exactly as cacheable/reusable as a real one, just under a different key. */
+type Tier3Cache = Map<string, SearchResult[]>;
+
+function tier3CacheKey(mailboxUid: string, fingerprint: string, searchAllMail: boolean, unlocked: boolean): string {
+    return `${mailboxUid}|${fingerprint}|${String(searchAllMail)}|${String(unlocked)}`;
+}
+
+/** A search query's cache/cursor identity - stable across re-parsing the identical raw text, and
+ * distinct for anything else (§8's "a query fingerprint, so a cursor cannot be replayed against a
+ * different query"). `JSON.stringify` on `ParsedSearchQuery` is deterministic here because every one of
+ * its own fields is a primitive or a `Date` (which serializes to a fixed ISO string) - no nested object
+ * whose key order could vary between two structurally-identical parses of the same text. */
+function queryFingerprint(parsed: ParsedSearchQuery): string {
+    return JSON.stringify(parsed);
+}
+
+/** Tier 3's own `before` bound, tightened to Tier 2's already-covered window (`coverage.indexedFrom`)
+ * unless the reader explicitly asked to "Search all mail" - Tier 2 already holds fully-decrypted,
+ * current content for everything at least that recent, so re-fetching and re-decrypting the same range
+ * through Tier 3's slower candidate-narrowing path would be pure waste. Never *widens* an existing
+ * `before:` the query already specified. */
+function tightenBeforeToCoverage(parsed: ParsedSearchQuery, coverage: Coverage | undefined, searchAllMail: boolean): ParsedSearchQuery {
+    if (searchAllMail || !coverage?.indexedFrom) {
+        return parsed;
+    }
+    const coverageBound = new Date(coverage.indexedFrom);
+    const effectiveBefore = parsed.before && parsed.before.getTime() < coverageBound.getTime() ? parsed.before : coverageBound;
+    return { ...parsed, before: effectiveBefore };
+}
+
+/** The paging state for one search, composited across all three tiers (`specs/search.md` §8) - opaque to
+ * every caller the same way `SearchResultPage.nextCursor` is opaque to callers of `search()` itself.
+ * Tier 1 keeps the server's own opaque cursor unmodified; Tier 2 (the local index) and Tier 3 (the
+ * cached, already-decrypted candidate array - see `Tier3Cache` above) are both this client's own state,
+ * so their "position" is just a plain offset into each. */
+interface CompositeCursor {
+    tier1Cursor?: string;
+    tier2Offset: number;
+    tier3Offset: number;
+    fingerprint: string;
+}
+
+/** `undefined` for a missing, corrupted, or foreign-query cursor - every caller already treats "no
+ * cursor" as "start this tier from the beginning," so there's no separate error path needed here. */
+function decodeCursor(raw: CompositeCursor | undefined, fingerprint: string): CompositeCursor | undefined {
+    return raw?.fingerprint === fingerprint ? raw : undefined;
+}
+
+/** Resolves every hit's `entityUid` to a full `Message` via `getMessage()`, reusing `cache` across
+ * repeated calls within the same search pass - `InboxContent`'s own search orchestration below re-merges
+ * and re-resolves the *entire* current hit set each time a tier resolves, so without this cache every
+ * stage would re-fetch messages an earlier stage already fetched. A hit whose message no longer resolves
+ * (deleted after being indexed, or the fetch itself failed) is cached as `null` and dropped - the same
+ * "a search hit can briefly outlive the message it points to" tolerance this function's inline
+ * predecessor already had. */
+async function resolveHitsToMessages(
+    hits: SearchResult[],
+    cache: Map<string, Message | null>,
+): Promise<{ messages: Message[]; snippets: Record<string, string> }> {
+    const toFetch = hits.filter((hit) => !cache.has(hit.entityUid));
+    await Promise.all(
+        toFetch.map(async (hit) => {
             const message = await getMessage(hit.entityUid).catch(() => null);
-            return message ? { message, snippet: hit.snippet } : null;
+            cache.set(hit.entityUid, message);
         }),
     );
-    // A search hit can briefly outlive the message it points to (index updates are eventually consistent,
-    // and a message can be deleted after being indexed) - drop anything that no longer resolves rather than
-    // rendering a broken entry.
     const messages: Message[] = [];
     const snippets: Record<string, string> = {};
-    for (const entry of resolved) {
-        if (!entry) {
+    for (const hit of hits) {
+        const message = cache.get(hit.entityUid);
+        if (!message) {
             continue;
         }
-        messages.push(entry.message);
-        if (entry.snippet) {
-            snippets[entry.message.uid] = entry.snippet;
+        messages.push(message);
+        if (hit.snippet) {
+            snippets[message.uid] = hit.snippet;
         }
     }
-    return { messages, nextCursor: page.nextCursor, snippets, coverage: tier2.coverage };
+    return { messages, snippets };
 }
 
 export default function InboxPage(props: MailShellProps) {
@@ -228,8 +308,7 @@ function InboxContent() {
     const [snippets, setSnippets] = useState<Record<string, string>>({});
     const [labels, setLabels] = useState<Label[]>([]);
     // Tier 2's own reported window coverage for the current search - undefined outside a search, or
-    // before Tier 2 has anything to report (not yet unlocked, or a loadMore continuation - see
-    // searchMessages()'s own doc comment on why coverage is only ever populated on the first page).
+    // before Tier 2 has resolved yet for this search pass.
     const [coverage, setCoverage] = useState<Coverage | undefined>(undefined);
     // Keyed by message uid - see decryptEncryptedRows(). Never cleared on folder/search switches (a
     // decrypted row stays decrypted for the rest of the session; re-decrypting on every navigation would
@@ -239,12 +318,42 @@ function InboxContent() {
     // dependency the effect could otherwise react to (getUnlockedKeys() is a plain module-level read, not
     // React state; see keySession.ts's own doc comment).
     const [unlockRefresh, setUnlockRefresh] = useState(0);
+    // §_Progressive Results_: which of the current search's uids are still an unconfirmed Tier 1
+    // `metadataOnly` guess (rendered as a skeleton row - see the JSX below) - empty outside a search, and
+    // always empty again once every tier has reported for the current pass (each unresolved entry is by
+    // then either confirmed, real content, or pruned - see the search orchestration effect).
+    const [pendingUids, setPendingUids] = useState<Set<string>>(new Set());
+    // Withholds a hard result count until every tier has reported for the current search pass (§_Progressive
+    // Results_: "Never show a hard count until every tier has reported... A settled count is the signal
+    // that ordering is final"). Reset on every fresh search; irrelevant outside search mode.
+    const [tier1Done, setTier1Done] = useState(false);
+    const [tier2Done, setTier2Done] = useState(false);
+    const [tier3Done, setTier3Done] = useState(false);
+    // Toggled by the "Search all mail" action next to the results count - removes Tier 3's own default
+    // bound (tightened to Tier 2's coverage window otherwise - see tightenBeforeToCoverage()) for one
+    // re-run. Reset to false whenever the query itself changes (see the search effect's own dependency).
+    const [searchAllMail, setSearchAllMail] = useState(false);
     const isSearching = viewMode === "date" && searchQuery.length > 0;
     const pageRef = useRef(0);
-    const cursorRef = useRef<string | undefined>(undefined);
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
     const sentinelRef = useRef<HTMLDivElement | null>(null);
     const mailboxKeys = mailboxes.find((mb) => mb.uid === mailboxUid)?.keys ?? [];
+    // Reset to a fresh Map at the start of every new search pass (see the search effect below) - see
+    // resolveHitsToMessages()'s own doc comment on why this needs to persist *within* one pass but not
+    // across passes (a stale `null` for a uid that's since become resolvable elsewhere must not stick).
+    const resolvedMessageCacheRef = useRef<Map<string, Message | null>>(new Map());
+    // Session-scoped, never explicitly cleared - see Tier3Cache's own doc comment above.
+    const tier3CacheRef = useRef<Tier3Cache>(new Map());
+    // The latest composite cursor this search pass has reached - read by loadMore(), written at the end
+    // of both the fresh-search orchestration and loadMore() itself. Not React state: it never drives a
+    // render on its own, only what loadMore() does with it later.
+    const compositeCursorRef = useRef<CompositeCursor | undefined>(undefined);
+    // Guards every async stage of the search orchestration below against a stale, still-in-flight pass
+    // clobbering state for a newer one that started after it (the query changed again, or the folder
+    // did) - the same `loadSeq`-style monotonic-id pattern already used elsewhere in this codebase (e.g.
+    // `settings/privacy/index.tsx`'s `ExportSection`), generalized here across three independently-timed
+    // async stages instead of one.
+    const searchRunIdRef = useRef(0);
     // `messages` themselves aren't a dependency here on purpose - a message uid, once decrypted, is
     // never re-decrypted just because the list re-renders with the same rows (e.g. a folder-unrelated
     // state update elsewhere). New rows (a fresh page load, load-more, or a completed search) each
@@ -305,7 +414,7 @@ function InboxContent() {
     // stays hidden (an empty `labels` array) rather than blocking the rest of the inbox - it's a small
     // enhancement, not critical path the way the message list itself is. No `mailboxUid` guard needed -
     // `MailShell` never renders this component at all until `mailboxUid` has resolved (same invariant
-    // `searchMessages(mailboxUid!, ...)` below already relies on).
+    // the search effect below already relies on via its own `mailboxUid!` uses).
     useEffect(() => {
         listLabels(mailboxUid!, { limit: 200 })
             .then(setLabels)
@@ -326,7 +435,7 @@ function InboxContent() {
         setSelectedConversationId(null);
         setClassificationFilter("all");
         pageRef.current = 0;
-        cursorRef.current = undefined;
+        compositeCursorRef.current = undefined;
         setHasMore(false);
 
         if (viewMode === "conversation") {
@@ -352,16 +461,91 @@ function InboxContent() {
 
         if (isSearching) {
             setCoverage(undefined);
-            searchMessages(mailboxUid!, searchQuery)
-                .then(({ messages: results, nextCursor, snippets: newSnippets, coverage: newCoverage }) => {
-                    setMessages(results);
-                    setSnippets(newSnippets);
-                    setHasMore(!!nextCursor);
-                    cursorRef.current = nextCursor;
-                    setCoverage(newCoverage);
-                })
-                .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Search failed."))
-                .finally(() => setLoading(false));
+            setPendingUids(new Set());
+            setTier1Done(false);
+            setTier2Done(false);
+            setTier3Done(false);
+            resolvedMessageCacheRef.current = new Map();
+            searchRunIdRef.current += 1;
+            const myRunId = searchRunIdRef.current;
+            const parsed = parseSearchQuery(searchQuery);
+            const unlocked = getUnlockedKeys(mailboxUid!);
+            const fingerprint = queryFingerprint(parsed);
+
+            // Recomputes and re-renders the merged list from whatever tiers have reported so far -
+            // called once after Tier 1+2 (interim: unconfirmed Tier 1 metadataOnly hits render as
+            // skeletons) and again after Tier 3 (final: anything still unconfirmed is pruned instead -
+            // §_Progressive Results_' "Skeletons resolve or disappear"). Bails out via `myRunId` if a
+            // newer search pass has since started.
+            async function reveal(tier1Hits: SearchResult[], tier2Hits: SearchResult[], tier3Hits: SearchResult[], final: boolean) {
+                const capped = capSkeletons(tier1Hits);
+                const confirmed = new Set([...tier2Hits, ...tier3Hits].map((r) => r.entityUid));
+                const effectiveTier1 = final ? capped.filter((hit) => !hit.metadataOnly || confirmed.has(hit.entityUid)) : capped;
+                const merged = mergeSearchResults(effectiveTier1, tier2Hits, tier3Hits);
+                const { messages: resolved, snippets: resolvedSnippets } = await resolveHitsToMessages(
+                    merged,
+                    resolvedMessageCacheRef.current,
+                );
+                if (searchRunIdRef.current !== myRunId) {
+                    return;
+                }
+                setMessages(resolved);
+                setSnippets(resolvedSnippets);
+                if (final) {
+                    setPendingUids(new Set());
+                } else {
+                    const pending = new Set<string>();
+                    for (const hit of capped) {
+                        if (hit.metadataOnly && !confirmed.has(hit.entityUid)) {
+                            pending.add(hit.entityUid);
+                        }
+                    }
+                    setPendingUids(pending);
+                }
+            }
+
+            void (async () => {
+                try {
+                    const [tier1Page, tier2Page] = await Promise.all([
+                        searchMailbox(parsed.text, tier1SearchParams(parsed, undefined)),
+                        searchLocalIndex(mailboxUid!, parsed, unlocked, MESSAGE_PAGE_SIZE, 0),
+                    ]);
+                    if (searchRunIdRef.current !== myRunId) {
+                        return;
+                    }
+                    setTier1Done(true);
+                    setTier2Done(true);
+                    setCoverage(tier2Page.coverage);
+                    setLoading(false);
+                    await reveal(tier1Page.results, tier2Page.results, [], false);
+
+                    const tightened = tightenBeforeToCoverage(parsed, tier2Page.coverage, searchAllMail);
+                    const cacheKey = tier3CacheKey(mailboxUid!, fingerprint, searchAllMail, !!unlocked);
+                    let tier3Full = tier3CacheRef.current.get(cacheKey);
+                    if (!tier3Full) {
+                        tier3Full = await searchEncryptedCandidates(tightened, unlocked, TIER3_CANDIDATE_LIMIT);
+                        if (searchRunIdRef.current !== myRunId) {
+                            return;
+                        }
+                        tier3CacheRef.current.set(cacheKey, tier3Full);
+                    }
+                    const tier3Page = tier3Full.slice(0, MESSAGE_PAGE_SIZE);
+                    setTier3Done(true);
+                    compositeCursorRef.current = {
+                        tier1Cursor: tier1Page.nextCursor,
+                        tier2Offset: tier2Page.results.length,
+                        tier3Offset: tier3Page.length,
+                        fingerprint,
+                    };
+                    setHasMore(!!tier1Page.nextCursor || tier2Page.hasMore || tier3Page.length < tier3Full.length);
+                    await reveal(tier1Page.results, tier2Page.results, tier3Page, true);
+                } catch (err) {
+                    if (searchRunIdRef.current === myRunId) {
+                        setError(err instanceof ApiRequestError ? err.message : "Search failed.");
+                        setLoading(false);
+                    }
+                }
+            })();
             return;
         }
 
@@ -372,12 +556,17 @@ function InboxContent() {
             })
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load messages."))
             .finally(() => setLoading(false));
-        // `unlockRefresh` is a dependency solely so `handleUnlockSearch()` can force this effect to
-        // re-run `searchMessages()` after a successful on-demand unlock - Tier 3 (encrypted) results
-        // silently contribute nothing without unlocked keys, so this is what actually makes them appear
-        // once the user unlocks. It has no effect on the non-search branches above; re-running them with
-        // identical inputs just re-fetches the same page.
-    }, [viewMode, folderUid, mailboxUid, isSearching, searchQuery, unlockRefresh]);
+        // `unlockRefresh`/`searchAllMail` are dependencies solely so `handleUnlockSearch()`/"Search all
+        // mail" can force this effect to re-run the search above - Tier 3 (encrypted) results silently
+        // contribute nothing without unlocked keys, so this is what actually makes them appear once the
+        // user unlocks, and what makes "Search all mail" actually remove Tier 3's coverage bound. Neither
+        // has any effect on the non-search branch below; re-running it with identical inputs just
+        // re-fetches the same page.
+    }, [viewMode, folderUid, mailboxUid, isSearching, searchQuery, unlockRefresh, searchAllMail]);
+
+    function handleSearchAllMail() {
+        setSearchAllMail(true);
+    }
 
     const loadMore = useCallback(async () => {
         if (loadingMore || !hasMore || loading || viewMode !== "date" || !folderUid) {
@@ -386,11 +575,39 @@ function InboxContent() {
         setLoadingMore(true);
         try {
             if (isSearching) {
-                const { messages: more, nextCursor, snippets: moreSnippets } = await searchMessages(mailboxUid!, searchQuery, cursorRef.current);
+                const parsed = parseSearchQuery(searchQuery);
+                const unlocked = getUnlockedKeys(mailboxUid!);
+                const fingerprint = queryFingerprint(parsed);
+                const cursor = decodeCursor(compositeCursorRef.current, fingerprint);
+
+                const [tier1Page, tier2Page] = await Promise.all([
+                    searchMailbox(parsed.text, tier1SearchParams(parsed, cursor?.tier1Cursor)),
+                    searchLocalIndex(mailboxUid!, parsed, unlocked, MESSAGE_PAGE_SIZE, cursor?.tier2Offset ?? 0),
+                ]);
+                const cacheKey = tier3CacheKey(mailboxUid!, fingerprint, searchAllMail, !!unlocked);
+                const tier3Full = tier3CacheRef.current.get(cacheKey) ?? [];
+                const tier3Offset = cursor?.tier3Offset ?? 0;
+                const tier3Page = tier3Full.slice(tier3Offset, tier3Offset + MESSAGE_PAGE_SIZE);
+
+                // Unlike the fresh-search pass above, a load-more page is resolved and appended in one
+                // shot rather than progressively revealed - rows already on screen shouldn't reorder or
+                // grow skeletons out from under a reader who has since scrolled past them. Any Tier 1
+                // metadataOnly hit this page that neither Tier 2 nor Tier 3 (both already awaited above)
+                // confirms simply keeps showing its existing placeholder text rather than a live skeleton
+                // - a deliberate, documented scope trim of progressive reveal to the first page only.
+                const merged = mergeSearchResults(capSkeletons(tier1Page.results), tier2Page.results, tier3Page);
+                const { messages: more, snippets: moreSnippets } = await resolveHitsToMessages(merged, resolvedMessageCacheRef.current);
                 setMessages((prev) => [...prev, ...more]);
                 setSnippets((prev) => ({ ...prev, ...moreSnippets }));
-                setHasMore(!!nextCursor);
-                cursorRef.current = nextCursor;
+
+                const nextTier3Offset = tier3Offset + tier3Page.length;
+                compositeCursorRef.current = {
+                    tier1Cursor: tier1Page.nextCursor,
+                    tier2Offset: (cursor?.tier2Offset ?? 0) + tier2Page.results.length,
+                    tier3Offset: nextTier3Offset,
+                    fingerprint,
+                };
+                setHasMore(!!tier1Page.nextCursor || tier2Page.hasMore || nextTier3Offset < tier3Full.length);
             } else {
                 const nextPage = pageRef.current + 1;
                 const more = await listMessages(folderUid, { page: nextPage, limit: MESSAGE_PAGE_SIZE });
@@ -403,7 +620,7 @@ function InboxContent() {
         } finally {
             setLoadingMore(false);
         }
-    }, [loadingMore, hasMore, loading, viewMode, folderUid, isSearching, searchQuery]);
+    }, [loadingMore, hasMore, loading, viewMode, folderUid, isSearching, searchQuery, searchAllMail, mailboxUid]);
 
     // Always calls the latest `loadMore` closure so the effect below doesn't need `loadMore` itself in its
     // dependency array (it changes on every keystroke/page load, which would otherwise mean nothing here).
@@ -550,10 +767,34 @@ function InboxContent() {
                     </div>
                 )}
 
+                {isSearching && (
+                    <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border flex items-center justify-between gap-2">
+                        {/* §_Progressive Results_: "Never show a hard count until every tier has reported.
+                            Display n of ??, or omit the count. A settled count is the signal that ordering
+                            is final." */}
+                        <span>
+                            {tier1Done && tier2Done && tier3Done
+                                ? `${visibleMessages.length} result${visibleMessages.length === 1 ? "" : "s"}`
+                                : `${visibleMessages.length} of ??`}
+                        </span>
+                        {tier2Done && !searchAllMail && (
+                            <button
+                                type="button"
+                                onClick={handleSearchAllMail}
+                                className="text-primary-dark hover:underline font-medium shrink-0"
+                            >
+                                Search all mail
+                            </button>
+                        )}
+                    </div>
+                )}
                 {isSearching && coverage?.indexedFrom && (
                     <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
                         Local search covers messages back to {new Date(coverage.indexedFrom).toLocaleDateString()}
-                        {coverage.building ? " (still building)" : ""} - older encrypted mail is still searched, just slower.
+                        {coverage.building ? " (still building)" : ""}
+                        {searchAllMail
+                            ? " - searching everything, not just recent mail."
+                            : " - older encrypted mail is still searched, just slower."}
                     </div>
                 )}
                 {isSearching && !getUnlockedKeys(mailboxUid!) && (
@@ -623,14 +864,29 @@ function InboxContent() {
                                                 {new Date(message.receivedDate).toLocaleDateString()}
                                             </span>
                                         </div>
-                                        <div className="text-sm truncate">
-                                            {decryptedRows[message.uid]?.subject ||
-                                                (message.subject === ENCRYPTED_SUBJECT_PLACEHOLDER ? "Encrypted message" : message.subject) ||
-                                                "(no subject)"}
-                                        </div>
-                                        <div className="text-xs text-text-muted truncate font-normal">
-                                            {snippets[message.uid] || decryptedRows[message.uid]?.preview || message.bodyPreview}
-                                        </div>
+                                        {isSearching && pendingUids.has(message.uid) ? (
+                                            // §_Progressive Results_: "Unresolved encrypted results MUST
+                                            // be rendered as skeleton entries in place, not appended on
+                                            // arrival." This uid is a Tier 1 metadataOnly guess Tier 2/3
+                                            // haven't confirmed (or ruled out) yet.
+                                            <div className="flex flex-col gap-1.5 py-0.5">
+                                                <Skeleton height="h-3.5" className="w-2/3 rounded-sm" />
+                                                <Skeleton height="h-3" className="w-full rounded-sm" />
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="text-sm truncate">
+                                                    {decryptedRows[message.uid]?.subject ||
+                                                        (message.subject === ENCRYPTED_SUBJECT_PLACEHOLDER
+                                                            ? "Encrypted message"
+                                                            : message.subject) ||
+                                                        "(no subject)"}
+                                                </div>
+                                                <div className="text-xs text-text-muted truncate font-normal">
+                                                    {snippets[message.uid] || decryptedRows[message.uid]?.preview || message.bodyPreview}
+                                                </div>
+                                            </>
+                                        )}
                                     </button>
                                 </li>
                             ))}

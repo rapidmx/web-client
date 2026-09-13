@@ -944,7 +944,7 @@ describe("InboxPage", () => {
                 expect(rendered).toEqual(["High score match", "Low score match"]);
             });
 
-            it("does not call Tier 3 again for a loadMore continuation (no pagination wiring yet)", async () => {
+            it("fetches Tier 3's candidate set only once per search, reusing it across a loadMore continuation", async () => {
                 const firstHit = messageFixture({ uid: "m2", subject: "First match", folderUid: "f2" });
                 mockSearch([firstHit], (url) =>
                     url.includes("q=budget") ? jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1 }] }) : undefined,
@@ -1023,6 +1023,96 @@ describe("InboxPage", () => {
                 await screen.findByText(/No messages match/);
 
                 expect(screen.queryByText(/Local search covers messages back to/)).not.toBeInTheDocument();
+            });
+        });
+
+        describe("Progressive Results (skeletons, settled count, Search all mail)", () => {
+            // A manually-resolved promise so a test can assert the "still in flight" interim state before
+            // letting Tier 3 (the slowest tier) settle - vi.fn()'s default resolved-mock timing is too
+            // fast (same microtask queue) to ever observe an interim state otherwise.
+            function deferred<T>() {
+                let resolve!: (value: T) => void;
+                const promise = new Promise<T>((res) => {
+                    resolve = res;
+                });
+                return { promise, resolve };
+            }
+
+            it("renders unconfirmed Tier 1 metadataOnly hits as skeletons and withholds the count, then resolves or prunes each once every tier reports", async () => {
+                const pendingHit = messageFixture({ uid: "m-pending", subject: "[...]", folderUid: "f1" });
+                const confirmedHit = messageFixture({ uid: "m-confirmed", subject: "[...]", folderUid: "f1" });
+                mockFetch((url, init) => {
+                    if (url.startsWith("/api/mail/search")) {
+                        if (url.includes("q=budget")) {
+                            return jsonResponse(200, {
+                                results: [
+                                    { entityType: "message", entityUid: "m-pending", score: 3, source: "server", metadataOnly: true },
+                                    { entityType: "message", entityUid: "m-confirmed", score: 2, source: "server", metadataOnly: true },
+                                ],
+                            });
+                        }
+                        return jsonResponse(200, { results: [] });
+                    }
+                    if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                    if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                    if (url === "/api/mail/messages/m-pending") return jsonResponse(200, pendingHit);
+                    if (url === "/api/mail/messages/m-confirmed") return jsonResponse(200, confirmedHit);
+                    if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                    throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+                });
+                searchLocalIndex.mockResolvedValue({ results: [], hasMore: false });
+                const tier3 = deferred<unknown[]>();
+                searchEncryptedCandidates.mockReturnValue(tier3.promise);
+
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+                // Interim, before Tier 3 has reported: both hits are still unconfirmed metadataOnly
+                // guesses, so both render as skeletons (no "Encrypted message" placeholder text yet) and
+                // the count stays unsettled.
+                await screen.findByText("2 of ??");
+                expect(screen.queryByText("Encrypted message")).not.toBeInTheDocument();
+
+                // Tier 3 confirms only m-confirmed - m-pending gets nothing back and must be pruned.
+                tier3.resolve([
+                    { entityType: "message", entityUid: "m-confirmed", score: 9, source: "candidate", metadataOnly: false, snippet: "…the budget…" },
+                ]);
+
+                expect(await screen.findByText("…the budget…")).toBeInTheDocument();
+                expect(await screen.findByText("1 result")).toBeInTheDocument();
+                // Only the confirmed hit's row remains - a second "Encrypted message" row would mean
+                // m-pending survived instead of being pruned.
+                expect(screen.getAllByText("Encrypted message")).toHaveLength(1);
+            });
+
+            it('"Search all mail" removes Tier 3\'s coverage-tightened bound and re-runs it', async () => {
+                mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchLocalIndex.mockResolvedValue({
+                    results: [],
+                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 5, building: false },
+                    hasMore: false,
+                });
+                searchEncryptedCandidates.mockResolvedValue([]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+                await screen.findByText("Search all mail");
+
+                expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
+                const [firstParsed] = searchEncryptedCandidates.mock.calls[0] as [{ before?: Date }];
+                expect(firstParsed.before).toEqual(new Date("2025-06-01T00:00:00.000Z"));
+
+                await user.click(screen.getByText("Search all mail"));
+
+                await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(2));
+                const [secondParsed] = searchEncryptedCandidates.mock.calls[1] as [{ before?: Date }];
+                expect(secondParsed.before).toBeUndefined();
+                expect(screen.queryByText("Search all mail")).not.toBeInTheDocument();
             });
         });
 
@@ -1236,6 +1326,43 @@ describe("InboxPage", () => {
             io.trigger();
 
             expect(await screen.findByText("Second hit")).toBeInTheDocument();
+        });
+
+        it("threads Tier 2's own offset and reuses Tier 3's cached candidate set (§8's composite cursor) across a loadMore continuation", async () => {
+            const io = mockIntersectionObserver();
+            searchLocalIndex.mockImplementation(async (_mailboxUid: string, _parsed: unknown, _unlocked: unknown, _limit: number, offset = 0) => ({
+                results:
+                    offset === 0
+                        ? [{ entityType: "message", entityUid: "m-local-1", score: 5, source: "local", metadataOnly: false }]
+                        : [{ entityType: "message", entityUid: "m-local-2", score: 4, source: "local", metadataOnly: false }],
+                coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 2, building: false },
+                hasMore: offset === 0,
+            }));
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) return jsonResponse(200, { results: [] });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url === "/api/mail/messages/m-local-1") return jsonResponse(200, messageFixture({ uid: "m-local-1", subject: "Local one" }));
+                if (url === "/api/mail/messages/m-local-2") return jsonResponse(200, messageFixture({ uid: "m-local-2", subject: "Local two" }));
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Search all mail…");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+            await screen.findByText("Local one");
+            // Tier 3's candidate fetch already ran once for this search pass (the "no results" default
+            // from beforeEach) - the assertion below on its call count is what proves loadMore() doesn't
+            // trigger a second, redundant fetch.
+            expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
+
+            io.trigger();
+
+            expect(await screen.findByText("Local two")).toBeInTheDocument();
+            expect(searchLocalIndex).toHaveBeenLastCalledWith("mb1", expect.objectContaining({ text: "budget" }), undefined, 50, 1);
+            expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
         });
     });
 
