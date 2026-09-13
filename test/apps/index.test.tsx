@@ -21,6 +21,13 @@ const { searchEncryptedCandidates, getUnlockedKeys, unlockWithPassword } = vi.ho
     unlockWithPassword: vi.fn(),
 }));
 vi.mock("@rapidmx/react-shared/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
+
+// Tier 2 (the local encrypted index) is mocked at the same module boundary and for the same reason as
+// Tier 3 above - its own real behavior (Worker/WASM/OPFS/FTS5) is exercised elsewhere
+// (localIndexBlockCipher.test.ts for the crypto, and manual browser verification for the rest, per this
+// feature's own implementation plan); these tests only verify InboxContent's merge/coverage-line logic.
+const { searchLocalIndex } = vi.hoisted(() => ({ searchLocalIndex: vi.fn() }));
+vi.mock("../../apps/shared/search/searchTier2.js", () => ({ searchLocalIndex }));
 // unlockWithPassword is real UnlockPromptProvider's own dependency (mounted for real by the real
 // AppShell this file renders through, via MailShell/KeyEnrollmentGate) - needed so the "unlock" tests
 // below (list/search banners) can actually complete a real unlock, not just getUnlockedKeys' read side.
@@ -221,11 +228,13 @@ function mockShellAndInbox(
 // that actually exercise Tier 3 override this per-test before rendering.
 beforeEach(() => {
     searchEncryptedCandidates.mockResolvedValue([]);
+    searchLocalIndex.mockResolvedValue({ results: [] });
 });
 
 afterEach(() => {
     vi.unstubAllGlobals();
     searchEncryptedCandidates.mockReset();
+    searchLocalIndex.mockReset();
     getUnlockedKeys.mockReset();
     unlockWithPassword.mockReset();
     evaluateMessageSecurity.mockReset();
@@ -948,6 +957,72 @@ describe("InboxPage", () => {
                 await screen.findByText("First match");
 
                 expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
+            });
+        });
+
+        describe("Tier 2 (local index) merge", () => {
+            it("surfaces a message only Tier 2's local index found, not returned by Tier 1 at all", async () => {
+                searchLocalIndex.mockResolvedValue({
+                    results: [
+                        {
+                            entityType: "message",
+                            entityUid: "m-local",
+                            score: 5,
+                            source: "local",
+                            metadataOnly: false,
+                            snippet: "…the budget…",
+                        },
+                    ],
+                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 42, building: false },
+                });
+                mockFetch((url, init) => {
+                    if (url.startsWith("/api/mail/search")) return jsonResponse(200, { results: [] });
+                    if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                    if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder, sentItemsFolder]);
+                    if (url === "/api/mail/messages/m-local") {
+                        return jsonResponse(200, messageFixture({ uid: "m-local", subject: "Local-only match", folderUid: "f2" }));
+                    }
+                    if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                    if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                    throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+                });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+                expect(await screen.findByText("Local-only match")).toBeInTheDocument();
+                expect(screen.getByText("…the budget…")).toBeInTheDocument();
+            });
+
+            it("shows a coverage line naming how far back the local index reaches, and notes when it's still building", async () => {
+                mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchLocalIndex.mockResolvedValue({
+                    results: [],
+                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 10, building: true },
+                });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+                expect(await screen.findByText(/Local search covers messages back to/)).toBeInTheDocument();
+                expect(screen.getByText(/still building/)).toBeInTheDocument();
+            });
+
+            it("shows no coverage line when Tier 2 has no coverage to report (not unlocked)", async () => {
+                mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchLocalIndex.mockResolvedValue({ results: [] });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+                await screen.findByText(/No messages match/);
+
+                expect(screen.queryByText(/Local search covers messages back to/)).not.toBeInTheDocument();
             });
         });
 

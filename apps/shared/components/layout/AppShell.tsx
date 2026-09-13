@@ -15,6 +15,7 @@ import BottomTabBar from "@rapidmx/react-shared/components/navigation/BottomTabB
 import { BrandingFooter, BrandingHeader } from "./BrandingChrome.js";
 import UserMenu from "./UserMenu.js";
 import { UnlockPromptProvider } from "./UnlockPromptProvider.js";
+import { destroyAllLocalIndexes } from "../../search/localIndexRpcClient.js";
 
 export type AppShellApp = "mail" | "calendar" | "contacts" | "tasks";
 
@@ -91,6 +92,12 @@ export default function AppShell({
     useIdleKeyTimeout();
 
     function handleSignOut() {
+        // Best-effort, fire-and-forget: the Tier 2 local index MUST be destroyed on explicit logout, the
+        // same as unlocked keys themselves (spec §11) - this component has no specific mailboxUid of its
+        // own to pass (it's shared by every app, not just Mail), so this destroys every mailbox's index
+        // the session has open rather than needing one threaded through. Not awaited - the navigation
+        // below shouldn't wait on it, and destroyAllLocalIndexes() never throws either way.
+        void destroyAllLocalIndexes();
         window.location.href = authServerUrl ?? "/";
     }
 

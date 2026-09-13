@@ -613,6 +613,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@journeyapps/wa-sqlite@npm:^2.0.4":
+  version: 2.0.4
+  resolution: "@journeyapps/wa-sqlite@npm:2.0.4"
+  dependenciesMeta:
+    monaco-editor@0.34.1:
+      unplugged: true
+    web-test-runner-jasmine@0.0.6:
+      unplugged: true
+  checksum: 10c0/93572e8d3bded31f0dcc7e6fbfe2afcabc17044e9ebda1407f02bb5cd77371e6636b1f5bea2c54aa4475e886ce45649c3e777dedc5193b6bddd2890070425168
+  languageName: node
+  linkType: hard
+
 "@jridgewell/gen-mapping@npm:^0.3.5":
   version: 0.3.13
   resolution: "@jridgewell/gen-mapping@npm:0.3.13"
@@ -909,33 +921,24 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:0.2.0":
-  version: 0.2.0
-  resolution: "@rapidmx/react-shared@npm:0.2.0"
+"@rapidmx/react-shared@npm:^0.3.0":
+  version: 0.3.0
+  resolution: "@rapidmx/react-shared@npm:0.3.0"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
+    "@peculiar/x509": "npm:^2.1.0"
+    asn1js: "npm:^3.0.10"
     date-fns: "npm:^4.4.0"
+    dompurify: "npm:^3.4.15"
+    hash-wasm: "npm:^4.12.0"
+    pkijs: "npm:^3.4.0"
     react-icons: "npm:^5.7.0"
+    reflect-metadata: "npm:^0.2.2"
     rrule: "npm:^2.8.1"
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/873262dc30d450d753d66e29d158b9c700223e3eb4f620d66871550a9d9cef5cae801290583ce0c01f2cf5d1dbbb523cf46234e92265a5fb9ab533e9d076277f
-  languageName: node
-  linkType: hard
-
-"@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.2.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.2.0-d6173ce3e5.patch":
-  version: 0.2.0
-  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.2.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.2.0-d6173ce3e5.patch::version=0.2.0&hash=14540b"
-  dependencies:
-    "@emoji-mart/data": "npm:^1.2.1"
-    date-fns: "npm:^4.4.0"
-    react-icons: "npm:^5.7.0"
-    rrule: "npm:^2.8.1"
-  peerDependencies:
-    react: 19.x
-    react-dom: 19.x
-  checksum: 10c0/bc7662728a67b44143910d784f24ca9a1622755b1caaaf175822f6be1e60f0fe00711bcb19993435a16cd3f2d5be37861367d38bd8835df408f6db4b8673fb46
+  checksum: 10c0/0e7e1912f24c04cc344db76c9e990c7f503f4dccdb51e4fa9f7cd91a599637d319e5d0994de0d065dfa49881e20315a88eed289045b99fe198cd5200a9eb85cd
   languageName: node
   linkType: hard
 
@@ -944,8 +947,9 @@ __metadata:
   resolution: "@rapidmx/web-client@workspace:."
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
+    "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "patch:@rapidmx/react-shared@npm%3A0.2.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.2.0-d6173ce3e5.patch"
+    "@rapidmx/react-shared": "npm:^0.3.0"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"
     "@testing-library/jest-dom": "npm:^7.0.1"

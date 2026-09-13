@@ -12,6 +12,8 @@ import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/sea
 import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
 import { searchEncryptedCandidates } from "@rapidmx/react-shared/search/searchTier3.js";
+import { searchLocalIndex } from "../shared/search/searchTier2.js";
+import type { Coverage } from "../shared/search/localIndexWorker.js";
 import { getUnlockedKeys, UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
@@ -96,24 +98,31 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
     return result;
 }
 
-/** Merges Tier 1 (server, possibly `metadataOnly` for an encrypted message) and Tier 3 (decrypted,
- * content-verified) results into one ranked list, per `specs/search.md` §7's "client MUST re-score all
- * results it can see... normalise into the same space rather than interleaving raw scores": both sides
- * are normalized independently via `normalizeServerScores()` before merging, since a Postgres/OpenSearch
- * score and this module's own term-count score occupy unrelated ranges. A uid present in both lists
- * (Tier 1 found it via a `participants` coincidence, Tier 3 then genuinely verified its content) keeps
- * only the Tier 3 entry - real content verification supersedes a metadata guess for the same message.
+/** Merges Tier 1 (server, possibly `metadataOnly` for an encrypted message), Tier 2 (local index, fully
+ * decrypted and re-scored), and Tier 3 (server-narrowed candidates, decrypted and re-scored) results into
+ * one ranked list, per `specs/search.md` §7's "client MUST re-score all results it can see... normalise
+ * into the same space rather than interleaving raw scores": each tier is normalized independently via
+ * `normalizeServerScores()` before merging, since a Postgres/OpenSearch score, a local `bm25()` score,
+ * and this module's own Tier 3 term-count score all occupy unrelated ranges. A uid present in more than
+ * one list keeps only the last-inserted entry (Tier 2 wins over Tier 3 wins over Tier 1) - Tier 2 and
+ * Tier 3 both represent genuine, content-verified scores for the same message, so which one "wins" on
+ * overlap doesn't change correctness, only which of two equally-valid scores is shown; either supersedes
+ * Tier 1's metadata-only guess for the same uid.
  * Deliberately not the spec's full skeleton/reordering "Progressive Results" UX (§_Progressive
- * Results_) - that's real, separate UI work; this returns one final merged list once both tiers
- * resolve, same as how the search box already waits on one round-trip today. */
-function mergeSearchResults(tier1: SearchResult[], tier3: SearchResult[]): SearchResult[] {
+ * Results_) - that's real, separate UI work; this returns one final merged list once every tier
+ * resolves, same as how the search box already waits on one round-trip today. */
+function mergeSearchResults(tier1: SearchResult[], tier2: SearchResult[], tier3: SearchResult[]): SearchResult[] {
     const normalizedTier1 = normalizeServerScores(tier1);
+    const normalizedTier2 = normalizeServerScores(tier2);
     const normalizedTier3 = normalizeServerScores(tier3);
     const merged = new Map<string, { result: SearchResult; normalizedScore: number }>();
     for (const entry of normalizedTier1) {
         merged.set(entry.result.entityUid, entry);
     }
     for (const entry of normalizedTier3) {
+        merged.set(entry.result.entityUid, entry);
+    }
+    for (const entry of normalizedTier2) {
         merged.set(entry.result.entityUid, entry);
     }
     return Array.from(merged.values())
@@ -134,18 +143,22 @@ function mergeSearchResults(tier1: SearchResult[], tier3: SearchResult[]): Searc
  * (this inbox list only ever shows message rows; a real multi-entity-type results view is a separate,
  * larger UI project outside this pass).
  *
- * Tier 3 (`searchTier3.ts#searchEncryptedCandidates()`) runs alongside Tier 1 only for the first page
- * (`cursor` absent) - it has no pagination wiring yet (a deliberate scope trim, see that module's own
- * doc comment), so a `loadMore()` continuation stays Tier-1-only. Silently contributes nothing when
- * this mailbox has no unlocked keys this session (`getUnlockedKeys()` returns `undefined`) - nothing
- * for it to decrypt, same as `MessageDetailPane`'s own encrypted-message handling elsewhere. */
+ * Tier 2 (`searchTier2.ts#searchLocalIndex()`, the local encrypted index) and Tier 3
+ * (`searchTier3.ts#searchEncryptedCandidates()`, server-narrowed candidates) both run alongside Tier 1
+ * only for the first page (`cursor` absent) - neither has pagination wiring yet (Tier 3's own deliberate
+ * scope trim, documented in that module; Tier 2's local FTS5 query likewise only returns its own
+ * top-`limit` page today), so a `loadMore()` continuation stays Tier-1-only. Both silently contribute
+ * nothing when this mailbox has no unlocked keys this session (`getUnlockedKeys()` returns `undefined`) -
+ * nothing for either to decrypt/query, same as `MessageDetailPane`'s own encrypted-message handling
+ * elsewhere. `coverage` (from Tier 2) is `undefined` in that same case, and on any later page. */
 async function searchMessages(
     mailboxUid: string,
     rawQuery: string,
     cursor?: string,
-): Promise<{ messages: Message[]; nextCursor?: string; snippets: Record<string, string> }> {
+): Promise<{ messages: Message[]; nextCursor?: string; snippets: Record<string, string>; coverage?: Coverage }> {
     const parsed = parseSearchQuery(rawQuery);
-    const [page, tier3Results] = await Promise.all([
+    const unlocked = getUnlockedKeys(mailboxUid);
+    const [page, tier2, tier3Results] = await Promise.all([
         searchMailbox(parsed.text, {
             types: parsed.entityTypes ?? ["message"],
             cursor,
@@ -161,9 +174,10 @@ async function searchMessages(
             flags: parsed.flags,
             labels: parsed.labels,
         }),
-        cursor ? Promise.resolve<SearchResult[]>([]) : searchEncryptedCandidates(parsed, getUnlockedKeys(mailboxUid)),
+        cursor ? Promise.resolve({ results: [] as SearchResult[], coverage: undefined }) : searchLocalIndex(mailboxUid, parsed, unlocked),
+        cursor ? Promise.resolve<SearchResult[]>([]) : searchEncryptedCandidates(parsed, unlocked),
     ]);
-    const mergedResults = mergeSearchResults(page.results, tier3Results);
+    const mergedResults = mergeSearchResults(page.results, tier2.results, tier3Results);
     const resolved = await Promise.all(
         mergedResults.map(async (hit) => {
             const message = await getMessage(hit.entityUid).catch(() => null);
@@ -184,7 +198,7 @@ async function searchMessages(
             snippets[entry.message.uid] = entry.snippet;
         }
     }
-    return { messages, nextCursor: page.nextCursor, snippets };
+    return { messages, nextCursor: page.nextCursor, snippets, coverage: tier2.coverage };
 }
 
 export default function InboxPage(props: MailShellProps) {
@@ -213,6 +227,10 @@ function InboxContent() {
     const [searchQuery, setSearchQuery] = useState("");
     const [snippets, setSnippets] = useState<Record<string, string>>({});
     const [labels, setLabels] = useState<Label[]>([]);
+    // Tier 2's own reported window coverage for the current search - undefined outside a search, or
+    // before Tier 2 has anything to report (not yet unlocked, or a loadMore continuation - see
+    // searchMessages()'s own doc comment on why coverage is only ever populated on the first page).
+    const [coverage, setCoverage] = useState<Coverage | undefined>(undefined);
     // Keyed by message uid - see decryptEncryptedRows(). Never cleared on folder/search switches (a
     // decrypted row stays decrypted for the rest of the session; re-decrypting on every navigation would
     // waste work for no benefit), only ever added to.
@@ -333,12 +351,14 @@ function InboxContent() {
         setError(null);
 
         if (isSearching) {
+            setCoverage(undefined);
             searchMessages(mailboxUid!, searchQuery)
-                .then(({ messages: results, nextCursor, snippets: newSnippets }) => {
+                .then(({ messages: results, nextCursor, snippets: newSnippets, coverage: newCoverage }) => {
                     setMessages(results);
                     setSnippets(newSnippets);
                     setHasMore(!!nextCursor);
                     cursorRef.current = nextCursor;
+                    setCoverage(newCoverage);
                 })
                 .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Search failed."))
                 .finally(() => setLoading(false));
@@ -530,6 +550,12 @@ function InboxContent() {
                     </div>
                 )}
 
+                {isSearching && coverage?.indexedFrom && (
+                    <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
+                        Local search covers messages back to {new Date(coverage.indexedFrom).toLocaleDateString()}
+                        {coverage.building ? " (still building)" : ""} - older encrypted mail is still searched, just slower.
+                    </div>
+                )}
                 {isSearching && !getUnlockedKeys(mailboxUid!) && (
                     <div className="px-4 py-2 border-b border-border bg-surface-alt">
                         <button

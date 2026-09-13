@@ -13,6 +13,7 @@ import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import KeyEnrollmentGate from "../../layout/KeyEnrollmentGate.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { useCompose } from "../compose/ComposeContext.js";
+import LocalIndexLifecycle from "../../../search/LocalIndexLifecycle.js";
 
 export type MailShellProps = Omit<AppShellProps, "active">;
 
@@ -293,6 +294,7 @@ export default function MailShell({
             // prop's own doc comment on KeyEnrollmentGateProps.
             blocking={false}
         >
+            <LocalIndexLifecycle mailboxUid={mailboxUid} mailboxKeys={selectedMailbox?.keys} folders={folders} />
             <AppShell
                 active="mail"
                 userUid={userUid}

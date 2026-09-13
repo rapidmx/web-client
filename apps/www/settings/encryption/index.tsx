@@ -32,6 +32,7 @@ import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-sh
 import { getMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import KeyEnrollmentGate from "../../../shared/components/layout/KeyEnrollmentGate.js";
+import { destroyLocalIndex } from "../../../shared/search/localIndexRpcClient.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
@@ -373,6 +374,12 @@ function EncryptionContent() {
 
     function handleDestroyKeysNow() {
         destroyUnlockedKeys(mailboxUid);
+        // Spec §11: the Tier 2 local index MUST be destroyed on the same events that destroy unlocked
+        // keys. Not awaited - this page's own "keys removed" confirmation shouldn't wait on it, and
+        // destroyLocalIndex() never throws either way. Reached directly here (rather than relying on
+        // LocalIndexLifecycle.tsx's polling, which only runs while Mail's own MailShell is mounted) since
+        // this button lives on the Settings page, which never mounts that component.
+        void destroyLocalIndex(mailboxUid!);
         setDestroyed(true);
     }
 
