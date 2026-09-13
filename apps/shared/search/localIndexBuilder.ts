@@ -30,16 +30,25 @@ import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 import { indexLocalEntities, initLocalIndex, setLocalIndexBuilding, setLocalIndexWindow } from "./localIndexRpcClient.js";
 import { deriveLocalIndexKey } from "./localIndexKey.js";
+import { getLocalIndexByteBudget } from "./localIndexSizePreference.js";
 
 /** The RFC 9788 placeholder subject every encrypted message's outer envelope carries server-side - see
  * `apps/www/index.tsx`'s identical constant and its own doc comment for the full citation. */
 const ENCRYPTED_SUBJECT_PLACEHOLDER = "[...]";
 
-/** §11's Window Sizing table, Web row - explicitly unvalidated starting-point defaults per the spec's own
- * §16 "Measurement Task" ("cannot be supplied by design work... MUST NOT be treated as validated"). Used
- * as-is rather than invented/adjusted here. */
+/** §11's Window Sizing table's time-floor column - explicitly unvalidated starting-point default per the
+ * spec's own §16 "Measurement Task" ("cannot be supplied by design work... MUST NOT be treated as
+ * validated"). Used as-is rather than invented/adjusted here. Not user-adjustable today (unlike the byte
+ * budget - see `localIndexSizePreference.ts`) - nothing in this codebase has asked for that yet. */
 export const WEB_TIME_FLOOR_MONTHS = 12;
-export const WEB_BYTE_BUDGET_BYTES = 500 * 1024 * 1024;
+
+/** Either bound as `0` means "no limit": `applyEviction()` (`localIndexWorker.ts`) already treats a
+ * falsy byte budget as unconfigured/unenforced, and `buildLocalIndex()` below mirrors that same
+ * convention for `timeFloorMonths` so a single `0` means the same thing in both dimensions. */
+export interface LocalIndexWindowConfig {
+    timeFloorMonths: number;
+    byteBudgetBytes: number;
+}
 
 /** Folder types that actually hold messages - excludes `calendar`/`contacts`/other non-mail folder types
  * `FolderType` also covers. Inbox and Sent first: the two folders a "did I find that email" search is
@@ -51,8 +60,11 @@ const FOLDER_PRIORITY: Record<string, number> = { inbox: 0, sent_items: 1 };
 const PAGE_SIZE = 100;
 const MAX_APPROX_BYTES_PER_MESSAGE_PADDING = 512; // subject/participants/flags overhead beyond raw text length
 
-function isWithinTimeFloor(receivedDate: string, cutoff: Date): boolean {
-    return new Date(receivedDate).getTime() >= cutoff.getTime();
+/** `cutoff === undefined` means no time floor at all (an unbounded `windowConfig`) - every message is
+ * "within" it, so the caller's own end-of-folder check (`messages.length < PAGE_SIZE`) becomes the only
+ * stopping condition. */
+function isWithinTimeFloor(receivedDate: string, cutoff: Date | undefined): boolean {
+    return !cutoff || new Date(receivedDate).getTime() >= cutoff.getTime();
 }
 
 function estimateByteSize(entity: Pick<LocalIndexEntity, "subject" | "body" | "attachmentText" | "participants">): number {
@@ -110,15 +122,29 @@ async function buildEntity(message: Message, unlocked: UnlockedKeys): Promise<Lo
  * (spec §11's "incomplete-index UX... MUST indicate that coverage is partial" is served by `coverage()`
  * truthfully reporting whatever `indexedFrom` this run actually reached, not by this function needing to
  * succeed completely).
+ *
+ * `windowConfig` defaults to this device's own configured byte budget (`getLocalIndexByteBudget()` -
+ * 500 MB in a browser tab, 1 GB in Electron, or whatever the user has since set in Settings > Encryption)
+ * alongside the fixed time floor above. Evaluated fresh on every call with no explicit override, so a
+ * preference change in Settings takes effect starting with this mailbox's next build pass (its next
+ * unlock), without requiring a reload.
  */
-export async function buildLocalIndex(mailboxUid: string, unlocked: UnlockedKeys, folders: Folder[]): Promise<void> {
+export async function buildLocalIndex(
+    mailboxUid: string,
+    unlocked: UnlockedKeys,
+    folders: Folder[],
+    windowConfig: LocalIndexWindowConfig = { timeFloorMonths: WEB_TIME_FLOOR_MONTHS, byteBudgetBytes: getLocalIndexByteBudget() },
+): Promise<void> {
     const indexKey = await deriveLocalIndexKey(unlocked.masterKey, mailboxUid);
     await initLocalIndex({ mailboxUid, indexKey });
-    await setLocalIndexWindow(mailboxUid, WEB_TIME_FLOOR_MONTHS, WEB_BYTE_BUDGET_BYTES);
+    await setLocalIndexWindow(mailboxUid, windowConfig.timeFloorMonths, windowConfig.byteBudgetBytes);
     await setLocalIndexBuilding(mailboxUid, true);
     try {
-        const cutoff = new Date();
-        cutoff.setMonth(cutoff.getMonth() - WEB_TIME_FLOOR_MONTHS);
+        let cutoff: Date | undefined;
+        if (windowConfig.timeFloorMonths > 0) {
+            cutoff = new Date();
+            cutoff.setMonth(cutoff.getMonth() - windowConfig.timeFloorMonths);
+        }
 
         const mailFolders = folders
             .filter((f) => MESSAGE_FOLDER_TYPES.has(f.type))

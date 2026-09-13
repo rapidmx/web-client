@@ -38,7 +38,11 @@ export interface LocalIndexLifecycleProps {
 }
 
 /** Renders nothing - pure side-effect component, mounted by `MailShell.tsx` (which is where a
- * `mailboxUid` is actually known; `AppShell.tsx` itself is mailbox-agnostic, shared by every app). */
+ * `mailboxUid` is actually known; `AppShell.tsx` itself is mailbox-agnostic, shared by every app). Each
+ * `buildLocalIndex()` call below omits its `windowConfig` argument deliberately - that leaves the byte
+ * budget to its own default, which already resolves per-device (Web vs. Electron) and per-user
+ * preference (Settings > Encryption) on its own; see `localIndexBuilder.ts`/`localIndexSizePreference.ts`
+ * for how. */
 export default function LocalIndexLifecycle({ mailboxUid, folders }: LocalIndexLifecycleProps) {
     // Guards against re-triggering a build every time this component re-renders (e.g. on an unrelated
     // folders-list refresh) for a mailbox already built/building this session.

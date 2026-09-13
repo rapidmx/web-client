@@ -24,6 +24,12 @@ import {
     unlockWithPassword,
 } from "@rapidmx/react-shared/crypto/keySession.js";
 import { IDLE_TIMEOUT_OPTIONS_MINUTES, getIdleTimeoutMinutes, setIdleTimeoutMinutes } from "@rapidmx/react-shared/crypto/idleTimeout.js";
+import {
+    LOCAL_INDEX_SIZE_OPTIONS,
+    getDefaultLocalIndexByteBudget,
+    getLocalIndexByteBudget,
+    setLocalIndexByteBudget,
+} from "../../../shared/search/localIndexSizePreference.js";
 import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import { buildAad, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
 import { buildEscrowWrap, buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
@@ -114,6 +120,9 @@ function EncryptionContent() {
 
     const [destroyed, setDestroyed] = useState(false);
     const [idleTimeoutMinutes, setIdleTimeoutMinutesState] = useState(() => getIdleTimeoutMinutes());
+    const [localIndexByteBudget, setLocalIndexByteBudgetState] = useState(() => getLocalIndexByteBudget());
+    const localIndexDefaultByteBudgetLabel =
+        LOCAL_INDEX_SIZE_OPTIONS.find((option) => option.bytes === getDefaultLocalIndexByteBudget())?.label ?? "500 MB";
 
     // `mailbox.keys` comes from `SettingsShell`'s one-time `listMailboxes()` fetch - once an ACME
     // enrollment issues, the server has installed a new signing key that fetch never saw. Only this
@@ -209,6 +218,12 @@ function EncryptionContent() {
         const minutes = Number(e.target.value);
         setIdleTimeoutMinutes(minutes);
         setIdleTimeoutMinutesState(minutes);
+    }
+
+    function handleLocalIndexByteBudgetChange(e: React.ChangeEvent<HTMLSelectElement>) {
+        const bytes = Number(e.target.value);
+        setLocalIndexByteBudget(bytes);
+        setLocalIndexByteBudgetState(bytes);
     }
 
     function loadVault() {
@@ -665,6 +680,30 @@ function EncryptionContent() {
                         {IDLE_TIMEOUT_OPTIONS_MINUTES.map((minutes) => (
                             <option key={minutes} value={minutes}>
                                 {idleTimeoutLabel(minutes)}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
+                <div>
+                    <h2 className="text-sm font-semibold mb-2">Local search index size</h2>
+                    <p className="text-xs text-text-muted mb-3">
+                        How much decrypted mail this device keeps in a local encrypted search index, so recent
+                        search results and inbox previews work instantly without contacting the server every
+                        time. Defaults to {localIndexDefaultByteBudgetLabel} on this device. Applies the next
+                        time this mailbox&rsquo;s index rebuilds (e.g. the next time you unlock it) — lowering
+                        it doesn&rsquo;t delete anything already indexed elsewhere, it just narrows what this
+                        device keeps a local copy of.
+                    </p>
+                    <select
+                        aria-label="Local search index size"
+                        className="text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                        value={localIndexByteBudget}
+                        onChange={handleLocalIndexByteBudgetChange}
+                    >
+                        {LOCAL_INDEX_SIZE_OPTIONS.map((option) => (
+                            <option key={option.bytes} value={option.bytes}>
+                                {option.label}
                             </option>
                         ))}
                     </select>
