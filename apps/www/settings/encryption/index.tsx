@@ -105,6 +105,7 @@ function EncryptionContent() {
     // invalidates every other unlock method, which the copy needs to say plainly.
     const [recoveryCodesReason, setRecoveryCodesReason] = useState<"regenerate" | "rotate">("regenerate");
     const [codesSaved, setCodesSaved] = useState(false);
+    const [codesCopied, setCodesCopied] = useState(false);
 
     const [rotationPassword, setRotationPassword] = useState("");
     const [rotationConfirmPassword, setRotationConfirmPassword] = useState("");
@@ -288,6 +289,18 @@ function EncryptionContent() {
         }
     }
 
+    async function handleCopyCodes() {
+        try {
+            // Only reachable via the button below, which never renders while newRecoveryCodes is null.
+            await navigator.clipboard.writeText(newRecoveryCodes!.join("\n"));
+            setCodesCopied(true);
+            setTimeout(() => setCodesCopied(false), 2000);
+        } catch {
+            // Clipboard access can be denied by the browser - the codes are still selectable/copyable by
+            // hand from the list below.
+        }
+    }
+
     /**
      * Real revocation for a captured wrap (`keyvaultApi.ts`'s `rekey()` - see that function's own doc
      * comment): re-wraps this mailbox's already-unlocked private keys under a brand new master key
@@ -388,13 +401,16 @@ function EncryptionContent() {
                         If you lose your password, these new codes are the only way to recover your encrypted mail.
                         Each code can be used once. Store them somewhere safe — they will not be shown again.
                     </p>
-                    <ul className="grid grid-cols-2 gap-2 mb-5 font-mono text-sm">
+                    <ul className="grid grid-cols-2 gap-2 mb-3 font-mono text-sm">
                         {newRecoveryCodes.map((code) => (
                             <li key={code} className="bg-surface-alt rounded-sm py-1.5 px-2 text-center">
                                 {code}
                             </li>
                         ))}
                     </ul>
+                    <Button type="button" variant="secondary" className="!w-auto mb-5" onClick={handleCopyCodes}>
+                        {codesCopied ? "Copied" : "Copy codes to clipboard"}
+                    </Button>
                     <label className="flex items-center gap-2 text-sm mb-4">
                         <input type="checkbox" checked={codesSaved} onChange={(e) => setCodesSaved(e.target.checked)} />
                         I have saved these recovery codes in a safe place.

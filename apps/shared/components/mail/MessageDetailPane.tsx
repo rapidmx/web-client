@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
+import { HiOutlineLockClosed } from "react-icons/hi2";
 import DOMPurify from "dompurify";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -26,6 +27,8 @@ import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { MessageSecurityResult, evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { useCompose } from "./compose/ComposeContext.js";
+import { useMailShell } from "./layout/MailShell.js";
+import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -154,6 +157,12 @@ export default function MessageDetailPane({
     const [receiptBusy, setReceiptBusy] = useState<ReceiptType | null>(null);
     const [receiptError, setReceiptError] = useState<string | null>(null);
     const [security, setSecurity] = useState<MessageSecurityResult | null>(null);
+    const { mailboxes } = useMailShell();
+    const { requestUnlock } = useUnlockPrompt();
+    // Bumped after a successful on-demand unlock to re-run the effect below - it's not a dependency the
+    // effect could read reactively otherwise (getUnlockedKeys() is a plain module-level read, not React
+    // state; see keySession.ts's own doc comment).
+    const [unlockRefresh, setUnlockRefresh] = useState(0);
 
     // Evaluates every message's security state, not just ones flagged `encrypted` - a detached
     // `multipart/signed` message needs its raw MIME read too (a sanitized HTML body never carries the
@@ -182,7 +191,23 @@ export default function MessageDetailPane({
         return () => {
             cancelled = true;
         };
-    }, [message?.uid]);
+    }, [message?.uid, unlockRefresh]);
+
+    // Offered only when this device genuinely has no unlocked session for this message's mailbox at all
+    // (as opposed to being unlocked but still unable to decrypt - a wrong/since-rotated key, which
+    // re-unlocking the same session can't fix) - see `evaluateMessageSecurity()`'s own doc comment on why
+    // `decryptError` alone can't distinguish those two cases.
+    async function handleUnlockToView() {
+        // Only reachable via the button below, which never renders while `message` is null.
+        const mailboxUid = message!.mailboxUid;
+        const mailboxKeys = mailboxes.find((mb) => mb.uid === mailboxUid)?.keys ?? [];
+        try {
+            await requestUnlock(mailboxUid, mailboxKeys);
+            setUnlockRefresh((n) => n + 1);
+        } catch {
+            // User dismissed the unlock dialog - security state stays exactly as it was.
+        }
+    }
 
     if (!message) {
         return <p className="p-8 text-sm text-text-muted">Select a message to read it.</p>;
@@ -523,6 +548,16 @@ export default function MessageDetailPane({
             {security?.decryptError && (
                 <div className="px-4 pt-2">
                     <Alert>{security.decryptError}</Alert>
+                    {message && !getUnlockedKeys(message.mailboxUid) && (
+                        <button
+                            type="button"
+                            onClick={handleUnlockToView}
+                            className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
+                        >
+                            <HiOutlineLockClosed size={12} aria-hidden="true" />
+                            Unlock to view this message
+                        </button>
+                    )}
                 </div>
             )}
             {security?.html !== undefined ? (

@@ -286,6 +286,12 @@ export default function MailShell({
             mailboxUid={mailboxUid}
             mailboxAddress={selectedMailbox?.primarySmtpAddress}
             mailboxKeys={selectedMailbox?.keys}
+            // Unlocking is only actually required to sign/encrypt a compose, read an already-encrypted
+            // message, or change encryption settings - not merely to open Mail. Those specific call sites
+            // (ComposeWindow, MessageDetailPane) request an unlock on demand via useUnlockPrompt() instead.
+            // First-time provisioning (a mailbox with no vault at all yet) still always blocks - see this
+            // prop's own doc comment on KeyEnrollmentGateProps.
+            blocking={false}
         >
             <AppShell
                 active="mail"

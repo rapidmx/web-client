@@ -13,6 +13,13 @@ vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => 
     default: () => <textarea data-testid="html-editor" />,
 }));
 
+// ComposeWindow's on-demand unlock affordance calls useUnlockPrompt() - real UnlockPromptProvider is
+// only mounted by AppShell.tsx, which this file's plain <ComposeProvider> tests never render, so it's
+// stubbed the same way RichTextEditor is above.
+vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({
+    useUnlockPrompt: () => ({ requestUnlock: vi.fn() }),
+}));
+
 function Opener({ mailboxUid, to }: { mailboxUid: string; to?: string }) {
     const { openCompose } = useCompose();
     return (

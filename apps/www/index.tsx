@@ -3,15 +3,17 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { HiOutlineLockClosed } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Message, MessageClassification, getMessage, listMessages } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Message, MessageClassification, getMessage, getMessageRawContent, listMessages } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
 import { ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
 import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
 import { searchEncryptedCandidates } from "@rapidmx/react-shared/search/searchTier3.js";
-import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { getUnlockedKeys, UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import MailShell, { MailShellProps, useMailShell } from "../shared/components/mail/layout/MailShell.js";
@@ -19,11 +21,80 @@ import MessageDetailPane from "../shared/components/mail/MessageDetailPane.js";
 import ConversationList from "../shared/components/mail/ConversationList.js";
 import ConversationThreadPane from "../shared/components/mail/ConversationThreadPane.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import { useUnlockPrompt } from "../shared/components/layout/UnlockPromptProvider.js";
 
 type ViewMode = "date" | "conversation";
 
 const MESSAGE_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
+const LIST_PREVIEW_MAX_LENGTH = 160;
+
+/** The literal outer-envelope `Subject` every encrypted message carries server-side - RFC 9788's
+ * `hcp_baseline` policy obscures it to this exact string (see `smimeMessage.ts`'s
+ * `applyBaselineOuterHeaders()`), which is also all `Message.subject` ever shows for one of these until
+ * decrypted client-side. Used here to recognize which loaded rows are worth decrypting for display. */
+const ENCRYPTED_SUBJECT_PLACEHOLDER = "[...]";
+
+/** A row's client-recovered subject/preview, once decrypted - `undefined` fields mean nothing better
+ * than the placeholder/blank server value was recoverable for that field specifically. */
+interface DecryptedRow {
+    subject?: string;
+    preview?: string;
+}
+
+/** Strips HTML down to plain text, for a short list-row preview of a decrypted body - mirrors
+ * `searchTier3.ts`'s own private `stripHtml()` (not currently exported from `@rapidmx/react-shared`,
+ * so duplicated here rather than pulled in through a package change just for this one small, pure
+ * helper). Not a security boundary - the output only ever feeds plain text display, truncated below,
+ * never rendered back into any DOM. */
+function stripHtmlToText(html: string): string {
+    return html
+        .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#0*39;/gi, "'")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+/**
+ * Decrypts the subject/preview of every currently-loaded row whose subject is still the RFC 9788
+ * placeholder (i.e. every encrypted message this device hasn't already resolved), keyed by uid - the
+ * inbox-list counterpart to `MessageDetailPane`'s own single-message decrypt and `searchTier3.ts`'s
+ * per-candidate decrypt. Bounded to `messages` (at most one loaded page, `MESSAGE_PAGE_SIZE`), never the
+ * whole mailbox - matching `searchEncryptedCandidates()`'s own "bounded, not everything" scope. Runs only
+ * once `unlocked` is available (the caller decides when to call this - see `InboxContent`'s own effect
+ * and `handleUnlockList()`), and a single row's fetch/decrypt failure never blocks the rest.
+ */
+async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys): Promise<Record<string, DecryptedRow>> {
+    const encrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER);
+    const entries = await Promise.all(
+        encrypted.map(async (message): Promise<[string, DecryptedRow] | null> => {
+            try {
+                const rawMime = await getMessageRawContent(message.uid);
+                const security = await evaluateMessageSecurity(rawMime, unlocked);
+                if (!security.subject && !security.html) {
+                    return null;
+                }
+                const preview = security.html ? stripHtmlToText(security.html).slice(0, LIST_PREVIEW_MAX_LENGTH) : undefined;
+                return [message.uid, { subject: security.subject, preview }];
+            } catch {
+                return null;
+            }
+        }),
+    );
+    const result: Record<string, DecryptedRow> = {};
+    for (const entry of entries) {
+        if (entry) {
+            result[entry[0]] = entry[1];
+        }
+    }
+    return result;
+}
 
 /** Merges Tier 1 (server, possibly `metadataOnly` for an encrypted message) and Tier 3 (decrypted,
  * content-verified) results into one ranked list, per `specs/search.md` §7's "client MUST re-score all
@@ -125,8 +196,9 @@ export default function InboxPage(props: MailShellProps) {
 }
 
 function InboxContent() {
-    const { folderUid, mailboxUid, folders } = useMailShell();
+    const { folderUid, mailboxUid, mailboxes, folders } = useMailShell();
     const isMobile = useIsMobile();
+    const { requestUnlock } = useUnlockPrompt();
     const [viewMode, setViewMode] = useState<ViewMode>("date");
     const [messages, setMessages] = useState<Message[]>([]);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -141,11 +213,74 @@ function InboxContent() {
     const [searchQuery, setSearchQuery] = useState("");
     const [snippets, setSnippets] = useState<Record<string, string>>({});
     const [labels, setLabels] = useState<Label[]>([]);
+    // Keyed by message uid - see decryptEncryptedRows(). Never cleared on folder/search switches (a
+    // decrypted row stays decrypted for the rest of the session; re-decrypting on every navigation would
+    // waste work for no benefit), only ever added to.
+    const [decryptedRows, setDecryptedRows] = useState<Record<string, DecryptedRow>>({});
+    // Bumped after a successful on-demand unlock to re-run the search effect below - it's not a
+    // dependency the effect could otherwise react to (getUnlockedKeys() is a plain module-level read, not
+    // React state; see keySession.ts's own doc comment).
+    const [unlockRefresh, setUnlockRefresh] = useState(0);
     const isSearching = viewMode === "date" && searchQuery.length > 0;
     const pageRef = useRef(0);
     const cursorRef = useRef<string | undefined>(undefined);
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
     const sentinelRef = useRef<HTMLDivElement | null>(null);
+    const mailboxKeys = mailboxes.find((mb) => mb.uid === mailboxUid)?.keys ?? [];
+    // `messages` themselves aren't a dependency here on purpose - a message uid, once decrypted, is
+    // never re-decrypted just because the list re-renders with the same rows (e.g. a folder-unrelated
+    // state update elsewhere). New rows (a fresh page load, load-more, or a completed search) each
+    // re-trigger this the normal way, by changing `messages` itself.
+    const undecryptedEncryptedUids = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && !decryptedRows[m.uid]).map((m) => m.uid);
+
+    // Once unlocked, silently decrypt this page's own encrypted rows to show their real subject/preview -
+    // no prompt needed here, the same way searchEncryptedCandidates() already auto-includes decrypted
+    // matches once unlocked without asking again. Only the *first* unlock (or a fresh page of messages
+    // arriving) needs this; `handleUnlockList()` below covers the not-yet-unlocked case explicitly.
+    useEffect(() => {
+        if (undecryptedEncryptedUids.length === 0) {
+            return;
+        }
+        const unlocked = getUnlockedKeys(mailboxUid!);
+        if (!unlocked) {
+            return;
+        }
+        let cancelled = false;
+        decryptEncryptedRows(
+            messages.filter((m) => undecryptedEncryptedUids.includes(m.uid)),
+            unlocked,
+        ).then((decrypted) => {
+            if (!cancelled && Object.keys(decrypted).length > 0) {
+                setDecryptedRows((prev) => ({ ...prev, ...decrypted }));
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [messages, unlockRefresh]);
+
+    async function handleUnlockList() {
+        try {
+            const unlocked = await requestUnlock(mailboxUid!, mailboxKeys);
+            const decrypted = await decryptEncryptedRows(
+                messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER),
+                unlocked,
+            );
+            setDecryptedRows((prev) => ({ ...prev, ...decrypted }));
+        } catch {
+            // User dismissed the unlock dialog - rows stay exactly as they were.
+        }
+    }
+
+    async function handleUnlockSearch() {
+        try {
+            await requestUnlock(mailboxUid!, mailboxKeys);
+            setUnlockRefresh((n) => n + 1);
+        } catch {
+            // User dismissed the unlock dialog - the search results stay exactly as they were.
+        }
+    }
 
     // Labels are mailbox-wide, not folder-scoped - fetched once per mailbox rather than per message, and
     // handed to every `MessageDetailPane` instance below. A failure here just means the Labels control
@@ -217,7 +352,12 @@ function InboxContent() {
             })
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load messages."))
             .finally(() => setLoading(false));
-    }, [viewMode, folderUid, mailboxUid, isSearching, searchQuery]);
+        // `unlockRefresh` is a dependency solely so `handleUnlockSearch()` can force this effect to
+        // re-run `searchMessages()` after a successful on-demand unlock - Tier 3 (encrypted) results
+        // silently contribute nothing without unlocked keys, so this is what actually makes them appear
+        // once the user unlocks. It has no effect on the non-search branches above; re-running them with
+        // identical inputs just re-fetches the same page.
+    }, [viewMode, folderUid, mailboxUid, isSearching, searchQuery, unlockRefresh]);
 
     const loadMore = useCallback(async () => {
         if (loadingMore || !hasMore || loading || viewMode !== "date" || !folderUid) {
@@ -390,6 +530,31 @@ function InboxContent() {
                     </div>
                 )}
 
+                {isSearching && !getUnlockedKeys(mailboxUid!) && (
+                    <div className="px-4 py-2 border-b border-border bg-surface-alt">
+                        <button
+                            type="button"
+                            onClick={handleUnlockSearch}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
+                        >
+                            <HiOutlineLockClosed size={12} aria-hidden="true" />
+                            Unlock to include encrypted messages in these results
+                        </button>
+                    </div>
+                )}
+                {!isSearching && viewMode === "date" && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(mailboxUid!) && (
+                    <div className="px-4 py-2 border-b border-border bg-surface-alt">
+                        <button
+                            type="button"
+                            onClick={handleUnlockList}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
+                        >
+                            <HiOutlineLockClosed size={12} aria-hidden="true" />
+                            Unlock to show {undecryptedEncryptedUids.length === 1 ? "an encrypted message's" : "encrypted messages'"} subject
+                        </button>
+                    </div>
+                )}
+
                 {error && (
                     <div className="p-4">
                         <Alert>{error}</Alert>
@@ -432,9 +597,13 @@ function InboxContent() {
                                                 {new Date(message.receivedDate).toLocaleDateString()}
                                             </span>
                                         </div>
-                                        <div className="text-sm truncate">{message.subject || "(no subject)"}</div>
+                                        <div className="text-sm truncate">
+                                            {decryptedRows[message.uid]?.subject ||
+                                                (message.subject === ENCRYPTED_SUBJECT_PLACEHOLDER ? "Encrypted message" : message.subject) ||
+                                                "(no subject)"}
+                                        </div>
                                         <div className="text-xs text-text-muted truncate font-normal">
-                                            {snippets[message.uid] || message.bodyPreview}
+                                            {snippets[message.uid] || decryptedRows[message.uid]?.preview || message.bodyPreview}
                                         </div>
                                     </button>
                                 </li>

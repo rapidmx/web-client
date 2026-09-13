@@ -59,6 +59,18 @@ export interface KeyEnrollmentGateProps {
      * one. Treated as empty when undefined - a mailbox with no public keys published yet has nothing to
      * unlock, so this only affects the already-enrolled path. */
     mailboxKeys?: PublicKey[];
+    /**
+     * `true` (default) preserves this component's original behavior: a mailbox with an existing vault
+     * but no unlocked session blocks `children` behind a full-page unlock form. Set to `false` for a
+     * mount point that shouldn't block merely because a mailbox resolved - `MailShell` does this, since
+     * unlocking is only actually required to sign/encrypt a compose, read an already-encrypted message,
+     * or change encryption settings (see `UnlockPromptProvider.tsx`'s `useUnlockPrompt()`, which those
+     * specific call sites use instead). Has no effect on first-time provisioning
+     * (`setup_password`/`enrolling`/`show_recovery_codes`), which still always blocks regardless - that
+     * only ever happens once per mailbox and is a genuine prerequisite, not the source of "unlock keeps
+     * popping up" friction this prop exists to avoid.
+     */
+    blocking?: boolean;
     children: React.ReactNode;
 }
 
@@ -77,13 +89,20 @@ export interface KeyEnrollmentGateProps {
  * `children` unchanged rather than blocking mail entirely - encryption is optional and gradual by design
  * (the spec's own "near zero frictionless experience" goal), not a hard prerequisite for reading mail.
  */
-export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, mailboxKeys, children }: KeyEnrollmentGateProps) {
+export default function KeyEnrollmentGate({
+    mailboxUid,
+    mailboxAddress,
+    mailboxKeys,
+    blocking = true,
+    children,
+}: KeyEnrollmentGateProps) {
     const [status, setStatus] = useState<Status>(mailboxUid ? "checking" : "ready");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
     const [codesSaved, setCodesSaved] = useState(false);
+    const [codesCopied, setCodesCopied] = useState(false);
 
     useEffect(() => {
         if (!mailboxUid) {
@@ -155,11 +174,22 @@ export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, mailboxK
         }
     }
 
+    async function handleCopyCodes() {
+        try {
+            await navigator.clipboard.writeText(recoveryCodes.join("\n"));
+            setCodesCopied(true);
+            setTimeout(() => setCodesCopied(false), 2000);
+        } catch {
+            // Clipboard access can be denied by the browser - the codes are still selectable/copyable by
+            // hand from the list below.
+        }
+    }
+
     if (status === "checking") {
         return null;
     }
 
-    if (status === "unlock" || status === "unlocking") {
+    if ((status === "unlock" || status === "unlocking") && blocking) {
         const unlocking = status === "unlocking";
         return (
             <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
@@ -242,13 +272,16 @@ export default function KeyEnrollmentGate({ mailboxUid, mailboxAddress, mailboxK
                         If you lose your password, these codes are the only way to recover your encrypted mail.
                         Each code can be used once. Store them somewhere safe — they will not be shown again.
                     </p>
-                    <ul className="grid grid-cols-2 gap-2 mb-5 font-mono text-sm">
+                    <ul className="grid grid-cols-2 gap-2 mb-3 font-mono text-sm">
                         {recoveryCodes.map((code) => (
                             <li key={code} className="bg-surface-alt rounded-sm py-1.5 px-2 text-center">
                                 {code}
                             </li>
                         ))}
                     </ul>
+                    <Button type="button" variant="secondary" className="!w-auto mb-5" onClick={handleCopyCodes}>
+                        {codesCopied ? "Copied" : "Copy codes to clipboard"}
+                    </Button>
                     <label className="flex items-center gap-2 text-sm mb-4">
                         <input type="checkbox" checked={codesSaved} onChange={(e) => setCodesSaved(e.target.checked)} />
                         I have saved these recovery codes in a safe place.

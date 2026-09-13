@@ -15,12 +15,24 @@ import InboxPage from "../../apps/www/index.js";
 // MessageDetailPane.test.tsx already uses for `evaluateMessageSecurity`/`getUnlockedKeys`) so these
 // tests only verify `InboxContent`'s own concern: merging whatever Tier 3 returns with Tier 1's
 // results, not re-proving decryption correctness.
-const { searchEncryptedCandidates, getUnlockedKeys } = vi.hoisted(() => ({
+const { searchEncryptedCandidates, getUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
     searchEncryptedCandidates: vi.fn(),
     getUnlockedKeys: vi.fn(),
+    unlockWithPassword: vi.fn(),
 }));
 vi.mock("@rapidmx/react-shared/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
+// unlockWithPassword is real UnlockPromptProvider's own dependency (mounted for real by the real
+// AppShell this file renders through, via MailShell/KeyEnrollmentGate) - needed so the "unlock" tests
+// below (list/search banners) can actually complete a real unlock, not just getUnlockedKeys' read side.
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword }));
+
+// evaluateMessageSecurity() does real WebCrypto decryption against real unlocked keys - already
+// exercised end to end in react-shared's own test suite (see the Tier 3 comment above for the identical
+// reasoning). Mocked here so the inbox-list decrypt tests below only verify InboxContent's own
+// decryptEncryptedRows() orchestration (which rows it decrypts, how it renders the result), not
+// re-proving decryption correctness.
+const { evaluateMessageSecurity } = vi.hoisted(() => ({ evaluateMessageSecurity: vi.fn() }));
+vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
 
 // `MessageDetailPane`'s own exhaustive rendering (header fields, attachments, back link, iframe,
 // formatting) is tested in its own `MessageDetailPane.test.tsx` — mocked here to a thin stand-in so this
@@ -178,6 +190,12 @@ function mockShellAndInbox(
         if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
         if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
         if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, conversations);
+        if (url.match(/^\/api\/mail\/messages\/[^/]+\/raw$/)) {
+            // Content doesn't matter - evaluateMessageSecurity() (what actually reads it) is mocked
+            // separately per-test, so this only needs to satisfy getMessageRawContent()'s own res.ok/
+            // res.text() contract.
+            return new Response("raw-mime-placeholder", { status: 200 });
+        }
         if (url.startsWith("/api/mail/messages/")) {
             const method = init?.method ?? "GET";
             const uid = url.split("/api/mail/messages/")[1];
@@ -209,6 +227,8 @@ afterEach(() => {
     vi.unstubAllGlobals();
     searchEncryptedCandidates.mockReset();
     getUnlockedKeys.mockReset();
+    unlockWithPassword.mockReset();
+    evaluateMessageSecurity.mockReset();
 });
 
 describe("InboxPage", () => {
@@ -950,6 +970,35 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Folder message")).toBeInTheDocument();
             expect(screen.queryByText("Matched message")).not.toBeInTheDocument();
         });
+
+        it("shows an unlock banner while searching without unlocked keys, and includes Tier 3 results once unlocked", async () => {
+            const hit = messageFixture({ uid: "m3", subject: "Encrypted match", folderUid: "f2" });
+            mockSearch([hit], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+            getUnlockedKeys.mockReturnValue(undefined);
+            unlockWithPassword.mockImplementation(async () => {
+                getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            });
+            searchEncryptedCandidates.mockImplementation(async (_parsed: unknown, unlocked: unknown) =>
+                unlocked
+                    ? [{ entityType: "message", entityUid: "m3", score: 5, source: "candidate", metadataOnly: false, snippet: "…the budget…" }]
+                    : [],
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Search all mail…");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+            await screen.findByText("Unlock to include encrypted messages in these results");
+            expect(screen.queryByText("Encrypted match")).not.toBeInTheDocument();
+
+            await user.click(screen.getByText("Unlock to include encrypted messages in these results"));
+            await screen.findByText("Unlock your mailbox");
+            await user.type(screen.getByLabelText("Encryption password"), "a good password");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+            expect(await screen.findByText("Encrypted match")).toBeInTheDocument();
+            expect(screen.queryByText("Unlock to include encrypted messages in these results")).not.toBeInTheDocument();
+        });
     });
 
     describe("infinite scroll", () => {
@@ -1112,6 +1161,107 @@ describe("InboxPage", () => {
             io.trigger();
 
             expect(await screen.findByText("Second hit")).toBeInTheDocument();
+        });
+    });
+
+    describe("encrypted rows in the plain folder listing", () => {
+        it("shows an unlock banner for an encrypted ('[...]') row, and decrypts it in place once unlocked", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([encryptedMsg]);
+            getUnlockedKeys.mockReturnValue(undefined);
+            unlockWithPassword.mockImplementation(async () => {
+                getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            });
+            evaluateMessageSecurity.mockResolvedValue({
+                state: "encrypted_verified",
+                subject: "Real decrypted subject",
+                html: "<p>Real decrypted body content</p>",
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Encrypted message")).toBeInTheDocument();
+            const unlockLink = screen.getByText("Unlock to show an encrypted message's subject");
+
+            await user.click(unlockLink);
+            await screen.findByText("Unlock your mailbox");
+            await user.type(screen.getByLabelText("Encryption password"), "a good password");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+            expect(await screen.findByText("Real decrypted subject")).toBeInTheDocument();
+            expect(screen.getByText("Real decrypted body content")).toBeInTheDocument();
+            expect(screen.queryByText("Encrypted message")).not.toBeInTheDocument();
+            expect(screen.queryByText("Unlock to show an encrypted message's subject")).not.toBeInTheDocument();
+        });
+
+        it("uses the plural banner copy when more than one loaded row is encrypted", async () => {
+            const encryptedMsgs = [
+                messageFixture({ uid: "m-enc-1", subject: "[...]", bodyPreview: undefined }),
+                messageFixture({ uid: "m-enc-2", subject: "[...]", bodyPreview: undefined }),
+            ];
+            mockShellAndInbox(encryptedMsgs);
+            getUnlockedKeys.mockReturnValue(undefined);
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Unlock to show encrypted messages' subject")).toBeInTheDocument();
+        });
+
+        it("shows a decrypted subject with no preview override when the recovered content has no html body", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([encryptedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            evaluateMessageSecurity.mockResolvedValue({ state: "signed_verified", subject: "Subject only, no body" });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Subject only, no body")).toBeInTheDocument();
+        });
+
+        it("auto-decrypts an encrypted row with no banner at all when already unlocked this session", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([encryptedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            evaluateMessageSecurity.mockResolvedValue({
+                state: "encrypted_verified",
+                subject: "Already unlocked subject",
+                html: "<p>Already unlocked body</p>",
+            });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Already unlocked subject")).toBeInTheDocument();
+            expect(screen.getByText("Already unlocked body")).toBeInTheDocument();
+            expect(screen.queryByText(/Unlock to show/)).not.toBeInTheDocument();
+        });
+
+        it("leaves the row as its placeholder and shows no unlock banner when the mailbox has nothing encrypted to show", async () => {
+            const plainMsg = messageFixture({ uid: "m1", subject: "Ordinary message" });
+            mockShellAndInbox([plainMsg]);
+            getUnlockedKeys.mockReturnValue(undefined);
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Ordinary message")).toBeInTheDocument();
+            expect(screen.queryByText(/Unlock to show/)).not.toBeInTheDocument();
+            expect(evaluateMessageSecurity).not.toHaveBeenCalled();
+        });
+
+        it("leaves an encrypted row as its placeholder when this device is unlocked but still can't recover anything (wrong/rotated key)", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([encryptedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", decryptError: "This device doesn't have the key needed." });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Encrypted message")).toBeInTheDocument();
+            expect(screen.queryByText(/Unlock to show/)).not.toBeInTheDocument();
+        });
+
+        it("leaves an encrypted row as its placeholder when fetching or decrypting it throws", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([encryptedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            evaluateMessageSecurity.mockRejectedValue(new Error("bad ciphertext"));
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Encrypted message")).toBeInTheDocument();
         });
     });
 });

@@ -27,6 +27,11 @@ vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
     enrollKey: vi.fn(),
     getEncryptionPolicy: vi.fn().mockResolvedValue({ encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" }),
     lookupKeys: vi.fn().mockResolvedValue({ keys: [] }),
+    // Pure/no-network, but this file fully replaces the module (see the doc comment above on why
+    // importOriginal isn't reliable here) - ComposeWindow.tsx now calls this too, to decide whether to
+    // show its "unlock to sign/encrypt" affordance. None of these fixture mailboxes carry real `keys`, so
+    // "no active key" (undefined) is the correct default throughout.
+    findActivePublicKey: vi.fn().mockReturnValue(undefined),
 }));
 // Treated as already-unlocked this session (see KeyEnrollmentGate's own getUnlockedKeys() short-circuit)
 // so these tests never hit its "Unlock your mailbox" password prompt - that flow is this component's own

@@ -594,6 +594,14 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         return mockFetch((url, init) => {
             const custom = extra?.(url, init);
             if (custom) return custom;
+            // Distinguish the single-mailbox GET (ComposeWindow.tsx's own getMailbox(mailboxUid) call,
+            // fired unconditionally on mount - see the "toolbar Email" test below) from the mailbox-list
+            // GET (MailShell's own resolution) - both start with the same prefix, but only the list form
+            // is array-wrapped. Returning the array for both used to be harmless (nothing read a field
+            // that collided with an Array.prototype method), but ComposeWindow now reads `mailbox.keys` -
+            // `[mailbox].keys` resolves to the built-in Array.prototype.keys function instead of
+            // `undefined`, which does NOT get replaced by `?? []` and crashes findActivePublicKey().
+            if (url.startsWith("/api/mail/mailboxes/")) return jsonResponse(200, mailbox);
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
             if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [contactsFolder]);
             if (url.startsWith("/api/mail/contact-lists")) return jsonResponse(200, lists);

@@ -72,6 +72,14 @@ const { sealWithKey, buildAad } = vi.hoisted(() => ({
 }));
 vi.mock("@rapidmx/react-shared/crypto/masterKey.js", () => ({ sealWithKey, buildAad }));
 
+// jsdom's `navigator.clipboard` is a getter-only property — `Object.assign` throws against it, so
+// `writeText` must be installed via `defineProperty` instead (matches admin/domains/[uid].test.tsx's
+// identical helper). Must be called AFTER `userEvent.setup()` in each test - that call installs its own
+// clipboard stub, which would otherwise clobber this override.
+function mockClipboard(writeText: ReturnType<typeof vi.fn>): void {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+}
+
 const mailbox = {
     uid: "mb1",
     version: 0,
@@ -399,6 +407,52 @@ describe("SettingsEncryptionPage", () => {
         await user.click(doneButton);
 
         expect(screen.getByText("Password")).toBeInTheDocument();
+    });
+
+    it("copies every new recovery code (newline-joined) to the clipboard and shows a confirmation", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        removeMasterKeyWrap.mockResolvedValue(undefined);
+        const newCodes = Array.from({ length: 8 }, (_, i) => `NEWCODE-${i + 1}`);
+        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: newCodes });
+        addMasterKeyWrap.mockResolvedValue(vault);
+        mockShell();
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        const user = userEvent.setup();
+        mockClipboard(writeText);
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+        await screen.findByText("Save your new recovery codes");
+
+        await user.click(screen.getByRole("button", { name: "Copy codes to clipboard" }));
+
+        expect(writeText).toHaveBeenCalledWith(newCodes.join("\n"));
+        expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    });
+
+    it("silently ignores a clipboard write failure when copying new recovery codes", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        removeMasterKeyWrap.mockResolvedValue(undefined);
+        const newCodes = Array.from({ length: 8 }, (_, i) => `NEWCODE-${i + 1}`);
+        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: newCodes });
+        addMasterKeyWrap.mockResolvedValue(vault);
+        mockShell();
+        const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+        const user = userEvent.setup();
+        mockClipboard(writeText);
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+        await screen.findByText("Save your new recovery codes");
+
+        await user.click(screen.getByRole("button", { name: "Copy codes to clipboard" }));
+
+        expect(writeText).toHaveBeenCalled();
+        expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
     });
 
     it("shows an error when regenerating recovery codes fails", async () => {

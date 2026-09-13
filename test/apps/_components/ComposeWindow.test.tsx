@@ -14,6 +14,16 @@ import type { ComposeSession } from "../../../apps/shared/components/mail/compos
 const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
 vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
 
+// ComposeWindow's on-demand unlock affordance (the "🔒 Unlock to sign or encrypt" button, shown when a
+// key is enrolled but not yet unlocked) calls useUnlockPrompt() - real UnlockPromptProvider is only
+// mounted by AppShell.tsx, not by ComposeWindow rendered standalone here, so it's stubbed the same way
+// keySession.js is above. No test in this file exercises the unlock flow itself (that belongs to
+// UnlockPromptProvider's own test), so requestUnlock is never asserted on beyond being callable.
+const { requestUnlock } = vi.hoisted(() => ({ requestUnlock: vi.fn() }));
+vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({
+    useUnlockPrompt: () => ({ requestUnlock }),
+}));
+
 // The actual CMS/S-MIME crypto (pkijs's ECDH-ES multi-recipient key agreement in particular) is already
 // exercised end to end, against real WebCrypto, by react-shared's own smime.test.ts/smimeMessage.test.ts
 // - deliberately run under Vitest's "node" environment there, not jsdom (see that repo's vitest.config.ts).
@@ -1093,6 +1103,76 @@ describe("ComposeWindow", () => {
             await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
 
             expect(screen.queryByLabelText(/Digitally sign/)).not.toBeInTheDocument();
+            expect(screen.queryByLabelText(/Encrypt this message/)).not.toBeInTheDocument();
+        });
+
+        it("shows an unlock affordance when a key is enrolled but not unlocked, and reveals the toggles once unlocked", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            requestUnlock.mockImplementation(async () => {
+                getUnlockedKeys.mockReturnValue({
+                    masterKey: new Uint8Array(32),
+                    encryptionPrivateKey: fakeEncryptionKey,
+                    encryptionCertDer: fakeCertDer("alice-encrypt"),
+                    encryptionFingerprint: "fp-encrypt",
+                });
+            });
+            mockCryptoEndpoints(undefined, {
+                mailbox: {
+                    ...mailboxFixture,
+                    keys: [
+                        {
+                            publicKey: "base64cert",
+                            type: "x509",
+                            useType: "encrypt",
+                            fingerprint: "fp-encrypt",
+                            notBefore: Date.now() - 1000,
+                            notAfter: Date.now() + 1_000_000,
+                        },
+                    ],
+                },
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            const unlockLink = await screen.findByText("Unlock to sign or encrypt this message");
+            expect(screen.queryByLabelText(/Encrypt this message/)).not.toBeInTheDocument();
+
+            await user.click(unlockLink);
+
+            expect(requestUnlock).toHaveBeenCalledWith(
+                "mb1",
+                expect.arrayContaining([expect.objectContaining({ fingerprint: "fp-encrypt" })]),
+            );
+            expect(await screen.findByLabelText(/Encrypt this message/)).toBeInTheDocument();
+            expect(screen.queryByText("Unlock to sign or encrypt this message")).not.toBeInTheDocument();
+        });
+
+        it("dismisses the unlock affordance's click without revealing the toggles when the unlock dialog is cancelled", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            requestUnlock.mockRejectedValue(new Error("Unlock cancelled."));
+            mockCryptoEndpoints(undefined, {
+                mailbox: {
+                    ...mailboxFixture,
+                    keys: [
+                        {
+                            publicKey: "base64cert",
+                            type: "x509",
+                            useType: "encrypt",
+                            fingerprint: "fp-encrypt",
+                            notBefore: Date.now() - 1000,
+                            notAfter: Date.now() + 1_000_000,
+                        },
+                    ],
+                },
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.click(await screen.findByText("Unlock to sign or encrypt this message"));
+
+            expect(await screen.findByText("Unlock to sign or encrypt this message")).toBeInTheDocument();
             expect(screen.queryByLabelText(/Encrypt this message/)).not.toBeInTheDocument();
         });
 

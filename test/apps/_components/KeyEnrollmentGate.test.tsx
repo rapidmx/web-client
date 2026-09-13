@@ -3,11 +3,18 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import KeyEnrollmentGate from "../../../apps/shared/components/layout/KeyEnrollmentGate.js";
+
+// jsdom's `navigator.clipboard` is a getter-only property — `Object.assign` throws against it, so
+// `writeText` must be installed via `defineProperty` instead (matches admin/domains/[uid].test.tsx's
+// identical helper).
+function mockClipboard(writeText: ReturnType<typeof vi.fn>): void {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+}
 
 const { getKeyVault, enrollKey, getUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
     getKeyVault: vi.fn(),
@@ -289,6 +296,102 @@ describe("KeyEnrollmentGate", () => {
         await user.click(continueButton);
 
         expect(await screen.findByText("Mail content")).toBeInTheDocument();
+    });
+
+    it("copies every recovery code (newline-joined) to the clipboard and shows a confirmation", async () => {
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        enrollKey.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        // userEvent.setup() must come first - it installs its own clipboard stub, which would otherwise
+        // clobber mockClipboard()'s override (confirmed by direct reproduction: reversing this order
+        // left navigator.clipboard as jsdom/user-event's own real Clipboard object, never this mock).
+        const user = userEvent.setup();
+        mockClipboard(writeText);
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        await screen.findByText("Protect your mailbox");
+        await user.type(screen.getByLabelText("Encryption password"), "a good password");
+        await user.type(screen.getByLabelText("Confirm password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        await screen.findByText("Save your recovery codes");
+
+        await user.click(screen.getByRole("button", { name: "Copy codes to clipboard" }));
+
+        expect(writeText).toHaveBeenCalledWith(Array.from({ length: 8 }, (_, i) => `CODE-${i + 1}`).join("\n"));
+        expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    });
+
+    it("reverts the copy confirmation back to its original label after a couple of seconds", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        enrollKey.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        mockClipboard(vi.fn().mockResolvedValue(undefined));
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        await screen.findByText("Protect your mailbox");
+        await user.type(screen.getByLabelText("Encryption password"), "a good password");
+        await user.type(screen.getByLabelText("Confirm password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        await screen.findByText("Save your recovery codes");
+
+        await user.click(screen.getByRole("button", { name: "Copy codes to clipboard" }));
+        expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+        await act(() => vi.advanceTimersByTimeAsync(2000));
+        expect(screen.getByRole("button", { name: "Copy codes to clipboard" })).toBeInTheDocument();
+        vi.useRealTimers();
+    });
+
+    it("silently ignores a clipboard write failure when copying recovery codes", async () => {
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        enrollKey.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+        const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+        const user = userEvent.setup();
+        mockClipboard(writeText);
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        await screen.findByText("Protect your mailbox");
+        await user.type(screen.getByLabelText("Encryption password"), "a good password");
+        await user.type(screen.getByLabelText("Confirm password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        await screen.findByText("Save your recovery codes");
+
+        await user.click(screen.getByRole("button", { name: "Copy codes to clipboard" }));
+
+        expect(writeText).toHaveBeenCalled();
+        expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
+    });
+
+    it("renders children immediately (does not block) when blocking=false and the mailbox has enrolled keys but isn't unlocked yet", async () => {
+        getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com" blocking={false}>
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        expect(await screen.findByText("Mail content")).toBeInTheDocument();
+        expect(screen.queryByText("Unlock your mailbox")).not.toBeInTheDocument();
+    });
+
+    it("still blocks on first-time provisioning (setup_password) even when blocking=false - only the unlock step is skippable", async () => {
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com" blocking={false}>
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        expect(await screen.findByText("Protect your mailbox")).toBeInTheDocument();
+        expect(screen.queryByText("Mail content")).not.toBeInTheDocument();
     });
 
     it("shows an error and stays on the password step when enrollment fails", async () => {

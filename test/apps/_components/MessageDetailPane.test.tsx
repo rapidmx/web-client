@@ -23,6 +23,15 @@ const { evaluateMessageSecurity, getUnlockedKeys } = vi.hoisted(() => ({
 vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
 vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
 
+// Both MessageDetailPane's own "Unlock to view" affordance and the real ComposeWindow the reply/forward
+// tests below pop up (via openCompose()) call useUnlockPrompt() - real UnlockPromptProvider is only
+// mounted by AppShell.tsx, not by either component rendered standalone here, so it's stubbed the same
+// way keySession.js is above.
+const { requestUnlock } = vi.hoisted(() => ({ requestUnlock: vi.fn() }));
+vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({
+    useUnlockPrompt: () => ({ requestUnlock }),
+}));
+
 // `ComposeWindow`'s own exhaustive rendering (draft lifecycle, send, attachments...) is tested in its
 // own file — mocked here (`RichTextEditor` only, matching every other compose-adjacent test file's
 // convention) so the "reply/forward" tests below only exercise the values `MessageDetailPane` itself
@@ -949,6 +958,39 @@ describe("MessageDetailPane", () => {
             expect(await screen.findByText("This device doesn't have the key needed.")).toBeInTheDocument();
             expect(screen.getByText("Encrypted")).toBeInTheDocument();
             expect(screen.getByTitle("Hello there")).toHaveAttribute("src", "/api/mail/messages/m1/content");
+        });
+
+        it("offers to unlock when a decryptError means this device has no unlocked session at all, and re-evaluates once unlocked", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            evaluateMessageSecurity.mockResolvedValueOnce({ state: "encrypted", decryptError: "This device doesn't have the key needed." });
+            requestUnlock.mockImplementation(async () => {
+                getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            });
+            mockRawContent();
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+            await screen.findByText("This device doesn't have the key needed.");
+            const unlockLink = screen.getByText("Unlock to view this message");
+
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted_verified", html: "<p>Now decrypted</p>" });
+            await user.click(unlockLink);
+
+            expect(requestUnlock).toHaveBeenCalledWith("mb1", []);
+            expect(await screen.findByTitle("Hello there")).toHaveAttribute(
+                "srcdoc",
+                expect.stringContaining("Now decrypted"),
+            );
+            expect(screen.queryByText("Unlock to view this message")).not.toBeInTheDocument();
+        });
+
+        it("does not offer to unlock when a decryptError comes from an already-unlocked session (wrong/rotated key)", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", decryptError: "This device doesn't have the key needed." });
+            mockRawContent();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await screen.findByText("This device doesn't have the key needed.");
+            expect(screen.queryByText("Unlock to view this message")).not.toBeInTheDocument();
         });
 
         // RFC 9788's own "MUST visually distinguish" requirement for a message whose outer envelope

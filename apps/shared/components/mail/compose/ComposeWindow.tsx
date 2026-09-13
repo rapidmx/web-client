@@ -7,6 +7,7 @@ import {
     HiOutlineArrowsPointingIn,
     HiOutlineArrowsPointingOut,
     HiOutlineChevronDown,
+    HiOutlineLockClosed,
     HiOutlineMinus,
     HiOutlinePaperClip,
     HiOutlineTrash,
@@ -32,7 +33,8 @@ import {
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
 import { decideMessageEncryption, resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
-import { EncryptionPolicy, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { useUnlockPrompt } from "../../layout/UnlockPromptProvider.js";
 import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } from "@rapidmx/react-shared/crypto/smimeMessage.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
@@ -107,6 +109,10 @@ function HeaderButton({ label, onClick, icon: Icon }: { label: string; onClick: 
 export default function ComposeWindow({ session, onClose, onToggleMinimize }: ComposeWindowProps) {
     const { id, mailboxUid, initialTo, initialCc, initialSubject, initialQuotedHtml, signatureContext, suppressSigning, minimized } = session;
     const isMobile = useIsMobile();
+    const { requestUnlock } = useUnlockPrompt();
+    // Bumped after a successful on-demand unlock to force a re-render - `getUnlockedKeys()` below is a
+    // plain read from a module-level store, not React state, so nothing else would pick up the change.
+    const [, setUnlockRefresh] = useState(0);
 
     const windowRef = useRef<HTMLDivElement>(null);
     const [draftsFolderUid, setDraftsFolderUid] = useState<string | undefined>();
@@ -472,9 +478,30 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         }
     }
 
+    async function handleUnlockForCrypto() {
+        try {
+            // Only reachable via the button below, which never renders unless needsUnlockForCrypto is
+            // true - which itself requires mailbox.keys to already contain a real enrolled key (see
+            // hasEnrolledSigningKey/hasEnrolledEncryptionKey), so it's never empty/undefined here either.
+            await requestUnlock(mailboxUid, mailbox!.keys!);
+            setUnlockRefresh((n) => n + 1);
+        } catch {
+            // User dismissed the unlock dialog - nothing to do, the toggles below simply stay hidden.
+        }
+    }
+
     // A plain read from keySession.ts's module-level session store, not React state - see that module's
     // own doc comment. Cheap enough to read fresh on every render rather than caching in state.
     const unlockedKeys = getUnlockedKeys(mailboxUid);
+    const hasEnrolledSigningKey = !!findActivePublicKey(mailbox?.keys ?? [], "sign");
+    const hasEnrolledEncryptionKey = !!findActivePublicKey(mailbox?.keys ?? [], "encrypt");
+    // This mailbox has a real signing/encryption key on file, but this session hasn't unlocked it yet -
+    // the sign/encrypt toggles below stay hidden until it has, so this is the only way to reach them
+    // without first stumbling into Mail generally (which no longer force-prompts on its own - see
+    // `MailShell`'s `blocking={false}`). `getUnlockedKeys()` is re-read as a plain module value above, so
+    // bumping `unlockRefresh` after a successful unlock is what makes this line (and the toggles it
+    // gates) reflect it on the next render.
+    const needsUnlockForCrypto = (hasEnrolledSigningKey || hasEnrolledEncryptionKey) && !unlockedKeys;
 
     const title = subject.trim() || "New Message";
     const titleId = `compose-title-${id}`;
@@ -692,6 +719,19 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
                     <input type="checkbox" checked={requestReceipt} onChange={(e) => setRequestReceipt(e.target.checked)} />
                     Request a read receipt
                 </label>
+
+                {needsUnlockForCrypto && (
+                    <div className="px-3 pb-1">
+                        <button
+                            type="button"
+                            onClick={handleUnlockForCrypto}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
+                        >
+                            <HiOutlineLockClosed size={12} aria-hidden="true" />
+                            Unlock to sign or encrypt this message
+                        </button>
+                    </div>
+                )}
 
                 {/* Only rendered once this session actually has a usable signing/encryption key - see
                     `assembleForSend()`'s own doc comment for why signing rarely shows today (no signing

@@ -14,6 +14,7 @@ import ComposeProvider from "../mail/compose/ComposeContext.js";
 import BottomTabBar from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { BrandingFooter, BrandingHeader } from "./BrandingChrome.js";
 import UserMenu from "./UserMenu.js";
+import { UnlockPromptProvider } from "./UnlockPromptProvider.js";
 
 export type AppShellApp = "mail" | "calendar" | "contacts" | "tasks";
 
@@ -111,7 +112,11 @@ export default function AppShell({
     }
 
     return (
-        <ComposeProvider>
+        // Mounted here, not scoped to Mail/Settings, for the same reason as useIdleKeyTimeout() above -
+        // ComposeWindow's sign/encrypt toggles and MessageDetailPane's encrypted-message view (both Mail)
+        // are today's only useUnlockPrompt() callers, but this needs to be available to any app shell.
+        <UnlockPromptProvider>
+            <ComposeProvider>
             <div className="min-h-screen flex flex-col bg-surface-alt">
                 <BrandingHeader branding={branding} />
                 {impersonating && (
@@ -164,6 +169,7 @@ export default function AppShell({
                 </div>
                 <BrandingFooter branding={branding} />
             </div>
-        </ComposeProvider>
+            </ComposeProvider>
+        </UnlockPromptProvider>
     );
 }
