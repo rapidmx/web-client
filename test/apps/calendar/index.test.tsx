@@ -401,4 +401,50 @@ describe("CalendarPage", () => {
         expect(screen.getByRole("button", { name: "Split" })).toHaveClass("hidden", "md:inline-block");
         expect(screen.getByRole("button", { name: "Month" }).className).not.toContain("hidden");
     });
+
+    describe("shared mailboxes", () => {
+        const sharedMailbox = { ...mailbox, uid: "mb-shared", ownerUserUid: undefined, displayName: "Support", primarySmtpAddress: "support@example.com" };
+        const sharedCalendar = { ...calendarFolder, uid: "f-shared-cal", mailboxUid: "mb-shared", name: "Support Calendar", color: undefined };
+
+        function mockTwoMailboxes() {
+            return mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+                if (url.startsWith("/api/mail/folders")) {
+                    return jsonResponse(200, url.includes("mailboxUid=mb-shared") ? [sharedCalendar] : [calendarFolder]);
+                }
+                if (url.startsWith("/api/mail/calendar-events") && (init?.method ?? "GET") === "GET") {
+                    return jsonResponse(
+                        200,
+                        url.includes("folderUid=f-shared-cal")
+                            ? [calendarEvent({ uid: "e-shared", title: "Support rotation", mailboxUid: "mb-shared", folderUid: "f-shared-cal" })]
+                            : [calendarEvent()],
+                    );
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+        }
+
+        it("shows a shared mailbox's calendar events alongside the caller's own, in its own sidebar section", async () => {
+            mockTwoMailboxes();
+            render(<CalendarPage userUid="u1" />);
+
+            expect(await screen.findByText(/Support rotation/)).toBeInTheDocument();
+            expect(screen.getByText(/Standup/)).toBeInTheDocument();
+            expect(screen.getAllByText("Support (shared)").length).toBeGreaterThan(0);
+            expect(screen.getAllByText("Support Calendar").length).toBeGreaterThan(0);
+        });
+
+        it("hides a shared calendar's events when its checkbox is unchecked", async () => {
+            mockTwoMailboxes();
+            const user = userEvent.setup();
+            render(<CalendarPage userUid="u1" />);
+            await screen.findByText(/Support rotation/);
+
+            const checkbox = screen.getAllByText("Support Calendar")[0].closest("label")!.querySelector("input")!;
+            await user.click(checkbox);
+
+            await waitFor(() => expect(screen.queryByText(/Support rotation/)).not.toBeInTheDocument());
+            expect(screen.getByText(/Standup/)).toBeInTheDocument();
+        });
+    });
 });

@@ -3,10 +3,11 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
+import { DEFAULT_CALENDAR_COLOR, accentColorForMailbox } from "@rapidmx/react-shared/calendar/calendarColors.js";
 import CalendarShell, { useCalendarShell } from "../../../apps/shared/components/calendar/layout/CalendarShell.js";
 
 const mailboxA = {
@@ -44,6 +45,20 @@ function mockMailboxesAndFolders(mailboxes: unknown[], folders: unknown[]) {
         if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
         if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, mailboxes);
         if (url.startsWith("/api/mail/folders")) return jsonResponse(200, folders);
+        throw new Error(`unexpected ${url}`);
+    });
+}
+
+/** Gives each mailbox its own calendar folder (uid `f-cal-<mailboxUid>`), keyed off `listFolders()`'s
+ * `mailboxUid` query param. */
+function mockPerMailboxFolders(mailboxes: { uid: string }[]) {
+    return mockFetch((url) => {
+        if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+        if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, mailboxes);
+        if (url.startsWith("/api/mail/folders")) {
+            const mailbox = mailboxes.find((mb) => url.includes(`mailboxUid=${mb.uid}`));
+            return jsonResponse(200, mailbox ? [{ ...calendarFolder, uid: `f-cal-${mailbox.uid}`, mailboxUid: mailbox.uid }] : []);
+        }
         throw new Error(`unexpected ${url}`);
     });
 }
@@ -109,7 +124,7 @@ describe("CalendarShell", () => {
         expect(screen.queryByRole("navigation", { name: "Apps" })).not.toBeInTheDocument();
     });
 
-    it("renders a single mailbox's calendar folder with no mailbox switcher", async () => {
+    it("renders a single mailbox's calendar with no mailbox switcher", async () => {
         mockMailboxesAndFolders([mailboxA], [calendarFolder]);
         render(<CalendarShell userUid="u1">content</CalendarShell>);
 
@@ -117,98 +132,143 @@ describe("CalendarShell", () => {
         expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
     });
 
-    it("shows the mailbox switcher when more than one mailbox is accessible, marking a shared one", async () => {
-        mockMailboxesAndFolders([mailboxA, mailboxB], [calendarFolder]);
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
+    it("fetches every accessible mailbox's calendar folders, grouped per mailbox and flattened, with no switcher", async () => {
+        function Probe() {
+            const { calendarFolders, mailboxCalendars } = useCalendarShell();
+            return (
+                <span>
+                    {`${calendarFolders.map((f) => f.uid).join(",")}|${mailboxCalendars.map((mc) => `${mc.mailbox.uid}:${mc.calendarFolders.length}`).join(",")}`}
+                </span>
+            );
+        }
+        mockPerMailboxFolders([mailboxA, mailboxB]);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
 
-        await screen.findByLabelText("Mailbox");
-        expect(screen.getByRole("option", { name: "Mailbox A" })).toBeInTheDocument();
-        expect(screen.getByRole("option", { name: "Mailbox B (shared)" })).toBeInTheDocument();
+        expect(await screen.findByText("f-cal-mb-a,f-cal-mb-b|mb-a:1,mb-b:1")).toBeInTheDocument();
+        expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
     });
 
-    it("navigates to the chosen mailbox when the switcher's selection changes", async () => {
-        mockMailboxesAndFolders([mailboxA, mailboxB], [calendarFolder]);
-        const location = mockLocation();
-        const user = userEvent.setup();
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
+    it("colors the caller's own uncolored calendar the default, and another mailbox's with its accent", async () => {
+        function Probe() {
+            const { calendarFolders, colorFor } = useCalendarShell();
+            return <span>{calendarFolders.map((f) => `${f.uid}=${colorFor(f)}`).join(",")}</span>;
+        }
+        mockPerMailboxFolders([mailboxA, mailboxB]);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
 
-        const select = await screen.findByLabelText("Mailbox");
-        await user.selectOptions(select, "mb-b");
-
-        expect(location.href).toBe("/calendar?mailboxUid=mb-b");
+        expect(
+            await screen.findByText(`f-cal-mb-a=${DEFAULT_CALENDAR_COLOR},f-cal-mb-b=${accentColorForMailbox("mb-b")}`),
+        ).toBeInTheDocument();
     });
 
-    it("shows an error message when loading folders fails", async () => {
+    it("keeps an explicitly colored calendar's own color regardless of mailbox", async () => {
+        function Probe() {
+            const { calendarFolders, colorFor } = useCalendarShell();
+            return <span>{calendarFolders.map((f) => colorFor(f)).join(",")}</span>;
+        }
+        mockMailboxesAndFolders([mailboxB], [{ ...calendarFolder, mailboxUid: "mb-b", color: "#16a34a" }]);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
+
+        expect(await screen.findByText("#16a34a")).toBeInTheDocument();
+    });
+
+    it("reports one mailbox's folder-load failure on that mailbox's own entry, without hiding the others", async () => {
+        function Probe() {
+            const { mailboxCalendars } = useCalendarShell();
+            return <span>{mailboxCalendars.map((mc) => `${mc.mailbox.uid}:${mc.calendarFolders.length}:${mc.error ?? ""}`).join(",")}</span>;
+        }
         mockFetch((url) => {
-            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
-            if (url.startsWith("/api/mail/folders")) return jsonResponse(500, { message: "folder boom" });
+            if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA, mailboxB]);
+            if (url.startsWith("/api/mail/folders") && url.includes("mb-b")) return jsonResponse(500, { message: "folder boom" });
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [calendarFolder]);
             throw new Error(`unexpected ${url}`);
         });
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
-        expect(await screen.findByText("folder boom")).toBeInTheDocument();
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
+
+        expect(await screen.findByText("mb-a:1:,mb-b:0:folder boom")).toBeInTheDocument();
     });
 
-    it("shows a generic error message when loading folders fails with a non-API error", async () => {
+    it("uses a generic per-mailbox error message when loading folders fails with a non-API error", async () => {
+        function Probe() {
+            const { mailboxCalendars } = useCalendarShell();
+            return <span>{mailboxCalendars.map((mc) => mc.error ?? "").join(",")}</span>;
+        }
         mockFetch((url) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
             throw new TypeError("network down");
         });
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
         expect(await screen.findByText("Could not load this mailbox's calendar folder.")).toBeInTheDocument();
     });
 
+    it("defaults the new-event mailbox to the caller's own mailbox even when it isn't listed first", async () => {
+        function Probe() {
+            const { mailboxUid, folderUid } = useCalendarShell();
+            return <span>{`${mailboxUid}/${folderUid}`}</span>;
+        }
+        mockPerMailboxFolders([mailboxB, mailboxA]);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
+        expect(await screen.findByText("mb-a/f-cal-mb-a")).toBeInTheDocument();
+    });
+
     it("honors a ?mailboxUid= query param that names an accessible mailbox", async () => {
+        function Probe() {
+            const { mailboxUid, folderUid } = useCalendarShell();
+            return <span>{`${mailboxUid}/${folderUid}`}</span>;
+        }
         const location = mockLocation();
         (location as any).search = "?mailboxUid=mb-b";
-        mockMailboxesAndFolders([mailboxA, mailboxB], [calendarFolder]);
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
-
-        const select = await screen.findByLabelText("Mailbox");
-        expect(select).toHaveValue("mb-b");
+        mockPerMailboxFolders([mailboxA, mailboxB]);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
+        expect(await screen.findByText("mb-b/f-cal-mb-b")).toBeInTheDocument();
+        mockLocation();
     });
 
     it("ignores a ?mailboxUid= query param that isn't one of the caller's accessible mailboxes", async () => {
+        function Probe() {
+            const { mailboxUid } = useCalendarShell();
+            return <span>{`mailbox:${mailboxUid}`}</span>;
+        }
         const location = mockLocation();
         (location as any).search = "?mailboxUid=not-mine";
-        mockMailboxesAndFolders([mailboxA, mailboxB], [calendarFolder]);
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
+        mockPerMailboxFolders([mailboxA, mailboxB]);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
 
-        const select = await screen.findByLabelText("Mailbox");
-        expect(select).toHaveValue("mb-a");
-    });
-
-    it("does not show a mobile menu button when there's only one mailbox and no error (nothing to open)", async () => {
-        mockMailboxesAndFolders([mailboxA], [calendarFolder]);
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
-        await screen.findByText("content");
-        expect(screen.queryByRole("button", { name: "Open mailbox switcher" })).not.toBeInTheDocument();
-    });
-
-    it("opens and closes the mailbox switcher drawer via the mobile menu button", async () => {
-        mockMailboxesAndFolders([mailboxA, mailboxB], [calendarFolder]);
-        const user = userEvent.setup();
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
-        await screen.findByText("content");
-
-        expect(screen.queryByRole("dialog", { name: "Mailbox" })).not.toBeInTheDocument();
-
-        await user.click(screen.getByRole("button", { name: "Open mailbox switcher" }));
-        const drawer = screen.getByRole("dialog", { name: "Mailbox" });
-        expect(within(drawer).getByRole("combobox", { name: "Mailbox" })).toBeInTheDocument();
-
-        await user.click(within(drawer).getByRole("button", { name: "Close" }));
-        expect(screen.queryByRole("dialog", { name: "Mailbox" })).not.toBeInTheDocument();
-    });
-
-    it("shows the mobile menu button for a folder-loading error even with only one mailbox", async () => {
-        mockFetch((url) => {
-            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
-            if (url.startsWith("/api/mail/folders")) return jsonResponse(500, { message: "folder boom" });
-            throw new Error(`unexpected ${url}`);
-        });
-        render(<CalendarShell userUid="u1">content</CalendarShell>);
-        await screen.findByText("content");
-        expect(await screen.findByRole("button", { name: "Open mailbox switcher" })).toBeInTheDocument();
+        expect(await screen.findByText("mailbox:mb-a")).toBeInTheDocument();
+        mockLocation();
     });
 
     it("provides the resolved mailbox/folder/mailboxes to children via useCalendarShell()", async () => {

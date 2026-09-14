@@ -19,7 +19,6 @@ import {
     startOfWeek,
 } from "date-fns";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { colorForFolder } from "@rapidmx/react-shared/calendar/calendarColors.js";
 import { CalendarEvent, listCalendarEvents } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import { moveOccurrence, resizeOccurrenceEnd } from "@rapidmx/react-shared/calendar/calendarMutations.js";
 import { resolveDragAction } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
@@ -58,10 +57,7 @@ interface ModalState {
 }
 
 function CalendarContent() {
-    const { mailboxUid, folderUid, calendarFolders, mailboxes, reloadFolders } = useCalendarShell();
-    // `CalendarShell` only ever renders this component once `mailboxUid` is set, and always to a value
-    // drawn from `mailboxes` itself (see its own resolution logic) — the lookup below always succeeds.
-    const organizerAddress = mailboxes.find((mb) => mb.uid === mailboxUid)!.primarySmtpAddress;
+    const { mailboxUid, folderUid, calendarFolders, mailboxCalendars, mailboxes, reloadFolders, colorFor } = useCalendarShell();
     // `PointerSensor` alone activates a drag on the very first touch-move, indistinguishable from a
     // scroll gesture on a touch device. `MouseSensor` (a small `distance` — desktop drags still start
     // immediately on a deliberate movement, no change from before) + `TouchSensor` (a `delay`+`tolerance`
@@ -100,8 +96,8 @@ function CalendarContent() {
 
     const checkedFolderUids = checkedFolderUidsState ?? new Set(calendarFolders.map((f) => f.uid));
     const folderColors = useMemo(
-        () => Object.fromEntries(calendarFolders.map((f) => [f.uid, colorForFolder(f)])),
-        [calendarFolders],
+        () => Object.fromEntries(calendarFolders.map((f) => [f.uid, colorFor(f)])),
+        [calendarFolders, colorFor],
     );
 
     function toggleCalendar(toggledUid: string) {
@@ -116,9 +112,8 @@ function CalendarContent() {
         });
     }
 
-    async function handleAddCalendar(name: string, color: string) {
-        // `CalendarContent` only renders once `mailboxUid` is resolved — same invariant as `organizerAddress` above.
-        const created = await createFolder({ mailboxUid: mailboxUid!, name, type: "calendar", color });
+    async function handleAddCalendar(targetMailboxUid: string, name: string, color: string) {
+        const created = await createFolder({ mailboxUid: targetMailboxUid, name, type: "calendar", color });
         setCheckedFolderUidsState((prev) => new Set([...(prev ?? calendarFolders.map((f) => f.uid)), created.uid]));
         reloadFolders();
     }
@@ -198,8 +193,8 @@ function CalendarContent() {
         () =>
             calendarFolders
                 .filter((f) => checkedFolderUids.has(f.uid))
-                .map((f) => ({ folderUid: f.uid, name: f.name, color: colorForFolder(f) })),
-        [calendarFolders, checkedFolderUidsKey],
+                .map((f) => ({ folderUid: f.uid, name: f.name, color: colorFor(f) })),
+        [calendarFolders, checkedFolderUidsKey, colorFor],
     );
 
     function shiftView(direction: 1 | -1) {
@@ -277,14 +272,19 @@ function CalendarContent() {
               ? `${format(rangeStart, "MMM d")} – ${format(rangeEnd, "MMM d, yyyy")}`
               : format(viewDate, "EEEE, MMMM d, yyyy");
 
+    const modalFolderUid = modal ? (modal.targetFolderUid ?? modal.occurrence?.folderUid ?? folderUid) : undefined;
+    const modalMailboxUid = calendarFolders.find((f) => f.uid === modalFolderUid)?.mailboxUid ?? mailboxUid;
+    const modalMailbox = mailboxes.find((mb) => mb.uid === modalMailboxUid);
+
     const sidebarContent = (
         <>
             <MiniDatePicker selected={viewDate} onSelect={(date) => setViewDate(startOfDay(date))} />
             <CalendarListSidebar
-                calendars={calendarFolders}
+                mailboxCalendars={mailboxCalendars}
                 checkedFolderUids={checkedFolderUids}
                 onToggle={toggleCalendar}
                 onAddCalendar={handleAddCalendar}
+                colorFor={colorFor}
             />
         </>
     );
@@ -383,17 +383,18 @@ function CalendarContent() {
                     </DndContext>
                 )}
 
-                {/* `mailboxUid`/`folderUid` are guaranteed defined whenever `modal` is: `openNewEvent` only sets it
-                    after checking both, and `openEvent` only fires from an occurrence that itself required a
-                    successful, folder-scoped load to render. */}
-                {modal && (
+                {/* `folderUid` is guaranteed defined whenever `modal` is: `openNewEvent` only sets it after
+                    checking it, and `openEvent` only fires from an occurrence that itself required a
+                    successful, folder-scoped load to render. The modal is scoped to that folder's own mailbox
+                    (which may be a shared one) - its organizer address and calendar picker come from there. */}
+                {modal && modalMailbox && (
                     <EventModal
                         open
                         onClose={closeModal}
-                        mailboxUid={mailboxUid!}
-                        folderUid={modal.targetFolderUid ?? modal.occurrence?.folderUid ?? folderUid!}
-                        calendars={calendarFolders.map((f) => ({ uid: f.uid, name: f.name }))}
-                        organizerAddress={organizerAddress}
+                        mailboxUid={modalMailbox.uid}
+                        folderUid={modalFolderUid!}
+                        calendars={calendarFolders.filter((f) => f.mailboxUid === modalMailbox.uid).map((f) => ({ uid: f.uid, name: f.name }))}
+                        organizerAddress={modalMailbox.primarySmtpAddress}
                         occurrence={modal.occurrence}
                         initialStart={modal.initialStart}
                         initialEnd={modal.initialEnd}
