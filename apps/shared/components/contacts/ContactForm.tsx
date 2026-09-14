@@ -13,9 +13,11 @@ import {
     createContact,
     updateContact,
 } from "@rapidmx/react-shared/contacts/contactsApi.js";
+import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -24,8 +26,12 @@ const SELECT_CLASS =
 
 export interface ContactFormProps {
     contact?: Contact;
+    /** Create mode: the default mailbox (and its Contacts folder) to create in. */
     mailboxUid?: string;
     folderUid?: string;
+    /** Create mode: every mailbox the contact could be created in - with more than one, a Mailbox selector
+     * is shown. Choosing a mailbox other than `mailboxUid` looks up that mailbox's own Contacts folder. */
+    mailboxes?: Mailbox[];
     onSaved: (contact: Contact) => void;
     onCancel: () => void;
 }
@@ -37,7 +43,8 @@ const ADDRESS_KINDS: ContactAddressKind[] = ["home", "work", "other"];
  * mobile detail route's own edit mode (`apps/www/contacts/[uid].tsx`) — creation itself stays
  * desktop-and-mobile-inline (see that route's own doc comment on why "new" never gets a dedicated route).
  */
-export default function ContactForm({ contact, mailboxUid, folderUid, onSaved, onCancel }: ContactFormProps) {
+export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes, onSaved, onCancel }: ContactFormProps) {
+    const [targetMailboxUid, setTargetMailboxUid] = useState(mailboxUid);
     const [displayName, setDisplayName] = useState(contact?.displayName ?? "");
     const [givenName, setGivenName] = useState(contact?.givenName ?? "");
     const [surname, setSurname] = useState(contact?.surname ?? "");
@@ -93,9 +100,18 @@ export default function ContactForm({ contact, mailboxUid, folderUid, onSaved, o
                 phones,
                 addresses: address ? [address] : [],
             };
-            const saved = contact
-                ? await updateContact({ uid: contact.uid, version: contact.version, mailboxUid: contact.mailboxUid, folderUid: contact.folderUid, ...input })
-                : await createContact({ mailboxUid: mailboxUid as string, folderUid: folderUid as string, ...input });
+            let saved: Contact;
+            if (contact) {
+                saved = await updateContact({ uid: contact.uid, version: contact.version, mailboxUid: contact.mailboxUid, folderUid: contact.folderUid, ...input });
+            } else {
+                const targetFolderUid =
+                    targetMailboxUid === mailboxUid ? folderUid : await findWellKnownFolderUid(targetMailboxUid as string, "contacts");
+                if (!targetFolderUid) {
+                    setError("That mailbox has no Contacts folder.");
+                    return;
+                }
+                saved = await createContact({ mailboxUid: targetMailboxUid as string, folderUid: targetFolderUid, ...input });
+            }
             onSaved(saved);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save this contact.");
@@ -109,6 +125,24 @@ export default function ContactForm({ contact, mailboxUid, folderUid, onSaved, o
             <h1 className="text-xl font-bold uppercase tracking-wide mb-3">{contact ? "Edit contact" : "New contact"}</h1>
 
             {error && <Alert>{error}</Alert>}
+
+            {!contact && mailboxes && mailboxes.length > 1 && (
+                <FormField label="Mailbox" htmlFor="contact-mailbox">
+                    <select
+                        id="contact-mailbox"
+                        className={`${SELECT_CLASS} w-full`}
+                        value={targetMailboxUid}
+                        onChange={(e) => setTargetMailboxUid(e.target.value)}
+                    >
+                        {mailboxes.map((mb) => (
+                            <option key={mb.uid} value={mb.uid}>
+                                {mb.displayName}
+                                {mb.ownerUserUid ? "" : " (shared)"}
+                            </option>
+                        ))}
+                    </select>
+                </FormField>
+            )}
 
             <FormField label="Display name" htmlFor="contact-displayName">
                 <input

@@ -53,7 +53,7 @@ function downloadTextFile(filename: string, content: string): void {
 }
 
 function ContactsContent() {
-    const { folderUid, mailboxUid } = useContactsShell();
+    const { folderUid, mailboxUid, mailboxes } = useContactsShell();
     const { openCompose } = useCompose();
     const isMobile = useIsMobile();
     const [contacts, setContacts] = useState<Contact[]>([]);
@@ -69,6 +69,8 @@ function ContactsContent() {
     const [checkedUids, setCheckedUids] = useState<Set<string>>(new Set());
     const [selectedUid, setSelectedUid] = useState<string | null>(null);
     const [mode, setMode] = useState<Mode>("view");
+    // Set after a contact is created in a different mailbox than the one this list shows.
+    const [savedElsewhere, setSavedElsewhere] = useState<{ mailboxUid: string; displayName: string } | null>(null);
 
     /** Returns a promise so bulk actions (below) can wait for the refreshed list before re-asserting their
      * own error message — this always clears `error` first (a legitimate reset for a fresh fetch attempt),
@@ -192,8 +194,15 @@ function ContactsContent() {
     }
 
     function handleSaved(contact: Contact) {
-        setSelectedUid(contact.uid);
         setMode("view");
+        if (contact.mailboxUid !== mailboxUid) {
+            // Created in another mailbox (via the form's Mailbox selector) - it won't be in this list.
+            setSelectedUid(null);
+            setSavedElsewhere({ mailboxUid: contact.mailboxUid, displayName: contact.displayName });
+            return;
+        }
+        setSavedElsewhere(null);
+        setSelectedUid(contact.uid);
         void reload();
     }
 
@@ -421,8 +430,26 @@ function ContactsContent() {
                 see handleSelectRow), so this pane only needs to show there for "new", which stays in-place
                 on every device (an unsaved contact has no uid for a route). Always visible on desktop. */}
             <div className={["flex-1 min-w-0 overflow-y-auto p-6 md:block", mode === "new" ? "block" : "hidden"].join(" ")}>
+                {savedElsewhere && mode !== "new" && (
+                    <p role="status" className="mb-4 text-sm py-2 px-3 rounded-sm bg-surface-alt text-text">
+                        {savedElsewhere.displayName} was added to{" "}
+                        {mailboxes.find((mb) => mb.uid === savedElsewhere.mailboxUid)?.displayName ?? "another mailbox"}.{" "}
+                        <a
+                            href={`/contacts?mailboxUid=${encodeURIComponent(savedElsewhere.mailboxUid)}`}
+                            className="font-medium text-primary-dark hover:underline"
+                        >
+                            View that mailbox&rsquo;s contacts
+                        </a>
+                    </p>
+                )}
                 {mode === "new" && mailboxUid && folderUid ? (
-                    <ContactForm mailboxUid={mailboxUid} folderUid={folderUid} onSaved={handleSaved} onCancel={handleCancel} />
+                    <ContactForm
+                        mailboxUid={mailboxUid}
+                        folderUid={folderUid}
+                        mailboxes={mailboxes}
+                        onSaved={handleSaved}
+                        onCancel={handleCancel}
+                    />
                 ) : mode === "edit" && selected ? (
                     <ContactForm contact={selected} onSaved={handleSaved} onCancel={handleCancel} />
                 ) : selected ? (
