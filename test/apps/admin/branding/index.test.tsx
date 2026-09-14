@@ -30,7 +30,7 @@ function mockAdminFetch(handlers: (url: string, init: RequestInit) => Response |
 describe("BrandingPage", () => {
     it("shows a loading state, then the form once branding has loaded", async () => {
         mockAdminFetch((url) => {
-            if (url === "/api/mail/branding") return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding") return jsonResponse(200, BRANDING);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
 
@@ -40,7 +40,7 @@ describe("BrandingPage", () => {
 
     it("shows an error instead of the form when loading branding fails", async () => {
         mockAdminFetch((url) => {
-            if (url === "/api/mail/branding") return jsonResponse(500, { message: "boom" });
+            if (url === "/api/system/branding") return jsonResponse(500, { message: "boom" });
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
 
@@ -50,7 +50,7 @@ describe("BrandingPage", () => {
     it("shows a generic error message when the load failure is not an ApiRequestError", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/branding") return Promise.reject(new Error("network down"));
+            if (url === "/api/system/branding") return Promise.reject(new Error("network down"));
             throw new Error(`unexpected ${url}`);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
@@ -61,8 +61,8 @@ describe("BrandingPage", () => {
     it("saves company name, title, and header/footer HTML", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init || init.method === undefined)) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding" && init.method === "PUT") {
+            if (url === "/api/system/branding" && (!init || init.method === undefined)) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding" && init.method === "PUT") {
                 const body = JSON.parse(init.body as string);
                 return jsonResponse(200, { ...BRANDING, ...body });
             }
@@ -83,8 +83,8 @@ describe("BrandingPage", () => {
     it("shows an error when saving fails", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === undefined)) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding" && init.method === "PUT") return jsonResponse(400, { message: "bad title" });
+            if (url === "/api/system/branding" && (!init.method || init.method === undefined)) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding" && init.method === "PUT") return jsonResponse(400, { message: "bad title" });
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -97,8 +97,8 @@ describe("BrandingPage", () => {
         const user = userEvent.setup();
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding" && init.method === "PUT") return Promise.reject(new Error("offline"));
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding" && init.method === "PUT") return Promise.reject(new Error("offline"));
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
@@ -111,11 +111,11 @@ describe("BrandingPage", () => {
     it("uploads a logo file and shows the updated preview, then removes it", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding/logo" && init.method === "POST") {
-                return jsonResponse(200, { ...BRANDING, logoUrl: "/api/mail/branding/logo" });
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding/logo" && init.method === "POST") {
+                return jsonResponse(200, { ...BRANDING, logoUrl: "/api/system/branding/logo" });
             }
-            if (url === "/api/mail/branding/logo" && init.method === "DELETE") return new Response(null, { status: 204 });
+            if (url === "/api/system/branding/logo" && init.method === "DELETE") return new Response(null, { status: 204 });
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -124,7 +124,7 @@ describe("BrandingPage", () => {
         const file = new File(["png"], "logo.png", { type: "image/png" });
         await user.upload(screen.getByLabelText("Upload logo"), file);
         expect(await screen.findByRole("button", { name: "Remove logo" })).toBeInTheDocument();
-        expect(screen.getByAltText("Current logo")).toHaveAttribute("src", "/api/mail/branding/logo");
+        expect(screen.getByAltText("Current logo")).toHaveAttribute("src", "/api/system/branding/logo");
 
         await user.click(screen.getByRole("button", { name: "Remove logo" }));
         expect(screen.queryByRole("button", { name: "Remove logo" })).not.toBeInTheDocument();
@@ -133,7 +133,7 @@ describe("BrandingPage", () => {
     it("rejects an oversized logo file client-side without ever calling the upload endpoint", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url) => {
-            if (url === "/api/mail/branding") return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding") return jsonResponse(200, BRANDING);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -148,7 +148,7 @@ describe("BrandingPage", () => {
     it("rejects an oversized stylesheet file client-side without ever calling the upload endpoint", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url) => {
-            if (url === "/api/mail/branding") return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding") return jsonResponse(200, BRANDING);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -164,7 +164,7 @@ describe("BrandingPage", () => {
 
     it("shows an error and does not select a file when the picker is dismissed with none chosen", async () => {
         mockAdminFetch((url) => {
-            if (url === "/api/mail/branding") return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding") return jsonResponse(200, BRANDING);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -181,11 +181,11 @@ describe("BrandingPage", () => {
     it("uploads an icon file and shows the updated preview, then removes it", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding/icon" && init.method === "POST") {
-                return jsonResponse(200, { ...BRANDING, iconUrl: "/api/mail/branding/icon" });
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding/icon" && init.method === "POST") {
+                return jsonResponse(200, { ...BRANDING, iconUrl: "/api/system/branding/icon" });
             }
-            if (url === "/api/mail/branding/icon" && init.method === "DELETE") return new Response(null, { status: 204 });
+            if (url === "/api/system/branding/icon" && init.method === "DELETE") return new Response(null, { status: 204 });
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -194,7 +194,7 @@ describe("BrandingPage", () => {
         const file = new File(["png"], "icon.png", { type: "image/png" });
         await user.upload(screen.getByLabelText("Upload icon"), file);
         expect(await screen.findByRole("button", { name: "Remove icon" })).toBeInTheDocument();
-        expect(screen.getByAltText("Current icon")).toHaveAttribute("src", "/api/mail/branding/icon");
+        expect(screen.getByAltText("Current icon")).toHaveAttribute("src", "/api/system/branding/icon");
 
         await user.click(screen.getByRole("button", { name: "Remove icon" }));
         expect(screen.queryByRole("button", { name: "Remove icon" })).not.toBeInTheDocument();
@@ -203,7 +203,7 @@ describe("BrandingPage", () => {
     it("rejects an oversized icon file client-side without ever calling the upload endpoint", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url) => {
-            if (url === "/api/mail/branding") return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding") return jsonResponse(200, BRANDING);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -218,10 +218,10 @@ describe("BrandingPage", () => {
     it("sets an external icon URL, disabling Set until the value changes, and falls back to the logo when unset", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) {
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) {
                 return jsonResponse(200, { ...BRANDING, logoUrl: "https://cdn.example.com/logo.png" });
             }
-            if (url === "/api/mail/branding" && init.method === "PUT") {
+            if (url === "/api/system/branding" && init.method === "PUT") {
                 const body = JSON.parse(init.body as string);
                 return jsonResponse(200, { ...BRANDING, logoUrl: "https://cdn.example.com/logo.png", ...body });
             }
@@ -245,8 +245,8 @@ describe("BrandingPage", () => {
     it("shows an error when the icon upload fails", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding/icon" && init.method === "POST") return jsonResponse(400, { message: "too big" });
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding/icon" && init.method === "POST") return jsonResponse(400, { message: "too big" });
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -260,8 +260,8 @@ describe("BrandingPage", () => {
     it("sets an external logo URL, disabling Set until the value changes", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding" && init.method === "PUT") {
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding" && init.method === "PUT") {
                 const body = JSON.parse(init.body as string);
                 return jsonResponse(200, { ...BRANDING, ...body });
             }
@@ -283,11 +283,11 @@ describe("BrandingPage", () => {
     it("uploads a stylesheet file, shows its URL, and removes it", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding/stylesheet" && init.method === "POST") {
-                return jsonResponse(200, { ...BRANDING, stylesheetUrl: "/api/mail/branding/stylesheet" });
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding/stylesheet" && init.method === "POST") {
+                return jsonResponse(200, { ...BRANDING, stylesheetUrl: "/api/system/branding/stylesheet" });
             }
-            if (url === "/api/mail/branding/stylesheet" && init.method === "DELETE") return new Response(null, { status: 204 });
+            if (url === "/api/system/branding/stylesheet" && init.method === "DELETE") return new Response(null, { status: 204 });
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -295,7 +295,7 @@ describe("BrandingPage", () => {
         await user.click(screen.getByRole("button", { name: "Upload CSS file" }));
         const file = new File(["body{}"], "theme.css", { type: "text/css" });
         await user.upload(screen.getByLabelText("Upload stylesheet"), file);
-        expect(await screen.findByText("/api/mail/branding/stylesheet")).toBeInTheDocument();
+        expect(await screen.findByText("/api/system/branding/stylesheet")).toBeInTheDocument();
 
         await user.click(screen.getByRole("button", { name: "Remove stylesheet" }));
         expect(screen.getByText("None configured")).toBeInTheDocument();
@@ -304,8 +304,8 @@ describe("BrandingPage", () => {
     it("sets an external stylesheet URL", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding" && init.method === "PUT") {
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding" && init.method === "PUT") {
                 const body = JSON.parse(init.body as string);
                 return jsonResponse(200, { ...BRANDING, ...body });
             }
@@ -323,8 +323,8 @@ describe("BrandingPage", () => {
     it("shows an error when an asset action fails", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding/logo" && init.method === "POST") return jsonResponse(400, { message: "too big" });
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding/logo" && init.method === "POST") return jsonResponse(400, { message: "too big" });
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByLabelText("Company name");
@@ -339,8 +339,8 @@ describe("BrandingPage", () => {
         const user = userEvent.setup();
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (url === "/api/mail/branding/logo" && init.method === "POST") return Promise.reject(new Error("offline"));
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding/logo" && init.method === "POST") return Promise.reject(new Error("offline"));
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);

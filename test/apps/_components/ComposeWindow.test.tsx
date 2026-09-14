@@ -1065,7 +1065,7 @@ describe("ComposeWindow", () => {
                 if (custom) return custom;
                 const method = init?.method ?? "GET";
                 if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, overrides?.mailbox ?? mailboxFixture);
-                if (url === "/api/mail/encryption-policy") return jsonResponse(200, overrides?.policy ?? automaticPolicy);
+                if (url === "/api/system/encryption-policy") return jsonResponse(200, overrides?.policy ?? automaticPolicy);
                 if (url === "/api/mail/compose/m1/assemble-raw" && method === "POST") return jsonResponse(200, draft);
                 if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
                 return undefined;
@@ -1077,7 +1077,7 @@ describe("ComposeWindow", () => {
             let resolvePolicy: ((v: Response) => void) | undefined;
             mockCompose((url) => {
                 if (url === "/api/mail/mailboxes/mb1") return new Promise((resolve) => (resolveMailbox = resolve));
-                if (url === "/api/mail/encryption-policy") return new Promise((resolve) => (resolvePolicy = resolve));
+                if (url === "/api/system/encryption-policy") return new Promise((resolve) => (resolvePolicy = resolve));
                 return undefined;
             });
             const { unmount } = render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
@@ -1174,7 +1174,7 @@ describe("ComposeWindow", () => {
             getUnlockedKeys.mockReturnValue(undefined);
             const fetchMock = mockCompose((url) => {
                 if (url === "/api/mail/mailboxes/mb1") return new Promise(() => undefined);
-                if (url === "/api/mail/encryption-policy") return new Promise(() => undefined);
+                if (url === "/api/system/encryption-policy") return new Promise(() => undefined);
                 return undefined;
             });
             const user = userEvent.setup();
@@ -1326,7 +1326,7 @@ describe("ComposeWindow", () => {
             const fetchMock = mockCompose((url, init) => {
                 const method = init?.method ?? "GET";
                 if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailboxFixture);
-                if (url === "/api/mail/encryption-policy") return jsonResponse(200, automaticPolicy);
+                if (url === "/api/system/encryption-policy") return jsonResponse(200, automaticPolicy);
                 if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
                 if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
                 return undefined;

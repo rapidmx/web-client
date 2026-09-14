@@ -12,6 +12,7 @@ import {
     HiOutlineInboxStack,
     HiOutlineKey,
     HiOutlinePaintBrush,
+    HiOutlinePuzzlePiece,
     HiOutlineQueueList,
     HiOutlineShieldCheck,
     HiOutlineShieldExclamation,
@@ -36,6 +37,7 @@ export type AdminSection =
     | "escrowScopes"
     | "retentionPolicy"
     | "dataRequests"
+    | "plugins"
     | "branding";
 
 export interface AdminShellProps {
@@ -93,6 +95,7 @@ const NAV_ITEMS: NavItem[] = [
         label: "Data Requests",
         icon: HiOutlineDocumentArrowDown,
     },
+    { id: "plugins", href: "/admin/plugins", label: "Plugins", icon: HiOutlinePuzzlePiece },
     { id: "branding", href: "/admin/branding", label: "Branding", icon: HiOutlinePaintBrush },
 ];
 

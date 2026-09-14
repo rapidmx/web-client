@@ -1,3 +1,259 @@
+diff --git a/dist/admin/pluginsApi.d.ts b/dist/admin/pluginsApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..66882725c0b6e48a76ce4e3aa5b062194d954298
+--- /dev/null
++++ b/dist/admin/pluginsApi.d.ts
+@@ -0,0 +1,91 @@
++/** Mirrors `@rapidmx/restapi`'s `PluginSettingDefinition`. */
++export interface PluginSettingDefinition {
++    key: string;
++    label: string;
++    type: "string" | "number" | "boolean" | "select";
++    help?: string;
++    default?: string | number | boolean;
++    required?: boolean;
++    min?: number;
++    max?: number;
++    options?: {
++        value: string;
++        label: string;
++    }[];
++}
++/** Mirrors `@rapidmx/restapi`'s `PluginManifest`. */
++export interface PluginManifest {
++    apiVersion: number;
++    displayName: string;
++    description?: string;
++    settings?: PluginSettingDefinition[];
++}
++export type PluginSettingValue = string | number | boolean;
++/** Mirrors `@rapidmx/restapi`'s `Plugin`. `version` is the row's optimistic-lock counter; the npm version is
++ * `packageVersion`. */
++export interface Plugin {
++    uid: string;
++    version: number;
++    name: string;
++    packageVersion: string;
++    integrity?: string;
++    enabled: boolean;
++    settings: Record<string, PluginSettingValue>;
++    manifest: PluginManifest;
++}
++/** Mirrors `@rapidmx/restapi`'s `RegistryPackageVersion`. `manifest` is a message when the version isn't a
++ * loadable plugin. */
++export interface RegistryPackageVersion {
++    name: string;
++    version: string;
++    description?: string;
++    integrity?: string;
++    peerDependencies: Record<string, string>;
++    manifest: PluginManifest | string;
++}
++export interface PluginRegistryLookup {
++    package: {
++        name: string;
++        latest?: string;
++        versions: string[];
++    };
++    selected: RegistryPackageVersion;
++}
++/** What one server copy last reported. */
++export interface PluginInstanceStatus {
++    instance: string;
++    /** Equals `PluginStatus.hash` once the copy has applied the current plugin set. */
++    hash: string;
++    loaded: {
++        name: string;
++        version: string;
++    }[];
++    errors: {
++        name: string;
++        message: string;
++    }[];
++    safeMode: boolean;
++    updatedAt: string;
++}
++export interface PluginStatus {
++    /** The fingerprint of the saved plugin set every copy should reach. */
++    hash: string;
++    instances: PluginInstanceStatus[];
++}
++export interface UpdatePluginInput {
++    /** The row's optimistic-lock counter. */
++    version?: number;
++    packageVersion?: string;
++    enabled?: boolean;
++    /** A `null` value clears a setting back to the plugin's own default. */
++    settings?: Record<string, PluginSettingValue | null>;
++}
++export declare function listPlugins(): Promise<Plugin[]>;
++export declare function getPluginStatus(): Promise<PluginStatus>;
++/** A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). */
++export declare function lookupPluginPackage(name: string, packageVersion?: string): Promise<PluginRegistryLookup>;
++/** Adds a plugin, at its latest version unless `packageVersion` is given. */
++export declare function addPlugin(name: string, packageVersion?: string): Promise<Plugin>;
++export declare function updatePlugin(uid: string, input: UpdatePluginInput): Promise<Plugin>;
++/** Removes a plugin. Data it stored stays in the database. */
++export declare function removePlugin(uid: string): Promise<void>;
+diff --git a/dist/admin/pluginsApi.js b/dist/admin/pluginsApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d0fe585c05b1c868ced1478c5f2ea47503619ff
+--- /dev/null
++++ b/dist/admin/pluginsApi.js
+@@ -0,0 +1,34 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `BasePluginRoute` (mounted at `system/plugins`) - the plugins this
++ * deployment runs. Every endpoint is trusted-admin-only server-side. Saving a change doesn't apply it directly:
++ * each server copy installs the new plugin set and restarts itself, one copy at a time, and reports back through
++ * `getPluginStatus()`.
++ */
++import { apiFetch } from "../util/api.js";
++const BASE = "/system/plugins";
++export function listPlugins() {
++    return apiFetch(BASE);
++}
++export function getPluginStatus() {
++    return apiFetch(`${BASE}/status`);
++}
++/** A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). */
++export function lookupPluginPackage(name, packageVersion) {
++    const query = packageVersion ? `?packageVersion=${encodeURIComponent(packageVersion)}` : "";
++    return apiFetch(`${BASE}/registry/${encodeURIComponent(name)}${query}`);
++}
++/** Adds a plugin, at its latest version unless `packageVersion` is given. */
++export function addPlugin(name, packageVersion) {
++    return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion }) });
++}
++export function updatePlugin(uid, input) {
++    return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
++}
++/** Removes a plugin. Data it stored stays in the database. */
++export function removePlugin(uid) {
++    return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "DELETE" });
++}
+diff --git a/dist/admin/retentionPolicyApi.js b/dist/admin/retentionPolicyApi.js
+index 47aed4992d3f7588d1a6869bc56acd91a2ad29c7..8b04e4b0d0cb7547322949db1862d2a7ca8fab7a 100644
+--- a/dist/admin/retentionPolicyApi.js
++++ b/dist/admin/retentionPolicyApi.js
+@@ -4,7 +4,7 @@
+ ///////////////////////////////////////////////////////////////////////////////
+ /**
+  * Typed wrappers over `@rapidmx/restapi`'s deployment-wide `RetentionPolicy` singleton
+- * (`BaseRetentionPolicyRoute`, mounted at `mail/retention-policy`). `GET` is readable by any
++ * (`BaseRetentionPolicyRoute`, mounted at `system/retention-policy`). `GET` is readable by any
+  * authenticated user; `PUT` is trusted-admin-only server-side. Enforcement itself (actually purging
+  * expired messages/audit-log entries) lives entirely in restapi's own `RetentionEnforcementJob` — this
+  * file only reads/writes the configuration.
+@@ -15,13 +15,13 @@ import { apiFetch } from "../util/api.js";
+  * the server enforces this regardless. */
+ export const MIN_AUDIT_LOG_RETENTION_DAYS = 2190;
+ export function getRetentionPolicy() {
+-    return apiFetch(`/mail/retention-policy`);
++    return apiFetch(`/system/retention-policy`);
+ }
+ /** Partial patch — only supplied fields are changed. There is no way to clear a previously-configured
+  * field back to "no automatic purge" through this endpoint (matches the route's own real behavior,
+  * not a client-side limitation to work around). */
+ export function updateRetentionPolicy(patch) {
+-    return apiFetch(`/mail/retention-policy`, {
++    return apiFetch(`/system/retention-policy`, {
+         method: "PUT",
+         body: JSON.stringify(patch),
+     });
+diff --git a/dist/branding/brandingApi.d.ts b/dist/branding/brandingApi.d.ts
+index 21670c4ae53d8744130f5ce94346684b168cc541..bdf6175ecd538a7b6c5f967724b11635c1ecebe4 100644
+--- a/dist/branding/brandingApi.d.ts
++++ b/dist/branding/brandingApi.d.ts
+@@ -1,7 +1,7 @@
+ /**
+  * Typed wrapper over `@rapidmx/restapi`'s `Branding` route (`BaseBrandingRoute`) — a single, admin-managed,
+  * publicly-readable row of product chrome (logo, title/company name, custom stylesheet, header/footer HTML).
+- * `GET /mail/branding` needs no auth (every viewer, including an anonymous booking-page visitor, can read
++ * `GET /system/branding` needs no auth (every viewer, including an anonymous booking-page visitor, can read
+  * it); every write is `@RequiresTrustedRole()` on the backend.
+  */
+ export interface Branding {
+diff --git a/dist/branding/brandingApi.js b/dist/branding/brandingApi.js
+index fbfadbefc3534bfae55489ad3943ebc42e0be7a3..02a2f61803e5ea5512db3f8c25537095fb5a6bf9 100644
+--- a/dist/branding/brandingApi.js
++++ b/dist/branding/brandingApi.js
+@@ -5,15 +5,15 @@
+ /**
+  * Typed wrapper over `@rapidmx/restapi`'s `Branding` route (`BaseBrandingRoute`) — a single, admin-managed,
+  * publicly-readable row of product chrome (logo, title/company name, custom stylesheet, header/footer HTML).
+- * `GET /mail/branding` needs no auth (every viewer, including an anonymous booking-page visitor, can read
++ * `GET /system/branding` needs no auth (every viewer, including an anonymous booking-page visitor, can read
+  * it); every write is `@RequiresTrustedRole()` on the backend.
+  */
+ import { apiFetch, ApiRequestError } from "../util/api.js";
+ export function getBranding() {
+-    return apiFetch("/mail/branding");
++    return apiFetch("/system/branding");
+ }
+ export function updateBranding(input) {
+-    return apiFetch("/mail/branding", {
++    return apiFetch("/system/branding", {
+         method: "PUT",
+         body: JSON.stringify(input),
+     });
+@@ -36,21 +36,21 @@ async function uploadBrandingAsset(path, file) {
+  * `Content-Type: application/json`) the same way `mailApi.ts`'s `uploadAttachment()` does, since
+  * `BaseBrandingRoute.uploadLogo()` reads the raw request body directly. */
+ export function uploadBrandingLogo(file) {
+-    return uploadBrandingAsset("/mail/branding/logo", file);
++    return uploadBrandingAsset("/system/branding/logo", file);
+ }
+ /** Uploads `file` as the compact nav-header icon, independently of `uploadBrandingLogo()`'s full logo. */
+ export function uploadBrandingIcon(file) {
+-    return uploadBrandingAsset("/mail/branding/icon", file);
++    return uploadBrandingAsset("/system/branding/icon", file);
+ }
+ export function uploadBrandingStylesheet(file) {
+-    return uploadBrandingAsset("/mail/branding/stylesheet", file);
++    return uploadBrandingAsset("/system/branding/stylesheet", file);
+ }
+ export function deleteBrandingLogo() {
+-    return apiFetch("/mail/branding/logo", { method: "DELETE" });
++    return apiFetch("/system/branding/logo", { method: "DELETE" });
+ }
+ export function deleteBrandingIcon() {
+-    return apiFetch("/mail/branding/icon", { method: "DELETE" });
++    return apiFetch("/system/branding/icon", { method: "DELETE" });
+ }
+ export function deleteBrandingStylesheet() {
+-    return apiFetch("/mail/branding/stylesheet", { method: "DELETE" });
++    return apiFetch("/system/branding/stylesheet", { method: "DELETE" });
+ }
+diff --git a/dist/branding/useBranding.d.ts b/dist/branding/useBranding.d.ts
+index 863405de9553a052f91915e53074bd8b42cbce1f..276a655a8c4bc368e43411dd98d19c26479f9027 100644
+--- a/dist/branding/useBranding.d.ts
++++ b/dist/branding/useBranding.d.ts
+@@ -15,7 +15,7 @@ export interface UseBrandingResult {
+  * Fetches the admin-configured `Branding` singleton once on mount and applies its cosmetic side effects
+  * (browser-tab title, injected custom stylesheet `<link>`) directly to `document` — the same "resolve real
+  * client state once mounted, no SSR prop threading" convention `useIsMobile`/`MailShell`'s query-param reads
+- * already use. `GET /mail/branding` needs no auth and never `404`s (see `BaseBrandingRoute.get()`), so a
++ * already use. `GET /system/branding` needs no auth and never `404`s (see `BaseBrandingRoute.get()`), so a
+  * fetch failure here can only be a real network/server problem — swallowed rather than surfaced, since
+  * branding is purely decorative and every other part of the shell already depends on the same API being
+  * reachable.
+diff --git a/dist/branding/useBranding.js b/dist/branding/useBranding.js
+index b2daa7777cd72de52fe4214b84b466ae3d628c97..9dfd76e4302866b7dde660b50a19e9fd275ab5de 100644
+--- a/dist/branding/useBranding.js
++++ b/dist/branding/useBranding.js
+@@ -13,7 +13,7 @@ export const CUSTOM_STYLESHEET_LINK_ID = "branding-stylesheet";
+  * Fetches the admin-configured `Branding` singleton once on mount and applies its cosmetic side effects
+  * (browser-tab title, injected custom stylesheet `<link>`) directly to `document` — the same "resolve real
+  * client state once mounted, no SSR prop threading" convention `useIsMobile`/`MailShell`'s query-param reads
+- * already use. `GET /mail/branding` needs no auth and never `404`s (see `BaseBrandingRoute.get()`), so a
++ * already use. `GET /system/branding` needs no auth and never `404`s (see `BaseBrandingRoute.get()`), so a
+  * fetch failure here can only be a real network/server problem — swallowed rather than surfaced, since
+  * branding is purely decorative and every other part of the shell already depends on the same API being
+  * reachable.
 diff --git a/dist/calendar/calendarColors.d.ts b/dist/calendar/calendarColors.d.ts
 index 5a0105624b553b0f1900a716f16a052c25647cfd..97b5a7e8c0fa066d3f6a90a26213f0a685300542 100644
 --- a/dist/calendar/calendarColors.d.ts
@@ -44,6 +300,33 @@ index d99b18431c7de8b3df461962a6aca06536820942..0b3d19adbcb2e63ca195bb8cee55329a
 +    }
 +    return choices[hash % choices.length];
  }
+diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
+index 0acb10931ab44256e926ea4dd88cf0b0ba0beb7f..0c20e1474cff85aa06a91446979ccab550d1b282 100644
+--- a/dist/crypto/keyvaultApi.js
++++ b/dist/crypto/keyvaultApi.js
+@@ -5,7 +5,7 @@
+ /**
+  * Typed wrappers over `@rapidmx/restapi`'s E2E encryption endpoints (`BaseKeyVaultRoute`,
+  * `BaseKeyLookupRoute`, `BaseEncryptionPolicyRoute` — mounted in `server` at `mail/mailboxes` and
+- * `mail/encryption-policy`, see `src/{mongo,sql}/routes/{KeyVaultRoute,KeyLookupRoute,
++ * `system/encryption-policy`, see `src/{mongo,sql}/routes/{KeyVaultRoute,KeyLookupRoute,
+  * EncryptionPolicyRoute}.ts`). These calls carry only wrapped/ciphertext key material and public
+  * certificates — the server never sees an unwrapped private key or master key; see `crypto/masterKey.ts`
+  * and `crypto/keys.ts` for the client-side cryptography that produces the values passed here.
+@@ -96,11 +96,11 @@ export function lookupKeys(mailboxUid, addr) {
+ /** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption
+  * controls a compose UI should offer). */
+ export function getEncryptionPolicy() {
+-    return apiFetch(`/mail/encryption-policy`);
++    return apiFetch(`/system/encryption-policy`);
+ }
+ /** Admin-only (`RequiresTrustedRole`) — updates the system-wide encryption policy. */
+ export function updateEncryptionPolicy(patch) {
+-    return apiFetch(`/mail/encryption-policy`, {
++    return apiFetch(`/system/encryption-policy`, {
+         method: "PUT",
+         body: JSON.stringify(patch),
+     });
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
 index 8261e09318c4d07619b79e12df0968ba9917dd17..6210243d49fef06808114567464c199e117ca3af 100644
 --- a/dist/mail/mailApi.d.ts

@@ -25,7 +25,7 @@ function mockShell(extra?: (url: string, init?: RequestInit) => Response | undef
 describe("RetentionPolicyPage", () => {
     it("renders the loaded policy's configured values", async () => {
         mockShell((url) =>
-            url === "/api/mail/retention-policy" ? jsonResponse(200, { messageRetentionDays: 90, auditLogRetentionDays: 2555 }) : undefined,
+            url === "/api/system/retention-policy" ? jsonResponse(200, { messageRetentionDays: 90, auditLogRetentionDays: 2555 }) : undefined,
         );
         render(<RetentionPolicyPage userUid="admin-1" />);
 
@@ -34,7 +34,7 @@ describe("RetentionPolicyPage", () => {
     });
 
     it("shows both fields empty when nothing has been configured yet", async () => {
-        mockShell((url) => (url === "/api/mail/retention-policy" ? jsonResponse(200, {}) : undefined));
+        mockShell((url) => (url === "/api/system/retention-policy" ? jsonResponse(200, {}) : undefined));
         render(<RetentionPolicyPage userUid="admin-1" />);
 
         expect(await screen.findByLabelText("Message retention (days)")).toHaveValue(null);
@@ -42,7 +42,7 @@ describe("RetentionPolicyPage", () => {
     });
 
     it("shows an error when the policy fails to load", async () => {
-        mockShell((url) => (url === "/api/mail/retention-policy" ? jsonResponse(403, { message: "not an admin" }) : undefined));
+        mockShell((url) => (url === "/api/system/retention-policy" ? jsonResponse(403, { message: "not an admin" }) : undefined));
         render(<RetentionPolicyPage userUid="admin-1" />);
 
         expect(await screen.findByText("not an admin")).toBeInTheDocument();
@@ -50,7 +50,7 @@ describe("RetentionPolicyPage", () => {
 
     it("shows a generic error when loading the policy fails with a non-API error", async () => {
         mockShell((url) => {
-            if (url === "/api/mail/retention-policy") throw new TypeError("network down");
+            if (url === "/api/system/retention-policy") throw new TypeError("network down");
             return undefined;
         });
         render(<RetentionPolicyPage userUid="admin-1" />);
@@ -60,8 +60,8 @@ describe("RetentionPolicyPage", () => {
 
     it("saves both fields", async () => {
         const fetchMock = mockShell((url, init) => {
-            if (url === "/api/mail/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
-            if (url === "/api/mail/retention-policy" && init?.method === "PUT") {
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") {
                 return jsonResponse(200, { messageRetentionDays: 30, auditLogRetentionDays: 2190 });
             }
             return undefined;
@@ -81,8 +81,8 @@ describe("RetentionPolicyPage", () => {
 
     it("omits a blank message-retention field from the patch, saving only the audit-log field", async () => {
         const fetchMock = mockShell((url, init) => {
-            if (url === "/api/mail/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
-            if (url === "/api/mail/retention-policy" && init?.method === "PUT") return jsonResponse(200, { auditLogRetentionDays: 2190 });
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") return jsonResponse(200, { auditLogRetentionDays: 2190 });
             return undefined;
         });
         const user = userEvent.setup();
@@ -99,8 +99,8 @@ describe("RetentionPolicyPage", () => {
 
     it("omits a blank audit-log field from the patch, saving only the message-retention field", async () => {
         const fetchMock = mockShell((url, init) => {
-            if (url === "/api/mail/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
-            if (url === "/api/mail/retention-policy" && init?.method === "PUT") return jsonResponse(200, { messageRetentionDays: 30 });
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") return jsonResponse(200, { messageRetentionDays: 30 });
             return undefined;
         });
         const user = userEvent.setup();
@@ -117,8 +117,8 @@ describe("RetentionPolicyPage", () => {
 
     it("shows the server's own message when saving fails with an ApiRequestError", async () => {
         mockShell((url, init) => {
-            if (url === "/api/mail/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
-            if (url === "/api/mail/retention-policy" && init?.method === "PUT") {
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") {
                 return jsonResponse(400, { message: "'messageRetentionDays' must be a positive integer number of days." });
             }
             return undefined;
@@ -135,8 +135,8 @@ describe("RetentionPolicyPage", () => {
 
     it("shows a generic error when saving fails with a non-API error", async () => {
         mockShell((url, init) => {
-            if (url === "/api/mail/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
-            if (url === "/api/mail/retention-policy" && init?.method === "PUT") throw new TypeError("network down");
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") throw new TypeError("network down");
             return undefined;
         });
         const user = userEvent.setup();
