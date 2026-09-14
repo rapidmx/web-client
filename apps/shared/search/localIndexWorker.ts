@@ -14,18 +14,26 @@
  * see that file's own doc comment for why this doesn't conflict with `AccessHandlePoolVFS` itself being
  * synchronous underneath it.
  *
- * One SQLite connection per mailbox, opened on `init` and kept for the Worker's lifetime (or until
- * `destroy`). `entity_uid` is this module's identifier for a message (the only entity type Tier 2 covers
- * today - see the doc comment on `searchTier3.ts`'s identical scope decision, which this mirrors).
+ * **Every operation on a mailbox's connection runs through that mailbox's own serial queue**
+ * (`runExclusive()`). An Asyncify module is not re-entrant: starting a second `sqlite3.*` call while
+ * another is suspended inside an async VFS method corrupts the unwinding state. `postMessage` requests
+ * arrive concurrently (e.g. `searchTier2.ts` issues `search` and `coverage` together, while a build pass
+ * is mid-`indexEntities`), so without the queue they interleaved inside the same module. It also closes
+ * an `init` race where two concurrent `init`s both saw no connection and created two VFS instances over
+ * one OPFS pool. Each mailbox gets its own module instance, so separate mailboxes don't need to share
+ * one queue.
  *
- * Real index/search/lifecycle RPC methods are all implemented below; `selfTest` stays alongside them as
- * an internal diagnostic (proves the encrypted round trip end to end: write through `EncryptingVFS`,
- * close the connection, reopen, read back) rather than being removed once the real surface existed.
+ * One SQLite connection per mailbox, opened on `init` and kept for the Worker's lifetime (or until
+ * `destroy`). A Web Lock per mailbox (`navigator.locks`) ensures only one tab holds a given index open;
+ * a second tab's `init` fails with a logged reason and Tier 2 simply contributes nothing there.
+ *
+ * `entity_uid` is this module's identifier for a message (the only entity type Tier 2 covers today).
  */
 import SQLiteESMFactory from "@journeyapps/wa-sqlite/dist/wa-sqlite-async.mjs";
 import * as SQLite from "@journeyapps/wa-sqlite";
 import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { EncryptingVFS } from "./localIndexVFS.js";
+import { poolNameFor, removeLocalIndexDirectories, removeLocalIndexDirectory } from "./localIndexStorage.js";
 import {
     BM25_WEIGHTS_SQL,
     CREATE_SCHEMA_SQL,
@@ -42,7 +50,21 @@ import {
  * the main-thread counterpart that generates/awaits these). */
 export interface LocalIndexRequest {
     id: number;
-    method: "init" | "indexEntities" | "removeEntity" | "search" | "coverage" | "setWindow" | "setBuilding" | "destroy" | "selfTest" | "ping";
+    method:
+        | "init"
+        | "indexEntities"
+        | "removeEntity"
+        | "moveEntity"
+        | "indexedVersions"
+        | "pruneEntities"
+        | "search"
+        | "coverage"
+        | "setWindow"
+        | "setBuilding"
+        | "destroy"
+        | "destroyAll"
+        | "selfTest"
+        | "ping";
     params?: unknown;
 }
 
@@ -63,9 +85,35 @@ export interface IndexEntitiesParams {
     entities: LocalIndexEntity[];
 }
 
+export interface IndexEntitiesResult {
+    /** `true` when this call's eviction pass had to delete anything to get back under the byte budget -
+     * the builder's signal that walking further back in time would only insert rows that get evicted. */
+    budgetReached: boolean;
+}
+
 export interface RemoveEntityParams {
     mailboxUid: string;
     entityUid: string;
+}
+
+export interface MoveEntityParams {
+    mailboxUid: string;
+    entityUid: string;
+    folderUid: string;
+}
+
+export interface IndexedVersionsParams {
+    mailboxUid: string;
+    entityUids: string[];
+}
+
+export interface PruneEntitiesParams {
+    mailboxUid: string;
+    /** Every entity uid a complete build pass saw on the server. */
+    keepEntityUids: string[];
+    /** Only rows at or after this `date_for_sort` are candidates (the walk's own time floor - anything
+     * older was never re-listed, so its absence proves nothing). `undefined` means no floor. */
+    since?: string;
 }
 
 export interface SearchParams {
@@ -81,8 +129,7 @@ export interface SearchParams {
 export interface LocalSearchHit {
     entityUid: string;
     /** Raw `bm25()` score - more negative is a better match, per SQLite's own convention. Normalized by
-     * `searchTier2.ts` (main thread) via `searchScoring.ts`'s shared `normalizeServerScores()`, the same
-     * way every other tier's raw score is, before merging (spec §7). */
+     * `searchTier2.ts` (main thread) before merging (spec §7). */
     score: number;
     snippet?: string;
 }
@@ -95,10 +142,16 @@ export interface LocalSearchPage {
 }
 
 export interface Coverage {
-    /** Oldest `date_for_sort` currently covered, or `undefined` for an empty index. */
+    /** The oldest date the index is known to cover. While `complete`, every indexable message at least
+     * this recent is present; otherwise it is only the oldest row that happens to be present. `undefined`
+     * for an empty index. */
     indexedFrom?: string;
     indexedCount: number;
     building: boolean;
+    /** `true` only once a build pass has walked every mail folder all the way back to its time floor with
+     * no errors and no budget cut-off. Callers MUST NOT treat `indexedFrom` as a coverage guarantee (e.g.
+     * to narrow Tier 3) unless this is `true` and `building` is `false`. */
+    complete: boolean;
 }
 
 export interface SetWindowParams {
@@ -110,57 +163,195 @@ export interface SetWindowParams {
 export interface SetBuildingParams {
     mailboxUid: string;
     building: boolean;
+    /** Only meaningful with `building: false` - whether the pass that just ended walked everything. */
+    complete?: boolean;
+    /** Only meaningful with `complete: true` - the pass's time floor (ISO), or `undefined` for none. */
+    coveredFrom?: string;
 }
 
 interface OpenConnection {
     sqlite3: SQLiteAPI;
     db: number;
     vfs: EncryptingVFS;
+    /** Kept so a corrupted index can be reopened empty without another round trip to the main thread. */
+    params: InitParams;
+    releaseLock?: () => void;
 }
 
-/** Keyed by `mailboxUid` - a Worker instance is per-tab, not per-mailbox, so this stays a map even
- * though only one mailbox is ever unlocked in this app's UI at a time today. */
+/** Keyed by `mailboxUid` - a Worker instance is per-tab, not per-mailbox. */
 const connections = new Map<string, OpenConnection>();
 
-/** The OPFS directory name (and `EncryptingVFS` name) a mailbox's index lives under - scoped per
- * mailbox so two mailboxes' indexes never collide and `destroy(mailboxUid)` (added in the next pass) can
- * remove exactly one without touching the others. */
-function poolNameFor(mailboxUid: string): string {
-    return `rapidmx-localsearch-${mailboxUid}`;
+/** Per-mailbox promise chains - see this module's doc comment. Each value never rejects. */
+const queues = new Map<string, Promise<void>>();
+
+/** Runs `task` after every previously queued task for `mailboxUid` has settled. Exported for tests. */
+export function runExclusive<T>(mailboxUid: string, task: () => Promise<T>): Promise<T> {
+    const previous = queues.get(mailboxUid) ?? Promise.resolve();
+    const result = previous.then(task);
+    const tail = result.then(
+        () => undefined,
+        () => undefined,
+    );
+    queues.set(mailboxUid, tail);
+    void tail.then(() => {
+        if (queues.get(mailboxUid) === tail) {
+            queues.delete(mailboxUid);
+        }
+    });
+    return result;
 }
 
-async function openConnection({ mailboxUid, indexKey }: InitParams): Promise<OpenConnection> {
+/** Thrown by `init` when another tab already holds this mailbox's index open. */
+export class LocalIndexBusyError extends Error {
+    constructor(mailboxUid: string) {
+        super(`Local search index for mailbox ${mailboxUid} is already open in another tab.`);
+        this.name = "LocalIndexBusyError";
+    }
+}
+
+/**
+ * Takes an exclusive, non-waiting Web Lock for one mailbox's index and holds it until the returned release
+ * function is called. `undefined` when the Web Locks API isn't available - `AccessHandlePoolVFS`'s own
+ * exclusive sync access handles still stop a second tab from opening the pool, just with a less specific
+ * error.
+ */
+async function acquireIndexLock(mailboxUid: string): Promise<(() => void) | undefined> {
+    const locks = typeof navigator === "undefined" ? undefined : (navigator as Navigator & { locks?: LockManager }).locks;
+    if (!locks) {
+        return undefined;
+    }
+    return new Promise<() => void>((resolve, reject) => {
+        locks
+            .request(`${poolNameFor(mailboxUid)}:lock`, { ifAvailable: true }, (lock) => {
+                if (!lock) {
+                    reject(new LocalIndexBusyError(mailboxUid));
+                    return undefined;
+                }
+                return new Promise<void>((release) => resolve(release));
+            })
+            .catch(reject);
+    });
+}
+
+/** Wraps a failure to even open the database because its pages don't decrypt/authenticate. */
+class LocalIndexCorruptedError extends Error {
+    constructor(cause: unknown) {
+        super(`Local search index is corrupted: ${cause instanceof Error ? cause.message : String(cause)}`);
+        this.name = "LocalIndexCorruptedError";
+    }
+}
+
+/** A real corruption signal (discard and rebuild) versus an ordinary error (e.g. a malformed MATCH). */
+function isCorruptionError(err: unknown, connection: OpenConnection | undefined): boolean {
+    if (err instanceof LocalIndexCorruptedError || connection?.vfs.corruptionDetected) {
+        return true;
+    }
+    const code = (err as { code?: number } | undefined)?.code;
+    if (code === SQLite.SQLITE_CORRUPT || code === SQLite.SQLITE_NOTADB) {
+        return true;
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return /malformed|not a database|failed to decrypt/i.test(message);
+}
+
+async function openRawConnection(params: InitParams): Promise<OpenConnection> {
+    const { mailboxUid, indexKey } = params;
     const module = await SQLiteESMFactory();
     const sqlite3 = SQLite.Factory(module);
     const vfs = await EncryptingVFS.create(poolNameFor(mailboxUid), module, indexKey);
     sqlite3.vfs_register(vfs, true);
-    const db = await sqlite3.open_v2("index.db");
-    // No WAL, no rollback journal - see localIndexVFS.ts's own doc comment on why this index's lack of
-    // a durability requirement makes that an acceptable, deliberate simplification here.
-    await sqlite3.exec(db, "PRAGMA journal_mode=OFF; PRAGMA page_size=4096;");
-    await sqlite3.exec(db, CREATE_SCHEMA_SQL);
-    const connection = { sqlite3, db, vfs };
-
-    const storedVersion = await readMeta(connection, "schema_version");
-    if (storedVersion !== String(SCHEMA_VERSION)) {
-        // §11 "Invalidation... discarded and rebuilt... on schema version change" - drop every table's
-        // rows (the DDL itself is `CREATE ... IF NOT EXISTS`, already current) and start fresh, rather
-        // than attempting to migrate content built under an incompatible schema.
-        await sqlite3.exec(connection.db, "DELETE FROM entities; DELETE FROM entities_fts;");
-        await writeMeta(connection, "schema_version", String(SCHEMA_VERSION));
+    let db: number | undefined;
+    try {
+        db = await sqlite3.open_v2("index.db");
+        // No WAL, no rollback journal - see localIndexVFS.ts's own doc comment on why this index's lack of
+        // a durability requirement makes that an acceptable, deliberate simplification here.
+        await sqlite3.exec(db, "PRAGMA journal_mode=OFF;");
+    } catch (err) {
+        // Opening reads the header page, so a wrong key or a corrupted first block fails right here.
+        if (db !== undefined) {
+            await sqlite3.close(db).catch(() => undefined);
+        }
+        await vfs.close();
+        throw vfs.corruptionDetected ? new LocalIndexCorruptedError(err) : err;
     }
-    return connection;
+    return { sqlite3, db, vfs, params };
 }
 
-async function readMeta(connection: OpenConnection, key: string): Promise<string | undefined> {
-    let value: string | undefined;
-    for await (const stmt of connection.sqlite3.statements(connection.db, "SELECT value FROM meta WHERE key = ?")) {
-        connection.sqlite3.bind_collection(stmt, [key]);
+async function closeRawConnection(connection: OpenConnection): Promise<void> {
+    try {
+        await connection.sqlite3.close(connection.db);
+    } finally {
+        await connection.vfs.close();
+    }
+}
+
+async function queryValue<T>(connection: OpenConnection, sql: string, bindings: (string | number)[] = []): Promise<T | undefined> {
+    let value: T | undefined;
+    for await (const stmt of connection.sqlite3.statements(connection.db, sql)) {
+        if (bindings.length > 0) {
+            connection.sqlite3.bind_collection(stmt, bindings);
+        }
         if ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
-            value = connection.sqlite3.column(stmt, 0) as string;
+            value = (connection.sqlite3.column(stmt, 0) as T | null) ?? undefined;
         }
     }
     return value;
+}
+
+/** Creates the schema on a brand-new database, or validates an existing one. Resolves `false` when an
+ * existing database was built under a different `SCHEMA_VERSION` and must be discarded (§11
+ * "Invalidation... on schema version change"). */
+async function initializeSchema(connection: OpenConnection): Promise<boolean> {
+    const hasMeta = await queryValue<number>(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'");
+    if (hasMeta) {
+        return (await readMeta(connection, "schema_version")) === String(SCHEMA_VERSION);
+    }
+    // Both pragmas only take effect before the first table exists, which is why a schema-version bump
+    // recreates the whole file rather than just clearing rows.
+    await connection.sqlite3.exec(connection.db, "PRAGMA page_size=4096; PRAGMA auto_vacuum=INCREMENTAL;");
+    await connection.sqlite3.exec(connection.db, CREATE_SCHEMA_SQL);
+    await writeMeta(connection, "schema_version", String(SCHEMA_VERSION));
+    return true;
+}
+
+async function openConnection(params: InitParams): Promise<OpenConnection> {
+    const releaseLock = await acquireIndexLock(params.mailboxUid);
+    try {
+        let connection: OpenConnection | undefined;
+        let usable: boolean;
+        try {
+            connection = await openRawConnection(params);
+            usable = await initializeSchema(connection);
+        } catch (err) {
+            if (connection) {
+                await closeRawConnection(connection).catch(() => undefined);
+            }
+            if (!isCorruptionError(err, connection)) {
+                throw err;
+            }
+            connection = undefined;
+            usable = false;
+        }
+        if (!usable || !connection) {
+            // Corrupted (GCM auth failure, "malformed"/"not a database") or an old schema version: discard
+            // the whole database and start empty - the builder repopulates it (§11 "discarded and rebuilt").
+            if (connection) {
+                await closeRawConnection(connection).catch(() => undefined);
+            }
+            await removeLocalIndexDirectory(params.mailboxUid);
+            connection = await openRawConnection(params);
+            await initializeSchema(connection);
+        }
+        connection.releaseLock = releaseLock;
+        return connection;
+    } catch (err) {
+        releaseLock?.();
+        throw err;
+    }
+}
+
+async function readMeta(connection: OpenConnection, key: string): Promise<string | undefined> {
+    return queryValue<string>(connection, "SELECT value FROM meta WHERE key = ?", [key]);
 }
 
 async function writeMeta(connection: OpenConnection, key: string, value: string): Promise<void> {
@@ -174,7 +365,14 @@ async function init(params: InitParams): Promise<void> {
     if (connections.has(params.mailboxUid)) {
         return;
     }
-    connections.set(params.mailboxUid, await openConnection(params));
+    try {
+        connections.set(params.mailboxUid, await openConnection(params));
+    } catch (err) {
+        // Tier 2 degrades to "contributes nothing" in this tab - say why, once per attempt, rather than
+        // leaving a silently empty local tier.
+        console.warn(`localIndexWorker: local search unavailable for mailbox ${params.mailboxUid}: ${err instanceof Error ? err.message : String(err)}`);
+        throw err;
+    }
 }
 
 function requireConnection(mailboxUid: string): OpenConnection {
@@ -185,130 +383,232 @@ function requireConnection(mailboxUid: string): OpenConnection {
     return connection;
 }
 
-/** Tears down a mailbox's connection completely: the SQLite connection itself (`sqlite3.close(db)`) AND
- * the underlying `EncryptingVFS`/`AccessHandlePoolVFS` instance (`vfs.close()`) - two separate lifecycles
- * (see `EncryptingVFS.close()`'s own doc comment on why skipping the second one breaks re-`init()`ing the
- * same mailbox). Removes the entry from `connections` either way. */
+/** Tears down a mailbox's connection completely: the SQLite connection, the underlying VFS's pooled
+ * access handles (see `EncryptingVFS.close()`), and the cross-tab Web Lock. */
 async function closeConnection(mailboxUid: string): Promise<void> {
     const connection = connections.get(mailboxUid);
     if (!connection) {
         return;
     }
     connections.delete(mailboxUid);
-    await connection.sqlite3.close(connection.db);
-    await connection.vfs.close();
+    try {
+        await closeRawConnection(connection);
+    } finally {
+        connection.releaseLock?.();
+    }
 }
 
-async function sumBytes(connection: OpenConnection): Promise<number> {
-    let total = 0;
-    for await (const stmt of connection.sqlite3.statements(connection.db, "SELECT COALESCE(SUM(byte_size), 0) FROM entities")) {
-        if ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
-            total = connection.sqlite3.column(stmt, 0) as number;
+/**
+ * Runs `operation` against a mailbox's open connection. If it fails because the index is corrupted, the
+ * index is destroyed and reopened empty (same key, same lock) so the next build pass repopulates it, and
+ * the original error is rethrown - the caller's own degradation (e.g. `search()` returning no hits) still
+ * applies to this one call.
+ */
+async function withConnection<T>(mailboxUid: string, operation: (connection: OpenConnection) => Promise<T>): Promise<T> {
+    const connection = requireConnection(mailboxUid);
+    try {
+        return await operation(connection);
+    } catch (err) {
+        if (isCorruptionError(err, connection) && connections.get(mailboxUid) === connection) {
+            await resetCorruptedConnection(mailboxUid, connection);
         }
+        throw err;
     }
-    return total;
 }
 
-async function oldestDateForSort(connection: OpenConnection): Promise<string | undefined> {
-    let oldest: string | undefined;
-    for await (const stmt of connection.sqlite3.statements(connection.db, "SELECT MIN(date_for_sort) FROM entities")) {
-        if ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
-            oldest = (connection.sqlite3.column(stmt, 0) as string | null) ?? undefined;
-        }
+/** Discards a corrupted index and reopens it empty under the same key and Web Lock. If reopening fails,
+ * the mailbox is left uninitialized (lock released) - the next `init()` tries again from scratch. */
+async function resetCorruptedConnection(mailboxUid: string, connection: OpenConnection): Promise<void> {
+    console.warn(`localIndexWorker: local search index for mailbox ${mailboxUid} is corrupted; discarding and rebuilding.`);
+    connections.delete(mailboxUid);
+    await closeRawConnection(connection).catch(() => undefined);
+    try {
+        await removeLocalIndexDirectory(mailboxUid);
+        const fresh = await openRawConnection(connection.params);
+        await initializeSchema(fresh);
+        fresh.releaseLock = connection.releaseLock;
+        connections.set(mailboxUid, fresh);
+    } catch {
+        connection.releaseLock?.();
     }
-    return oldest;
 }
 
-async function entityCount(connection: OpenConnection): Promise<number> {
-    let count = 0;
-    for await (const stmt of connection.sqlite3.statements(connection.db, "SELECT COUNT(*) FROM entities")) {
-        if ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
-            count = connection.sqlite3.column(stmt, 0) as number;
-        }
-    }
-    return count;
+/** Bytes actually used by live pages - `page_count` minus free pages, times `page_size`. Counts the FTS5
+ * shadow tables and indexes too, unlike summing a per-row estimate. */
+async function usedBytes(connection: OpenConnection): Promise<number> {
+    const pageCount = (await queryValue<number>(connection, "PRAGMA page_count")) ?? 0;
+    const freelist = (await queryValue<number>(connection, "PRAGMA freelist_count")) ?? 0;
+    const pageSize = (await queryValue<number>(connection, "PRAGMA page_size")) ?? 4096;
+    return (pageCount - freelist) * pageSize;
 }
 
-/** Deletes the single oldest entity (by `date_for_sort`) and returns whether one existed to delete -
- * `entities_ad` (see `localIndexSchema.ts`) keeps `entities_fts` in sync automatically. One row per call
- * (not a batch `DELETE ... LIMIT`, which SQLite's default build doesn't compile in) so
- * `#applyEviction()`'s own loop can re-check the byte total after each deletion rather than
- * over-evicting. */
-async function deleteOldestEntity(connection: OpenConnection): Promise<boolean> {
-    let deleted = false;
-    for await (const stmt of connection.sqlite3.statements(
-        connection.db,
-        "DELETE FROM entities WHERE rowid = (SELECT rowid FROM entities ORDER BY date_for_sort ASC LIMIT 1)",
-    )) {
-        await connection.sqlite3.step(stmt);
-        deleted = connection.sqlite3.changes(connection.db) > 0;
-    }
-    return deleted;
+/** Physical database size (what OPFS actually stores) - exported via `coverage()` for diagnostics/tests. */
+async function fileBytes(connection: OpenConnection): Promise<number> {
+    const pageCount = (await queryValue<number>(connection, "PRAGMA page_count")) ?? 0;
+    const pageSize = (await queryValue<number>(connection, "PRAGMA page_size")) ?? 4096;
+    return pageCount * pageSize;
 }
 
-/** Oldest-first eviction against the configured byte budget (spec §11 "Eviction... MUST NOT block
- * search" - this runs to completion as part of `indexEntities()`, which is already off the UI thread by
- * virtue of running in this Worker, so there's no separate scheduling concern here). A no-op when no
- * budget has been configured yet (`setWindow()` was never called) - nothing to enforce. */
-async function applyEviction(connection: OpenConnection): Promise<void> {
+/** Maximum bulk-eviction rounds per call - each round deletes a whole date range sized from the measured
+ * overshoot, so more than a couple only happens when the per-row weights badly underestimate real size. */
+const MAX_EVICTION_ROUNDS = 8;
+
+/**
+ * Oldest-first eviction against the configured byte budget (spec §11). Measures the real database size,
+ * then deletes a contiguous oldest date range in one statement, sized by walking rows oldest-first with a
+ * running total of their `byte_size` weights scaled to the measured size - rather than the previous
+ * delete-one-row-then-re-SUM loop, which was O(n²). `incremental_vacuum` then returns freed pages to the
+ * filesystem. A no-op when no budget has been configured yet. Resolves whether anything was evicted.
+ */
+async function applyEviction(connection: OpenConnection): Promise<boolean> {
     const byteBudgetRaw = await readMeta(connection, "byte_budget");
     const byteBudget = byteBudgetRaw ? Number(byteBudgetRaw) : undefined;
     if (!byteBudget) {
-        return;
+        return false;
     }
-    for (;;) {
-        const total = await sumBytes(connection);
-        if (total <= byteBudget) {
-            return;
+    let evicted = false;
+    for (let round = 0; round < MAX_EVICTION_ROUNDS; round++) {
+        const used = await usedBytes(connection);
+        if (used <= byteBudget) {
+            break;
         }
-        const deletedOne = await deleteOldestEntity(connection);
-        if (!deletedOne) {
-            return;
+        const totalWeight = (await queryValue<number>(connection, "SELECT COALESCE(SUM(byte_size), 0) FROM entities")) ?? 0;
+        if (totalWeight <= 0) {
+            break;
+        }
+        const overshootWeight = ((used - byteBudget) / used) * totalWeight;
+        let running = 0;
+        let cutoffRowid: number | undefined;
+        let cutoffDate: string | undefined;
+        for await (const stmt of connection.sqlite3.statements(
+            connection.db,
+            "SELECT date_for_sort, rowid, byte_size FROM entities ORDER BY date_for_sort ASC, rowid ASC",
+        )) {
+            while ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
+                cutoffDate = connection.sqlite3.column(stmt, 0) as string;
+                cutoffRowid = connection.sqlite3.column(stmt, 1) as number;
+                running += connection.sqlite3.column(stmt, 2) as number;
+                if (running >= overshootWeight) {
+                    break;
+                }
+            }
+        }
+        if (cutoffDate === undefined || cutoffRowid === undefined) {
+            break;
+        }
+        for await (const stmt of connection.sqlite3.statements(
+            connection.db,
+            "DELETE FROM entities WHERE date_for_sort < ? OR (date_for_sort = ? AND rowid <= ?)",
+        )) {
+            connection.sqlite3.bind_collection(stmt, [cutoffDate, cutoffDate, cutoffRowid]);
+            await connection.sqlite3.step(stmt);
+            evicted = evicted || connection.sqlite3.changes(connection.db) > 0;
         }
     }
+    if (evicted) {
+        await connection.sqlite3.exec(connection.db, "PRAGMA incremental_vacuum;");
+    }
+    return evicted;
 }
 
-async function indexEntities({ mailboxUid, entities }: IndexEntitiesParams): Promise<void> {
-    const connection = requireConnection(mailboxUid);
+async function indexEntities(connection: OpenConnection, entities: LocalIndexEntity[]): Promise<IndexEntitiesResult> {
     for (const entity of entities) {
         for await (const stmt of connection.sqlite3.statements(connection.db, UPSERT_ENTITY_SQL)) {
             connection.sqlite3.bind_collection(stmt, entityBindValues(entity));
             await connection.sqlite3.step(stmt);
         }
     }
-    await applyEviction(connection);
+    return { budgetReached: await applyEviction(connection) };
 }
 
-async function removeEntity({ mailboxUid, entityUid }: RemoveEntityParams): Promise<void> {
-    const connection = requireConnection(mailboxUid);
+async function removeEntity(connection: OpenConnection, entityUid: string): Promise<void> {
     for await (const stmt of connection.sqlite3.statements(connection.db, "DELETE FROM entities WHERE entity_uid = ?")) {
         connection.sqlite3.bind_collection(stmt, [entityUid]);
         await connection.sqlite3.step(stmt);
     }
 }
 
-async function search({ mailboxUid, parsed, limit, offset = 0 }: SearchParams): Promise<LocalSearchPage> {
-    const connection = requireConnection(mailboxUid);
+/** Re-points an indexed message at a new folder in place (archive, cancel-scheduled-send). Clears
+ * `entity_version` so the next build pass re-validates the row against the server. */
+async function moveEntity(connection: OpenConnection, entityUid: string, folderUid: string): Promise<void> {
+    for await (const stmt of connection.sqlite3.statements(connection.db, "UPDATE entities SET folder_uid = ?, entity_version = NULL WHERE entity_uid = ?")) {
+        connection.sqlite3.bind_collection(stmt, [folderUid, entityUid]);
+        await connection.sqlite3.step(stmt);
+    }
+}
+
+/** `entity_version` for whichever of `entityUids` are already indexed - one batched query per builder page,
+ * so a rebuild can skip re-fetching/decrypting unchanged messages. */
+async function indexedVersions(connection: OpenConnection, entityUids: string[]): Promise<Record<string, string>> {
+    const versions: Record<string, string> = {};
+    if (entityUids.length === 0) {
+        return versions;
+    }
+    const placeholders = entityUids.map(() => "?").join(", ");
+    for await (const stmt of connection.sqlite3.statements(
+        connection.db,
+        `SELECT entity_uid, entity_version FROM entities WHERE entity_uid IN (${placeholders})`,
+    )) {
+        connection.sqlite3.bind_collection(stmt, entityUids);
+        while ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
+            const version = connection.sqlite3.column(stmt, 1) as string | null;
+            if (version !== null) {
+                versions[connection.sqlite3.column(stmt, 0) as string] = version;
+            }
+        }
+    }
+    return versions;
+}
+
+/** Deletes rows a complete build pass didn't see (deleted, or moved out of every mail folder, on any
+ * client) within the pass's own time floor. Resolves how many rows were removed. */
+async function pruneEntities(connection: OpenConnection, keepEntityUids: string[], since: string | undefined): Promise<number> {
+    const keep = new Set(keepEntityUids);
+    const stale: string[] = [];
+    for await (const stmt of connection.sqlite3.statements(
+        connection.db,
+        since ? "SELECT entity_uid FROM entities WHERE date_for_sort >= ?" : "SELECT entity_uid FROM entities",
+    )) {
+        if (since) {
+            connection.sqlite3.bind_collection(stmt, [since]);
+        }
+        while ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
+            const uid = connection.sqlite3.column(stmt, 0) as string;
+            if (!keep.has(uid)) {
+                stale.push(uid);
+            }
+        }
+    }
+    for (const uid of stale) {
+        await removeEntity(connection, uid);
+    }
+    if (stale.length > 0) {
+        await connection.sqlite3.exec(connection.db, "PRAGMA incremental_vacuum;");
+    }
+    return stale.length;
+}
+
+async function search(connection: OpenConnection, { mailboxUid, parsed, limit, offset = 0 }: SearchParams): Promise<LocalSearchPage> {
     const { where, params } = buildSearchPredicates(parsed, mailboxUid);
     const matchExpr = buildMatchExpression(parsed);
     const hits: LocalSearchHit[] = [];
 
-    // A malformed MATCH string is a real, reachable case (FTS5's query syntax rejects some inputs
-    // `queryGrammar.ts` otherwise leaves untouched for the *server's* more lenient `websearch_to_tsquery`
-    // to handle) - fails soft to "this tier found nothing," matching how every other tier already
-    // degrades on its own per-candidate/per-provider failures, rather than breaking the whole search.
+    // A malformed MATCH string is a real, reachable case (FTS5's query syntax rejects some inputs the
+    // server's more lenient parser accepts) - fails soft to "this tier found nothing". Corruption is the
+    // one failure rethrown, so `withConnection()` can discard and rebuild the index.
     try {
-        // Fetches one extra row beyond `limit` so `hasMore` below can be determined without a second,
-        // separate COUNT(*) query - trimmed back off before returning.
+        // Fetches one extra row beyond `limit` so `hasMore` can be determined without a COUNT(*). The
+        // `entity_uid` tiebreaker makes the ordering total, so OFFSET pages never overlap or skip rows
+        // that share a rank/date.
         const fetchLimit = limit + 1;
         const sql = matchExpr
             ? `SELECT e.entity_uid, bm25(entities_fts, ${BM25_WEIGHTS_SQL}) AS rank,
                       snippet(entities_fts, 2, '', '', '…', 24) AS snip
                FROM entities_fts f JOIN entities e ON e.rowid = f.rowid
                WHERE entities_fts MATCH ? AND ${where}
-               ORDER BY rank LIMIT ? OFFSET ?`
+               ORDER BY rank, e.entity_uid LIMIT ? OFFSET ?`
             : `SELECT e.entity_uid, 0 AS rank, NULL AS snip FROM entities e WHERE ${where}
-               ORDER BY e.date_for_sort DESC LIMIT ? OFFSET ?`;
+               ORDER BY e.date_for_sort DESC, e.entity_uid LIMIT ? OFFSET ?`;
         const bindings = matchExpr ? [matchExpr, ...params, fetchLimit, offset] : [...params, fetchLimit, offset];
         for await (const stmt of connection.sqlite3.statements(connection.db, sql)) {
             connection.sqlite3.bind_collection(stmt, bindings);
@@ -320,7 +620,10 @@ async function search({ mailboxUid, parsed, limit, offset = 0 }: SearchParams): 
                 });
             }
         }
-    } catch {
+    } catch (err) {
+        if (isCorruptionError(err, connection)) {
+            throw err;
+        }
         return { hits: [], hasMore: false };
     }
     const hasMore = hits.length > limit;
@@ -330,17 +633,23 @@ async function search({ mailboxUid, parsed, limit, offset = 0 }: SearchParams): 
     return { hits, hasMore };
 }
 
-async function coverage(mailboxUid: string): Promise<Coverage> {
-    const connection = requireConnection(mailboxUid);
+async function coverage(connection: OpenConnection): Promise<Coverage & { fileBytes: number }> {
+    const oldest = await queryValue<string>(connection, "SELECT MIN(date_for_sort) FROM entities");
+    const complete = (await readMeta(connection, "build_complete")) === "1";
+    const coveredFrom = await readMeta(connection, "covered_from");
+    // A complete pass walked every folder back to its time floor, but a folder's last page can reach
+    // further back than another folder's did - so the guaranteed frontier is the later of the two.
+    const indexedFrom = complete && oldest && coveredFrom && coveredFrom > oldest ? coveredFrom : oldest;
     return {
-        indexedFrom: await oldestDateForSort(connection),
-        indexedCount: await entityCount(connection),
+        indexedFrom,
+        indexedCount: (await queryValue<number>(connection, "SELECT COUNT(*) FROM entities")) ?? 0,
         building: (await readMeta(connection, "building")) === "1",
+        complete,
+        fileBytes: await fileBytes(connection),
     };
 }
 
-async function setWindow({ mailboxUid, timeFloorMonths, byteBudgetBytes }: SetWindowParams): Promise<void> {
-    const connection = requireConnection(mailboxUid);
+async function setWindow(connection: OpenConnection, { timeFloorMonths, byteBudgetBytes }: SetWindowParams): Promise<void> {
     await writeMeta(connection, "time_floor_months", String(timeFloorMonths));
     await writeMeta(connection, "byte_budget", String(byteBudgetBytes));
     // A lowered budget must shrink the window immediately, not just gate future inserts (spec §11 "the
@@ -348,29 +657,40 @@ async function setWindow({ mailboxUid, timeFloorMonths, byteBudgetBytes }: SetWi
     await applyEviction(connection);
 }
 
-async function setBuilding(mailboxUid: string, building: boolean): Promise<void> {
-    const connection = requireConnection(mailboxUid);
+async function setBuilding(connection: OpenConnection, { building, complete, coveredFrom }: SetBuildingParams): Promise<void> {
     await writeMeta(connection, "building", building ? "1" : "0");
+    // Starting a pass invalidates the previous pass's completeness until this one finishes.
+    await writeMeta(connection, "build_complete", !building && complete ? "1" : "0");
+    await writeMeta(connection, "covered_from", !building && complete && coveredFrom ? coveredFrom : "");
 }
 
 /** Closes the connection (if open) and deletes the mailbox's entire OPFS directory - the spec's "MUST be
- * destroyed on the same events that destroy private keys" (§11), and also the discard side of
- * "discarded and rebuilt" on corruption/schema-version invalidation. Goes around SQLite/the VFS entirely
- * for the deletion itself (there's no VFS-level "delete everything" primitive) - safe only because the
- * connection is already closed at this point, so nothing else holds these files open. */
+ * destroyed on the same events that destroy private keys" (§11). Rejects if the directory couldn't be
+ * removed (e.g. another tab still has it open), so the caller can report it. */
 async function destroy(mailboxUid: string): Promise<void> {
     await closeConnection(mailboxUid);
-    const root = await navigator.storage.getDirectory();
-    await root.removeEntry(poolNameFor(mailboxUid), { recursive: true }).catch(() => undefined);
+    await removeLocalIndexDirectory(mailboxUid);
+}
+
+/** Destroys every local index on this origin, including ones this Worker never opened. */
+async function destroyAll(): Promise<{ failed: string[] }> {
+    const failed = new Set<string>();
+    await Promise.all(
+        [...connections.keys()].map((mailboxUid) =>
+            runExclusive(mailboxUid, () => closeConnection(mailboxUid)).catch(() => failed.add(mailboxUid)),
+        ),
+    );
+    const result = await removeLocalIndexDirectories();
+    for (const mailboxUid of result.failed) {
+        failed.add(mailboxUid);
+    }
+    return { failed: [...failed] };
 }
 
 /**
- * Proves the full encrypted round trip, not just a single write-then-read within one open connection
- * (which could pass even if encryption/decryption were silently no-ops): writes a row, **closes the
- * SQLite connection and drops it from `connections`**, then re-`init()`s the same mailbox from scratch -
- * a real close/reopen through `EncryptingVFS`, `AccessHandlePoolVFS`, and OPFS, not merely reading back
- * from an in-memory cache - and confirms the row (and a `bm25()`-ranked `MATCH` query against it) both
- * still work after that reopen.
+ * Proves the full encrypted round trip, not just a single write-then-read within one open connection:
+ * writes a row, closes the connection, re-`init()`s the same mailbox from scratch, and confirms the row
+ * (and a `bm25()`-ranked `MATCH` query against it) both still work after that reopen.
  */
 async function selfTest(params: InitParams): Promise<{ matchedAfterReopen: string[] }> {
     await init(params);
@@ -407,58 +727,70 @@ async function selfTest(params: InitParams): Promise<{ matchedAfterReopen: strin
     return { matchedAfterReopen };
 }
 
+/** Routes one request to its handler, inside the owning mailbox's serial queue. Exported for tests. */
+export async function handleRequest(method: LocalIndexRequest["method"], params: unknown): Promise<unknown> {
+    switch (method) {
+        case "ping":
+            return "pong";
+        case "init": {
+            const p = params as InitParams;
+            return runExclusive(p.mailboxUid, () => init(p));
+        }
+        case "indexEntities": {
+            const p = params as IndexEntitiesParams;
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => indexEntities(c, p.entities)));
+        }
+        case "removeEntity": {
+            const p = params as RemoveEntityParams;
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => removeEntity(c, p.entityUid)));
+        }
+        case "moveEntity": {
+            const p = params as MoveEntityParams;
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => moveEntity(c, p.entityUid, p.folderUid)));
+        }
+        case "indexedVersions": {
+            const p = params as IndexedVersionsParams;
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => indexedVersions(c, p.entityUids)));
+        }
+        case "pruneEntities": {
+            const p = params as PruneEntitiesParams;
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => pruneEntities(c, p.keepEntityUids, p.since)));
+        }
+        case "search": {
+            const p = params as SearchParams;
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => search(c, p)));
+        }
+        case "coverage": {
+            const mailboxUid = params as string;
+            return runExclusive(mailboxUid, () => withConnection(mailboxUid, (c) => coverage(c)));
+        }
+        case "setWindow": {
+            const p = params as SetWindowParams;
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => setWindow(c, p)));
+        }
+        case "setBuilding": {
+            const p = params as SetBuildingParams;
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => setBuilding(c, p)));
+        }
+        case "destroy": {
+            const mailboxUid = params as string;
+            return runExclusive(mailboxUid, () => destroy(mailboxUid));
+        }
+        case "destroyAll":
+            return destroyAll();
+        case "selfTest": {
+            const p = params as InitParams;
+            return runExclusive(p.mailboxUid, () => selfTest(p));
+        }
+        default:
+            throw new Error(`Unknown localIndexWorker method: ${method satisfies never}`);
+    }
+}
+
 self.addEventListener("message", (event: MessageEvent<LocalIndexRequest>) => {
     const { id, method, params } = event.data;
-    void (async () => {
-        try {
-            let result: unknown;
-            switch (method) {
-                case "ping":
-                    result = "pong";
-                    break;
-                case "init":
-                    await init(params as InitParams);
-                    result = undefined;
-                    break;
-                case "indexEntities":
-                    await indexEntities(params as IndexEntitiesParams);
-                    result = undefined;
-                    break;
-                case "removeEntity":
-                    await removeEntity(params as RemoveEntityParams);
-                    result = undefined;
-                    break;
-                case "search":
-                    result = await search(params as SearchParams);
-                    break;
-                case "coverage":
-                    result = await coverage(params as string);
-                    break;
-                case "setWindow":
-                    await setWindow(params as SetWindowParams);
-                    result = undefined;
-                    break;
-                case "setBuilding": {
-                    const { mailboxUid, building } = params as SetBuildingParams;
-                    await setBuilding(mailboxUid, building);
-                    result = undefined;
-                    break;
-                }
-                case "destroy":
-                    await destroy(params as string);
-                    result = undefined;
-                    break;
-                case "selfTest":
-                    result = await selfTest(params as InitParams);
-                    break;
-                default:
-                    throw new Error(`Unknown localIndexWorker method: ${method satisfies never}`);
-            }
-            const response: LocalIndexResponse = { id, ok: true, result };
-            self.postMessage(response);
-        } catch (err) {
-            const response: LocalIndexResponse = { id, ok: false, error: err instanceof Error ? err.message : String(err) };
-            self.postMessage(response);
-        }
-    })();
+    handleRequest(method, params).then(
+        (result) => self.postMessage({ id, ok: true, result } satisfies LocalIndexResponse),
+        (err: unknown) => self.postMessage({ id, ok: false, error: err instanceof Error ? err.message : String(err) } satisfies LocalIndexResponse),
+    );
 });

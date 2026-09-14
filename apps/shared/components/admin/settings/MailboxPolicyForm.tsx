@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useState } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { MailboxPolicy, updateMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -20,16 +20,24 @@ function toGb(bytes: number): string {
 export interface MailboxPolicyFormProps {
     policy: MailboxPolicy;
     onChange: (policy: MailboxPolicy) => void;
+    /** Told whether the form has edits that haven't been saved. */
+    onDirtyChange?: (dirty: boolean) => void;
 }
 
 /** The mailbox defaults editor, shared by the Mailbox Policy page and the setup wizard. */
-export default function MailboxPolicyForm({ policy, onChange }: MailboxPolicyFormProps) {
+export default function MailboxPolicyForm({ policy, onChange, onDirtyChange }: MailboxPolicyFormProps) {
     const [defaultQuotaGb, setDefaultQuotaGb] = useState(toGb(policy.defaultQuotaBytes));
     const [autoProvisionEnabled, setAutoProvisionEnabled] = useState(policy.autoProvisionEnabled);
     const [autoProvisionQuotaGb, setAutoProvisionQuotaGb] = useState(toGb(policy.autoProvisionQuotaBytes));
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+
+    // Edits are unsaved until they match what was loaded or last saved.
+    const snapshot = JSON.stringify([defaultQuotaGb, autoProvisionEnabled, autoProvisionQuotaGb]);
+    const [savedSnapshot, setSavedSnapshot] = useState(snapshot);
+    const dirty: boolean = snapshot !== savedSnapshot;
+    useEffect(() => onDirtyChange?.(dirty), [dirty]);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -49,6 +57,7 @@ export default function MailboxPolicyForm({ policy, onChange }: MailboxPolicyFor
                 autoProvisionQuotaBytes: Math.round(autoQuota * GB),
             });
             onChange(updated);
+            setSavedSnapshot(snapshot);
             setSaved(true);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save the mailbox policy.");

@@ -1,5 +1,5 @@
 diff --git a/dist/admin/pluginsApi.d.ts b/dist/admin/pluginsApi.d.ts
-index 66882725c0b6e48a76ce4e3aa5b062194d954298..770bf1bb479cdedd10c8ba32ffd63877d282d51e 100644
+index 66882725c0b6e48a76ce4e3aa5b062194d954298..6e73e1fa2546f74f0967695bd5fd61327c230774 100644
 --- a/dist/admin/pluginsApi.d.ts
 +++ b/dist/admin/pluginsApi.d.ts
 @@ -19,6 +19,8 @@ export interface PluginManifest {
@@ -11,7 +11,7 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..770bf1bb479cdedd10c8ba32ffd63877
  }
  export type PluginSettingValue = string | number | boolean;
  /** Mirrors `@rapidmx/restapi`'s `Plugin`. `version` is the row's optimistic-lock counter; the npm version is
-@@ -72,6 +74,57 @@ export interface PluginStatus {
+@@ -72,6 +74,71 @@ export interface PluginStatus {
      hash: string;
      instances: PluginInstanceStatus[];
  }
@@ -36,6 +36,8 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..770bf1bb479cdedd10c8ba32ffd63877
 +    installedVersion: string;
 +    latestVersion?: string;
 +    updateAvailable: boolean;
++    /** Whether this server's configuration still allows the package; an update is never offered when it doesn't. */
++    allowed?: boolean;
 +    /** Why the registry couldn't be checked for this plugin. */
 +    error?: string;
 +}
@@ -66,10 +68,27 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..770bf1bb479cdedd10c8ba32ffd63877
 +    plugin: Plugin;
 +    dependencies: Plugin[];
 +}
++/** The other plugins a previewed change was confirmed to install and enable (from its `PluginChangePlan`). The server
++ * refuses the change (409) when what it would do now differs, e.g. because a new dependency appeared since. Send empty
++ * lists to require that nothing else is installed or enabled. */
++export interface PluginExpectedPlan {
++    install: {
++        name: string;
++        version: string;
++    }[];
++    enable: string[];
++}
++/** The `expectedPlan` to send for a change previewed as `plan`. */
++export declare function expectedPlanOf(plan: Pick<PluginChangePlan, "install" | "enable">): PluginExpectedPlan;
  export interface UpdatePluginInput {
      /** The row's optimistic-lock counter. */
      version?: number;
-@@ -82,10 +135,21 @@ export interface UpdatePluginInput {
+@@ -79,13 +146,27 @@ export interface UpdatePluginInput {
+     enabled?: boolean;
+     /** A `null` value clears a setting back to the plugin's own default. */
+     settings?: Record<string, PluginSettingValue | null>;
++    /** What a previewed version change or enable was confirmed to also install and enable. */
++    expectedPlan?: PluginExpectedPlan;
  }
  export declare function listPlugins(): Promise<Plugin[]>;
  export declare function getPluginStatus(): Promise<PluginStatus>;
@@ -87,18 +106,30 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..770bf1bb479cdedd10c8ba32ffd63877
 + * enable, and what would refuse it. Nothing is changed. */
 +export declare function planPluginChange(name: string, packageVersion?: string): Promise<PluginChangePlan>;
 +/** Adds a plugin, at its latest version unless `packageVersion` is given, installing and enabling the plugins it
-+ * requires first. Refused (409) when a requirement conflicts with an installed plugin's version. */
-+export declare function addPlugin(name: string, packageVersion?: string): Promise<AddPluginResult>;
++ * requires first. Refused (409) when a requirement conflicts with an installed plugin's version, or when
++ * `expectedPlan` is given and no longer matches what adding it would install and enable. */
++export declare function addPlugin(name: string, packageVersion?: string, expectedPlan?: PluginExpectedPlan): Promise<AddPluginResult>;
  export declare function updatePlugin(uid: string, input: UpdatePluginInput): Promise<Plugin>;
 -/** Removes a plugin. Data it stored stays in the database. */
 +/** Removes a plugin. Data it stored stays in the database. Refused (409) while an enabled plugin requires it, as is
 + * disabling it with `updatePlugin()`. */
  export declare function removePlugin(uid: string): Promise<void>;
 diff --git a/dist/admin/pluginsApi.js b/dist/admin/pluginsApi.js
-index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..cc848809c8e5e0a3284bd6122f6808c6bef2c06d 100644
+index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..efcdf68975dfd3b0790451967e071101a702a60f 100644
 --- a/dist/admin/pluginsApi.js
 +++ b/dist/admin/pluginsApi.js
-@@ -16,19 +16,43 @@ export function listPlugins() {
+@@ -9,6 +9,10 @@
+  * `getPluginStatus()`.
+  */
+ import { apiFetch } from "../util/api.js";
++/** The `expectedPlan` to send for a change previewed as `plan`. */
++export function expectedPlanOf(plan) {
++    return { install: plan.install.map(({ name, version }) => ({ name, version })), enable: [...plan.enable] };
++}
+ const BASE = "/system/plugins";
+ export function listPlugins() {
+     return apiFetch(BASE);
+@@ -16,19 +20,44 @@ export function listPlugins() {
  export function getPluginStatus() {
      return apiFetch(`${BASE}/status`);
  }
@@ -121,6 +152,8 @@ index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..cc848809c8e5e0a3284bd6122f6808c6
      return apiFetch(`${BASE}/registry/${encodeURIComponent(name)}${query}`);
  }
 -/** Adds a plugin, at its latest version unless `packageVersion` is given. */
+-export function addPlugin(name, packageVersion) {
+-    return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion }) });
 +/** What adding `name` - or changing it, when installed - at `packageVersion` (default: latest) would also install and
 + * enable, and what would refuse it. Nothing is changed. */
 +export function planPluginChange(name, packageVersion) {
@@ -131,9 +164,10 @@ index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..cc848809c8e5e0a3284bd6122f6808c6
 +    return apiFetch(`${BASE}/plan?${query.toString()}`);
 +}
 +/** Adds a plugin, at its latest version unless `packageVersion` is given, installing and enabling the plugins it
-+ * requires first. Refused (409) when a requirement conflicts with an installed plugin's version. */
- export function addPlugin(name, packageVersion) {
-     return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion }) });
++ * requires first. Refused (409) when a requirement conflicts with an installed plugin's version, or when
++ * `expectedPlan` is given and no longer matches what adding it would install and enable. */
++export function addPlugin(name, packageVersion, expectedPlan) {
++    return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion, expectedPlan }) });
  }
  export function updatePlugin(uid, input) {
      return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
@@ -144,3 +178,22 @@ index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..cc848809c8e5e0a3284bd6122f6808c6
  export function removePlugin(uid) {
      return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "DELETE" });
  }
+diff --git a/dist/mail/mailboxAccessApi.d.ts b/dist/mail/mailboxAccessApi.d.ts
+index e0d05d30172c848527f600d7943cc7a00c8ccd73..fa9adf7a574b097a01e0d26504d24f29877ca624 100644
+--- a/dist/mail/mailboxAccessApi.d.ts
++++ b/dist/mail/mailboxAccessApi.d.ts
+@@ -1,7 +1,13 @@
++/** A role that can be granted. */
+ export type MailboxAccessRole = "viewer" | "manager";
++/** A member's role as listed: `"custom"` for any other set of actions granted outside this API, which can't be set
++ * here - see `actions` for what it allows. */
++export type MailboxAccessMemberRole = MailboxAccessRole | "custom";
+ export interface MailboxAccessMember {
+     userOrRoleId: string;
+-    role: MailboxAccessRole;
++    role: MailboxAccessMemberRole;
++    /** The ACL actions the member holds. */
++    actions?: string[];
+ }
+ export interface MailboxOwnerLookup {
+     userUid: string;

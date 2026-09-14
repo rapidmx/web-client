@@ -11,7 +11,7 @@ import { jsonResponse, mockFetch } from "../../testUtils.js";
 const { generateEscrowKeyPair } = vi.hoisted(() => ({ generateEscrowKeyPair: vi.fn() }));
 vi.mock("@rapidmx/react-shared/crypto/escrowKeys.js", () => ({ generateEscrowKeyPair }));
 
-import EscrowSetupStep, { downloadTextFile } from "../../../../apps/shared/components/admin/setup/EscrowSetupStep.js";
+import EscrowSetupStep, { DOWNLOAD_URL_LIFETIME_MS, downloadTextFile } from "../../../../apps/shared/components/admin/setup/EscrowSetupStep.js";
 
 const keys = {
     certificateDer: new Uint8Array([1]),
@@ -84,13 +84,23 @@ describe("EscrowSetupStep", () => {
         expect(screen.getByLabelText("Escrow scope name")).toBeDisabled();
         expect(screen.queryByRole("button", { name: "Create escrow scope" })).not.toBeInTheDocument();
 
-        await user.click(screen.getByRole("button", { name: "Download private key" }));
+        // The private key has to be downloaded before it can be marked as saved; the certificate alone isn't enough.
+        expect(screen.getByLabelText("I’ve saved the private key somewhere safe")).toBeDisabled();
+        expect(screen.getByText("Download the private key before continuing.")).toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Download certificate" }));
+        expect(screen.getByLabelText("I’ve saved the private key somewhere safe")).toBeDisabled();
+        await user.click(screen.getByRole("button", { name: "Download private key" }));
         expect(createObjectURL).toHaveBeenCalledTimes(2);
-        expect(revokeObjectURL).toHaveBeenCalledWith("blob:escrow");
+        // Revoked later, so a browser still reading the download isn't cut off.
+        expect(revokeObjectURL).not.toHaveBeenCalled();
 
         await user.click(screen.getByLabelText("I’ve saved the private key somewhere safe"));
-        expect(screen.getByLabelText("Fingerprint (hex SHA-256)")).toHaveValue("abcd");
+        const fingerprint = screen.getByLabelText("Fingerprint (hex SHA-256)");
+        expect(fingerprint).toHaveValue("abcd");
+        // Generated key fields can't be edited, and what's sent is the generated key regardless of the form.
+        expect(fingerprint).toHaveAttribute("readonly");
+        expect(screen.getByLabelText("Public key (base64)")).toHaveAttribute("readonly");
+        fireEvent.change(fingerprint, { target: { value: "tampered" } });
 
         await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
         expect(await screen.findByText("At least one holder is required.")).toBeInTheDocument();
@@ -104,7 +114,7 @@ describe("EscrowSetupStep", () => {
                 name: "Legal escrow",
                 holderUserUids: ["holder-1"],
                 requiredHolders: 1,
-                publicKey: expect.objectContaining({ publicKey: "AQ==", type: "x509", fingerprint: "abcd" }),
+                publicKey: keys.publicKey,
             }),
         );
         expect(screen.getByLabelText("Don't add another escrow scope")).toBeChecked();
@@ -151,11 +161,74 @@ describe("EscrowSetupStep", () => {
         await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Escrow scopes set up: Existing."));
     });
 
-    it("downloads text as a named file", () => {
-        const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
-        downloadTextFile("a.pem", "text");
-        expect(click).toHaveBeenCalled();
-        expect(createObjectURL.mock.calls[0][0]).toBeInstanceOf(Blob);
-        click.mockRestore();
+    it("names downloads 'escrow' when the scope name has no file-safe characters", async () => {
+        mockEscrow();
+        const filenames: string[] = [];
+        const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+            filenames.push(this.download);
+        });
+        try {
+            const user = userEvent.setup();
+            render(<EscrowSetupStep />);
+            await user.click(await screen.findByLabelText("Generate new escrow keys in this browser"));
+            await user.clear(screen.getByLabelText("Escrow scope name"));
+            await user.type(screen.getByLabelText("Escrow scope name"), "!!!");
+            await user.click(screen.getByRole("button", { name: "Generate keys" }));
+            await user.click(await screen.findByRole("button", { name: "Download private key" }));
+            await user.click(screen.getByRole("button", { name: "Download certificate" }));
+            expect(filenames).toEqual(["escrow-private-key.pem", "escrow-certificate.pem"]);
+
+            // Going back to no escrow discards the generated keys.
+            await user.click(screen.getByLabelText("Don't use escrow"));
+            expect(screen.getByLabelText("Don't use escrow")).toBeChecked();
+            expect(screen.queryByLabelText("Escrow scope name")).not.toBeInTheDocument();
+            await user.click(screen.getByLabelText("Generate new escrow keys in this browser"));
+            expect(screen.getByRole("button", { name: "Generate keys" })).toBeInTheDocument();
+        } finally {
+            click.mockRestore();
+        }
+    });
+
+    it("creates a scope before the existing scopes have loaded, and shows a generic error for a non-API failure", async () => {
+        let fail = true;
+        mockFetch((url, init) => {
+            // The existing scopes never finish loading.
+            if (url.startsWith("/api/escrow/scopes?")) return new Promise<Response>(() => undefined);
+            if (url === "/api/escrow/scopes" && init?.method === "POST") {
+                if (fail) throw new TypeError("network down");
+                return jsonResponse(200, { uid: "s3", ...JSON.parse(init.body as string) });
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<EscrowSetupStep />);
+        await user.click(screen.getByLabelText("Use a certificate I already have"));
+        await user.clear(screen.getByLabelText("Escrow scope name"));
+        await user.type(screen.getByLabelText("Escrow scope name"), "Early");
+        await user.type(screen.getByLabelText("Public key (base64)"), "AQ==");
+        await user.type(screen.getByLabelText("Fingerprint (hex SHA-256)"), "ff");
+        await addHolder(user, "h1");
+        await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
+        expect(await screen.findByText("Could not create the escrow scope.")).toBeInTheDocument();
+
+        fail = false;
+        await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
+        await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Escrow scopes set up: Early."));
+    });
+
+    it("downloads text as a named file, revoking its URL only after a delay", () => {
+        vi.useFakeTimers();
+        try {
+            const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+            downloadTextFile("a.pem", "text");
+            expect(click).toHaveBeenCalled();
+            expect(createObjectURL.mock.calls[0][0]).toBeInstanceOf(Blob);
+            expect(revokeObjectURL).not.toHaveBeenCalled();
+            vi.advanceTimersByTime(DOWNLOAD_URL_LIFETIME_MS);
+            expect(revokeObjectURL).toHaveBeenCalledWith("blob:escrow");
+            click.mockRestore();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

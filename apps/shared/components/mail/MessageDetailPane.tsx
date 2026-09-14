@@ -29,6 +29,7 @@ import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurit
 import { useCompose } from "./compose/ComposeContext.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
+import { moveLocalEntity } from "../../search/localIndexRpcClient.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -276,6 +277,8 @@ export default function MessageDetailPane({
         setCancelError(null);
         try {
             const updated = await cancelScheduledSend(message!, draftsFolderUid!);
+            // Keeps a `folder:`-scoped Tier 2 local search from still finding it in its old folder.
+            void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
             onScheduledSendCanceled?.(updated);
         } catch (err) {
             setCancelError(err instanceof ApiRequestError ? err.message : "Could not cancel this scheduled send.");
@@ -292,6 +295,7 @@ export default function MessageDetailPane({
         setArchiveError(null);
         try {
             const updated = await archiveMessage(message!.uid);
+            void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
             onArchived?.(updated);
         } catch (err) {
             setArchiveError(err instanceof ApiRequestError ? err.message : "Could not archive this message.");

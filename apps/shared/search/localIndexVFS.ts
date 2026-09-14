@@ -186,7 +186,38 @@ export class EncryptingVFS extends FacadeVFS {
         return this.#inner.jWrite(pFile, physical, blockIndex * PHYSICAL_BLOCK_SIZE);
     }
 
+    /** Set once any block has failed to decrypt/authenticate (or the inner VFS failed a read/write outright)
+     * - `localIndexWorker.ts` checks this after a failed SQLite call to tell real corruption (discard and
+     * rebuild, spec §11 "Invalidation") apart from an ordinary error such as a malformed FTS5 query. */
+    corruptionDetected = false;
+
+    /**
+     * `jRead`/`jWrite` MUST NOT throw: with the Asyncify build, an exception escaping an async VFS method
+     * never reaches the awaiting `sqlite3.*` call - it surfaces only as an unhandled rejection and the
+     * SQLite call hangs forever (confirmed by direct reproduction in node against the real wa-sqlite build).
+     * A thrown `PageCorruptedError` therefore used to wedge the whole connection instead of triggering a
+     * rebuild. Errors are converted to an I/O error return code here, which SQLite does propagate as a
+     * normal `SQLiteError`, and recorded on `corruptionDetected`.
+     */
     async jRead(pFile: number, pData: Uint8Array, iOffset: number): Promise<number> {
+        try {
+            return await this.#jReadBlocks(pFile, pData, iOffset);
+        } catch {
+            this.corruptionDetected = true;
+            return VFS.SQLITE_IOERR_READ;
+        }
+    }
+
+    async jWrite(pFile: number, pData: Uint8Array, iOffset: number): Promise<number> {
+        try {
+            return await this.#jWriteBlocks(pFile, pData, iOffset);
+        } catch {
+            this.corruptionDetected = true;
+            return VFS.SQLITE_IOERR_WRITE;
+        }
+    }
+
+    async #jReadBlocks(pFile: number, pData: Uint8Array, iOffset: number): Promise<number> {
         const filename = this.#filenamesByFileId.get(pFile) ?? `(unknown:${pFile})`;
         const startBlock = Math.floor(iOffset / LOGICAL_BLOCK_SIZE);
         const endBlock = Math.floor((iOffset + pData.length - 1) / LOGICAL_BLOCK_SIZE);
@@ -207,7 +238,7 @@ export class EncryptingVFS extends FacadeVFS {
         return anyAbsent ? VFS.SQLITE_IOERR_SHORT_READ : VFS.SQLITE_OK;
     }
 
-    async jWrite(pFile: number, pData: Uint8Array, iOffset: number): Promise<number> {
+    async #jWriteBlocks(pFile: number, pData: Uint8Array, iOffset: number): Promise<number> {
         const filename = this.#filenamesByFileId.get(pFile) ?? `(unknown:${pFile})`;
         const startBlock = Math.floor(iOffset / LOGICAL_BLOCK_SIZE);
         const endBlock = Math.floor((iOffset + pData.length - 1) / LOGICAL_BLOCK_SIZE);

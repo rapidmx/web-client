@@ -33,6 +33,7 @@ import {
     uploadAttachment,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
+import { filterWritableMailboxes } from "../writableMailboxes.js";
 import { decideMessageEncryption, resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
@@ -132,6 +133,8 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
     const [draftsFolderUid, setDraftsFolderUid] = useState<string | undefined>();
     const [folderError, setFolderError] = useState<string | null>(null);
     const [draft, setDraft] = useState<Message | null>(null);
+    // Drafts replaced by a From switch, awaiting deletion until their replacement has actually been created.
+    const supersededDraftsRef = useRef<Message[]>([]);
     const [draftError, setDraftError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState(false);
     const [manualSize, setManualSize] = useState<Size | null>(null);
@@ -174,6 +177,12 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
     useEffect(() => {
         let cancelled = false;
         listMailboxes({ limit: 100 })
+            // Only mailboxes the caller can send from - a view-only share would just fail at draft creation.
+            // (The session's own mailbox, e.g. a reply's, always stays listed so the picker matches its value.)
+            .then(async (result) => {
+                const writable = new Set(await filterWritableMailboxes(result, userUid));
+                return result.filter((mb) => writable.has(mb) || mb.uid === session.mailboxUid);
+            })
             .then((result) => {
                 if (cancelled) {
                     return;
@@ -191,7 +200,6 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
         return () => {
             cancelled = true;
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -273,7 +281,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
         const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
         const unchecked = addresses.filter((r) => !(r.address in recipientStatuses));
         for (const recipient of unchecked) {
-            lookupKeys(mailbox.uid, recipient.address)
+            void lookupKeys(mailbox.uid, recipient.address)
                 .catch(() => undefined)
                 .then((lookup) => {
                     const status = resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, recipient.address, lookup);
@@ -321,6 +329,11 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
                     return;
                 }
                 setDraft(created);
+                // Only now that the replacement exists is it safe to discard the draft(s) a From switch
+                // superseded - if creating this one had failed, the earlier draft is still there.
+                for (const superseded of supersededDraftsRef.current.splice(0)) {
+                    void deleteMessage(superseded.uid, superseded.version).catch(() => undefined);
+                }
             })
             .catch((err) => {
                 if (!cancelled) {
@@ -332,15 +345,16 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
         };
     }, [mailboxUid, draftsFolderUid, draft]);
 
-    /** Switches the sending mailbox: discards the current (unsent, upload-free) draft and resets the
-     * per-mailbox state, so the effects above start a fresh draft and crypto context in the new mailbox.
-     * Recipients, subject, and body are kept. */
+    /** Switches the sending mailbox: supersedes the current (unsent, upload-free) draft and resets the
+     * per-mailbox state, so the effects above start a fresh draft and crypto context in the new mailbox -
+     * the old draft is deleted only once the new one has been created. Recipients, subject, and body are
+     * kept. */
     function handleFromChange(nextMailboxUid: string) {
         if (nextMailboxUid === mailboxUid || hasUploads) {
             return;
         }
         if (draft) {
-            void deleteMessage(draft.uid, draft.version).catch(() => undefined);
+            supersededDraftsRef.current.push(draft);
         }
         setDraft(null);
         setDraftsFolderUid(undefined);
@@ -484,7 +498,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
                     setEncryptionBlocked(decision.blockedRecipients);
                     return "blocked";
                 }
-                recipientCertDers = [unlocked!.encryptionCertDer!, ...statuses.map((s) => fromBase64(s.encryptCert!.publicKey))];
+                recipientCertDers = [unlocked.encryptionCertDer!, ...statuses.map((s) => fromBase64(s.encryptCert!.publicKey))];
             }
         }
 
@@ -513,7 +527,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
             messageId: `<${crypto.randomUUID()}@${domain}>`,
         };
         const bodyContentType = 'text/html; charset="utf-8"';
-        const signing = canSign ? { certDer: unlocked!.signingCertDer!, privateKey: unlocked!.signingPrivateKey! } : undefined;
+        const signing = canSign ? { certDer: unlocked.signingCertDer!, privateKey: unlocked.signingPrivateKey! } : undefined;
 
         const outerHeaders = wantEncrypt ? applyBaselineOuterHeaders(protectedHeaders) : protectedHeaders;
         const mimePart = wantEncrypt

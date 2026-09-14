@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { HiOutlineBars3 } from "react-icons/hi2";
 import {
@@ -27,6 +27,7 @@ import { CalendarOccurrence, expandAllOccurrences } from "@rapidmx/react-shared/
 import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
 import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../shared/components/calendar/layout/CalendarShell.js";
 import CalendarListSidebar from "../../shared/components/calendar/CalendarListSidebar.js";
+import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import EventModal from "../../shared/components/calendar/EventModal.js";
 import MiniDatePicker from "@rapidmx/react-shared/components/pickers/MiniDatePicker.js";
 import MonthView from "../../shared/components/calendar/MonthView.js";
@@ -38,7 +39,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 export default function CalendarPage(props: CalendarShellProps) {
     return (
         <CalendarShell {...props}>
-            <CalendarContent />
+            <CalendarContent userUid={props.userUid} />
         </CalendarShell>
     );
 }
@@ -56,7 +57,7 @@ interface ModalState {
     targetFolderUid?: string;
 }
 
-function CalendarContent() {
+function CalendarContent({ userUid }: { userUid?: string }) {
     const { mailboxUid, folderUid, calendarFolders, mailboxCalendars, mailboxes, reloadFolders, colorFor } = useCalendarShell();
     // `PointerSensor` alone activates a drag on the very first touch-move, indistinguishable from a
     // scroll gesture on a touch device. `MouseSensor` (a small `distance` — desktop drags still start
@@ -140,7 +141,14 @@ function CalendarContent() {
         return { rangeStart: start, rangeEnd: end, days: [start] };
     }, [view, viewDate]);
 
+    // Only the most recent reload() may apply its results - toggling calendars (or saving/dragging an event)
+    // while an earlier, slower fetch is still in flight must not let that stale response overwrite newer
+    // events. (No date range is passed: `listCalendarEvents()` deliberately fetches the whole calendar and
+    // filters client-side - see its own doc comment on the server-side range query it works around.)
+    const reloadSeqRef = useRef(0);
+
     function reload() {
+        const seq = ++reloadSeqRef.current;
         const targets = calendarFolders.filter((f) => checkedFolderUids.has(f.uid));
         if (targets.length === 0) {
             setEvents([]);
@@ -151,6 +159,9 @@ function CalendarContent() {
         setError(null);
         void Promise.allSettled(targets.map((f) => listCalendarEvents(f.uid)))
             .then((results) => {
+                if (seq !== reloadSeqRef.current) {
+                    return;
+                }
                 const loaded: CalendarEvent[] = [];
                 const failures: { name: string; err: unknown }[] = [];
                 results.forEach((result, i) => {
@@ -175,7 +186,11 @@ function CalendarContent() {
                     setError(`Could not load events for: ${failures.map((f) => f.name).join(", ")}.`);
                 }
             })
-            .finally(() => setLoading(false));
+            .finally(() => {
+                if (seq === reloadSeqRef.current) {
+                    setLoading(false);
+                }
+            });
     }
 
     // Keyed on stable string summaries (not the array/set objects themselves, which are new references
@@ -275,13 +290,15 @@ function CalendarContent() {
     const modalFolderUid = modal ? (modal.targetFolderUid ?? modal.occurrence?.folderUid ?? folderUid) : undefined;
     const modalMailboxUid = calendarFolders.find((f) => f.uid === modalFolderUid)?.mailboxUid ?? mailboxUid;
     const modalMailbox = mailboxes.find((mb) => mb.uid === modalMailboxUid);
-    // Mailboxes a new event can be created in - only those with at least one calendar.
+    // Mailboxes a new event can be created in - only those with at least one calendar that the caller can
+    // write to (a view-only share is left out; see writableMailboxes.ts).
+    const writableMailboxes = useWritableMailboxes(mailboxes, userUid, modalMailboxUid);
     const mailboxOptions = useMemo(
         () =>
             mailboxCalendars
-                .filter((mc) => mc.calendarFolders.length > 0)
+                .filter((mc) => mc.calendarFolders.length > 0 && writableMailboxes.some((mb) => mb.uid === mc.mailbox.uid))
                 .map((mc) => ({ mailbox: mc.mailbox, calendars: mc.calendarFolders.map((f) => ({ uid: f.uid, name: f.name })) })),
-        [mailboxCalendars],
+        [mailboxCalendars, writableMailboxes],
     );
 
     const sidebarContent = (

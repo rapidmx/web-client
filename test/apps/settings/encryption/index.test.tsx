@@ -770,6 +770,22 @@ describe("SettingsEncryptionPage", () => {
         expect(localStorage.getItem("rapidmx:idle-timeout-minutes")).toBe("0");
     });
 
+    it("changing the local search index size persists it to localStorage immediately", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+        expect(screen.getByText(/Defaults to 500 MB on this device/)).toBeInTheDocument();
+
+        await user.selectOptions(screen.getByLabelText("Local search index size"), "2 GB");
+
+        expect(screen.getByLabelText("Local search index size")).toHaveValue(String(2 * 1024 * 1024 * 1024));
+        expect(localStorage.getItem("rapidmx:local-index-byte-budget")).toBe(String(2 * 1024 * 1024 * 1024));
+        localStorage.removeItem("rapidmx:local-index-byte-budget");
+    });
+
     it("reflects an already-configured session timeout on load", async () => {
         localStorage.setItem("rapidmx:idle-timeout-minutes", "60");
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });

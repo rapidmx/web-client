@@ -2,18 +2,19 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useEffect, useState } from "react";
+import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { getRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
 import { getMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
 import { createDomain, Domain, listDomains } from "@rapidmx/react-shared/admin/domainsApi.js";
-import { completeSetup, getSetupStatus, saveSetupStep } from "@rapidmx/react-shared/admin/setupApi.js";
+import { completeSetup, getSetupStatus, saveSetupStep, SetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
 import { getBranding } from "@rapidmx/react-shared/branding/brandingApi.js";
 import { EncryptionPolicy, getEncryptionPolicy } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import BrandingForm from "../settings/BrandingForm.js";
 import DomainDnsSetup from "../settings/DomainDnsSetup.js";
 import EncryptionPolicyForm, { isEncryptionEnabled } from "../settings/EncryptionPolicyForm.js";
@@ -42,6 +43,10 @@ function isStepId(value: string | undefined): value is SetupStepId {
     return SETUP_STEPS.some((step) => step.id === value);
 }
 
+function errorMessage(err: unknown, fallback: string): string {
+    return err instanceof ApiRequestError ? err.message : fallback;
+}
+
 export interface SetupWizardProps {
     userUid: string;
 }
@@ -53,15 +58,33 @@ export interface SetupWizardProps {
  */
 export default function SetupWizard({ userUid }: SetupWizardProps) {
     const [step, setStep] = useState<SetupStepId | null>(null);
+    const [status, setStatus] = useState<SetupStatus | undefined>();
     const [domains, setDomains] = useState<Domain[]>([]);
+    const [domainsError, setDomainsError] = useState<string | null>(null);
     const [encryption, setEncryption] = useState<EncryptionPolicy | null>(null);
     const [finishing, setFinishing] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    /** Which of the settings step's forms have edits that haven't been saved. */
+    const [unsaved, setUnsaved] = useState<Record<string, boolean>>({});
+    /** The step the administrator asked to go to while the settings step had unsaved edits. */
+    const [leavingTo, setLeavingTo] = useState<SetupStepId | null>(null);
+    const [progressFailed, setProgressFailed] = useState(false);
+    /** Step saves run one at a time, and only the latest step still waiting is saved. */
+    const progress = useRef<{ running: Promise<void> | null; next: SetupStepId | null }>({ running: null, next: null });
+
+    function loadDomains(): Promise<void> {
+        return listDomains({ limit: 25 })
+            .then((list) => {
+                setDomains(list);
+                setDomainsError(null);
+            })
+            .catch((err) => setDomainsError(errorMessage(err, "Could not load your domains.")));
+    }
 
     useEffect(() => {
-        void Promise.all([getSetupStatus().catch(() => undefined), listDomains({ limit: 25 }).catch(() => [] as Domain[])]).then(([status, list]) => {
-            setDomains(list);
-            setStep(isStepId(status?.currentStep) ? status.currentStep : "plugins");
+        void Promise.all([getSetupStatus().catch(() => undefined), loadDomains()]).then(([loaded]) => {
+            setStatus(loaded);
+            setStep(isStepId(loaded?.currentStep) ? loaded.currentStep : "plugins");
         });
     }, []);
 
@@ -81,34 +104,90 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
     const current = SETUP_STEPS[index];
     const last = index === SETUP_STEPS.length - 1;
 
+    /** Records the step the administrator is on. Progress is a convenience for resuming, so a failure is only noted. */
+    function saveProgress(next: SetupStepId) {
+        const queue = progress.current;
+        queue.next = next;
+        if (queue.running) {
+            return;
+        }
+        queue.running = (async () => {
+            while (queue.next) {
+                const target: SetupStepId = queue.next;
+                queue.next = null;
+                try {
+                    await saveSetupStep(target);
+                    setProgressFailed(false);
+                } catch (err) {
+                    console.warn("Could not save setup progress", err);
+                    setProgressFailed(true);
+                }
+            }
+            queue.running = null;
+        })();
+    }
+
     function goTo(next: SetupStepId) {
         setError(null);
+        setLeavingTo(null);
+        setUnsaved({});
         setStep(next);
-        // Progress is a convenience for resuming - failing to record it shouldn't stop the administrator.
-        void saveSetupStep(next).catch(() => undefined);
+        saveProgress(next);
         window.scrollTo?.(0, 0);
     }
+
+    /** Goes to `next`, first asking whether to discard any unsaved server settings. */
+    function requestGoTo(next: SetupStepId) {
+        if (step === "settings" && Object.values(unsaved).some(Boolean)) {
+            setLeavingTo(next);
+            return;
+        }
+        goTo(next);
+    }
+
+    const trackUnsaved = (form: string) => (dirty: boolean) => setUnsaved((prev) => ({ ...prev, [form]: dirty }));
 
     async function finish() {
         setFinishing(true);
         setError(null);
         try {
+            // Let a step still being recorded land first, so it can't arrive after setup is marked finished.
+            await progress.current.running;
             await completeSetup();
             window.location.href = "/admin";
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not finish setup.");
+            setError(errorMessage(err, "Could not finish setup."));
             setFinishing(false);
         }
     }
 
-    const blocked = step === "domain" && domains.length === 0;
+    const noDomain: boolean = domains.length === 0;
+    const blocked = (step === "domain" || last) && noDomain;
 
     return (
         <div className="flex flex-col gap-6">
-            <div>
-                <h1 className="text-xl font-bold uppercase tracking-wide mb-1">Set up your server</h1>
-                <p className="text-sm text-text-muted">You can change any of these settings later from the admin console.</p>
+            <div className="flex items-start justify-between gap-4">
+                <div>
+                    <h1 className="text-xl font-bold uppercase tracking-wide mb-1">Set up your server</h1>
+                    <p className="text-sm text-text-muted">You can change any of these settings later from the admin console.</p>
+                </div>
+                {status && !status.required && (
+                    <a href="/admin" className="text-sm text-primary-dark underline whitespace-nowrap">
+                        Exit setup
+                    </a>
+                )}
             </div>
+
+            {domainsError && (
+                <Alert>
+                    <span className="flex flex-wrap items-center gap-2">
+                        {domainsError}
+                        <Button type="button" variant="secondary" className="!w-auto !py-1 !px-2 !text-xs" onClick={() => void loadDomains()}>
+                            Retry
+                        </Button>
+                    </span>
+                </Alert>
+            )}
 
             <ol aria-label="Setup steps" className="flex flex-wrap gap-2">
                 {SETUP_STEPS.map((s, i) => (
@@ -117,8 +196,8 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                             type="button"
                             aria-current={s.id === step ? "step" : undefined}
                             // Steps after the domain need somewhere to put mail first.
-                            disabled={i > 1 && domains.length === 0}
-                            onClick={() => goTo(s.id)}
+                            disabled={i > 1 && noDomain}
+                            onClick={() => requestGoTo(s.id)}
                             className={[
                                 "text-sm py-1.5 px-3 rounded-pill border disabled:opacity-50",
                                 s.id === step
@@ -151,6 +230,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                             {(policy, onChange) => (
                                 <EncryptionPolicyForm
                                     policy={policy}
+                                    onDirtyChange={trackUnsaved("encryption")}
                                     onChange={(updated) => {
                                         onChange(updated);
                                         setEncryption(updated);
@@ -159,10 +239,10 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                             )}
                         </LoadedSettingsForm>
                         <LoadedSettingsForm load={getRetentionPolicy} loadErrorMessage="Could not load the retention policy.">
-                            {(policy, onChange) => <RetentionPolicyForm policy={policy} onChange={onChange} />}
+                            {(policy, onChange) => <RetentionPolicyForm policy={policy} onChange={onChange} onDirtyChange={trackUnsaved("retention")} />}
                         </LoadedSettingsForm>
                         <LoadedSettingsForm load={getMailboxPolicy} loadErrorMessage="Could not load the mailbox policy.">
-                            {(policy, onChange) => <MailboxPolicyForm policy={policy} onChange={onChange} />}
+                            {(policy, onChange) => <MailboxPolicyForm policy={policy} onChange={onChange} onDirtyChange={trackUnsaved("mailbox")} />}
                         </LoadedSettingsForm>
                     </div>
                 )}
@@ -187,22 +267,37 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
 
             <div className="flex items-center gap-3 border-t border-border pt-5">
                 {index > 0 && (
-                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => goTo(SETUP_STEPS[index - 1].id)}>
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => requestGoTo(SETUP_STEPS[index - 1].id)}>
                         Back
                     </Button>
                 )}
                 <div className="flex-1" />
-                {blocked && <span className="text-sm text-text-muted">Add a domain to continue.</span>}
+                {progressFailed && <span className="text-xs text-text-muted">Your place in setup couldn&rsquo;t be saved.</span>}
+                {blocked && <span className="text-sm text-text-muted">{last ? "Add a domain before finishing setup." : "Add a domain to continue."}</span>}
                 {last ? (
-                    <Button type="button" className="!w-auto" loading={finishing} disabled={finishing} onClick={() => void finish()}>
+                    <Button type="button" className="!w-auto" loading={finishing} disabled={finishing || blocked} onClick={() => void finish()}>
                         Finish setup
                     </Button>
                 ) : (
-                    <Button type="button" className="!w-auto" disabled={blocked} onClick={() => goTo(SETUP_STEPS[index + 1].id)}>
+                    <Button type="button" className="!w-auto" disabled={blocked} onClick={() => requestGoTo(SETUP_STEPS[index + 1].id)}>
                         Continue
                     </Button>
                 )}
             </div>
+
+            {leavingTo && (
+                <Modal open onClose={() => setLeavingTo(null)} title="Discard unsaved changes?">
+                    <p className="text-sm mb-4">Some server settings on this step have changes that haven&rsquo;t been saved.</p>
+                    <div className="flex gap-2 justify-end">
+                        <Button type="button" variant="secondary" className="!w-auto" onClick={() => setLeavingTo(null)}>
+                            Keep editing
+                        </Button>
+                        <Button type="button" className="!w-auto" onClick={() => goTo(leavingTo)}>
+                            Discard changes
+                        </Button>
+                    </div>
+                </Modal>
+            )}
         </div>
     );
 }
@@ -224,7 +319,7 @@ function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (dom
             onCreated(await createDomain({ name: name.trim() }));
             setName("");
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not add the domain.");
+            setError(errorMessage(err, "Could not add the domain."));
         } finally {
             setSaving(false);
         }
@@ -260,18 +355,29 @@ function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (dom
 
 function MailboxesStep({ userUid, domain }: { userUid: string; domain?: string }) {
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
+    const [loaded, setLoaded] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const [formKey, setFormKey] = useState(0);
 
     useEffect(() => {
         listMailboxes({ limit: 100 })
-            .then(setMailboxes)
-            .catch(() => undefined);
+            .then((list) =>
+                // Keep any mailbox created here while the list was loading.
+                setMailboxes((prev) => [...list, ...prev.filter((mine) => !list.some((mailbox) => mailbox.uid === mine.uid))]),
+            )
+            .catch((err) =>
+                setError(
+                    `${errorMessage(err, "Could not load the existing mailboxes.")} Check the Mailboxes page before creating your own, so you don't create it twice.`,
+                ),
+            )
+            .finally(() => setLoaded(true));
     }, []);
 
     const hasOwn = mailboxes.some((mailbox) => mailbox.ownerUserUid === userUid);
 
     return (
         <div className="flex flex-col gap-5 max-w-xl">
+            {error && <Alert>{error}</Alert>}
             {mailboxes.length > 0 && (
                 <div>
                     <h3 className="text-sm font-bold uppercase tracking-wide mb-2">Mailboxes created</h3>
@@ -285,16 +391,22 @@ function MailboxesStep({ userUid, domain }: { userUid: string; domain?: string }
                     </ul>
                 </div>
             )}
-            <h3 className="text-base font-bold">{hasOwn ? "Add another mailbox" : "Your mailbox"}</h3>
-            <MailboxCreateForm
-                key={formKey}
-                submitLabel="Create mailbox"
-                defaults={hasOwn ? { domain } : { localPart: "admin", domain, displayName: "Administrator", ownerUserUid: userUid }}
-                onCreated={(mailbox) => {
-                    setMailboxes((prev) => [...prev, mailbox]);
-                    setFormKey((k) => k + 1);
-                }}
-            />
+            {!loaded ? (
+                <p className="text-sm text-text-muted">Loading&hellip;</p>
+            ) : (
+                <>
+                    <h3 className="text-base font-bold">{hasOwn ? "Add another mailbox" : "Your mailbox"}</h3>
+                    <MailboxCreateForm
+                        key={formKey}
+                        submitLabel="Create mailbox"
+                        defaults={hasOwn ? { domain } : { localPart: "admin", domain, displayName: "Administrator", ownerUserUid: userUid }}
+                        onCreated={(mailbox) => {
+                            setMailboxes((prev) => [...prev, mailbox]);
+                            setFormKey((k) => k + 1);
+                        }}
+                    />
+                </>
+            )}
         </div>
     );
 }

@@ -10,6 +10,7 @@ import AdminShell, { AdminShellProps } from "../shared/components/admin/layout/A
 import MailboxTable from "../shared/components/admin/mailboxes/MailboxTable.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const PAGE_SIZE = 25;
 
@@ -38,6 +39,7 @@ function MailboxesListContent() {
 
     const hasNextPage = mailboxes.length === PAGE_SIZE;
     const [reopening, setReopening] = useState(false);
+    const [confirmingSetup, setConfirmingSetup] = useState(false);
 
     async function handleRunSetup() {
         setReopening(true);
@@ -47,6 +49,7 @@ function MailboxesListContent() {
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not reopen setup.");
             setReopening(false);
+            setConfirmingSetup(false);
         }
     }
 
@@ -55,7 +58,7 @@ function MailboxesListContent() {
             <div className="flex items-center justify-between mb-5">
                 <h1 className="text-xl font-bold uppercase tracking-wide">Mailboxes</h1>
                 <div className="flex gap-2">
-                    <Button type="button" variant="secondary" className="!w-auto" loading={reopening} disabled={reopening} onClick={() => void handleRunSetup()}>
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={reopening} onClick={() => setConfirmingSetup(true)}>
                         Run setup again
                     </Button>
                     <a href="/admin/mailboxes/new">
@@ -67,6 +70,21 @@ function MailboxesListContent() {
             </div>
 
             {error && <Alert>{error}</Alert>}
+
+            <Modal open={confirmingSetup} onClose={() => setConfirmingSetup(false)} title="Run setup again?">
+                <p className="text-sm mb-4">
+                    Setup starts again from its first step, and the admin console sends administrators to it until
+                    it&apos;s finished. Your existing settings, domains and mailboxes are kept.
+                </p>
+                <div className="flex gap-2 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingSetup(false)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto" loading={reopening} disabled={reopening} onClick={() => void handleRunSetup()}>
+                        Run setup
+                    </Button>
+                </div>
+            </Modal>
 
             {loading ? (
                 <p className="text-sm text-text-muted">Loading&hellip;</p>

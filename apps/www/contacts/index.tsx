@@ -22,6 +22,7 @@ import ContactsToolbar from "../../shared/components/contacts/ContactsToolbar.js
 import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar.js";
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
+import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 const INPUT_CLASS =
@@ -30,7 +31,7 @@ const INPUT_CLASS =
 export default function ContactsPage(props: ContactsShellProps) {
     return (
         <ContactsShell {...props}>
-            <ContactsContent />
+            <ContactsContent userUid={props.userUid} />
         </ContactsShell>
     );
 }
@@ -52,8 +53,10 @@ function downloadTextFile(filename: string, content: string): void {
     URL.revokeObjectURL(url);
 }
 
-function ContactsContent() {
+function ContactsContent({ userUid }: { userUid?: string }) {
     const { folderUid, mailboxUid, mailboxes } = useContactsShell();
+    // The new-contact form's Mailbox choices - view-only shares are left out (see writableMailboxes.ts).
+    const writableMailboxes = useWritableMailboxes(mailboxes, userUid, mailboxUid);
     const { openCompose } = useCompose();
     const isMobile = useIsMobile();
     const [contacts, setContacts] = useState<Contact[]>([]);
@@ -446,7 +449,7 @@ function ContactsContent() {
                     <ContactForm
                         mailboxUid={mailboxUid}
                         folderUid={folderUid}
-                        mailboxes={mailboxes}
+                        mailboxes={writableMailboxes}
                         onSaved={handleSaved}
                         onCancel={handleCancel}
                     />

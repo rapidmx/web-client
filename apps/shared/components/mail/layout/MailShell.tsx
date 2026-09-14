@@ -201,7 +201,7 @@ export default function MailShell({
             return;
         }
         setFoldersLoading(true);
-        Promise.all(
+        void Promise.all(
             mailboxes.map((mailbox) =>
                 listFolders(mailbox.uid)
                     .then((result): MailboxFolders => ({ mailbox, folders: result.filter((f) => MAIL_FOLDER_TYPES.has(f.type)) }))
@@ -392,6 +392,7 @@ export default function MailShell({
                 mailboxUid={activeMailboxUid}
                 mailboxKeys={activeMailbox?.keys}
                 folders={mailboxFolders.find((mf) => mf.mailbox.uid === activeMailboxUid)?.folders ?? []}
+                accessibleMailboxUids={status === "ready" ? mailboxes.map((mb) => mb.uid) : undefined}
             />
             <AppShell
                 active="mail"

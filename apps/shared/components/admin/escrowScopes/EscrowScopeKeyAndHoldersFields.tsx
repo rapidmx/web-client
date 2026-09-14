@@ -31,6 +31,8 @@ export interface EscrowScopeKeyAndHoldersFieldsProps {
     value: EscrowScopeKeyAndHoldersValue;
     onChange: (value: EscrowScopeKeyAndHoldersValue) => void;
     disabled?: boolean;
+    /** Shows the public key fields without letting them be edited, e.g. for keys generated in the browser. */
+    keyReadOnly?: boolean;
 }
 
 /** Builds an all-zeroes starting point for the "new" page — `notBefore`/`notAfter` default to "now" so an
@@ -49,7 +51,7 @@ export function emptyEscrowScopeKeyAndHoldersValue(): EscrowScopeKeyAndHoldersVa
     };
 }
 
-export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabled }: EscrowScopeKeyAndHoldersFieldsProps) {
+export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabled, keyReadOnly }: EscrowScopeKeyAndHoldersFieldsProps) {
     function set<K extends keyof EscrowScopeKeyAndHoldersValue>(key: K, next: EscrowScopeKeyAndHoldersValue[K]) {
         onChange({ ...value, [key]: next });
     }
@@ -70,6 +72,7 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
                         rows={4}
                         value={value.publicKey}
                         disabled={disabled}
+                        readOnly={keyReadOnly}
                         onChange={(e) => set("publicKey", e.target.value)}
                     />
                 </FormField>
@@ -81,6 +84,7 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
                         className={INPUT_CLASS}
                         value={value.keyType}
                         disabled={disabled}
+                        readOnly={keyReadOnly}
                         onChange={(e) => set("keyType", e.target.value)}
                         placeholder="x509"
                     />
@@ -93,6 +97,7 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
                         className={`${INPUT_CLASS} font-mono`}
                         value={value.fingerprint}
                         disabled={disabled}
+                        readOnly={keyReadOnly}
                         onChange={(e) => set("fingerprint", e.target.value)}
                     />
                 </FormField>
@@ -105,6 +110,7 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
                             className={INPUT_CLASS}
                             value={value.notBefore}
                             disabled={disabled}
+                            readOnly={keyReadOnly}
                             onChange={(e) => set("notBefore", e.target.value)}
                         />
                     </FormField>
@@ -116,6 +122,7 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
                             className={INPUT_CLASS}
                             value={value.notAfter}
                             disabled={disabled}
+                            readOnly={keyReadOnly}
                             onChange={(e) => set("notAfter", e.target.value)}
                         />
                     </FormField>

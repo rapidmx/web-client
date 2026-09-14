@@ -245,6 +245,46 @@ describe("TasksPage", () => {
         expect(screen.getByText("No tasks yet.")).toBeInTheDocument();
     });
 
+    it("refuses to create a task in another mailbox that has no Tasks folder", async () => {
+        const shared = { ...mailbox, uid: "mb2", ownerUserUid: "u9", primarySmtpAddress: "team@example.com", displayName: "Team" };
+        const fetchMock = mockShellAndTasks([], (url) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, shared]);
+            if (url.startsWith("/api/mail/folders") && url.includes("mb2")) return jsonResponse(200, []);
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+
+        await screen.findByText("No tasks yet.");
+        await user.selectOptions(screen.getByLabelText("Task mailbox"), "mb2");
+        await user.type(screen.getByLabelText("Add a task"), "Team chore");
+        await user.click(screen.getByRole("button", { name: "Add" }));
+
+        expect(await screen.findByText("That mailbox has no Tasks folder.")).toBeInTheDocument();
+        expect(fetchMock).not.toHaveBeenCalledWith("/api/mail/tasks", expect.objectContaining({ method: "POST" }));
+    });
+
+    it("names an unnamed other mailbox generically after creating a task in it", async () => {
+        const shared = { ...mailbox, uid: "mb2", ownerUserUid: "u9", primarySmtpAddress: "team@example.com", displayName: undefined };
+        const sharedTasksFolder = { ...tasksFolder, uid: "f-team-tasks", mailboxUid: "mb2" };
+        const created = task({ uid: "t-team", mailboxUid: "mb2", folderUid: "f-team-tasks", title: "Team chore" });
+        mockShellAndTasks([], (url, init) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, shared]);
+            if (url.startsWith("/api/mail/folders") && url.includes("mb2")) return jsonResponse(200, [sharedTasksFolder]);
+            if (url === "/api/mail/tasks" && init?.method === "POST") return jsonResponse(200, created);
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+
+        await screen.findByText("No tasks yet.");
+        await user.selectOptions(screen.getByLabelText("Task mailbox"), "mb2");
+        await user.type(screen.getByLabelText("Add a task"), "Team chore");
+        await user.click(screen.getByRole("button", { name: "Add" }));
+
+        expect(await screen.findByRole("status")).toHaveTextContent("“Team chore” was added to another mailbox.");
+    });
+
     it("shows a validation error and does not submit when the title is blank", async () => {
         const fetchMock = mockShellAndTasks([]);
         const user = userEvent.setup();

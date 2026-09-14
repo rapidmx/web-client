@@ -109,6 +109,67 @@ describe("UnlockPromptProvider", () => {
         expect(unlockWithPassword).not.toHaveBeenCalled();
     });
 
+    it("a second request for the same mailbox joins the open dialog, and one unlock settles both callers", async () => {
+        getUnlockedKeys.mockReturnValueOnce(undefined).mockReturnValueOnce(undefined).mockReturnValue(fakeUnlockedKeys);
+        unlockWithPassword.mockResolvedValue(undefined);
+        let request!: ReturnType<typeof useUnlockPrompt>["requestUnlock"];
+        function Capture() {
+            request = useUnlockPrompt().requestUnlock;
+            return null;
+        }
+        const user = userEvent.setup();
+        render(
+            <UnlockPromptProvider>
+                <Capture />
+            </UnlockPromptProvider>,
+        );
+        const first = request("mb1", []);
+        const second = request("mb1", []);
+        await screen.findByText("Unlock your mailbox");
+        await user.type(screen.getByLabelText("Encryption password"), "pw");
+        await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+        await expect(first).resolves.toBe(fakeUnlockedKeys);
+        await expect(second).resolves.toBe(fakeUnlockedKeys);
+        expect(unlockWithPassword).toHaveBeenCalledTimes(1);
+    });
+
+    it("a request for a different mailbox rejects the earlier caller instead of leaving it pending forever", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        let request!: ReturnType<typeof useUnlockPrompt>["requestUnlock"];
+        function Capture() {
+            request = useUnlockPrompt().requestUnlock;
+            return null;
+        }
+        const user = userEvent.setup();
+        render(
+            <UnlockPromptProvider>
+                <Capture />
+            </UnlockPromptProvider>,
+        );
+        const first = request("mb1", []);
+        const second = request("mb2", []);
+        await expect(first).rejects.toThrow("superseded");
+
+        let finishUnlock!: () => void;
+        unlockWithPassword.mockReturnValueOnce(new Promise<void>((resolve) => (finishUnlock = resolve)));
+        await user.type(await screen.findByLabelText("Encryption password"), "pw");
+        await user.click(screen.getByRole("button", { name: "Unlock" }));
+        expect(unlockWithPassword).toHaveBeenCalledWith("mb2", [], "pw");
+
+        // A third mailbox's request arrives while mb2's unlock is still in flight: mb2's caller is rejected,
+        // and mb2's late success must not close mb3's dialog.
+        const third = request("mb3", []);
+        const thirdOutcome = expect(third).rejects.toThrow("cancelled");
+        await expect(second).rejects.toThrow("superseded");
+        getUnlockedKeys.mockReturnValue(fakeUnlockedKeys);
+        finishUnlock();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.getByText("Unlock your mailbox")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+        await thirdOutcome;
+    });
+
     it("useUnlockPrompt() throws when used outside an UnlockPromptProvider", () => {
         function Bare() {
             useUnlockPrompt();

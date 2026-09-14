@@ -935,3 +935,64 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   - **Not verified live**: the `server` repo consumes this package as published `@rapidmx/web-client`
     ^0.3.1, so these UI changes aren't visible in `yarn dev` there until web-client (and react-shared) are
     published or patched into `server` too. The restapi routes were verified in a real `yarn dev` boot.
+
+- **2026-09-14 — Review fixes, mail/search side (Tier 2 local index hardening + inbox races).** Not
+  committed. Admin/plugins/setup/react-shared were another agent's scope and untouched here.
+  - **Real Worker tests now exist**: `test/apps/_search/localIndexWorker.test.ts` runs the actual worker
+    module against the real wa-sqlite Asyncify build in node (pass `{ wasmBinary: readFileSync(...wasm) }`
+    to the factory - its own fetch fails in node) with the real `EncryptingVFS`/WebCrypto; only
+    `AccessHandlePoolVFS` is swapped for wa-sqlite's `MemoryVFS` over a shared per-name map (survives
+    close/reopen like OPFS) and `self`/`navigator` are stubbed. Supersedes the "can't run under vitest at
+    all" notes above - use this harness for any further worker change.
+  - **Asyncify gotcha (root cause of "corruption never rebuilds")**: an exception thrown from an async
+    VFS `jRead`/`jWrite` does NOT reach the awaiting `sqlite3.*` call - it becomes an unhandled rejection
+    and the SQLite call hangs forever (reproduced in node). `EncryptingVFS.jRead/jWrite` now catch, set
+    `corruptionDetected`, and return `SQLITE_IOERR_READ/WRITE`; the worker treats that flag (or
+    `SQLITE_CORRUPT`/`NOTADB`/"malformed") as corruption: discard the pool directory and reopen empty,
+    both at open time (incl. wrong key) and mid-session (`withConnection()`). An ordinary bad FTS5 MATCH
+    still fails soft.
+  - **Serial queue**: every worker request runs through a per-mailbox promise chain (`runExclusive`) -
+    concurrent `postMessage` requests were re-entering the non-reentrant Asyncify module, and two racing
+    `init`s opened two VFS instances over one pool. Verified the concurrency test fails with the queue
+    bypassed. Each mailbox has its own module instance, so per-mailbox (not global) is sufficient.
+  - **Schema v2**: `entity_version` column (builder skips messages already indexed at `version:folderUid`,
+    one batched `IN (...)` lookup per page) and `auto_vacuum=INCREMENTAL`. A version mismatch now deletes
+    and recreates the whole file (auto_vacuum only applies before the first table exists).
+  - **Budget**: measured as `(page_count - freelist_count) * page_size` (counts FTS shadow tables), bulk
+    eviction by an oldest date/rowid cutoff sized from a running `byte_size` weight total, then
+    `incremental_vacuum`. `indexEntities` returns `budgetReached`; the builder stops walking that folder.
+    Fetch/decrypt concurrency capped at 6. Archive folders are now indexed too (were never walked).
+  - **Coverage completeness**: new `Coverage.complete` + `covered_from` meta. A pass is complete only if
+    every folder reached its time floor with no listing/fetch failure and no budget stop.
+    `tightenBeforeToCoverage()` only narrows Tier 3 when `complete && !building`, and `indexedFrom` is then
+    `max(MIN(date), time floor)` (a folder's last page can reach further back than another's). A complete
+    pass also prunes rows the server no longer lists within the floor (deletes/moves from any client).
+  - **Stale entries in-session**: `MessageDetailPane` archive/cancel-scheduled-send call
+    `moveLocalEntity()`. There is no message delete action in the mail UI, so `removeLocalEntity()` still
+    has no UI caller - build-pass pruning covers deletions. Both helpers no-op (no Worker spawn) for a
+    mailbox not indexed in this tab.
+  - **Logout / other users**: `destroyAllLocalIndexes()` enumerates OPFS for `rapidmx-localsearch-*`
+    (new `localIndexStorage.ts`, wa-sqlite-free so the main thread can use it), closes this tab's
+    connections via the worker first only if one is running, and is awaited by `AppShell` sign-out with a
+    3s timeout. `LocalIndexLifecycle` gets `accessibleMailboxUids` from `MailShell` and prunes directories
+    for any other mailbox (a previous user's) once per distinct list.
+  - **Cross-tab**: an exclusive, `ifAvailable` Web Lock per mailbox; the second tab's `init` fails with a
+    logged reason. `destroyLocalIndex()` now resolves `false` (and logs) instead of swallowing failures.
+  - **Lifecycle**: tracks every mailbox it built (not just the active one) and never resets the unlocked
+    state in the effect body, so a key destruction between polls isn't lost to a re-render/mailbox switch.
+  - **Inbox (`apps/www/index.tsx`)**: run id bumped on every effect run (and on cleanup), checked by the
+    folder/conversation/aggregate listings and `loadMore()`; `loadMore` appends only unseen uids; Tier 2
+    `ORDER BY` has an `entity_uid` tiebreaker. Labels are fetched for the selected message's own mailbox
+    (same in `messages/[uid].tsx`). Verified all six new inbox tests fail against the HEAD version.
+  - **Other**: `UnlockPromptProvider` joins a same-mailbox request to the open dialog and rejects a
+    superseded different-mailbox request; calendar `reload()` has a sequence guard (no date range - the
+    API deliberately fetches whole calendars, see `listCalendarEvents()`); `AppShell` only asks
+    `getSetupStatus()` for a `trusted` caller.
+  - **Writable mailboxes** (`writableMailboxes.ts`): `Mailbox` has no per-caller role, so writability is
+    "owned, or `listMailboxAccess()` succeeds" (that route is gated at `update`: manager/admin yes, viewer
+    403). Only a 403 hides a mailbox; other errors fail open. Applied to Compose From (session's own mailbox
+    always kept), EventModal mailbox options, ContactForm, and the task quick-add picker. Compose From switch
+    now creates the new draft before deleting the old one (old one kept if creation fails).
+  - Lint: fixed pre-existing errors in the touched files, including stale
+    `eslint-disable react-hooks/exhaustive-deps` comments (that plugin isn't configured, so the disable
+    itself is an error).

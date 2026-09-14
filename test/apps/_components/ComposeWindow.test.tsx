@@ -173,7 +173,7 @@ describe("ComposeWindow", () => {
                 }
                 if (url.startsWith("/api/mail/mail-signatures")) return jsonResponse(200, []);
                 if (url === "/api/mail/messages" && method === "POST") {
-                    const body = JSON.parse(init!.body as string);
+                    const body = JSON.parse(init.body as string);
                     draftCount += 1;
                     return jsonResponse(200, { ...draft, uid: `m-${draftCount}`, mailboxUid: body.mailboxUid, folderUid: body.folderUid });
                 }
@@ -217,8 +217,46 @@ describe("ComposeWindow", () => {
             await waitFor(() =>
                 expect(draftCreates(fetchMock)[1]).toEqual(expect.objectContaining({ mailboxUid: "mb-shared", folderUid: "drafts-mb-shared" })),
             );
-            expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m-1?version=0", expect.objectContaining({ method: "DELETE" }));
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m-1?version=0", expect.objectContaining({ method: "DELETE" })),
+            );
+            // The replacement draft is created before the old one is deleted, never the other way around.
+            const calls = fetchMock.mock.calls.map(([url, init]) => `${(init as RequestInit | undefined)?.method ?? "GET"} ${url}`);
+            const secondCreate = calls.findIndex((c, i) => c === "POST /api/mail/messages" && calls.indexOf("POST /api/mail/messages") !== i);
+            expect(calls.indexOf("DELETE /api/mail/messages/m-1?version=0")).toBeGreaterThan(secondCreate);
             expect(screen.getByLabelText("To")).toHaveValue("jane@example.com");
+        });
+
+        it("keeps the old draft when the replacement draft can't be created", async () => {
+            const fetchMock = mockTwoMailboxes((url, init) =>
+                url === "/api/mail/messages" && init?.method === "POST" && String(init.body).includes("mb-shared")
+                    ? jsonResponse(500, { message: "no drafts for you" })
+                    : undefined,
+            );
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            const from = await screen.findByLabelText("From");
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(1));
+
+            await user.selectOptions(from, "mb-shared");
+
+            expect(await screen.findByText("no drafts for you")).toBeInTheDocument();
+            expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/mail\/messages\/m-1/), expect.objectContaining({ method: "DELETE" }));
+        });
+
+        it("doesn't offer From mailboxes the caller can only view", async () => {
+            const viewOnly = { uid: "mb-view", displayName: "Announcements", primarySmtpAddress: "news@example.com", aliasAddresses: [] };
+            mockTwoMailboxes((url) => {
+                if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, [sharedMailbox, ownMailbox, viewOnly]);
+                if (url === "/api/mail/mailboxes/mb-view/access") return jsonResponse(403, { message: "forbidden" });
+                if (url === "/api/mail/mailboxes/mb-shared/access") return jsonResponse(200, []);
+                return undefined;
+            });
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            await screen.findByLabelText("From");
+            expect(screen.getByRole("option", { name: "Support <support@example.com> (shared)" })).toBeInTheDocument();
+            expect(screen.queryByRole("option", { name: /Announcements/ })).not.toBeInTheDocument();
         });
 
         it("locks From once an attachment has been uploaded onto the draft", async () => {
@@ -235,6 +273,121 @@ describe("ComposeWindow", () => {
             await user.click(screen.getByRole("button", { name: "fake-upload-image" }));
 
             await waitFor(() => expect(from).toBeDisabled());
+        });
+
+        function deferred<T>() {
+            let resolve!: (value: T) => void;
+            const promise = new Promise<T>((res) => {
+                resolve = res;
+            });
+            return { promise, resolve };
+        }
+
+        it("defaults to the first listed mailbox when the caller owns none of them, showing a bare address for an unnamed one", async () => {
+            const unnamed = { ...sharedMailbox, uid: "mb-unnamed", displayName: "", primarySmtpAddress: "team@example.com" };
+            mockTwoMailboxes((url) => (url.startsWith("/api/mail/mailboxes?") ? jsonResponse(200, [unnamed, sharedMailbox]) : undefined));
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            expect(await screen.findByLabelText("From")).toHaveValue("mb-unnamed");
+            expect(screen.getByRole("option", { name: "team@example.com (shared)" })).toBeInTheDocument();
+        });
+
+        it.each([
+            ["the API's own message", () => jsonResponse(500, { message: "mailboxes boom" }), "mailboxes boom"],
+            [
+                "a generic message",
+                () => {
+                    throw new TypeError("network down");
+                },
+                "Could not load your mailboxes.",
+            ],
+        ])("shows %s when there's no session mailbox to fall back on and the mailbox list fails", async (_label, respond, expected) => {
+            mockTwoMailboxes((url) => (url.startsWith("/api/mail/mailboxes?") ? respond() : undefined));
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            expect(await screen.findByText(expected)).toBeInTheDocument();
+        });
+
+        it("ignores a mailbox list that arrives after the window closed", async () => {
+            const list = deferred<Response>();
+            const fetchMock = mockTwoMailboxes((url) => (url.startsWith("/api/mail/mailboxes?") ? (list.promise as unknown as Response) : undefined));
+            const { unmount } = render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+            unmount();
+            list.resolve(jsonResponse(200, [sharedMailbox, ownMailbox]));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/mail/folders"))).toBe(false);
+        });
+
+        it("ignores a Drafts folder lookup (success or failure) for a mailbox the user already switched away from", async () => {
+            const folderRequests: { mailboxUid: string; request: ReturnType<typeof deferred<Response>> }[] = [];
+            const fetchMock = mockTwoMailboxes((url) => {
+                if (!url.startsWith("/api/mail/folders")) return undefined;
+                const mailboxUid = new URLSearchParams(url.split("?")[1]).get("mailboxUid")!;
+                const request = deferred<Response>();
+                folderRequests.push({ mailboxUid, request });
+                return request.promise as unknown as Response;
+            });
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            const from = await screen.findByLabelText("From");
+            await waitFor(() => expect(folderRequests).toHaveLength(1));
+
+            // No draft exists yet on either switch.
+            fireEvent.change(from, { target: { value: "mb-shared" } });
+            await waitFor(() => expect(folderRequests).toHaveLength(2));
+            fireEvent.change(from, { target: { value: "mb-own" } });
+            await waitFor(() => expect(folderRequests).toHaveLength(3));
+
+            folderRequests[0].request.resolve(jsonResponse(200, [{ ...draftsFolder, uid: "drafts-stale", mailboxUid: "mb-own" }]));
+            folderRequests[1].request.resolve(jsonResponse(500, { message: "stale folder failure" }));
+            folderRequests[2].request.resolve(jsonResponse(200, [{ ...draftsFolder, uid: "drafts-mb-own", mailboxUid: "mb-own" }]));
+
+            await waitFor(() => expect(draftCreates(fetchMock)).toEqual([expect.objectContaining({ mailboxUid: "mb-own", folderUid: "drafts-mb-own" })]));
+            expect(screen.queryByText("stale folder failure")).not.toBeInTheDocument();
+        });
+
+        it("deletes a draft that finishes creating after the user switched From, even if that delete fails", async () => {
+            const ownDraft = deferred<Response>();
+            const fetchMock = mockTwoMailboxes((url, init) => {
+                const method = init?.method ?? "GET";
+                if (url === "/api/mail/messages" && method === "POST" && String(init?.body).includes("mb-own")) {
+                    return ownDraft.promise as unknown as Response;
+                }
+                if (url.startsWith("/api/mail/messages/m-orphan") && method === "DELETE") return jsonResponse(500, { message: "delete failed" });
+                return undefined;
+            });
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            const from = await screen.findByLabelText("From");
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(1));
+
+            fireEvent.change(from, { target: { value: "mb-shared" } });
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(2));
+            ownDraft.resolve(jsonResponse(200, { ...draft, uid: "m-orphan", mailboxUid: "mb-own" }));
+
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m-orphan?version=0", expect.objectContaining({ method: "DELETE" })),
+            );
+            await waitFor(() => expect(screen.getByLabelText("Attach files")).not.toBeDisabled());
+        });
+
+        it("still starts the new draft when deleting the superseded one fails, and ignores re-selecting the current sender", async () => {
+            const fetchMock = mockTwoMailboxes((url, init) =>
+                url.startsWith("/api/mail/messages/m-1") && init?.method === "DELETE" ? jsonResponse(500, { message: "delete failed" }) : undefined,
+            );
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            const from = await screen.findByLabelText("From");
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(1));
+
+            fireEvent.change(from, { target: { value: "mb-own" } });
+            expect(draftCreates(fetchMock)).toHaveLength(1);
+
+            fireEvent.change(from, { target: { value: "mb-shared" } });
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m-1?version=0", expect.objectContaining({ method: "DELETE" })),
+            );
+            expect(draftCreates(fetchMock)).toHaveLength(2);
+            expect(screen.queryByText("delete failed")).not.toBeInTheDocument();
         });
 
         it("shows no From field for a caller with only one mailbox", async () => {
@@ -1561,6 +1714,32 @@ describe("ComposeWindow", () => {
                 expect.anything(),
                 expect.anything(),
                 expect.objectContaining({ from: "u1@example.com" }),
+                expect.anything(),
+                expect.anything(),
+            );
+        });
+
+        it("falls back to a localhost Message-ID domain when the mailbox address has no domain part", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                signingPrivateKey: fakeSigningKey,
+                signingCertDer: fakeCertDer("alice-sign"),
+                signingFingerprint: "fp-sign",
+            });
+            buildSignedOnlyMessage.mockResolvedValue({ contentType: 'multipart/signed; boundary="b1"', body: "SIGNED-BODY" });
+            mockCryptoEndpoints(undefined, { mailbox: { ...mailboxFixture, primarySmtpAddress: "localuser" } });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "b@example.com");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+
+            await waitFor(() => expect(buildSignedOnlyMessage).toHaveBeenCalled());
+            expect(buildSignedOnlyMessage).toHaveBeenCalledWith(
+                expect.anything(),
+                expect.anything(),
+                expect.objectContaining({ messageId: expect.stringMatching(/@localhost>$/) }),
                 expect.anything(),
                 expect.anything(),
             );

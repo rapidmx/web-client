@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
@@ -83,10 +83,10 @@ describe("MailboxesListPage", () => {
         expect(await screen.findByText("u0@example.com")).toBeInTheDocument();
     });
 
-    it("reopens setup and goes to the wizard, or shows why it couldn't", async () => {
+    it("reopens setup after confirming and goes to the wizard, or shows why it couldn't", async () => {
         const location = mockLocation();
         let fail = true;
-        mockFetch((url, init) => {
+        const fetchMock = mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, []);
             if (url === "/api/system/setup/reopen" && init?.method === "POST") {
@@ -96,11 +96,43 @@ describe("MailboxesListPage", () => {
         });
         const user = userEvent.setup();
         render(<MailboxesListPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        const reopenCalls = () => fetchMock.mock.calls.filter((c) => c[0] === "/api/system/setup/reopen").length;
+
+        // Nothing happens until it's confirmed.
         await user.click(await screen.findByRole("button", { name: "Run setup again" }));
+        const cancelDialog = await screen.findByRole("dialog", { name: "Run setup again?" });
+        await user.click(within(cancelDialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(reopenCalls()).toBe(0);
+
+        await user.click(screen.getByRole("button", { name: "Run setup again" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Run setup" }));
         expect(await screen.findByText("Could not save")).toBeInTheDocument();
 
         fail = false;
         await user.click(screen.getByRole("button", { name: "Run setup again" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Run setup" }));
         await vi.waitFor(() => expect(location.href).toBe("/admin/setup"));
+        expect(reopenCalls()).toBe(2);
+    });
+
+    it("closes the setup confirmation from its close button, and explains a non-API failure to reopen setup", async () => {
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, []);
+            if (url === "/api/system/setup/reopen" && init?.method === "POST") throw new TypeError("network down");
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxesListPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        await user.click(await screen.findByRole("button", { name: "Run setup again" }));
+        const dialog = await screen.findByRole("dialog", { name: "Run setup again?" });
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Run setup again" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Run setup" }));
+        expect(await screen.findByText("Could not reopen setup.")).toBeInTheDocument();
     });
 });

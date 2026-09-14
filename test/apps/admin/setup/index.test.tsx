@@ -83,6 +83,16 @@ afterEach(() => {
 const renderPage = () => render(<SetupPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
 
 describe("SetupPage", () => {
+    it("sends a signed-out visitor to sign in instead of showing the wizard", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/admin/setup";
+        const fetchMock = mockSetup();
+        render(<SetupPage authServerUrl="https://auth.example.com" />);
+        await waitFor(() => expect(location.href).toMatch(/^https:\/\/auth\.example\.com\/auth\/signin\?return_to=/));
+        expect(screen.queryByRole("heading", { name: /Step 1 of 6/ })).not.toBeInTheDocument();
+        expect(calls(fetchMock, "/api/system/setup", "GET")).toHaveLength(0);
+    });
+
     it("starts at the plugins step and requires a domain before moving past the domain step", async () => {
         const fetchMock = mockSetup();
         const user = userEvent.setup();
@@ -123,6 +133,33 @@ describe("SetupPage", () => {
         await user.type(await screen.findByLabelText("Domain name"), "example.com");
         await user.click(screen.getByRole("button", { name: "Add domain" }));
         expect(await screen.findByText("That domain already exists.")).toBeInTheDocument();
+    });
+
+    it("shows a generic error when adding the domain fails with a non-API error", async () => {
+        mockSetup({
+            currentStep: "domain",
+            extra: (url, init) => {
+                if (url === "/api/mail/domains" && init?.method === "POST") throw new TypeError("network down");
+                return undefined;
+            },
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.type(await screen.findByLabelText("Domain name"), "example.com");
+        await user.click(screen.getByRole("button", { name: "Add domain" }));
+        expect(await screen.findByText("Could not add the domain.")).toBeInTheDocument();
+    });
+
+    it("still offers escrow when the encryption policy can't be read", async () => {
+        mockSetup({
+            currentStep: "escrow",
+            domains: [domain],
+            extra: (url) => (url === "/api/system/encryption-policy" ? jsonResponse(500, { message: "Policy unavailable" }) : undefined),
+        });
+        renderPage();
+        expect(await screen.findByRole("heading", { name: "Step 4 of 6: Escrow" })).toBeInTheDocument();
+        expect(await screen.findByText("How do you want to set up escrow?")).toBeInTheDocument();
+        expect(screen.queryByText(/End-to-end encryption is turned off/)).not.toBeInTheDocument();
     });
 
     it("resumes at the saved step, and shows every server setting on the settings step", async () => {
@@ -216,6 +253,129 @@ describe("SetupPage", () => {
         await user.click(screen.getByRole("button", { name: "Finish setup" }));
         await waitFor(() => expect(location.href).toBe("/admin"));
         expect(calls(fetchMock, "/api/system/setup/complete", "POST")).toHaveLength(1);
+    });
+
+    it("asks before leaving the settings step with unsaved changes", async () => {
+        mockSetup({ currentStep: "settings", domains: [domain] });
+        const user = userEvent.setup();
+        renderPage();
+        const quota = await screen.findByLabelText("Default quota (GB)");
+        await user.clear(quota);
+        await user.type(quota, "5");
+
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        const dialog = await screen.findByRole("dialog", { name: "Discard unsaved changes?" });
+        await user.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+        expect(screen.getByRole("heading", { name: "Step 3 of 6: Server settings" })).toBeInTheDocument();
+        expect(screen.getByLabelText("Default quota (GB)")).toHaveValue(5);
+
+        // Closing the dialog keeps editing too.
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Discard unsaved changes?" })).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Step 3 of 6: Server settings" })).toBeInTheDocument();
+
+        // Once saved, there's nothing to lose.
+        const mailboxForm = quota.closest("form") as HTMLElement;
+        await user.click(within(mailboxForm).getByRole("button", { name: "Save" }));
+        expect(await within(mailboxForm.parentElement as HTMLElement).findByText("Saved.")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        expect(await screen.findByRole("heading", { name: "Step 4 of 6: Escrow" })).toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        await user.type(await screen.findByLabelText("Message retention (days)"), "30");
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Discard changes" }));
+        expect(await screen.findByRole("heading", { name: "Step 2 of 6: Domain" })).toBeInTheDocument();
+    });
+
+    it("shows why domains couldn't load, retries, and needs a domain to finish", async () => {
+        let domainsFail = true;
+        mockSetup({
+            currentStep: "mailboxes",
+            extra: (url) => {
+                if (!url.startsWith("/api/mail/domains?")) return undefined;
+                return domainsFail ? jsonResponse(500, { message: "Domains are unavailable." }) : jsonResponse(200, [domain]);
+            },
+        });
+        const user = userEvent.setup();
+        renderPage();
+        expect(await screen.findByText("Domains are unavailable.")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Finish setup" })).toBeDisabled();
+        expect(screen.getByText("Add a domain before finishing setup.")).toBeInTheDocument();
+
+        domainsFail = false;
+        await user.click(screen.getByRole("button", { name: "Retry" }));
+        await waitFor(() => expect(screen.getByRole("button", { name: "Finish setup" })).toBeEnabled());
+        expect(screen.queryByText("Domains are unavailable.")).not.toBeInTheDocument();
+    });
+
+    it("lists each existing mailbox once, even when the list is loaded twice (React strict mode)", async () => {
+        mockSetup({ currentStep: "mailboxes", domains: [domain], mailboxes: [mailbox("admin", "admin-1"), mailbox("ops")] });
+        render(
+            <React.StrictMode>
+                <SetupPage userUid="admin-1" authServerUrl="https://auth.example.com" />
+            </React.StrictMode>,
+        );
+        expect(await screen.findByRole("heading", { name: "Add another mailbox" })).toBeInTheDocument();
+        await waitFor(() => expect(screen.getAllByText(/<ops@example\.com>/)).toHaveLength(1));
+        expect(screen.getAllByText(/<admin@example\.com>/)).toHaveLength(1);
+    });
+
+    it("says when the existing mailboxes couldn't be loaded", async () => {
+        mockSetup({
+            currentStep: "mailboxes",
+            domains: [domain],
+            extra: (url) => (url.startsWith("/api/mail/mailboxes?") ? jsonResponse(500, { message: "Mailboxes are unavailable." }) : undefined),
+        });
+        renderPage();
+        expect(await screen.findByText(/Mailboxes are unavailable\. Check the Mailboxes page before creating your own/)).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Your mailbox" })).toBeInTheDocument();
+    });
+
+    it("records steps one at a time, skipping ones already passed, and notes when it can't", async () => {
+        const releases: (() => void)[] = [];
+        let fail = false;
+        const fetchMock = mockSetup({
+            currentStep: "plugins",
+            domains: [domain],
+            extra: ((url: string, init?: RequestInit) => {
+                if (url !== "/api/system/setup" || init?.method !== "PUT") return undefined;
+                const body = JSON.parse(init.body as string);
+                return new Promise<Response>((resolve) =>
+                    releases.push(() => resolve(fail ? jsonResponse(500, {}) : jsonResponse(200, { required: true, currentStep: body.currentStep }))),
+                );
+            }) as Handler,
+        });
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const user = userEvent.setup();
+        renderPage();
+        await user.click(await screen.findByRole("button", { name: "3. Server settings" }));
+        await user.click(screen.getByRole("button", { name: "4. Escrow" }));
+        await user.click(screen.getByRole("button", { name: "5. Branding" }));
+        const puts = () => calls(fetchMock, "/api/system/setup", "PUT").map((c) => JSON.parse(c[1].body).currentStep);
+        expect(puts()).toEqual(["settings"]);
+
+        fail = true;
+        releases[0]();
+        await waitFor(() => expect(puts()).toEqual(["settings", "branding"]));
+        releases[1]();
+        expect(await screen.findByText("Your place in setup couldn’t be saved.")).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Step 5 of 6: Branding" })).toBeInTheDocument();
+        warn.mockRestore();
+    });
+
+    it("offers a way out of setup only when it isn't required", async () => {
+        mockSetup({ extra: (url, init) => (url === "/api/system/setup" && !init?.method ? jsonResponse(200, { required: false, completedAt: "2026-01-01" }) : undefined) });
+        const { unmount } = renderPage();
+        expect(await screen.findByRole("link", { name: "Exit setup" })).toHaveAttribute("href", "/admin");
+        unmount();
+
+        mockSetup();
+        renderPage();
+        expect(await screen.findByRole("heading", { name: "Step 1 of 6: Plugins" })).toBeInTheDocument();
+        expect(screen.queryByRole("link", { name: "Exit setup" })).not.toBeInTheDocument();
     });
 
     it("shows an error when finishing fails", async () => {

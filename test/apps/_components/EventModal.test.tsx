@@ -760,6 +760,36 @@ describe("EventModal", () => {
             expect(body.organizer.address).toBe("support@example.com");
         });
 
+        it("keeps the current calendar when switching to a mailbox option with no calendars", async () => {
+            const fetchMock = mockFetch((url, init) =>
+                url === "/api/mail/calendar-events" && init?.method === "POST" ? jsonResponse(200, occurrence()) : undefined,
+            );
+            const user = userEvent.setup();
+            render(
+                <EventModal
+                    open
+                    onClose={vi.fn()}
+                    mailboxUid="mb1"
+                    folderUid="f1"
+                    calendars={[{ uid: "f1", name: "Work" }]}
+                    mailboxOptions={[mailboxOptions[0], { mailbox: sharedMailbox, calendars: [] }]}
+                    organizerAddress="jane@example.com"
+                    occurrence={null}
+                    onSaved={vi.fn()}
+                    onDeleted={vi.fn()}
+                />,
+            );
+
+            await user.selectOptions(screen.getByLabelText("Mailbox"), "mb-shared");
+            await user.type(screen.getByLabelText("Title"), "Rotation");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+            const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+            expect(body.mailboxUid).toBe("mb-shared");
+            expect(body.folderUid).toBe("f1");
+        });
+
         it("shows no Mailbox selector when editing an existing event", () => {
             render(
                 <EventModal

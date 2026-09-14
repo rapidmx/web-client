@@ -23,6 +23,7 @@ import TasksToolbar, { TasksViewMode } from "../../shared/components/tasks/Tasks
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import { findWellKnownFolderUid } from "../../shared/mail/findWellKnownFolderUid.js";
+import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 
 const INPUT_CLASS =
     "text-sm py-1.5 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -65,6 +66,8 @@ const PRIORITY_CLASS: Record<TaskPriority, string> = {
 
 function TasksContent() {
     const { folderUid, mailboxUid, userUid, mailboxes } = useTasksShell();
+    // The quick-add form's Mailbox choices - view-only shares are left out (see writableMailboxes.ts).
+    const writableMailboxes = useWritableMailboxes(mailboxes, userUid, mailboxUid);
     // The quick-add form's chosen mailbox - `undefined` means "the mailbox being viewed".
     const [targetMailboxUid, setTargetMailboxUid] = useState<string | undefined>(undefined);
     // Set after a task is added to a different mailbox than the one this list shows.
@@ -325,14 +328,14 @@ function TasksContent() {
                                     <option value="normal">Normal</option>
                                     <option value="high">High</option>
                                 </select>
-                                {mailboxes.length > 1 && (
+                                {writableMailboxes.length > 1 && (
                                     <select
                                         aria-label="Task mailbox"
                                         className={`${INPUT_CLASS} max-w-40`}
                                         value={targetMailboxUid ?? mailboxUid ?? ""}
                                         onChange={(e) => setTargetMailboxUid(e.target.value)}
                                     >
-                                        {mailboxes.map((mb) => (
+                                        {writableMailboxes.map((mb) => (
                                             <option key={mb.uid} value={mb.uid}>
                                                 {mb.displayName}
                                                 {mb.ownerUserUid === userUid ? "" : " (shared)"}

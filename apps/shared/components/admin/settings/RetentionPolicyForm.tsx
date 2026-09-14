@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useState } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { MIN_AUDIT_LOG_RETENTION_DAYS, RetentionPolicy, updateRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -12,12 +12,27 @@ const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
 /** The retention policy editor, shared by the Retention Policy page and the setup wizard. */
-export default function RetentionPolicyForm({ policy, onChange }: { policy: RetentionPolicy; onChange: (p: RetentionPolicy) => void }) {
+export default function RetentionPolicyForm({
+    policy,
+    onChange,
+    onDirtyChange,
+}: {
+    policy: RetentionPolicy;
+    onChange: (p: RetentionPolicy) => void;
+    /** Told whether the form has edits that haven't been saved. */
+    onDirtyChange?: (dirty: boolean) => void;
+}) {
     const [messageRetentionDays, setMessageRetentionDays] = useState(policy.messageRetentionDays?.toString() ?? "");
     const [auditLogRetentionDays, setAuditLogRetentionDays] = useState(policy.auditLogRetentionDays?.toString() ?? "");
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+
+    // Edits are unsaved until they match what was loaded or last saved.
+    const snapshot = JSON.stringify([messageRetentionDays, auditLogRetentionDays]);
+    const [savedSnapshot, setSavedSnapshot] = useState(snapshot);
+    const dirty: boolean = snapshot !== savedSnapshot;
+    useEffect(() => onDirtyChange?.(dirty), [dirty]);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -34,6 +49,7 @@ export default function RetentionPolicyForm({ policy, onChange }: { policy: Rete
             }
             const updated = await updateRetentionPolicy(patch);
             onChange(updated);
+            setSavedSnapshot(snapshot);
             setSaved(true);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save the retention policy.");

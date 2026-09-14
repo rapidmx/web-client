@@ -288,18 +288,44 @@ describe("CalendarShell", () => {
 
     it("useCalendarShell()'s default (no enclosing CalendarShell) is a harmless no-op, not a crash", async () => {
         function Probe() {
-            const { calendarFolders, mailboxes, reloadFolders } = useCalendarShell();
+            const { calendarFolders, mailboxes, reloadFolders, colorFor } = useCalendarShell();
             return (
-                <button type="button" onClick={reloadFolders}>
-                    {`${calendarFolders.length}/${mailboxes.length}`}
-                </button>
+                <>
+                    <button type="button" onClick={reloadFolders}>
+                        {`${calendarFolders.length}/${mailboxes.length}`}
+                    </button>
+                    <span data-testid="default-color">{colorFor({ ...calendarFolder, color: undefined })}</span>
+                </>
             );
         }
         const user = userEvent.setup();
         render(<Probe />);
 
         expect(screen.getByText("0/0")).toBeInTheDocument();
+        expect(screen.getByTestId("default-color")).toHaveTextContent(DEFAULT_CALENDAR_COLOR);
         await user.click(screen.getByText("0/0"));
         expect(screen.getByText("0/0")).toBeInTheDocument();
+    });
+
+    it("ignores folder results that land after the shell unmounted", async () => {
+        let resolveFolders: ((value: Response) => void) | undefined;
+        const fetchMock = mockFetch((url) => {
+            if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
+            if (url.startsWith("/api/mail/folders")) {
+                return new Promise<Response>((resolve) => {
+                    resolveFolders = resolve;
+                });
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        const { unmount } = render(<CalendarShell userUid="u1">content</CalendarShell>);
+        await waitFor(() => expect(resolveFolders).toBeDefined());
+
+        unmount();
+        resolveFolders!(jsonResponse(200, [calendarFolder]));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(fetchMock.mock.calls.filter(([url]: [string]) => url.startsWith("/api/mail/folders"))).toHaveLength(1);
     });
 });

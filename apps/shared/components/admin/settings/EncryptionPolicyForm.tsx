@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useState } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { EncryptionPolicy, PolicyState, updateEncryptionPolicy } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -35,14 +35,21 @@ export function isEncryptionEnabled(policy: EncryptionPolicy): boolean {
 export interface EncryptionPolicyFormProps {
     policy: EncryptionPolicy;
     onChange: (policy: EncryptionPolicy) => void;
+    /** Told whether the form has edits that haven't been saved. */
+    onDirtyChange?: (dirty: boolean) => void;
 }
 
 /** The end-to-end encryption policy editor, shared by the Encryption Policy page and the setup wizard. */
-export default function EncryptionPolicyForm({ policy, onChange }: EncryptionPolicyFormProps) {
+export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange }: EncryptionPolicyFormProps) {
     const [values, setValues] = useState<EncryptionPolicy>(policy);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+
+    // Edits are unsaved until they match what was loaded or last saved.
+    const [savedValues, setSavedValues] = useState<EncryptionPolicy>(policy);
+    const dirty: boolean = TIERS.some((tier) => values[tier.key] !== savedValues[tier.key]);
+    useEffect(() => onDirtyChange?.(dirty), [dirty]);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -52,6 +59,7 @@ export default function EncryptionPolicyForm({ policy, onChange }: EncryptionPol
         try {
             const updated = await updateEncryptionPolicy(values);
             onChange(updated);
+            setSavedValues(values);
             setSaved(true);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save the encryption policy.");

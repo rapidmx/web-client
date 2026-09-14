@@ -297,6 +297,33 @@ describe("CalendarPage", () => {
         expect(await screen.findByText(/Personal Thing/)).toBeInTheDocument();
     });
 
+    it("ignores a slow, superseded event load that finishes after a newer one", async () => {
+        let resolveSlow: ((value: Response) => void) | undefined;
+        mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [calendarFolder, secondCalendarFolder]);
+            if (url.includes("folderUid=f-cal2")) {
+                return new Promise((resolve) => {
+                    resolveSlow = resolve;
+                });
+            }
+            if (url.startsWith("/api/mail/calendar-events")) return jsonResponse(200, [calendarEvent()]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<CalendarPage userUid="u1" />);
+
+        await waitFor(() => expect(resolveSlow).toBeDefined());
+        await user.click(screen.getAllByText("Personal")[0].closest("label")!.querySelector("input")!);
+        expect(await screen.findByText(/Standup/)).toBeInTheDocument();
+
+        resolveSlow!(jsonResponse(200, [calendarEvent({ uid: "e2", folderUid: "f-cal2", title: "Personal Thing" })]));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(screen.queryByText(/Personal Thing/)).not.toBeInTheDocument();
+        expect(screen.getByText(/Standup/)).toBeInTheDocument();
+    });
+
     it("creates a new calendar from the sidebar and shows it checked, without a separate confirmation step", async () => {
         const folders = [calendarFolder];
         const fetchMock = mockFetch((url, init) => {

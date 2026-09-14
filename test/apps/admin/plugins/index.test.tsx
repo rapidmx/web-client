@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../../testUtils.js";
@@ -77,6 +77,9 @@ afterEach(() => {
 
 const renderPage = () => render(<PluginsPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
 
+/** The `expectedPlan` of a change that needs no other plugins. */
+const NO_EXTRAS = { install: [], enable: [] };
+
 describe("PluginsPage", () => {
     it("shows an empty state", async () => {
         mockPlugins({ plugins: [], status: { hash: "h", instances: [] } });
@@ -140,6 +143,71 @@ describe("PluginsPage", () => {
         expect(fetchMock.mock.calls.filter((c) => c[0] === "/api/system/plugins/status").length).toBeGreaterThanOrEqual(3);
     }, 20000);
 
+    it("keeps the last status when a refresh fails, and keeps polling the rollout", async () => {
+        let polls = 0;
+        mockPlugins({
+            extra: (url) => {
+                if (url !== "/api/system/plugins/status") return undefined;
+                polls++;
+                if (polls === 2) return jsonResponse(500, { message: "down" });
+                return jsonResponse(200, { hash: "current", instances: polls < 3 ? [instance(), instance({ instance: "pod-b", hash: "old" })] : [instance()] });
+            },
+        });
+        renderPage();
+        expect(await screen.findByRole("status")).toHaveTextContent("Applying changes: 1 of 2 servers updated.");
+        expect(await screen.findByText(/Couldn't refresh server status/, undefined, { timeout: 8000 })).toBeInTheDocument();
+        expect(screen.getByRole("status")).toHaveTextContent("Applying changes: 1 of 2 servers updated.");
+        await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument(), { timeout: 8000 });
+        expect(screen.queryByText(/Couldn't refresh server status/)).not.toBeInTheDocument();
+    }, 20000);
+
+    it("keeps polling for a while after a change is saved, before servers start applying it", async () => {
+        let saved = false;
+        let pollsAfterSave = 0;
+        mockPlugins({
+            extra: (url, init) => {
+                if (url === "/api/system/plugins/p-eas" && init?.method === "PUT") {
+                    saved = true;
+                    return jsonResponse(200, { ...eas, enabled: false, version: 4 });
+                }
+                if (url !== "/api/system/plugins/status") return undefined;
+                if (saved) pollsAfterSave++;
+                // Servers only notice the change a while after it's saved.
+                return jsonResponse(200, { hash: pollsAfterSave >= 2 ? "next" : "current", instances: [instance()] });
+            },
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.click(await screen.findByRole("button", { name: "Disable Exchange ActiveSync" }));
+        expect(await screen.findByRole("button", { name: "Enable Exchange ActiveSync" })).toBeInTheDocument();
+        expect(screen.queryByRole("status")).not.toBeInTheDocument();
+        expect(await screen.findByRole("status", undefined, { timeout: 8000 })).toHaveTextContent("Applying changes: 0 of 1 server updated.");
+    }, 20000);
+
+    it("stops polling a saved change's rollout once the watch period ends", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const fetchMock = mockPlugins({
+            extra: (url, init) => (url === "/api/system/plugins/p-eas" && init?.method === "PUT" ? jsonResponse(200, { ...eas, enabled: false, version: 4 }) : undefined),
+        });
+        const statusCalls = () => fetchMock.mock.calls.filter((c) => c[0] === "/api/system/plugins/status").length;
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        renderPage();
+        await user.click(await screen.findByRole("button", { name: "Disable Exchange ActiveSync" }));
+        expect(await screen.findByRole("button", { name: "Enable Exchange ActiveSync" })).toBeInTheDocument();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(2 * 60 * 1000 + 1000);
+        });
+        const afterWatch = statusCalls();
+        // Polled every few seconds while watching...
+        expect(afterWatch).toBeGreaterThan(10);
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(60 * 1000);
+        });
+        // ...and not at all once the watch period is over, since nothing is pending.
+        expect(statusCalls()).toBe(afterWatch);
+    });
+
     it("enables and disables a plugin", async () => {
         const fetchMock = mockPlugins({
             extra: (url, init) => (url === "/api/system/plugins/p-mapi" && init?.method === "PUT" ? jsonResponse(200, { ...mapi, enabled: true, version: 4 }) : undefined),
@@ -148,27 +216,37 @@ describe("PluginsPage", () => {
         renderPage();
         await user.click(await screen.findByRole("button", { name: "Enable MAPI over HTTP" }));
         expect(await screen.findByRole("button", { name: "Disable MAPI over HTTP" })).toBeInTheDocument();
-        expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({ version: 3, enabled: true });
+        // Enabling is previewed like any change, and sends the plan it was confirmed against.
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fmapi&packageVersion=1.0.0", expect.anything());
+        expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({ version: 3, enabled: true, expectedPlan: NO_EXTRAS });
     });
 
-    it("shows an error when toggling fails", async () => {
-        mockPlugins({
+    it("shows an error when toggling fails, and disables without previewing", async () => {
+        const fetchMock = mockPlugins({
             extra: (url, init) => (url === "/api/system/plugins/p-eas" && init?.method === "PUT" ? jsonResponse(409, { message: "Version conflict" }) : undefined),
         });
         const user = userEvent.setup();
         renderPage();
         await user.click(await screen.findByRole("button", { name: "Disable Exchange ActiveSync" }));
         expect(await screen.findByText("Version conflict")).toBeInTheDocument();
+        expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, enabled: false });
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).startsWith("/api/system/plugins/plan?"))).toBe(false);
     });
 
     it("adds a plugin after previewing it from the registry", async () => {
         const autodiscover = { ...mapi, uid: "p-ad", name: "@rapidmx/autodiscover", enabled: true, manifest: { apiVersion: 1, displayName: "Autodiscover", settings: [] } };
         const fetchMock = mockPlugins({
             extra: (url, init) => {
-                if (url === "/api/system/plugins/registry/%40rapidmx%2Fautodiscover") {
+                if (url.startsWith("/api/system/plugins/registry/%40rapidmx%2Fautodiscover")) {
+                    const version = url.endsWith("?packageVersion=1.0.0") ? "1.0.0" : "2.0.0";
                     return jsonResponse(200, {
                         package: { name: "@rapidmx/autodiscover", latest: "2.0.0", versions: ["2.0.0", "1.0.0"] },
-                        selected: { name: "@rapidmx/autodiscover", version: "2.0.0", peerDependencies: {}, manifest: { apiVersion: 1, displayName: "Autodiscover", description: "Finds servers" } },
+                        selected: {
+                            name: "@rapidmx/autodiscover",
+                            version,
+                            peerDependencies: {},
+                            manifest: { apiVersion: 1, displayName: "Autodiscover", description: version === "1.0.0" ? "Finds old servers" : "Finds servers" },
+                        },
                     });
                 }
                 if (url === "/api/system/plugins" && init?.method === "POST") return jsonResponse(200, { plugin: autodiscover, dependencies: [] });
@@ -185,13 +263,123 @@ describe("PluginsPage", () => {
         await user.type(within(dialog).getByLabelText("Package name"), "@rapidmx/autodiscover");
         await user.click(within(dialog).getByRole("button", { name: "Find" }));
         expect(await within(dialog).findByText("Finds servers")).toBeInTheDocument();
+        // The package name is shown alongside the manifest's display name.
+        expect(within(dialog).getByText("@rapidmx/autodiscover")).toBeInTheDocument();
         expect(within(dialog).getByRole("option", { name: "2.0.0 (latest)" })).toBeInTheDocument();
         await user.selectOptions(within(dialog).getByLabelText("Version"), "1.0.0");
+        // The chosen version's manifest is looked up, not the latest one's.
+        expect(await within(dialog).findByText("Finds old servers")).toBeInTheDocument();
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/registry/%40rapidmx%2Fautodiscover?packageVersion=1.0.0", expect.anything());
         await user.click(within(dialog).getByRole("button", { name: "Add plugin" }));
 
         await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-        expect(requestBody(fetchMock, "/api/system/plugins", "POST")).toEqual({ name: "@rapidmx/autodiscover", packageVersion: "1.0.0" });
+        expect(requestBody(fetchMock, "/api/system/plugins", "POST")).toEqual({ name: "@rapidmx/autodiscover", packageVersion: "1.0.0", expectedPlan: NO_EXTRAS });
         expect(screen.getByText("Autodiscover")).toBeInTheDocument();
+    });
+
+    it("ignores a lookup that finishes after the name was changed, and disables Add while a version loads", async () => {
+        let releaseSlow: () => void = () => undefined;
+        let releaseVersion: () => void = () => undefined;
+        const lookupOf = (name: string, displayName: string, version = "1.0.0") =>
+            jsonResponse(200, {
+                package: { name, latest: "1.0.0", versions: ["1.0.0", "0.9.0"] },
+                selected: { name, version, peerDependencies: {}, manifest: { apiVersion: 1, displayName } },
+            });
+        mockPlugins({
+            extra: ((url: string) => {
+                if (url === "/api/system/plugins/registry/%40acme%2Fslow-plugin") {
+                    return new Promise<Response>((resolve) => (releaseSlow = () => resolve(lookupOf("@acme/slow-plugin", "Slow"))));
+                }
+                if (url === "/api/system/plugins/registry/%40acme%2Ffast-plugin") return lookupOf("@acme/fast-plugin", "Fast");
+                if (url === "/api/system/plugins/registry/%40acme%2Ffast-plugin?packageVersion=0.9.0") {
+                    return new Promise<Response>((resolve) => (releaseVersion = () => resolve(lookupOf("@acme/fast-plugin", "Fast old", "0.9.0"))));
+                }
+                return undefined;
+            }) as Handler,
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.click(await screen.findByRole("button", { name: "Add by name" }));
+        const dialog = await screen.findByRole("dialog");
+        await user.type(within(dialog).getByLabelText("Package name"), "@acme/slow-plugin");
+        await user.click(within(dialog).getByRole("button", { name: "Find" }));
+
+        await user.clear(within(dialog).getByLabelText("Package name"));
+        await user.type(within(dialog).getByLabelText("Package name"), "@acme/fast-plugin");
+        await user.click(within(dialog).getByRole("button", { name: "Find" }));
+        expect(await within(dialog).findByText("Fast")).toBeInTheDocument();
+
+        releaseSlow();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(within(dialog).queryByText("Slow")).not.toBeInTheDocument();
+        expect(within(dialog).getByText("@acme/fast-plugin")).toBeInTheDocument();
+
+        await user.selectOptions(within(dialog).getByLabelText("Version"), "0.9.0");
+        expect(within(dialog).getByRole("button", { name: "Add plugin" })).toBeDisabled();
+        releaseVersion();
+        expect(await within(dialog).findByText("Fast old")).toBeInTheDocument();
+        expect(within(dialog).getByRole("button", { name: "Add plugin" })).toBeEnabled();
+    });
+
+    it("ignores a lookup that fails after the name was changed, and keeps the package shown when a version can't be read", async () => {
+        let failSlow: () => void = () => undefined;
+        const lookupOf = (name: string, displayName: string) =>
+            jsonResponse(200, {
+                package: { name, latest: "1.0.0", versions: ["1.0.0", "0.9.0"] },
+                selected: { name, version: "1.0.0", peerDependencies: {}, manifest: { apiVersion: 1, displayName } },
+            });
+        mockPlugins({
+            extra: ((url: string) => {
+                if (url === "/api/system/plugins/registry/%40acme%2Fslow-plugin") {
+                    return new Promise<Response>((_resolve, reject) => (failSlow = () => reject(new TypeError("offline"))));
+                }
+                if (url === "/api/system/plugins/registry/%40acme%2Ffast-plugin") return lookupOf("@acme/fast-plugin", "Fast");
+                if (url === "/api/system/plugins/registry/%40acme%2Ffast-plugin?packageVersion=0.9.0") return jsonResponse(503, { message: "Version unavailable" });
+                return undefined;
+            }) as Handler,
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.click(await screen.findByRole("button", { name: "Add by name" }));
+        const dialog = await screen.findByRole("dialog");
+        await user.type(within(dialog).getByLabelText("Package name"), "@acme/slow-plugin");
+        await user.click(within(dialog).getByRole("button", { name: "Find" }));
+
+        await user.clear(within(dialog).getByLabelText("Package name"));
+        await user.type(within(dialog).getByLabelText("Package name"), "@acme/fast-plugin");
+        await user.click(within(dialog).getByRole("button", { name: "Find" }));
+        expect(await within(dialog).findByText("Fast")).toBeInTheDocument();
+
+        failSlow();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(within(dialog).queryByText("Could not look that package up.")).not.toBeInTheDocument();
+        expect(within(dialog).getByText("Fast")).toBeInTheDocument();
+
+        await user.selectOptions(within(dialog).getByLabelText("Version"), "0.9.0");
+        expect(await within(dialog).findByText("Version unavailable")).toBeInTheDocument();
+        expect(within(dialog).getByText("@acme/fast-plugin")).toBeInTheDocument();
+        expect(within(dialog).getByLabelText("Version")).toHaveValue("0.9.0");
+        expect(within(dialog).getByRole("button", { name: "Add plugin" })).toBeDisabled();
+    });
+
+    it("adds a package whose manifest isn't shown under its package name, and explains a non-API failure", async () => {
+        mockPlugins({
+            extra: (url, init) => {
+                if (url === "/api/system/plugins/registry/%40acme%2Fbare") {
+                    return jsonResponse(200, { package: { name: "@acme/bare", versions: ["1.0.0"] }, selected: { name: "@acme/bare", version: "1.0.0", peerDependencies: {} } });
+                }
+                if (url === "/api/system/plugins" && init?.method === "POST") throw new TypeError("network down");
+                return undefined;
+            },
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.click(await screen.findByRole("button", { name: "Add by name" }));
+        const dialog = await screen.findByRole("dialog");
+        await user.type(within(dialog).getByLabelText("Package name"), "@acme/bare");
+        await user.click(within(dialog).getByRole("button", { name: "Find" }));
+        await user.click(await within(dialog).findByRole("button", { name: "Add plugin" }));
+        expect(await within(dialog).findByText("Could not install @acme/bare.")).toBeInTheDocument();
     });
 
     it("explains why a package can't be added", async () => {
@@ -244,7 +432,7 @@ describe("PluginsPage", () => {
         await user.selectOptions(select, "1.1.0");
         await user.click(within(dialog).getByRole("button", { name: "Save" }));
         await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-        expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, packageVersion: "1.1.0" });
+        expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, packageVersion: "1.1.0", expectedPlan: NO_EXTRAS });
         expect(within(row).getByText("1.1.0")).toBeInTheDocument();
     });
 
@@ -281,6 +469,81 @@ describe("PluginsPage", () => {
         });
     });
 
+    it("sends only changed settings, keeps unchanged booleans unset, and saves a required select's first option", async () => {
+        const plugin = {
+            ...mapi,
+            settings: { "x:note": "kept" },
+            manifest: {
+                apiVersion: 1,
+                displayName: "MAPI over HTTP",
+                settings: [
+                    { key: "x:flag", label: "Flag", type: "boolean", default: true },
+                    { key: "x:region", label: "Region", type: "select", required: true, options: [{ value: "eu", label: "EU" }, { value: "us", label: "US" }] },
+                    { key: "x:note", label: "Note", type: "string" },
+                    { key: "x:size", label: "Size", type: "number", default: 5 },
+                ],
+            },
+        };
+        const fetchMock = mockPlugins({
+            plugins: [plugin],
+            extra: (url, init) => (url === "/api/system/plugins/p-mapi" && init?.method === "PUT" ? jsonResponse(200, plugin) : undefined),
+        });
+        const user = userEvent.setup();
+        renderPage();
+        const row = (await screen.findByText("MAPI over HTTP")).closest("tr") as HTMLElement;
+        await user.click(within(row).getByRole("button", { name: "Settings" }));
+        const dialog = await screen.findByRole("dialog");
+        expect(within(dialog).getByLabelText("Region")).toHaveValue("eu");
+        await user.type(within(dialog).getByLabelText("Note"), "!");
+        await user.click(within(dialog).getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({ version: 3, settings: { "x:region": "eu", "x:note": "kept!" } });
+    });
+
+    it("clears emptied text and select settings, and leaves a required select without options alone", async () => {
+        const plugin = {
+            ...mapi,
+            settings: { "x:note": "kept", "x:mode": "b" },
+            manifest: {
+                apiVersion: 1,
+                displayName: "MAPI over HTTP",
+                settings: [
+                    { key: "x:empty", label: "Empty", type: "select", required: true },
+                    { key: "x:loose", label: "Loose", type: "select" },
+                    { key: "x:note", label: "Note", type: "string" },
+                    { key: "x:mode", label: "Mode", type: "select", options: [{ value: "b", label: "B" }] },
+                ],
+            },
+        };
+        const fetchMock = mockPlugins({
+            plugins: [plugin],
+            extra: (url, init) => (url === "/api/system/plugins/p-mapi" && init?.method === "PUT" ? jsonResponse(200, plugin) : undefined),
+        });
+        const user = userEvent.setup();
+        renderPage();
+        const row = (await screen.findByText("MAPI over HTTP")).closest("tr") as HTMLElement;
+        await user.click(within(row).getByRole("button", { name: "Settings" }));
+        const dialog = await screen.findByRole("dialog");
+        expect(within(within(dialog).getByLabelText("Empty")).queryAllByRole("option")).toHaveLength(0);
+        expect(within(within(dialog).getByLabelText("Loose")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Default"]);
+        await user.clear(within(dialog).getByLabelText("Note"));
+        await user.selectOptions(within(dialog).getByLabelText("Mode"), "");
+        await user.click(within(dialog).getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({ version: 3, settings: { "x:note": null, "x:mode": null } });
+    });
+
+    it("closes settings without saving when nothing changed", async () => {
+        const fetchMock = mockPlugins();
+        const user = userEvent.setup();
+        renderPage();
+        const row = (await screen.findByText("Exchange ActiveSync")).closest("tr") as HTMLElement;
+        await user.click(within(row).getByRole("button", { name: "Settings" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "PUT")).toBe(false);
+    });
+
     it("clears an emptied setting back to its default, and shows a save error", async () => {
         const fetchMock = mockPlugins({
             extra: (url, init) => (url === "/api/system/plugins/p-eas" && init?.method === "PUT" ? jsonResponse(400, { message: "'Mode' is required." }) : undefined),
@@ -293,12 +556,7 @@ describe("PluginsPage", () => {
         await user.clear(within(dialog).getByLabelText("Sync batch size"));
         await user.click(within(dialog).getByRole("button", { name: "Save" }));
         expect(await within(dialog).findByText("'Mode' is required.")).toBeInTheDocument();
-        expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT").settings).toEqual({
-            "mail:eas:sync_window_size": null,
-            "mail:eas:provision:password_enabled": true,
-            "mail:eas:mode": null,
-            "mail:eas:note": null,
-        });
+        expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT").settings).toEqual({ "mail:eas:sync_window_size": null });
     });
 
     it("closes each dialog on Cancel", async () => {
@@ -413,7 +671,7 @@ describe("PluginsPage", () => {
 
         await user.click(within(row).getByRole("button", { name: "Upgrade Exchange ActiveSync to 1.3.0" }));
         await waitFor(() => expect(within(row).getByText("1.3.0")).toBeInTheDocument());
-        expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, packageVersion: "1.3.0" });
+        expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, packageVersion: "1.3.0", expectedPlan: NO_EXTRAS });
     });
 
     it("shows an error when upgrading fails", async () => {
@@ -484,6 +742,12 @@ describe("PluginsPage", () => {
 
             await user.click(within(dialog).getByRole("button", { name: "Continue" }));
             await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            // What was confirmed is what the server is asked to do.
+            expect(requestBody(fetchMock, "/api/system/plugins", "POST")).toEqual({
+                name: autodiscover.name,
+                packageVersion: "1.0.0",
+                expectedPlan: { install: [{ name: newEas.name, version: "1.2.0" }], enable: ["@rapidmx/mapi"] },
+            });
             expect(screen.getByText("Autodiscover")).toBeInTheDocument();
             expect(screen.getByText("Exchange ActiveSync")).toBeInTheDocument();
             expect(screen.getByRole("button", { name: "Disable MAPI over HTTP" })).toBeInTheDocument();
@@ -589,10 +853,83 @@ describe("PluginsPage", () => {
             expect(within(confirm).getByText("Enable Exchange ActiveSync")).toBeInTheDocument();
             await user.click(within(confirm).getByRole("button", { name: "Continue" }));
             expect(await screen.findByText("MAPI 2")).toBeInTheDocument();
-            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({ version: 3, packageVersion: "2.0.0" });
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({
+                version: 3,
+                packageVersion: "2.0.0",
+                expectedPlan: { install: [], enable: ["@rapidmx/activesync"] },
+            });
 
+            // Enabling also confirms the plugins it enables first.
             await user.click(screen.getByRole("button", { name: "Enable Autodiscover" }));
+            const confirmEnable = await screen.findByRole("dialog", { name: "Autodiscover requires other plugins" });
+            expect(fetchMock.mock.calls.some((c) => c[0] === "/api/system/plugins/p-ad")).toBe(false);
+            await user.click(within(confirmEnable).getByRole("button", { name: "Continue" }));
             expect(await screen.findByRole("button", { name: "Disable MAPI over HTTP" })).toBeInTheDocument();
+            expect(requestBody(fetchMock, "/api/system/plugins/p-ad", "PUT")).toEqual({
+                version: 3,
+                enabled: true,
+                expectedPlan: { install: [], enable: ["@rapidmx/activesync"] },
+            });
+        });
+
+        it("keeps a confirmed enable shown when re-reading the list afterwards fails", async () => {
+            const { settings: _settings, ...bareManifest } = autodiscover.manifest;
+            const bare = { ...autodiscover, enabled: false, manifest: bareManifest };
+            let lists = 0;
+            const fetchMock = mockPlugins({
+                extra: (url, init) => {
+                    if (url === "/api/system/plugins" && (init?.method ?? "GET") === "GET") {
+                        lists++;
+                        return lists === 1 ? jsonResponse(200, [eas, bare]) : jsonResponse(500, { message: "down" });
+                    }
+                    if (url.startsWith("/api/system/plugins/plan?")) return plan({ enable: ["@rapidmx/mapi"] });
+                    if (url === "/api/system/plugins/p-ad" && init?.method === "PUT") return jsonResponse(200, { ...bare, enabled: true, version: 4 });
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            const row = (await screen.findByText("Autodiscover")).closest("tr") as HTMLElement;
+            // A manifest that declares no settings at all has no Settings button.
+            expect(within(row).queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
+            await user.click(within(row).getByRole("button", { name: "Enable Autodiscover" }));
+            const confirm = await screen.findByRole("dialog", { name: "Autodiscover requires other plugins" });
+            await user.click(within(confirm).getByRole("button", { name: "Continue" }));
+            await waitFor(() => expect(fetchMock.mock.calls.filter((c) => c[0] === "/api/system/plugins" && !(c[1] as RequestInit)?.method)).toHaveLength(2));
+            expect(await screen.findByRole("button", { name: "Disable Autodiscover" })).toBeInTheDocument();
+            expect(screen.queryByText("down")).not.toBeInTheDocument();
+        });
+
+        it("refuses to enable a plugin whose requirements conflict", async () => {
+            const fetchMock = mockPlugins({
+                plugins: [eas, { ...autodiscover, enabled: false }],
+                extra: (url) => (url.startsWith("/api/system/plugins/plan?") ? plan({ conflicts: ["MAPI over HTTP ^1.0.0 isn't available."] }) : undefined),
+            });
+            const user = userEvent.setup();
+            renderPage();
+            await user.click(await screen.findByRole("button", { name: "Enable Autodiscover" }));
+            expect(await screen.findByText("Autodiscover 1.0.0 can't be installed. MAPI over HTTP ^1.0.0 isn't available.")).toBeInTheDocument();
+            expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "PUT")).toBe(false);
+            expect(screen.getByRole("button", { name: "Enable Autodiscover" })).toBeEnabled();
+        });
+
+        it("shows the server's refusal when the plan changed since it was confirmed", async () => {
+            mockPlugins({
+                plugins: [eas, { ...autodiscover, enabled: false }],
+                extra: (url, init) => {
+                    if (url.startsWith("/api/system/plugins/plan?")) return plan({ enable: ["@rapidmx/mapi"] });
+                    if (url === "/api/system/plugins/p-ad" && init?.method === "PUT") {
+                        return jsonResponse(409, { message: "The plugins this change needs have changed since it was previewed. Review the change again." });
+                    }
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            await user.click(await screen.findByRole("button", { name: "Enable Autodiscover" }));
+            const confirm = await screen.findByRole("dialog", { name: "Autodiscover requires other plugins" });
+            await user.click(within(confirm).getByRole("button", { name: "Continue" }));
+            expect(await within(confirm).findByText(/have changed since it was previewed/)).toBeInTheDocument();
         });
 
         it("explains why a required plugin can't be disabled", async () => {
@@ -676,12 +1013,12 @@ describe("PluginsPage", () => {
 
             await user.click(await browser.findByRole("button", { name: "Install @acme/crm-plugin" }));
             expect(await screen.findByText("CRM")).toBeInTheDocument();
-            expect(requestBody(fetchMock, "/api/system/plugins", "POST")).toEqual({ name: "@acme/crm-plugin", packageVersion: "0.2.0" });
+            expect(requestBody(fetchMock, "/api/system/plugins", "POST")).toEqual({ name: "@acme/crm-plugin", packageVersion: "0.2.0", expectedPlan: NO_EXTRAS });
             const crm = browser.getByText("@acme/crm-plugin").closest("tr") as HTMLElement;
             expect(within(crm).getByText("Installed 0.2.0")).toBeInTheDocument();
 
             await user.click(browser.getByRole("button", { name: "Upgrade @rapidmx/activesync to 1.4.0" }));
-            await waitFor(() => expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, packageVersion: "1.4.0" }));
+            await waitFor(() => expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, packageVersion: "1.4.0", expectedPlan: NO_EXTRAS }));
             const easRow = browser.getByText("@rapidmx/activesync").closest("tr") as HTMLElement;
             await waitFor(() => expect(within(easRow).getByText("Installed 1.4.0")).toBeInTheDocument());
         });

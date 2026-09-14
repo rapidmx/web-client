@@ -5,7 +5,7 @@
 import React from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import AppShell from "../../../apps/shared/components/layout/AppShell.js";
 
@@ -15,7 +15,15 @@ import AppShell from "../../../apps/shared/components/layout/AppShell.js";
 const { useIdleKeyTimeout } = vi.hoisted(() => ({ useIdleKeyTimeout: vi.fn() }));
 vi.mock("@rapidmx/react-shared/crypto/useIdleKeyTimeout.js", () => ({ useIdleKeyTimeout }));
 
+// The destroy mechanics themselves are covered in test/apps/_search/localIndexRpcClient.test.ts.
+const { destroyAllLocalIndexes } = vi.hoisted(() => ({ destroyAllLocalIndexes: vi.fn() }));
+vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ destroyAllLocalIndexes }));
+
 const AUTH_SERVER_URL = "https://auth.example.com";
+
+beforeEach(() => {
+    destroyAllLocalIndexes.mockResolvedValue(true);
+});
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -37,26 +45,28 @@ describe("AppShell", () => {
     it("sends an administrator to the setup wizard while first-run setup is required", async () => {
         const location = mockLocation();
         mockFetch((url) => (url === "/api/system/setup" ? jsonResponse(200, { required: true }) : jsonResponse(404, {})));
-        render(<AppShell active="mail" userUid="admin-1">content</AppShell>);
+        render(<AppShell active="mail" userUid="admin-1" trusted>content</AppShell>);
         await waitFor(() => expect(location.href).toBe("/admin/setup"));
     });
 
-    it("leaves everyone else where they are: non-admins (403), finished setup, and impersonating admins", async () => {
+    it("leaves everyone else where they are: non-trusted users (never asked), finished setup, and impersonating admins", async () => {
         const location = mockLocation();
         location.href = "https://mail.example.com/";
         const denied = mockFetch(() => jsonResponse(403, { message: "User does not have permission." }));
         const { unmount } = render(<AppShell active="mail" userUid="user-1">content</AppShell>);
-        await waitFor(() => expect(denied).toHaveBeenCalledWith("/api/system/setup", expect.anything()));
+        // A non-trusted caller never makes the admin-only request at all - it could only ever 403.
+        await waitFor(() => expect(denied).toHaveBeenCalled());
+        expect(denied).not.toHaveBeenCalledWith("/api/system/setup", expect.anything());
         unmount();
 
         const finished = mockFetch(() => jsonResponse(200, { required: false }));
-        const second = render(<AppShell active="mail" userUid="admin-1">content</AppShell>);
+        const second = render(<AppShell active="mail" userUid="admin-1" trusted>content</AppShell>);
         await waitFor(() => expect(finished).toHaveBeenCalledWith("/api/system/setup", expect.anything()));
         second.unmount();
 
         const impersonating = mockFetch(() => jsonResponse(200, { required: true }));
         render(
-            <AppShell active="mail" userUid="user-1" impersonating>
+            <AppShell active="mail" userUid="user-1" impersonating trusted>
                 content
             </AppShell>,
         );
@@ -186,7 +196,29 @@ describe("AppShell", () => {
 
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
-        expect(location.href).toBe(AUTH_SERVER_URL);
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
+        expect(destroyAllLocalIndexes).toHaveBeenCalled();
+    });
+
+    it("waits for every local search index to be destroyed before navigating away on sign-out", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/";
+        let finishDestroy!: (ok: boolean) => void;
+        destroyAllLocalIndexes.mockReturnValueOnce(new Promise<boolean>((resolve) => (finishDestroy = resolve)));
+        const user = userEvent.setup();
+        render(
+            <AppShell active="calendar" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+        expect(destroyAllLocalIndexes).toHaveBeenCalled();
+        expect(location.href).toBe("https://mail.example.com/");
+
+        finishDestroy(false);
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
     });
 
     it("signs out to '/' when authServerUrl is not configured", async () => {
@@ -196,7 +228,7 @@ describe("AppShell", () => {
 
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
-        expect(location.href).toBe("/");
+        await waitFor(() => expect(location.href).toBe("/"));
     });
 
     it("shows the Admin link in the user menu only when trusted", async () => {

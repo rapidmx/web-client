@@ -60,6 +60,25 @@ describe("EncryptionPolicyPage", () => {
         expect(await screen.findByText("Bad tier")).toBeInTheDocument();
     });
 
+    it("shows generic load and save errors when the request fails with a non-API error", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/system/setup") return jsonResponse(200, { required: false });
+            throw new TypeError("network down");
+        });
+        const { unmount } = render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        expect(await screen.findByText("Could not load the encryption policy.")).toBeInTheDocument();
+        unmount();
+
+        mockPolicy(() => {
+            throw new TypeError("network down");
+        });
+        const user = userEvent.setup();
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await user.click(await screen.findByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Could not save the encryption policy.")).toBeInTheDocument();
+    });
+
     it("treats encryption as enabled when any tier allows it", () => {
         expect(isEncryptionEnabled({ encryptSameOrg: "prohibited", encryptFederated: "prohibited", encryptExternal: "prohibited" })).toBe(false);
         expect(isEncryptionEnabled({ encryptSameOrg: "prohibited", encryptFederated: "optional", encryptExternal: "prohibited" })).toBe(true);

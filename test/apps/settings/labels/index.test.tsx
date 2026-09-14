@@ -122,6 +122,26 @@ describe("SettingsLabelsPage", () => {
         expect(screen.getByRole("dialog", { name: "New label" })).toBeInTheDocument();
     });
 
+    it("shows generic errors when saving or deleting a label fails with a non-API error", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/labels") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [label(1)]);
+            if (url.startsWith("/api/mail/labels") && (init?.method === "PUT" || init?.method === "DELETE")) throw new TypeError("network down");
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<SettingsLabelsPage userUid="u1" />);
+        await screen.findByText("Label 1");
+
+        await user.click(screen.getByRole("button", { name: "Edit" }));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Could not save this label.")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+        await user.click(screen.getByRole("button", { name: "Delete label" }));
+        expect(await screen.findByText("Could not delete this label.")).toBeInTheDocument();
+    });
+
     it("edits an existing label, pre-filling the form with its current name", async () => {
         mockShell((url, init) => {
             if (url.startsWith("/api/mail/labels") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [label(1)]);

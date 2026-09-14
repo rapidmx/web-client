@@ -6,6 +6,7 @@ import React, { FormEvent, useCallback, useEffect, useRef, useState } from "reac
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     addPlugin,
+    expectedPlanOf,
     getPluginStatus,
     getPluginUpdates,
     listPluginNamespaces,
@@ -36,6 +37,9 @@ const INPUT_CLASS =
 /** How often status is refreshed while server copies are still applying a change. */
 const PENDING_POLL_MS = 5000;
 
+/** How long status keeps being polled after a saved change, since servers may not have noticed it yet. */
+const AFTER_CHANGE_POLL_MS = 2 * 60 * 1000;
+
 function errorMessage(err: unknown, fallback: string): string {
     return err instanceof ApiRequestError ? err.message : fallback;
 }
@@ -53,6 +57,10 @@ interface PendingChange {
 export default function PluginsManager() {
     const [plugins, setPlugins] = useState<Plugin[]>([]);
     const [status, setStatus] = useState<PluginStatus | null>(null);
+    /** Set when the last status refresh failed, so what's shown may be out of date. */
+    const [statusStale, setStatusStale] = useState(false);
+    /** When polling started by a saved change stops (epoch ms), or 0 when there's none. */
+    const [pollUntil, setPollUntil] = useState(0);
     const [updates, setUpdates] = useState<Map<string, PluginUpdateInfo>>(new Map());
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -64,10 +72,13 @@ export default function PluginsManager() {
     const [busyUid, setBusyUid] = useState<string | null>(null);
 
     const refreshStatus = useCallback(() => {
-        // Status is advisory - a failure to read it shouldn't hide the plugin list.
+        // Status is advisory - a failure to read it shouldn't hide the plugin list, or lose the last status read.
         return getPluginStatus()
-            .then(setStatus)
-            .catch(() => setStatus(null));
+            .then((next) => {
+                setStatus(next);
+                setStatusStale(false);
+            })
+            .catch(() => setStatusStale(true));
     }, []);
 
     const refreshUpdates = useCallback(() => {
@@ -96,12 +107,23 @@ export default function PluginsManager() {
 
     const pending: boolean = !!status && status.instances.some((instance) => instance.hash !== status.hash);
     useEffect(() => {
-        if (!pending) {
+        if (!pending && pollUntil === 0) {
             return;
         }
         const timer = setInterval(() => void refreshStatus(), PENDING_POLL_MS);
-        return () => clearInterval(timer);
-    }, [pending, refreshStatus]);
+        // Polling for a saved change ends after a while; a rollout that's under way keeps it going.
+        const stop = pollUntil > 0 ? setTimeout(() => setPollUntil(0), Math.max(0, pollUntil - Date.now())) : undefined;
+        return () => {
+            clearInterval(timer);
+            clearTimeout(stop);
+        };
+    }, [pending, pollUntil, refreshStatus]);
+
+    /** Re-reads status, and keeps doing so for a while, since saving starts a rollout servers pick up shortly. */
+    function watchRollout() {
+        setPollUntil(Date.now() + AFTER_CHANGE_POLL_MS);
+        void refreshStatus();
+    }
 
     /** Applies saved changes locally and re-reads status and updates, since saving starts a rollout. */
     function applied(...changed: Plugin[]) {
@@ -113,7 +135,7 @@ export default function PluginsManager() {
             }
             return [...next].sort((a, b) => a.name.localeCompare(b.name));
         });
-        void refreshStatus();
+        watchRollout();
         void refreshUpdates();
     }
 
@@ -129,19 +151,33 @@ export default function PluginsManager() {
         }
     }
 
-    function toggle(plugin: Plugin) {
-        return run(
-            plugin,
-            async () => {
-                const updated = await updatePlugin(plugin.uid, { version: plugin.version, enabled: !plugin.enabled });
-                // Enabling a plugin also enables the plugins it requires.
-                if (updated.enabled && Object.keys(plugin.manifest.requires ?? {}).length > 0) {
+    async function toggle(plugin: Plugin) {
+        if (plugin.enabled) {
+            return run(
+                plugin,
+                () => updatePlugin(plugin.uid, { version: plugin.version, enabled: false }),
+                `Could not disable ${plugin.manifest.displayName}.`,
+            );
+        }
+        // Enabling a plugin also installs or enables the plugins it requires, so it's previewed like any other change.
+        setBusyUid(plugin.uid);
+        setError(null);
+        const problem = await planned(
+            plugin.name,
+            plugin.packageVersion,
+            plugin.manifest.displayName,
+            async (plan) => {
+                applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: true, expectedPlan: expectedPlanOf(plan) }));
+                if (plan.install.length > 0 || plan.enable.length > 0) {
                     void reload();
                 }
-                return updated;
             },
-            `Could not ${plugin.enabled ? "disable" : "enable"} ${plugin.manifest.displayName}.`,
+            `Could not enable ${plugin.manifest.displayName}.`,
         );
+        if (problem) {
+            setError(problem);
+        }
+        setBusyUid(null);
     }
 
     /**
@@ -176,8 +212,8 @@ export default function PluginsManager() {
             name,
             packageVersion,
             displayName,
-            async () => {
-                const result = await addPlugin(name, packageVersion);
+            async (plan) => {
+                const result = await addPlugin(name, packageVersion, expectedPlanOf(plan));
                 applied(...result.dependencies, result.plugin);
             },
             `Could not install ${displayName}.`,
@@ -190,7 +226,7 @@ export default function PluginsManager() {
             packageVersion,
             plugin.manifest.displayName,
             async (plan) => {
-                applied(await updatePlugin(plugin.uid, { version: plugin.version, packageVersion }));
+                applied(await updatePlugin(plugin.uid, { version: plugin.version, packageVersion, expectedPlan: expectedPlanOf(plan) }));
                 if (plan.install.length > 0 || plan.enable.length > 0) {
                     void reload();
                 }
@@ -227,6 +263,9 @@ export default function PluginsManager() {
 
             {error && <Alert>{error}</Alert>}
             <RolloutBanner status={status} />
+            {statusStale && status && (
+                <p className="mb-4 text-xs text-text-muted">Couldn&apos;t refresh server status. Showing the last status reported.</p>
+            )}
 
             <h2 className="text-sm font-bold uppercase tracking-wide mb-2">Installed plugins</h2>
             {loading ? (
@@ -336,10 +375,8 @@ export default function PluginsManager() {
             <PluginBrowser
                 plugins={plugins}
                 onInstall={(result) => install(result.name, result.version, result.name)}
-                onUpgrade={(uid, packageVersion) => {
-                    const plugin = plugins.find((p) => p.uid === uid);
-                    return plugin ? upgrade(plugin, packageVersion) : Promise.resolve();
-                }}
+                // The browser only offers an upgrade for a result it matched to one of these same `plugins`.
+                onUpgrade={(uid, packageVersion) => upgrade(plugins.find((p) => p.uid === uid)!, packageVersion)}
             />
 
             <AddPluginModal
@@ -392,7 +429,7 @@ export default function PluginsManager() {
                         const uid = removing.uid;
                         setRemoving(null);
                         setPlugins((prev) => prev.filter((plugin) => plugin.uid !== uid));
-                        void refreshStatus();
+                        watchRollout();
                     }}
                 />
             )}
@@ -630,9 +667,19 @@ function AddPluginModal({
     const [selectedVersion, setSelectedVersion] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [looking, setLooking] = useState(false);
+    /** Identifies the latest lookup, so a slower earlier response can't replace what it found. */
+    const lookupToken = useRef(0);
+
+    /** Forgets any lookup still in flight. */
+    function invalidateLookup() {
+        lookupToken.current++;
+        setLooking(false);
+    }
 
     useEffect(() => {
         if (!open) {
+            invalidateLookup();
             setName("");
             setLookup(null);
             setSelectedVersion("");
@@ -640,24 +687,49 @@ function AddPluginModal({
         }
     }, [open]);
 
-    async function find(e: FormEvent) {
+    /** Looks up `packageName` at `packageVersion` (default: latest). `previous` is what a version change started
+     * from - kept, with the failure in place of its manifest, when that version can't be read. */
+    async function runLookup(packageName: string, packageVersion?: string, previous?: PluginRegistryLookup) {
+        const token = ++lookupToken.current;
+        setLooking(true);
+        setError(null);
+        try {
+            const found = await lookupPluginPackage(packageName, packageVersion);
+            if (token === lookupToken.current) {
+                setLookup(found);
+                setSelectedVersion(found.selected.version);
+            }
+        } catch (err) {
+            if (token !== lookupToken.current) {
+                return;
+            }
+            const message = errorMessage(err, "Could not look that package up.");
+            if (previous && packageVersion) {
+                setLookup({ ...previous, selected: { ...previous.selected, version: packageVersion, manifest: message } });
+            } else {
+                setLookup(null);
+                setError(message);
+            }
+        } finally {
+            if (token === lookupToken.current) {
+                setLooking(false);
+            }
+        }
+    }
+
+    function find(e: FormEvent) {
         e.preventDefault();
         if (!name.trim()) {
             setError("Enter a package name.");
             return;
         }
-        setBusy(true);
-        setError(null);
-        try {
-            const found = await lookupPluginPackage(name.trim());
-            setLookup(found);
-            setSelectedVersion(found.selected.version);
-        } catch (err) {
-            setLookup(null);
-            setError(errorMessage(err, "Could not look that package up."));
-        } finally {
-            setBusy(false);
-        }
+        void runLookup(name.trim());
+    }
+
+    function chooseVersion(version: string) {
+        setSelectedVersion(version);
+        // The manifest shown, and whether it's a loadable plugin, depend on the version.
+        void runLookup(lookup!.package.name, version, lookup!);
     }
 
     const manifest = lookup?.selected.manifest;
@@ -681,30 +753,35 @@ function AddPluginModal({
                         aria-label="Package name"
                         className={INPUT_CLASS}
                         value={name}
-                        placeholder="@rapidmx/activesync"
+                        placeholder="@rapidmx/activesync-plugin"
                         onChange={(e) => {
                             setName(e.target.value);
+                            invalidateLookup();
                             setLookup(null);
                         }}
                     />
                 </label>
-                <Button type="submit" variant="secondary" className="!w-auto" loading={busy && !lookup} disabled={busy}>
+                <Button type="submit" variant="secondary" className="!w-auto" loading={looking && !lookup} disabled={busy || looking}>
                     Find
                 </Button>
             </form>
             {lookup && (
                 <div className="flex flex-col gap-3">
                     {typeof manifest === "string" ? (
-                        <Alert>{manifest}</Alert>
+                        <>
+                            <div className="text-sm font-semibold">{lookup.package.name}</div>
+                            <Alert>{manifest}</Alert>
+                        </>
                     ) : (
                         <div className="text-sm">
                             <div className="font-semibold">{manifest?.displayName}</div>
+                            <div className="text-xs text-text-muted">{lookup.package.name}</div>
                             {manifest?.description && <div className="text-text-muted">{manifest.description}</div>}
                         </div>
                     )}
                     <label className="flex flex-col gap-1.5 text-sm">
                         <span className="font-semibold">Version</span>
-                        <select aria-label="Version" className={INPUT_CLASS} value={selectedVersion} onChange={(e) => setSelectedVersion(e.target.value)}>
+                        <select aria-label="Version" className={INPUT_CLASS} value={selectedVersion} onChange={(e) => chooseVersion(e.target.value)}>
                             {lookup.package.versions.map((version) => (
                                 <option key={version} value={version}>
                                     {version}
@@ -717,7 +794,13 @@ function AddPluginModal({
                         <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
                             Cancel
                         </Button>
-                        <Button type="button" className="!w-auto" loading={busy} disabled={busy || typeof manifest === "string"} onClick={() => void add()}>
+                        <Button
+                            type="button"
+                            className="!w-auto"
+                            loading={busy || looking}
+                            disabled={busy || looking || typeof manifest === "string"}
+                            onClick={() => void add()}
+                        >
                             Add plugin
                         </Button>
                     </div>
@@ -857,8 +940,23 @@ function ConfirmDependenciesModal({
     );
 }
 
-/** A setting's current form value: its saved value, else its default. Kept as a string for text inputs. */
+/** Whether a required select has no value to fall back on, so the form has to pick (and save) one. */
+function needsSelection(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined): boolean {
+    return (
+        definition.type === "select" &&
+        !!definition.required &&
+        saved === undefined &&
+        definition.default === undefined &&
+        (definition.options ?? []).length > 0
+    );
+}
+
+/** A setting's current form value: its saved value, else its default - or, for a required select with neither, its
+ * first option. Kept as a string for text inputs. */
 function initialValue(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined): PluginSettingValue | "" {
+    if (needsSelection(definition, saved)) {
+        return definition.options![0].value;
+    }
     const value = saved ?? definition.default;
     if (definition.type === "boolean") {
         return value === true;
@@ -867,7 +965,8 @@ function initialValue(definition: PluginSettingDefinition, saved: PluginSettingV
 }
 
 function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: () => void; onSaved: (plugin: Plugin) => void }) {
-    const definitions: PluginSettingDefinition[] = plugin.manifest.settings ?? [];
+    // Only opened from the Settings button, which is only shown for a plugin that declares settings.
+    const definitions: PluginSettingDefinition[] = plugin.manifest.settings!;
     const initial = useRef(Object.fromEntries(definitions.map((d) => [d.key, initialValue(d, plugin.settings[d.key])])));
     const [values, setValues] = useState<Record<string, PluginSettingValue | "">>(initial.current);
     const [error, setError] = useState<string | null>(null);
@@ -875,9 +974,14 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
 
     async function save(e: FormEvent) {
         e.preventDefault();
+        // Only what the administrator changed is sent, so a setting left alone keeps following the plugin's default.
+        // A required select with nothing to fall back on is always sent, since the form picked its value.
         const settings: Record<string, PluginSettingValue | null> = {};
         for (const definition of definitions) {
             const value = values[definition.key];
+            if (value === initial.current[definition.key] && !needsSelection(definition, plugin.settings[definition.key])) {
+                continue;
+            }
             if (definition.type === "number") {
                 if (value === "") {
                     settings[definition.key] = null;
@@ -888,6 +992,10 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
             } else {
                 settings[definition.key] = value === "" ? null : value;
             }
+        }
+        if (Object.keys(settings).length === 0) {
+            onClose();
+            return;
         }
         setBusy(true);
         setError(null);

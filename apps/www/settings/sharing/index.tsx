@@ -57,13 +57,13 @@ function SharingContent() {
     const [removeTarget, setRemoveTarget] = useState<MailboxAccessMember | null>(null);
     const [removing, setRemoving] = useState(false);
 
+    // `SettingsShell` only ever renders its children once `mailboxUid` has resolved (a mailbox-less caller
+    // gets `<MailboxProvisioning />` instead) - same established precedent as the Labels/Focused Inbox
+    // settings pages, so none of the handlers below need their own `!mailboxUid` guard.
     function reload() {
-        if (!mailboxUid) {
-            return;
-        }
         setStatus("loading");
         setError(null);
-        listMailboxAccess(mailboxUid)
+        listMailboxAccess(mailboxUid!)
             .then((result) => {
                 setMembers(result);
                 setStatus("ready");
@@ -86,7 +86,7 @@ function SharingContent() {
     async function handleAdd(e: FormEvent) {
         e.preventDefault();
         const email = emailInput.trim();
-        if (!email || !mailboxUid) {
+        if (!email) {
             return;
         }
         setAddError(null);
@@ -97,7 +97,7 @@ function SharingContent() {
                 setAddError("No one found with that email on this platform.");
                 return;
             }
-            await setMailboxAccess(mailboxUid, found.userUid, newRole);
+            await setMailboxAccess(mailboxUid!, found.userUid, newRole);
             setEmailInput("");
             setNewRole("viewer");
             reload();
@@ -109,13 +109,10 @@ function SharingContent() {
     }
 
     async function handleRoleChange(userOrRoleId: string, role: MailboxAccessRole) {
-        if (!mailboxUid) {
-            return;
-        }
         setPendingRoleChange(userOrRoleId);
         setError(null);
         try {
-            await setMailboxAccess(mailboxUid, userOrRoleId, role);
+            await setMailboxAccess(mailboxUid!, userOrRoleId, role);
             reload();
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not update this member's role.");
@@ -129,13 +126,12 @@ function SharingContent() {
     }
 
     async function handleRemove() {
-        if (!mailboxUid || !removeTarget) {
-            return;
-        }
+        // Only reachable from the confirm modal's own "Remove" button, and `Modal` renders nothing at all
+        // unless `removeTarget` is set, so `removeTarget` is always non-null here.
         setRemoving(true);
         setError(null);
         try {
-            await removeMailboxAccess(mailboxUid, removeTarget.userOrRoleId);
+            await removeMailboxAccess(mailboxUid!, removeTarget!.userOrRoleId);
             setRemoveTarget(null);
             reload();
         } catch (err) {
@@ -191,6 +187,13 @@ function SharingContent() {
                                                         handleRoleChange(member.userOrRoleId, e.target.value as MailboxAccessRole)
                                                     }
                                                 >
+                                                    {/* Access granted outside this page can't be set here, only replaced by a
+                                                        standard role. */}
+                                                    {member.role === "custom" && (
+                                                        <option value="custom" disabled>
+                                                            Custom access
+                                                        </option>
+                                                    )}
                                                     {(Object.keys(ROLE_LABELS) as MailboxAccessRole[]).map((role) => (
                                                         <option key={role} value={role}>
                                                             {ROLE_LABELS[role]}

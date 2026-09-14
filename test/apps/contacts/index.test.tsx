@@ -327,6 +327,56 @@ describe("ContactsPage", () => {
         expect(JSON.parse((post[1] as RequestInit).body as string)).toMatchObject({ mailboxUid: "mb-shared", folderUid: "f-shared-contacts" });
     });
 
+    it("refuses to create a contact in another mailbox that has no Contacts folder", async () => {
+        const sharedMailbox = { ...mailbox, uid: "mb-shared", ownerUserUid: undefined, displayName: "Support" };
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb-shared") ? [] : [contactsFolder]);
+            if (url.startsWith("/api/mail/contact-lists")) return jsonResponse(200, []);
+            if (url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("button", { name: "New contact" }));
+        const form = within(screen.getByRole("heading", { name: "New contact" }).closest("form")!);
+        await user.selectOptions(form.getByLabelText("Mailbox"), "mb-shared");
+        await user.type(screen.getByLabelText("Display name"), "Vendor Rep");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("That mailbox has no Contacts folder.")).toBeInTheDocument();
+        expect(fetchMock).not.toHaveBeenCalledWith("/api/mail/contacts", expect.objectContaining({ method: "POST" }));
+    });
+
+    it("names an unnamed other mailbox generically after creating a contact in it", async () => {
+        const sharedMailbox = { ...mailbox, uid: "mb-shared", ownerUserUid: undefined, displayName: undefined };
+        const sharedContactsFolder = { ...contactsFolder, uid: "f-shared-contacts", mailboxUid: "mb-shared" };
+        mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+            if (url.startsWith("/api/mail/folders")) {
+                return jsonResponse(200, url.includes("mailboxUid=mb-shared") ? [sharedContactsFolder] : [contactsFolder]);
+            }
+            if (url.startsWith("/api/mail/contact-lists")) return jsonResponse(200, []);
+            if (url === "/api/mail/contacts" && init?.method === "POST") {
+                const body = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...jane, uid: "c9", ...body });
+            }
+            if (url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("button", { name: "New contact" }));
+        const form = within(screen.getByRole("heading", { name: "New contact" }).closest("form")!);
+        await user.selectOptions(form.getByLabelText("Mailbox"), "mb-shared");
+        await user.type(screen.getByLabelText("Display name"), "Vendor Rep");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByRole("status")).toHaveTextContent("Vendor Rep was added to another mailbox.");
+    });
+
     it("creating a new contact posts the input and shows the saved contact", async () => {
         const created = { ...jane, uid: "c3", displayName: "New Person", emails: [], phones: [], addresses: [], notes: undefined };
         // The list panel's post-save `reload()` must see the newly created contact, so this mock's GET

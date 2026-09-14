@@ -92,10 +92,11 @@ export default function AppShell({
     // specifically so activity in *any* app resets the idle clock - see that hook's own doc comment.
     useIdleKeyTimeout();
 
-    // An administrator on a server that hasn't finished first-run setup is sent to the setup wizard. Everyone else
-    // gets a 403 from the setup status check (it's admin-only), which is ignored along with any other failure.
+    // An administrator on a server that hasn't finished first-run setup is sent to the setup wizard. The status
+    // check is admin-only, so it's only made for a trusted caller - everyone else would just get a 403 on every
+    // page load. Any failure is ignored.
     useEffect(() => {
-        if (!userUid || impersonating) {
+        if (!userUid || impersonating || !trusted) {
             return;
         }
         getSetupStatus()
@@ -105,15 +106,14 @@ export default function AppShell({
                 }
             })
             .catch(() => undefined);
-    }, [userUid, impersonating]);
+    }, [userUid, impersonating, trusted]);
 
-    function handleSignOut() {
-        // Best-effort, fire-and-forget: the Tier 2 local index MUST be destroyed on explicit logout, the
-        // same as unlocked keys themselves (spec §11) - this component has no specific mailboxUid of its
-        // own to pass (it's shared by every app, not just Mail), so this destroys every mailbox's index
-        // the session has open rather than needing one threaded through. Not awaited - the navigation
-        // below shouldn't wait on it, and destroyAllLocalIndexes() never throws either way.
-        void destroyAllLocalIndexes();
+    async function handleSignOut() {
+        // The Tier 2 local index MUST be destroyed on explicit logout, the same as unlocked keys themselves
+        // (spec §11). Destroys every index on this device (not only mailboxes opened this page load) and is
+        // awaited before navigating - a navigation tears down the Worker mid-delete otherwise.
+        // destroyAllLocalIndexes() is bounded by its own timeout and never rejects, so sign-out can't hang.
+        await destroyAllLocalIndexes();
         window.location.href = authServerUrl ?? "/";
     }
 

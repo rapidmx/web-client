@@ -1092,7 +1092,7 @@ describe("InboxPage", () => {
                 mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
                 searchLocalIndex.mockResolvedValue({
                     results: [],
-                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 5, building: false },
+                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 5, building: false, complete: true },
                     hasMore: false,
                 });
                 searchEncryptedCandidates.mockResolvedValue([]);
@@ -1113,6 +1113,71 @@ describe("InboxPage", () => {
                 const [secondParsed] = searchEncryptedCandidates.mock.calls[1] as [{ before?: Date }];
                 expect(secondParsed.before).toBeUndefined();
                 expect(screen.queryByText("Search all mail")).not.toBeInTheDocument();
+            });
+
+            it.each([
+                ["keeps a query's own earlier before: bound", "before:2025-01-01 budget", "2025-01-01T00:00:00.000Z"],
+                ["tightens a query's later before: bound to the coverage window", "before:2025-12-01 budget", "2025-06-01T00:00:00.000Z"],
+            ])("%s when narrowing Tier 3", async (_label, query, expectedBefore) => {
+                mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchLocalIndex.mockResolvedValue({
+                    results: [],
+                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 5, building: false, complete: true },
+                    hasMore: false,
+                });
+                searchEncryptedCandidates.mockResolvedValue([]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), query);
+
+                await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1));
+                const [parsed] = searchEncryptedCandidates.mock.calls[0] as [{ before?: Date }];
+                expect(parsed.before).toEqual(new Date(expectedBefore));
+            });
+
+            it("reuses Tier 3's cached candidates when the identical query is searched again", async () => {
+                const hit = messageFixture({ uid: "m3", subject: "Encrypted match", folderUid: "f2" });
+                mockSearch([hit], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchEncryptedCandidates.mockResolvedValue([
+                    { entityType: "message", entityUid: "m3", score: 5, source: "candidate", metadataOnly: false },
+                ]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+                const searchBox = screen.getByPlaceholderText("Search all mail…");
+
+                await user.type(searchBox, "budget");
+                await screen.findByText("Encrypted match");
+                await user.clear(searchBox);
+                await waitFor(() => expect(screen.queryByText("Encrypted match")).not.toBeInTheDocument());
+                await user.type(searchBox, "budget");
+
+                expect(await screen.findByText("Encrypted match")).toBeInTheDocument();
+                expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
+            });
+
+            it.each([
+                ["still building", { building: true, complete: false }],
+                ["finished but incomplete", { building: false, complete: false }],
+            ])("never narrows Tier 3 to Tier 2's coverage while the local index is %s", async (_label, state) => {
+                mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchLocalIndex.mockResolvedValue({
+                    results: [],
+                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 5, ...state },
+                    hasMore: false,
+                });
+                searchEncryptedCandidates.mockResolvedValue([]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+                await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1));
+                const [parsed] = searchEncryptedCandidates.mock.calls[0] as [{ before?: Date }];
+                expect(parsed.before).toBeUndefined();
             });
         });
 
@@ -1212,6 +1277,20 @@ describe("InboxPage", () => {
             expect(screen.queryByRole("button", { name: "Focused" })).not.toBeInTheDocument();
         });
 
+        it("loads labels for the selected message's own mailbox, not the caller's default mailbox", async () => {
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            const fetchMock = mockAggregate({
+                "f-shared-inbox": [messageFixture({ uid: "m-shared", subject: "Shared row", mailboxUid: "mb2", folderUid: "f-shared-inbox" })],
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+
+            await user.click(await screen.findByText("Shared row"));
+
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/mail\/labels\?.*mailboxUid=mb2/), expect.anything()));
+        });
+
         it("still shows the other mailboxes' messages when one mailbox's fetch fails", async () => {
             const location = mockLocation();
             (location as any).search = "?aggregate=inbox";
@@ -1250,6 +1329,90 @@ describe("InboxPage", () => {
 
             expect(await screen.findByText("Message 99")).toBeInTheDocument();
             expect(screen.getByText("Message 0")).toBeInTheDocument();
+        });
+
+        it("skips rows a later page repeats instead of rendering them twice", async () => {
+            const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Message ${i}` }));
+            const io = mockIntersectionObserver();
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    // New mail arrived between fetches, shifting m49 onto the next page.
+                    if (url.includes("page=1")) return jsonResponse(200, [firstPage[49], messageFixture({ uid: "m99", subject: "Message 99" })]);
+                    return jsonResponse(200, firstPage);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Message 0");
+
+            io.trigger();
+
+            expect(await screen.findByText("Message 99")).toBeInTheDocument();
+            expect(screen.getAllByText("Message 49")).toHaveLength(1);
+        });
+
+        it("drops a load-more page that lands after the list was replaced by a search", async () => {
+            const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Message ${i}` }));
+            const io = mockIntersectionObserver();
+            let resolvePageOne: ((value: Response) => void) | undefined;
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) return jsonResponse(200, { results: [] });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    if (url.includes("page=1")) {
+                        return new Promise((resolve) => {
+                            resolvePageOne = resolve;
+                        });
+                    }
+                    return jsonResponse(200, firstPage);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Message 0");
+
+            io.trigger();
+            await screen.findByText("Loading more…");
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "nothing");
+            await screen.findByText('No messages match "nothing".');
+
+            resolvePageOne!(jsonResponse(200, [messageFixture({ uid: "m99", subject: "Message 99" })]));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            expect(screen.queryByText("Message 99")).not.toBeInTheDocument();
+            expect(screen.getByText('No messages match "nothing".')).toBeInTheDocument();
+        });
+
+        it("drops a slow folder listing that lands after a search already replaced it", async () => {
+            let resolveListing: ((value: Response) => void) | undefined;
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) return jsonResponse(200, { results: [] });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    return new Promise((resolve) => {
+                        resolveListing = resolve;
+                    });
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Search all mail…");
+            await waitFor(() => expect(resolveListing).toBeDefined());
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "nothing");
+            await screen.findByText('No messages match "nothing".');
+
+            resolveListing!(jsonResponse(200, [messageFixture({ uid: "m-late", subject: "Late folder row" })]));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            expect(screen.queryByText("Late folder row")).not.toBeInTheDocument();
+            expect(screen.getByText('No messages match "nothing".')).toBeInTheDocument();
         });
 
         it("ignores a second sentinel trigger while a page load is already in flight", async () => {
@@ -1528,6 +1691,365 @@ describe("InboxPage", () => {
             render(<InboxPage userUid="u1" />);
 
             expect(await screen.findByText("Encrypted message")).toBeInTheDocument();
+        });
+    });
+
+    // Every async load in InboxContent checks its own run id before touching state - these tests let each
+    // one land only after a newer run (a query/view change, or unmount) has superseded it.
+    describe("stale async results", () => {
+        function deferred<T>() {
+            let resolve!: (value: T) => void;
+            const promise = new Promise<T>((res) => {
+                resolve = res;
+            });
+            return { promise, resolve };
+        }
+
+        const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+        afterEach(() => {
+            mockLocation();
+        });
+
+        function mockSearchShell(
+            onSearch: (url: string) => Response | Promise<Response>,
+            messages: Record<string, unknown>[] = [],
+            onMessage?: (uid: string) => Response | Promise<Response> | undefined,
+        ) {
+            return mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) return onSearch(url);
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/")) {
+                    const uid = url.split("/api/mail/messages/")[1].split("?")[0];
+                    const custom = onMessage?.(uid);
+                    if (custom) return custom;
+                    const found = messages.find((m) => m.uid === uid);
+                    return found ? jsonResponse(200, found) : jsonResponse(404, { message: "not found" });
+                }
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [messageFixture({ uid: "m-folder", subject: "Folder row" })]);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+        }
+
+        it.each([
+            ["results", () => jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1 }] })],
+            ["a failure", () => jsonResponse(500, { message: "late search failure" })],
+        ])("drops Tier 1/2 %s that land after the search was cleared", async (_label, lateResponse) => {
+            const searchResponse = deferred<Response>();
+            const fetchMock = mockSearchShell(() => searchResponse.promise, [messageFixture({ uid: "m2", subject: "Late hit" })]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Folder row");
+            const searchBox = screen.getByPlaceholderText("Search all mail…");
+
+            await user.type(searchBox, "budget");
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/mail/search"), expect.anything()));
+            await user.clear(searchBox);
+            await screen.findByText("Folder row");
+
+            searchResponse.resolve(lateResponse());
+            await settle();
+
+            expect(screen.queryByText("Late hit")).not.toBeInTheDocument();
+            expect(screen.queryByText("late search failure")).not.toBeInTheDocument();
+            expect(screen.getByText("Folder row")).toBeInTheDocument();
+        });
+
+        it("drops resolved search rows that land after the search was cleared", async () => {
+            const lateMessage = deferred<Response>();
+            let messageRequested = false;
+            mockSearchShell(
+                () => jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1 }] }),
+                [],
+                (uid) => {
+                    if (uid !== "m2") return undefined;
+                    messageRequested = true;
+                    return lateMessage.promise;
+                },
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Folder row");
+            const searchBox = screen.getByPlaceholderText("Search all mail…");
+
+            await user.type(searchBox, "budget");
+            await waitFor(() => expect(messageRequested).toBe(true));
+            await screen.findByText("Search all mail");
+            await user.clear(searchBox);
+            // The folder row never left the screen (this pass is stuck resolving its hits), so wait for the
+            // debounced query itself to clear instead.
+            await waitFor(() => expect(screen.queryByText("Search all mail")).not.toBeInTheDocument());
+
+            lateMessage.resolve(jsonResponse(200, messageFixture({ uid: "m2", subject: "Late hit" })));
+            await settle();
+
+            expect(screen.queryByText("Late hit")).not.toBeInTheDocument();
+            expect(screen.getByText("Folder row")).toBeInTheDocument();
+        });
+
+        it("drops Tier 3 candidates that land after the search was cleared", async () => {
+            const tier3 = deferred<unknown[]>();
+            searchEncryptedCandidates.mockReturnValue(tier3.promise);
+            mockSearchShell(() => jsonResponse(200, { results: [] }), [messageFixture({ uid: "m3", subject: "Late encrypted hit" })]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Folder row");
+            const searchBox = screen.getByPlaceholderText("Search all mail…");
+
+            await user.type(searchBox, "budget");
+            await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1));
+            await user.clear(searchBox);
+            await screen.findByText("Folder row");
+
+            tier3.resolve([{ entityType: "message", entityUid: "m3", score: 5, source: "candidate", metadataOnly: false }]);
+            await settle();
+
+            expect(screen.queryByText("Late encrypted hit")).not.toBeInTheDocument();
+            expect(screen.getByText("Folder row")).toBeInTheDocument();
+        });
+
+        it("drops a search load-more page that lands after the search was cleared", async () => {
+            const io = mockIntersectionObserver();
+            const pageTwo = deferred<Response>();
+            mockSearchShell(
+                (url) =>
+                    url.includes("cursor=c1")
+                        ? pageTwo.promise
+                        : jsonResponse(200, { results: [{ entityType: "message", entityUid: "m1", score: 1 }], nextCursor: "c1" }),
+                [messageFixture({ uid: "m1", subject: "First hit" }), messageFixture({ uid: "m2", subject: "Second hit" })],
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Folder row");
+            const searchBox = screen.getByPlaceholderText("Search all mail…");
+
+            await user.type(searchBox, "hit");
+            await screen.findByText("First hit");
+            io.trigger();
+            await screen.findByText("Loading more…");
+            await user.clear(searchBox);
+            await screen.findByText("Folder row");
+
+            pageTwo.resolve(jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1 }] }));
+            await settle();
+
+            expect(screen.queryByText("Second hit")).not.toBeInTheDocument();
+            expect(screen.getByText("Folder row")).toBeInTheDocument();
+        });
+
+        it("uses an empty Tier 3 page for a load-more whose unlock state no longer matches the cached pass", async () => {
+            const io = mockIntersectionObserver();
+            getUnlockedKeys.mockReturnValue(undefined);
+            mockSearchShell(
+                (url) =>
+                    url.includes("cursor=c1")
+                        ? jsonResponse(200, { results: [{ entityType: "message", entityUid: "m2", score: 1 }] })
+                        : jsonResponse(200, { results: [{ entityType: "message", entityUid: "m1", score: 1 }], nextCursor: "c1" }),
+                [messageFixture({ uid: "m1", subject: "First hit" }), messageFixture({ uid: "m2", subject: "Second hit" })],
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Folder row");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "hit");
+            await screen.findByText("First hit");
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            io.trigger();
+
+            expect(await screen.findByText("Second hit")).toBeInTheDocument();
+            expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
+        });
+
+        it("drops a folder load-more failure that lands after a search replaced the list", async () => {
+            const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Message ${i}` }));
+            const io = mockIntersectionObserver();
+            const pageOne = deferred<Response>();
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) return jsonResponse(200, { results: [] });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) return url.includes("page=1") ? pageOne.promise : jsonResponse(200, firstPage);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Message 0");
+
+            io.trigger();
+            await screen.findByText("Loading more…");
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "nothing");
+            await screen.findByText('No messages match "nothing".');
+
+            pageOne.resolve(jsonResponse(500, { message: "late page failure" }));
+            await settle();
+
+            expect(screen.queryByText("late page failure")).not.toBeInTheDocument();
+        });
+
+        it("leaves the list unchanged when a load-more page only repeats rows already shown", async () => {
+            const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Message ${i}` }));
+            const io = mockIntersectionObserver();
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    return url.includes("page=1") ? jsonResponse(200, [firstPage[48], firstPage[49]]) : jsonResponse(200, firstPage);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Message 0");
+
+            io.trigger();
+
+            await waitFor(() => expect(screen.queryByText("Loading more…")).not.toBeInTheDocument());
+            expect(screen.getAllByText("Message 49")).toHaveLength(1);
+            expect(screen.getAllByRole("listitem")).toHaveLength(50);
+        });
+
+        it("drops a folder listing failure that lands after a search replaced it", async () => {
+            const listing = deferred<Response>();
+            let listingRequested = false;
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) return jsonResponse(200, { results: [] });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    listingRequested = true;
+                    return listing.promise;
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Search all mail…");
+            await waitFor(() => expect(listingRequested).toBe(true));
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "nothing");
+            await screen.findByText('No messages match "nothing".');
+
+            listing.resolve(jsonResponse(500, { message: "late listing failure" }));
+            await settle();
+
+            expect(screen.queryByText("late listing failure")).not.toBeInTheDocument();
+        });
+
+        it("drops conversation results and failures that land after switching back to 'By date'", async () => {
+            const conversationRequests: ReturnType<typeof deferred<Response>>[] = [];
+            mockShellAndInbox([messageFixture({ subject: "Folder message" })], (url) => {
+                if (!url.startsWith("/api/mail/messages/conversations")) return undefined;
+                const request = deferred<Response>();
+                conversationRequests.push(request);
+                return request.promise as unknown as Response;
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Folder message");
+
+            await user.click(screen.getByRole("button", { name: "By conversation" }));
+            await waitFor(() => expect(conversationRequests).toHaveLength(1));
+            await user.click(screen.getByRole("button", { name: "By date" }));
+            await screen.findByText("Folder message");
+            await user.click(screen.getByRole("button", { name: "By conversation" }));
+            await waitFor(() => expect(conversationRequests).toHaveLength(2));
+            await user.click(screen.getByRole("button", { name: "By date" }));
+            await screen.findByText("Folder message");
+
+            conversationRequests[0].resolve(jsonResponse(500, { message: "late conversation failure" }));
+            conversationRequests[1].resolve(jsonResponse(200, [conversationFixture({ subject: "Late conversation" })]));
+            await settle();
+
+            expect(screen.queryByText("late conversation failure")).not.toBeInTheDocument();
+            expect(screen.getByText("Folder message")).toBeInTheDocument();
+        });
+
+        it("drops an aggregate listing that lands after switching to 'By conversation', and falls back to no folders while they load", async () => {
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            const folders = deferred<Response>();
+            const listings: ReturnType<typeof deferred<Response>>[] = [];
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return folders.promise;
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages")) {
+                    const listing = deferred<Response>();
+                    listings.push(listing);
+                    return listing.promise;
+                }
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Open a mailbox's own folder to search");
+
+            // Folders still loading: the conversation pane gets an empty folder list.
+            await user.click(screen.getByRole("button", { name: "By conversation" }));
+            expect(await screen.findByTestId("thread-pane")).toHaveTextContent("no-conversation");
+
+            // Folders arrive; back in date mode that starts a (slow) aggregate listing, which switching to
+            // conversation mode again supersedes before it lands.
+            folders.resolve(jsonResponse(200, [inboxFolder]));
+            await settle();
+            await user.click(screen.getByRole("button", { name: "By date" }));
+            await waitFor(() => expect(listings).toHaveLength(1));
+            await user.click(screen.getByRole("button", { name: "By conversation" }));
+            await screen.findByText(/Showing every conversation in this mailbox/);
+
+            listings[0].resolve(jsonResponse(200, [messageFixture({ subject: "Aggregate row" })]));
+            await settle();
+            await user.click(screen.getByRole("button", { name: "By date" }));
+
+            expect(screen.queryByText("Aggregate row")).not.toBeInTheDocument();
+        });
+
+        it("merges an aggregate view across only shared mailboxes, skipping one with no matching folder", async () => {
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            const sharedA = { ...mailbox, uid: "mbA", ownerUserUid: undefined, displayName: "Shared A" };
+            const sharedB = { ...mailbox, uid: "mbB", ownerUserUid: undefined, displayName: "Shared B" };
+            const fetchMock = mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [sharedA, sharedB]);
+                if (url.startsWith("/api/mail/folders")) {
+                    return jsonResponse(
+                        200,
+                        url.includes("mailboxUid=mbB") ? [{ ...sentItemsFolder, mailboxUid: "mbB" }] : [{ ...inboxFolder, mailboxUid: "mbA" }],
+                    );
+                }
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [messageFixture({ subject: "Shared A row", mailboxUid: "mbA" })]);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Shared A row")).toBeInTheDocument();
+            const listings = fetchMock.mock.calls.filter(([url]: [string]) => url.startsWith("/api/mail/messages?"));
+            expect(listings.every(([url]: [string]) => url.includes("folderUid=f1"))).toBe(true);
+            // No owned mailbox - labels fall back to the first accessible mailbox.
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/mail\/labels\?.*mailboxUid=mbA/), expect.anything()));
+        });
+
+        it("ignores a labels response that lands after the page unmounted", async () => {
+            const labels = deferred<Response>();
+            mockShellAndInbox([messageFixture({ subject: "Folder message" })], (url) =>
+                url.startsWith("/api/mail/labels") ? (labels.promise as unknown as Response) : undefined,
+            );
+            const { unmount } = render(<InboxPage userUid="u1" />);
+            await screen.findByText("Folder message");
+
+            unmount();
+            labels.resolve(jsonResponse(200, [{ uid: "l1", name: "Late label" }]));
+            await settle();
+
+            expect(screen.queryByText("Late label")).not.toBeInTheDocument();
         });
     });
 });

@@ -20,6 +20,9 @@ const INPUT_CLASS =
 
 type Mode = "none" | "generate" | "existing";
 
+/** How long a download's object URL is kept, since some browsers are still reading it after the click returns. */
+export const DOWNLOAD_URL_LIFETIME_MS = 60_000;
+
 /** Offers `text` to the browser as a file download. */
 export function downloadTextFile(filename: string, text: string, type: string = "application/x-pem-file"): void {
     const url = URL.createObjectURL(new Blob([text], { type }));
@@ -29,7 +32,7 @@ export function downloadTextFile(filename: string, text: string, type: string = 
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
 }
 
 function fileSafe(name: string): string {
@@ -48,6 +51,7 @@ export default function EscrowSetupStep() {
     const [name, setName] = useState("Escrow");
     const [validYears, setValidYears] = useState(5);
     const [generated, setGenerated] = useState<GeneratedEscrowKeys | null>(null);
+    const [downloadedPrivateKey, setDownloadedPrivateKey] = useState(false);
     const [savedPrivateKey, setSavedPrivateKey] = useState(false);
     const [keyAndHolders, setKeyAndHolders] = useState<EscrowScopeKeyAndHoldersValue>(emptyEscrowScopeKeyAndHoldersValue());
     const [error, setError] = useState<string | null>(null);
@@ -63,6 +67,7 @@ export default function EscrowSetupStep() {
         setMode(next);
         setError(null);
         setGenerated(null);
+        setDownloadedPrivateKey(false);
         setSavedPrivateKey(false);
         setKeyAndHolders(emptyEscrowScopeKeyAndHoldersValue());
     }
@@ -99,7 +104,17 @@ export default function EscrowSetupStep() {
             setError("A name is required.");
             return;
         }
-        if (!keyAndHolders.publicKey.trim() || !keyAndHolders.keyType.trim() || !keyAndHolders.fingerprint.trim()) {
+        // Generated keys are used exactly as generated; only a pasted-in certificate's fields come from the form.
+        const publicKey = generated
+            ? generated.publicKey
+            : {
+                  publicKey: keyAndHolders.publicKey.trim(),
+                  type: keyAndHolders.keyType.trim(),
+                  fingerprint: keyAndHolders.fingerprint.trim(),
+                  notBefore: new Date(keyAndHolders.notBefore).getTime(),
+                  notAfter: new Date(keyAndHolders.notAfter).getTime(),
+              };
+        if (!publicKey.publicKey || !publicKey.type || !publicKey.fingerprint) {
             setError("The public key, its type, and its fingerprint are all required.");
             return;
         }
@@ -115,13 +130,7 @@ export default function EscrowSetupStep() {
         try {
             const created = await createEscrowScope({
                 name: name.trim(),
-                publicKey: {
-                    publicKey: keyAndHolders.publicKey.trim(),
-                    type: keyAndHolders.keyType.trim(),
-                    fingerprint: keyAndHolders.fingerprint.trim(),
-                    notBefore: new Date(keyAndHolders.notBefore).getTime(),
-                    notAfter: new Date(keyAndHolders.notAfter).getTime(),
-                },
+                publicKey,
                 holderUserUids: keyAndHolders.holderUserUids,
                 requiredHolders: keyAndHolders.requiredHolders,
                 notifySubjectOnAccess: keyAndHolders.notifySubjectOnAccess,
@@ -138,7 +147,12 @@ export default function EscrowSetupStep() {
 
     const scopeForm = (
         <form onSubmit={create} className="flex flex-col gap-5">
-            <EscrowScopeKeyAndHoldersFields value={keyAndHolders} onChange={setKeyAndHolders} disabled={mode === "generate" && busy} />
+            <EscrowScopeKeyAndHoldersFields
+                value={keyAndHolders}
+                onChange={setKeyAndHolders}
+                disabled={mode === "generate" && busy}
+                keyReadOnly={mode === "generate"}
+            />
             <div>
                 <Button type="submit" loading={busy} disabled={busy} className="!w-auto">
                     Create escrow scope
@@ -225,7 +239,10 @@ export default function EscrowSetupStep() {
                                 <Button
                                     type="button"
                                     className="!w-auto"
-                                    onClick={() => downloadTextFile(`${fileSafe(name)}-private-key.pem`, generated.privateKeyPem)}
+                                    onClick={() => {
+                                        downloadTextFile(`${fileSafe(name)}-private-key.pem`, generated.privateKeyPem);
+                                        setDownloadedPrivateKey(true);
+                                    }}
                                 >
                                     Download private key
                                 </Button>
@@ -239,9 +256,17 @@ export default function EscrowSetupStep() {
                                 </Button>
                             </div>
                             <label className="flex items-center gap-2">
-                                <input type="checkbox" checked={savedPrivateKey} onChange={(e) => setSavedPrivateKey(e.target.checked)} />
+                                <input
+                                    type="checkbox"
+                                    checked={savedPrivateKey}
+                                    disabled={!downloadedPrivateKey}
+                                    onChange={(e) => setSavedPrivateKey(e.target.checked)}
+                                />
                                 I&rsquo;ve saved the private key somewhere safe
                             </label>
+                            {!downloadedPrivateKey && (
+                                <p className="text-xs text-text-muted">Download the private key before continuing.</p>
+                            )}
                         </div>
                     )}
                 </div>

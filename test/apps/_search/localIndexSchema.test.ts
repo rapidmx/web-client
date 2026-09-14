@@ -29,7 +29,7 @@ function entity(overrides: Partial<LocalIndexEntity> = {}): LocalIndexEntity {
 describe("localIndexSchema", () => {
     describe("entityBindValues", () => {
         it("orders values to match UPSERT_ENTITY_SQL's column list exactly", () => {
-            const e = entity({ folderUid: "f1", subject: "Hello", body: "World", attachmentText: "text", hasAttachments: true });
+            const e = entity({ folderUid: "f1", subject: "Hello", body: "World", attachmentText: "text", hasAttachments: true, entityVersion: "3:f1" });
             expect(entityBindValues(e)).toEqual([
                 "message",
                 "m1",
@@ -43,11 +43,13 @@ describe("localIndexSchema", () => {
                 "World",
                 "text",
                 128,
+                "3:f1",
             ]);
         });
 
         it("maps missing optional fields to null, not undefined", () => {
-            const [, , , folderUid, , , , , subject, body, attachmentText] = entityBindValues(entity());
+            const [, , , folderUid, , , , , subject, body, attachmentText, , entityVersion] = entityBindValues(entity());
+            expect(entityVersion).toBeNull();
             expect(folderUid).toBeNull();
             expect(subject).toBeNull();
             expect(body).toBeNull();

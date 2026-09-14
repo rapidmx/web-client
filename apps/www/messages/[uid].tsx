@@ -40,13 +40,25 @@ function MessageDetailContent({ uid }: { uid: string }) {
     }, [uid]);
 
     // See `apps/www/index.tsx`'s identical effect's own doc comment - a failure here just hides the
-    // Labels control rather than blocking the rest of the page. No `mailboxUid` guard needed - `MailShell`
-    // never renders this component at all until `mailboxUid` has resolved.
+    // Labels control rather than blocking the rest of the page. Keyed on the message's own mailbox, not the
+    // shell's ambient one: this route is reached from aggregate/search rows too, where they can differ.
+    const messageMailboxUid = message?.mailboxUid;
     useEffect(() => {
-        listLabels(mailboxUid!, { limit: 200 })
-            .then(setLabels)
-            .catch(() => setLabels([]));
-    }, [mailboxUid]);
+        if (!messageMailboxUid) {
+            return;
+        }
+        let cancelled = false;
+        listLabels(messageMailboxUid, { limit: 200 })
+            .then((result) => {
+                if (!cancelled) {
+                    setLabels(result);
+                }
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [messageMailboxUid]);
 
     const attachments = useMessageAttachments(message);
     useMarkMessageRead(message, setMessage);

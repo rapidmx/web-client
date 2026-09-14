@@ -32,6 +32,24 @@ vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => 
     useUnlockPrompt: () => ({ requestUnlock }),
 }));
 
+// Keeping the Tier 2 local index in step with a move is covered in localIndexRpcClient/localIndexWorker tests.
+const { moveLocalEntity } = vi.hoisted(() => ({ moveLocalEntity: vi.fn() }));
+vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ moveLocalEntity }));
+
+// Lets a test hand MessageDetailPane a MailShell context (e.g. mailboxes with enrolled keys) without
+// mounting the whole MailShell - every other test keeps the real, provider-less default.
+const { mailShellOverride } = vi.hoisted(() => ({ mailShellOverride: { current: undefined as Record<string, unknown> | undefined } }));
+vi.mock("../../../apps/shared/components/mail/layout/MailShell.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../apps/shared/components/mail/layout/MailShell.js")>();
+    return {
+        ...actual,
+        useMailShell: () => {
+            const real = actual.useMailShell();
+            return mailShellOverride.current ?? real;
+        },
+    };
+});
+
 // `ComposeWindow`'s own exhaustive rendering (draft lifecycle, send, attachments...) is tested in its
 // own file — mocked here (`RichTextEditor` only, matching every other compose-adjacent test file's
 // convention) so the "reply/forward" tests below only exercise the values `MessageDetailPane` itself
@@ -108,6 +126,7 @@ afterEach(() => {
     vi.unstubAllGlobals();
     evaluateMessageSecurity.mockReset();
     getUnlockedKeys.mockReset();
+    mailShellOverride.current = undefined;
 });
 
 describe("MessageDetailPane", () => {
@@ -324,6 +343,7 @@ describe("MessageDetailPane", () => {
                 expect.objectContaining({ method: "POST" }),
             );
             await waitFor(() => expect(onArchived).toHaveBeenCalledWith(updated));
+            expect(moveLocalEntity).toHaveBeenCalledWith("mb1", "m1", "f-archive");
         });
 
         it("shows an error message when archiving fails", async () => {
@@ -375,6 +395,19 @@ describe("MessageDetailPane", () => {
             );
             const chips = screen.getAllByText(/Important|Later/);
             expect(chips.map((el) => el.textContent)).toEqual(["Later", "Important"]);
+        });
+
+        it("falls back to the default label color for a label with no color, in both the chip and the Labels modal", async () => {
+            const uncolored = { ...labels[0], uid: "l3", name: "Uncolored", color: undefined };
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture({ labelUids: ["l3"] }) as any} attachments={[]} labels={[uncolored]} />);
+
+            const chipSwatch = screen.getByText("Uncolored").querySelector("span")!;
+            expect(chipSwatch).toHaveStyle({ backgroundColor: "#6366f1" });
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            const modalSwatch = screen.getByRole("checkbox", { name: /Uncolored/ }).nextElementSibling!;
+            expect(modalSwatch).toHaveStyle({ backgroundColor: "#6366f1" });
         });
 
         it("shows no chip row at all when the message has no labelUids", () => {
@@ -664,6 +697,7 @@ describe("MessageDetailPane", () => {
                 }),
             );
             await vi.waitFor(() => expect(onScheduledSendCanceled).toHaveBeenCalledWith(updated));
+            expect(moveLocalEntity).toHaveBeenCalledWith("mb1", "m1", "f-drafts");
         });
 
         it("shows an error message and keeps the pill/button when canceling fails", async () => {
@@ -983,6 +1017,21 @@ describe("MessageDetailPane", () => {
             expect(screen.queryByText("Unlock to view this message")).not.toBeInTheDocument();
         });
 
+        it("passes the message's own mailbox's enrolled keys to the unlock prompt", async () => {
+            const keys = [{ uid: "k1", purpose: "signing" }];
+            mailShellOverride.current = { mailboxes: [{ uid: "mb-other", keys: [] }, { uid: "mb1", keys }], mailboxFolders: [] };
+            getUnlockedKeys.mockReturnValue(undefined);
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", decryptError: "This device doesn't have the key needed." });
+            requestUnlock.mockRejectedValue(new Error("dismissed"));
+            mockRawContent();
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+
+            await user.click(await screen.findByText("Unlock to view this message"));
+
+            expect(requestUnlock).toHaveBeenCalledWith("mb1", keys);
+        });
+
         it("does not offer to unlock when a decryptError comes from an already-unlocked session (wrong/rotated key)", async () => {
             getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
             evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", decryptError: "This device doesn't have the key needed." });
@@ -1075,7 +1124,7 @@ describe("MessageDetailPane", () => {
 
             let resolveNext: ((result: { state: string }) => void) | undefined;
             evaluateMessageSecurity.mockImplementation(() => new Promise((resolve) => (resolveNext = resolve)));
-            rerender(<MessageDetailPane message={messageFixture({ uid: "m2", subject: "Other" }) as any} attachments={[]} />);
+            rerender(<MessageDetailPane message={messageFixture({ uid: "m2", subject: "Other" })} attachments={[]} />);
 
             await waitFor(() => expect(resolveNext).toBeDefined());
             expect(screen.queryByText("Signed & verified")).not.toBeInTheDocument();

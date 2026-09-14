@@ -49,6 +49,29 @@ describe("MailboxPolicyPage", () => {
         expect(saved).toEqual([{ defaultQuotaBytes: 10_000_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 2_500_000_000 }]);
     });
 
+    it("saves an edited self-created mailbox quota, and shows a generic error for a non-API failure", async () => {
+        let fail = false;
+        const saved: any[] = [];
+        mockPolicy((body) => {
+            if (fail) throw new TypeError("network down");
+            saved.push(body);
+            return jsonResponse(200, body);
+        }, jsonResponse(200, { ...policy, autoProvisionEnabled: true }));
+        const user = userEvent.setup();
+        renderPage();
+
+        const autoQuota = await screen.findByLabelText("Quota for self-created mailboxes (GB)");
+        await user.clear(autoQuota);
+        await user.type(autoQuota, "3");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(saved).toEqual([{ defaultQuotaBytes: 5_000_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 3_000_000_000 }]);
+
+        fail = true;
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Could not save the mailbox policy.")).toBeInTheDocument();
+    });
+
     it("rejects a quota of zero without saving", async () => {
         const put = vi.fn();
         mockPolicy(put);

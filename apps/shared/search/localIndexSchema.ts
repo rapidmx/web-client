@@ -15,8 +15,11 @@
  */
 
 /** Bump whenever `CREATE_SCHEMA_SQL` changes in a way existing on-disk databases can't be reconciled
- * with in place. */
-export const SCHEMA_VERSION = 1;
+ * with in place. A mismatch deletes and recreates the whole database file (not just its rows), so
+ * creation-time-only settings like `auto_vacuum` also apply to upgraded indexes.
+ *
+ * 2 - added `entities.entity_version` (incremental rebuild skip) and `auto_vacuum=INCREMENTAL`. */
+export const SCHEMA_VERSION = 2;
 
 /**
  * `entities` is the real row store (metadata + the plaintext content fields), `entities_fts` is an FTS5
@@ -51,7 +54,8 @@ CREATE TABLE IF NOT EXISTS entities (
     subject TEXT,
     body TEXT,
     attachment_text TEXT,
-    byte_size INTEGER NOT NULL DEFAULT 0
+    byte_size INTEGER NOT NULL DEFAULT 0,
+    entity_version TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_entities_date ON entities(date_for_sort);
 CREATE INDEX IF NOT EXISTS idx_entities_mailbox ON entities(mailbox_uid);
@@ -105,18 +109,22 @@ export interface LocalIndexEntity {
     /** Rough on-disk cost of this entity's own content, in bytes - what `localIndexBuilder.ts`'s
      * byte-budget accounting (spec §11) sums against the configured budget. */
     byteSize: number;
+    /** Opaque change marker for the source entity (the builder uses the message's `version` plus its
+     * folder) - lets a rebuild skip re-fetching/decrypting anything already indexed unchanged. */
+    entityVersion?: string;
 }
 
 /** `entity_uid` upsert - `ON CONFLICT` (SQLite's UPSERT syntax) rather than a separate delete-then-insert,
  * so re-indexing an already-present message (a flag changed, a folder move) updates it in place and the
  * `entities_au` trigger keeps `entities_fts` in sync automatically. */
 export const UPSERT_ENTITY_SQL = `
-INSERT INTO entities (entity_type, entity_uid, mailbox_uid, folder_uid, date_for_sort, participants, flags, has_attachments, subject, body, attachment_text, byte_size)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO entities (entity_type, entity_uid, mailbox_uid, folder_uid, date_for_sort, participants, flags, has_attachments, subject, body, attachment_text, byte_size, entity_version)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(entity_uid) DO UPDATE SET
     folder_uid = excluded.folder_uid, date_for_sort = excluded.date_for_sort, participants = excluded.participants,
     flags = excluded.flags, has_attachments = excluded.has_attachments, subject = excluded.subject,
-    body = excluded.body, attachment_text = excluded.attachment_text, byte_size = excluded.byte_size
+    body = excluded.body, attachment_text = excluded.attachment_text, byte_size = excluded.byte_size,
+    entity_version = excluded.entity_version
 `;
 
 /** Bind values for `UPSERT_ENTITY_SQL`, in column order - kept alongside it so the two can never drift
@@ -135,6 +143,7 @@ export function entityBindValues(entity: LocalIndexEntity): (string | number)[] 
         entity.body ?? null!,
         entity.attachmentText ?? null!,
         entity.byteSize,
+        entity.entityVersion ?? null!,
     ];
 }
 

@@ -162,6 +162,36 @@ describe("NewMailboxPage", () => {
         expect(screen.queryByLabelText("Local part")).not.toBeInTheDocument();
     });
 
+    it("starts the quota at the mailbox policy's default, unless a quota was typed before the policy loaded", async () => {
+        let releasePolicy: () => void = () => undefined;
+        mockFetch((url: string) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+            if (url === "/api/system/mailbox-policy") {
+                return new Promise<Response>((resolve) => {
+                    releasePolicy = () => resolve(jsonResponse(200, { defaultQuotaBytes: 7_000_000_000, autoProvisionEnabled: false, autoProvisionQuotaBytes: 1 }));
+                });
+            }
+            return jsonResponse(200, {});
+        });
+        const user = userEvent.setup();
+        const { unmount } = render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New mailbox");
+        await vi.waitFor(() => expect(screen.getByLabelText("Quota (GB)")).toBeInTheDocument());
+        releasePolicy();
+        await vi.waitFor(() => expect(screen.getByLabelText("Quota (GB)")).toHaveValue(7));
+        unmount();
+
+        render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New mailbox");
+        const quota = await screen.findByLabelText("Quota (GB)");
+        await user.clear(quota);
+        await user.type(quota, "12");
+        releasePolicy();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(screen.getByLabelText("Quota (GB)")).toHaveValue(12);
+    });
+
     it("the Cancel link returns to the mailboxes list", async () => {
         mockFetch(() => jsonResponse(200, {}));
         render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);

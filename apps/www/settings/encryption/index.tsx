@@ -121,8 +121,8 @@ function EncryptionContent() {
     const [destroyed, setDestroyed] = useState(false);
     const [idleTimeoutMinutes, setIdleTimeoutMinutesState] = useState(() => getIdleTimeoutMinutes());
     const [localIndexByteBudget, setLocalIndexByteBudgetState] = useState(() => getLocalIndexByteBudget());
-    const localIndexDefaultByteBudgetLabel =
-        LOCAL_INDEX_SIZE_OPTIONS.find((option) => option.bytes === getDefaultLocalIndexByteBudget())?.label ?? "500 MB";
+    // Both possible defaults (web and Electron) are themselves entries in `LOCAL_INDEX_SIZE_OPTIONS`.
+    const localIndexDefaultByteBudgetLabel = LOCAL_INDEX_SIZE_OPTIONS.find((option) => option.bytes === getDefaultLocalIndexByteBudget())!.label;
 
     // `mailbox.keys` comes from `SettingsShell`'s one-time `listMailboxes()` fetch - once an ACME
     // enrollment issues, the server has installed a new signing key that fetch never saw. Only this
@@ -233,8 +233,7 @@ function EncryptionContent() {
     }
 
     useEffect(() => {
-        loadVault();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        void loadVault();
     }, [mailboxUid]);
 
     const unlocked = getUnlockedKeys(mailboxUid!);

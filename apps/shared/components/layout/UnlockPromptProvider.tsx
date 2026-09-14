@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { createContext, useCallback, useContext, useState } from "react";
+import React, { createContext, useCallback, useContext, useRef, useState } from "react";
 import { getUnlockedKeys, unlockWithPassword, UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
@@ -13,8 +13,9 @@ import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 interface PendingUnlock {
     mailboxUid: string;
     mailboxKeys: PublicKey[];
-    resolve: (keys: UnlockedKeys) => void;
-    reject: (err: Error) => void;
+    /** Every caller waiting on this one dialog - a second request for the same mailbox while it's open joins
+     * it rather than replacing it, so no earlier caller's promise is ever left unsettled. */
+    waiters: { resolve: (keys: UnlockedKeys) => void; reject: (err: Error) => void }[];
 }
 
 interface UnlockPromptContextValue {
@@ -41,10 +42,17 @@ const UnlockPromptContext = createContext<UnlockPromptContextValue | null>(null)
  * `false` for exactly this reason.
  */
 export function UnlockPromptProvider({ children }: { children: React.ReactNode }) {
-    const [pending, setPending] = useState<PendingUnlock | null>(null);
+    const [pending, setPendingState] = useState<PendingUnlock | null>(null);
+    // Mirrors `pending` synchronously, so two requests issued in the same tick see each other.
+    const pendingRef = useRef<PendingUnlock | null>(null);
     const [password, setPassword] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [unlocking, setUnlocking] = useState(false);
+
+    function setPending(next: PendingUnlock | null) {
+        pendingRef.current = next;
+        setPendingState(next);
+    }
 
     const requestUnlock = useCallback((mailboxUid: string, mailboxKeys: PublicKey[]): Promise<UnlockedKeys> => {
         const existing = getUnlockedKeys(mailboxUid);
@@ -52,14 +60,22 @@ export function UnlockPromptProvider({ children }: { children: React.ReactNode }
             return Promise.resolve(existing);
         }
         return new Promise<UnlockedKeys>((resolve, reject) => {
+            const current = pendingRef.current;
+            if (current?.mailboxUid === mailboxUid) {
+                current.waiters.push({ resolve, reject });
+                return;
+            }
+            // A different mailbox's dialog is replacing this one - settle its callers rather than leaving
+            // their promises hanging forever.
+            current?.waiters.forEach((waiter) => waiter.reject(new Error("Unlock superseded by another request.")));
             setPassword("");
             setError(null);
-            setPending({ mailboxUid, mailboxKeys, resolve, reject });
+            setPending({ mailboxUid, mailboxKeys, waiters: [{ resolve, reject }] });
         });
     }, []);
 
     function handleCancel() {
-        pending?.reject(new Error("Unlock cancelled."));
+        pendingRef.current?.waiters.forEach((waiter) => waiter.reject(new Error("Unlock cancelled.")));
         setPending(null);
     }
 
@@ -74,8 +90,10 @@ export function UnlockPromptProvider({ children }: { children: React.ReactNode }
             // Always reachable: unlockWithPassword() just populated keySession.ts's session store for
             // this exact mailboxUid, or threw before we get here.
             const unlocked = getUnlockedKeys(request.mailboxUid)!;
-            request.resolve(unlocked);
-            setPending(null);
+            request.waiters.forEach((waiter) => waiter.resolve(unlocked));
+            if (pendingRef.current === request) {
+                setPending(null);
+            }
         } catch {
             // Deliberately generic - see KeyEnrollmentGate's identical handleUnlock() for why.
             setError("Incorrect password.");

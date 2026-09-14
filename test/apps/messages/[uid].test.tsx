@@ -90,6 +90,41 @@ describe("MessageDetailPage", () => {
         await screen.findByRole("heading", { name: "Hello there" });
     });
 
+    it("loads labels for the message's own mailbox, not the shell's default mailbox", async () => {
+        const fetchMock = mockShell((url) => {
+            if (url === "/api/mail/messages/m1") return jsonResponse(200, { ...message, mailboxUid: "mb-shared" });
+            if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+            return undefined;
+        });
+        render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
+
+        await screen.findByRole("heading", { name: "Hello there" });
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/mail\/labels\?.*mailboxUid=mb-shared/), expect.anything()));
+        expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/mail\/labels\?.*mailboxUid=mb1/), expect.anything());
+    });
+
+    it("ignores a labels response that lands after the page unmounted", async () => {
+        let resolveLabels: ((value: Response) => void) | undefined;
+        mockShell((url) => {
+            if (url === "/api/mail/messages/m1") return jsonResponse(200, message);
+            if (url.startsWith("/api/mail/labels")) {
+                return new Promise<Response>((resolve) => {
+                    resolveLabels = resolve;
+                }) as unknown as Response;
+            }
+            return undefined;
+        });
+        const { unmount } = render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Hello there" });
+        await waitFor(() => expect(resolveLabels).toBeDefined());
+
+        unmount();
+        resolveLabels!(jsonResponse(200, [{ uid: "l1", name: "Late label" }]));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(screen.queryByText("Late label")).not.toBeInTheDocument();
+    });
+
     it("renders the message with a back link to its mailbox/folder", async () => {
         mockShell((url) => (url === "/api/mail/messages/m1" ? jsonResponse(200, message) : undefined));
         render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);

@@ -225,9 +225,14 @@ function queryFingerprint(parsed: ParsedSearchQuery): string {
  * unless the reader explicitly asked to "Search all mail" - Tier 2 already holds fully-decrypted,
  * current content for everything at least that recent, so re-fetching and re-decrypting the same range
  * through Tier 3's slower candidate-narrowing path would be pure waste. Never *widens* an existing
- * `before:` the query already specified. */
+ * `before:` the query already specified.
+ *
+ * Only applied once Tier 2 reports a finished, complete build pass: while it's still building (or a pass
+ * stopped early - a failed folder listing, the byte budget) `indexedFrom` is just the oldest row that
+ * happens to be present, not a guarantee every encrypted message since then is indexed, and narrowing
+ * on it would silently drop encrypted results neither tier returns. */
 function tightenBeforeToCoverage(parsed: ParsedSearchQuery, coverage: Coverage | undefined, searchAllMail: boolean): ParsedSearchQuery {
-    if (searchAllMail || !coverage?.indexedFrom) {
+    if (searchAllMail || !coverage?.indexedFrom || coverage.building || !coverage.complete) {
         return parsed;
     }
     const coverageBound = new Date(coverage.indexedFrom);
@@ -284,6 +289,21 @@ async function resolveHitsToMessages(
         }
     }
     return { messages, snippets };
+}
+
+/** Appends `more` to `shown`, skipping any uid already shown - a later page can repeat rows (Tier 1 and
+ * Tier 2/3 cursors advance independently, so the same message can come back from a different tier on a
+ * later page; a plain folder listing's pages shift when new mail arrives between fetches). */
+function appendUnseenMessages(shown: Message[], more: Message[]): Message[] {
+    const seen = new Set(shown.map((m) => m.uid));
+    const unseen: Message[] = [];
+    for (const message of more) {
+        if (!seen.has(message.uid)) {
+            seen.add(message.uid);
+            unseen.push(message);
+        }
+    }
+    return unseen.length === 0 ? shown : [...shown, ...unseen];
 }
 
 /** Flattens and sorts a per-mailbox fetch into one merged, newest-first list - the aggregate ("All
@@ -397,9 +417,9 @@ function InboxContent() {
     // of both the fresh-search orchestration and loadMore() itself. Not React state: it never drives a
     // render on its own, only what loadMore() does with it later.
     const compositeCursorRef = useRef<CompositeCursor | undefined>(undefined);
-    // Guards every async stage of the search orchestration below against a stale, still-in-flight pass
-    // clobbering state for a newer one that started after it (the query changed again, or the folder
-    // did) - the same `loadSeq`-style monotonic-id pattern already used elsewhere in this codebase (e.g.
+    // Guards every async load below - each search stage, the plain folder/conversation/aggregate listings,
+    // and `loadMore()` - against a stale, still-in-flight pass clobbering state for a newer one that started
+    // after it (the query, folder, or view changed) - the same `loadSeq`-style monotonic-id pattern already used elsewhere in this codebase (e.g.
     // `settings/privacy/index.tsx`'s `ExportSection`), generalized here across three independently-timed
     // async stages instead of one.
     const searchRunIdRef = useRef(0);
@@ -429,7 +449,7 @@ function InboxContent() {
             return;
         }
         let cancelled = false;
-        decryptEncryptedRows(
+        void decryptEncryptedRows(
             messages.filter((m) => undecryptedEncryptedUids.includes(m.uid)),
             unlocked,
         ).then((decrypted) => {
@@ -440,12 +460,11 @@ function InboxContent() {
         return () => {
             cancelled = true;
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [messages, unlockRefresh]);
 
     async function handleUnlockList() {
         try {
-            const unlocked = await requestUnlock(activeMailboxUid!, mailboxKeys);
+            const unlocked = await requestUnlock(activeMailboxUid, mailboxKeys);
             const decrypted = await decryptEncryptedRows(
                 messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && m.mailboxUid === activeMailboxUid),
                 unlocked,
@@ -458,7 +477,7 @@ function InboxContent() {
 
     async function handleUnlockSearch() {
         try {
-            await requestUnlock(activeMailboxUid!, mailboxKeys);
+            await requestUnlock(activeMailboxUid, mailboxKeys);
             setUnlockRefresh((n) => n + 1);
         } catch {
             // User dismissed the unlock dialog - the search results stay exactly as they were.
@@ -466,19 +485,29 @@ function InboxContent() {
     }
 
     // Labels are mailbox-wide, not folder-scoped - fetched once per mailbox rather than per message, and
-    // handed to every `MessageDetailPane` instance below. A failure here just means the Labels control
-    // stays hidden (an empty `labels` array) rather than blocking the rest of the inbox - it's a small
-    // enhancement, not critical path the way the message list itself is. Keyed on `activeMailboxUid`, which
-    // `MailShell` guarantees resolves (it never renders this component without at least one mailbox) even
-    // in aggregate mode, where there's no single selected `mailboxUid`.
+    // handed to the detail pane below. A failure here just means the Labels control stays hidden (an empty
+    // `labels` array) rather than blocking the rest of the inbox. Keyed on the *selected message's own*
+    // mailbox: aggregate views and search results can show messages from a mailbox other than
+    // `activeMailboxUid`, and offering that mailbox's labels would let a label from the wrong mailbox be
+    // applied. The conversation view stays scoped to `activeMailboxUid`, the mailbox its threads come from.
+    const selectedMessageMailboxUid = messages.find((m) => m.uid === selectedUid)?.mailboxUid;
+    const labelsMailboxUid = viewMode === "date" ? (selectedMessageMailboxUid ?? activeMailboxUid) : activeMailboxUid;
+    // `labelsMailboxUid` is always set: `MailShell` only renders this component once at least one mailbox
+    // exists, so `activeMailboxUid` (its fallback) always resolves.
     useEffect(() => {
-        if (!activeMailboxUid) {
-            return;
-        }
-        listLabels(activeMailboxUid, { limit: 200 })
-            .then(setLabels)
-            .catch(() => setLabels([]));
-    }, [activeMailboxUid]);
+        let cancelled = false;
+        setLabels([]);
+        listLabels(labelsMailboxUid, { limit: 200 })
+            .then((result) => {
+                if (!cancelled) {
+                    setLabels(result);
+                }
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [labelsMailboxUid]);
 
     // Debounce the raw input into the query actually searched, so every keystroke doesn't fire a request.
     useEffect(() => {
@@ -496,41 +525,59 @@ function InboxContent() {
         pageRef.current = 0;
         compositeCursorRef.current = undefined;
         setHasMore(false);
+        // Every run - search or not - supersedes whatever an earlier run (or a `loadMore()` it started)
+        // still has in flight; each async callback below checks this before touching state.
+        searchRunIdRef.current += 1;
+        const myRunId = searchRunIdRef.current;
+        const isCurrentRun = () => searchRunIdRef.current === myRunId;
+        // Also invalidates on unmount, so nothing lands after the component is gone. Unconditional: this
+        // cleanup only ever runs for the latest run of this effect (React runs it before the next run
+        // bumps the id, or on unmount), so the id is always still `myRunId` here.
+        const invalidate = () => {
+            searchRunIdRef.current += 1;
+        };
 
         if (viewMode === "conversation") {
             // Conversations stay single-mailbox (not aggregated across mailboxes in this pass) - in
-            // aggregate mode this falls back to `activeMailboxUid`, the same mailbox unlock/labels use.
-            if (!activeMailboxUid) {
-                return;
-            }
+            // aggregate mode this falls back to `activeMailboxUid`, the same mailbox unlock/labels use
+            // (always set - `MailShell` only renders this component once at least one mailbox exists).
             setLoading(true);
             setError(null);
             listConversations(activeMailboxUid)
-                .then(setConversations)
-                .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load conversations."))
-                .finally(() => setLoading(false));
-            return;
+                .then((result) => {
+                    if (isCurrentRun()) {
+                        setConversations(result);
+                    }
+                })
+                .catch((err) => {
+                    if (isCurrentRun()) {
+                        setError(err instanceof ApiRequestError ? err.message : "Could not load conversations.");
+                    }
+                })
+                .finally(() => {
+                    if (isCurrentRun()) {
+                        setLoading(false);
+                    }
+                });
+            return invalidate;
         }
 
         if (aggregateFolderType) {
             setLoading(true);
             setError(null);
-            let cancelled = false;
             // hasMore stays false (set above) - see fetchAggregateMessages()'s own pagination scope trim.
-            fetchAggregateMessages(mailboxFolders, aggregateFolderType)
+            void fetchAggregateMessages(mailboxFolders, aggregateFolderType)
                 .then((results) => {
-                    if (!cancelled) {
+                    if (isCurrentRun()) {
                         setMessages(results);
                     }
                 })
                 .finally(() => {
-                    if (!cancelled) {
+                    if (isCurrentRun()) {
                         setLoading(false);
                     }
                 });
-            return () => {
-                cancelled = true;
-            };
+            return invalidate;
         }
 
         if (!folderUid) {
@@ -548,8 +595,6 @@ function InboxContent() {
             setTier2Done(false);
             setTier3Done(false);
             resolvedMessageCacheRef.current = new Map();
-            searchRunIdRef.current += 1;
-            const myRunId = searchRunIdRef.current;
             const parsed = parseSearchQuery(searchQuery);
             const unlocked = getUnlockedKeys(mailboxUid!);
             const fingerprint = queryFingerprint(parsed);
@@ -628,16 +673,27 @@ function InboxContent() {
                     }
                 }
             })();
-            return;
+            return invalidate;
         }
 
         listMessages(folderUid, { limit: MESSAGE_PAGE_SIZE })
             .then((results) => {
-                setMessages(results);
-                setHasMore(results.length === MESSAGE_PAGE_SIZE);
+                if (isCurrentRun()) {
+                    setMessages(results);
+                    setHasMore(results.length === MESSAGE_PAGE_SIZE);
+                }
             })
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load messages."))
-            .finally(() => setLoading(false));
+            .catch((err) => {
+                if (isCurrentRun()) {
+                    setError(err instanceof ApiRequestError ? err.message : "Could not load messages.");
+                }
+            })
+            .finally(() => {
+                if (isCurrentRun()) {
+                    setLoading(false);
+                }
+            });
+        return invalidate;
         // `unlockRefresh`/`searchAllMail` are dependencies solely so `handleUnlockSearch()`/"Search all
         // mail" can force this effect to re-run the search above - Tier 3 (encrypted) results silently
         // contribute nothing without unlocked keys, so this is what actually makes them appear once the
@@ -655,6 +711,10 @@ function InboxContent() {
             return;
         }
         setLoadingMore(true);
+        // A query/folder/view change while this page is in flight bumps the run id (see the effect above) -
+        // its rows then belong to a list that's no longer on screen and must not be appended to the new one.
+        const myRunId = searchRunIdRef.current;
+        const isCurrentRun = () => searchRunIdRef.current === myRunId;
         try {
             if (isSearching) {
                 const parsed = parseSearchQuery(searchQuery);
@@ -679,7 +739,10 @@ function InboxContent() {
                 // - a deliberate, documented scope trim of progressive reveal to the first page only.
                 const merged = mergeSearchResults(capSkeletons(tier1Page.results), tier2Page.results, tier3Page);
                 const { messages: more, snippets: moreSnippets } = await resolveHitsToMessages(merged, resolvedMessageCacheRef.current);
-                setMessages((prev) => [...prev, ...more]);
+                if (!isCurrentRun()) {
+                    return;
+                }
+                setMessages((prev) => appendUnseenMessages(prev, more));
                 setSnippets((prev) => ({ ...prev, ...moreSnippets }));
 
                 const nextTier3Offset = tier3Offset + tier3Page.length;
@@ -693,12 +756,17 @@ function InboxContent() {
             } else {
                 const nextPage = pageRef.current + 1;
                 const more = await listMessages(folderUid, { page: nextPage, limit: MESSAGE_PAGE_SIZE });
-                setMessages((prev) => [...prev, ...more]);
+                if (!isCurrentRun()) {
+                    return;
+                }
+                setMessages((prev) => appendUnseenMessages(prev, more));
                 setHasMore(more.length === MESSAGE_PAGE_SIZE);
                 pageRef.current = nextPage;
             }
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not load more messages.");
+            if (isCurrentRun()) {
+                setError(err instanceof ApiRequestError ? err.message : "Could not load more messages.");
+            }
         } finally {
             setLoadingMore(false);
         }
@@ -897,7 +965,7 @@ function InboxContent() {
                         </button>
                     </div>
                 )}
-                {!isSearching && viewMode === "date" && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(activeMailboxUid!) && (
+                {!isSearching && viewMode === "date" && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(activeMailboxUid) && (
                     <div className="px-4 py-2 border-b border-border bg-surface-alt">
                         <button
                             type="button"
