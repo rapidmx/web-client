@@ -908,3 +908,30 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     correct `hasMore` on each. Added test coverage in `test/apps/index.test.tsx` for the composite cursor
     (Tier 2 offset threading + Tier 3 cache reuse across a `loadMore()`) and Progressive Results (skeleton
     render/prune, settled-count gate, "Search all mail" removing Tier 3's bound).
+
+- **2026-09-14 — Shared mailboxes: Sharing settings page, multi-mailbox Mail/Calendar.** Spans restapi
+  (`BaseMailboxAccessRoute`: list/grant/revoke delegates as viewer/manager, gated at ACL `update`; and
+  `GET /mail/mailboxes/lookup-by-email`), server (route wrappers + restapi patch), react-shared
+  (`mailboxAccessApi.ts`, `accentColorForMailbox()`), and here.
+  - **No backend inheritance work was needed**: every folder's ACL already has `parentUid: mailboxUid`,
+    and events/contacts/tasks/messages have no ACL of their own, so one mailbox grant covers everything.
+    Booking links for a shared mailbox also already worked via the Settings mailbox switcher (now pinned
+    by a restapi `BookingTypeRoute` test: manager delegate 200, viewer 403).
+  - **No user directory exists** in this platform (identity is an external auth-server restapi never
+    calls), so "add by email" resolves against `Mailbox.primarySmtpAddress`/aliases and uses that
+    mailbox's `ownerUserUid`. Shared (ownerless) mailboxes never resolve.
+  - `MailShell` now renders every mailbox's folder tree plus an "All Mailboxes" section (`?aggregate=`);
+    `MailShellContextValue.folders` was replaced by `mailboxFolders`. Aggregate views: first page per
+    mailbox only (no load more), search and Focused/Other disabled, unlock/decrypt scoped to the caller's
+    own mailbox (other mailboxes' encrypted rows stay locked until opened directly - user-accepted).
+  - `CalendarShell` loads all mailboxes' calendars; uncolored calendars outside the caller's own mailbox
+    fall back to `accentColorForMailbox()` so a shared calendar isn't the same default blue. EventModal is
+    scoped to the target calendar's own mailbox (organizer address + calendar picker).
+  - **Test gotcha**: `mockLocation()` never restores `window.location`, so setting `.search` in one test
+    leaks into later tests in the same file - reset with `mockLocation()` afterwards.
+  - **Yarn gotcha**: `yarn patch <pkg> --update` on an already-patched dependency stacks a second
+    patch-of-a-patch resolution. For a clean single patch, run `yarn patch "<pkg>@npm:<version>"` against
+    the original and copy in *all* changed build files, then `patch-commit` (it rewrites the same file).
+  - **Not verified live**: the `server` repo consumes this package as published `@rapidmx/web-client`
+    ^0.3.1, so these UI changes aren't visible in `yarn dev` there until web-client (and react-shared) are
+    published or patched into `server` too. The restapi routes were verified in a real `yarn dev` boot.
