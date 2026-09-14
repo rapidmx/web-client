@@ -7,6 +7,177 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
+### Added
+- Added UnlockPromptProvider/useUnlockPrompt() (mounted once in
+- Added Settings > Sharing: manage who can access a mailbox, by email
+- Added a From drop-down to compose
+- Added a Mailbox drop-down when creating a calendar event
+- Added a Mailbox drop-down when creating a contact
+- Added a Mailbox drop-down when creating a to-do
+- Added an admin Plugins page: list installed plugins with their per-server load status and errors, add a plugin after previewing it from the registry, change its version, edit its manifest-declared settings, enable, disable and remove it, with rollout progress and safe-mode warnings while servers restart
+- Added Plugins to the admin navigation
+- Added a first-run setup wizard at /admin/setup that walks an administrator through plugins, a domain and its DNS records, encryption, retention and mailbox policies, escrow, branding and the first mailboxes, resuming at the saved step and finishing with Finish setup
+- Added an escrow step that can generate the escrow key pair in the browser, requires the private key to be downloaded and confirmed as saved before creating the scope, or uses an existing certificate, or skips escrow, and is hidden when end-to-end encryption is turned off everywhere
+- Added Encryption Policy and Mailbox Policy admin pages and navigation items
+- Added a Run setup again button to the admin Mailboxes page
+
+### Changed
+- Gate the E2E unlock prompt on demand, not on every page load
+- KeyEnrollmentGate previously blocked all of Mail behind a full-page
+- unlock screen the instant a mailbox with an existing vault resolved,
+- regardless of what the user was actually doing - since this app has
+- no client-side router, every navigation between top-level apps is a
+- full page load, so this re-prompted constantly even for reading
+- plain, unencrypted mail.
+- AppShell, alongside useIdleKeyTimeout) as the on-demand counterpart:
+- resolves immediately with no UI when a mailbox is already unlocked
+- this session, otherwise shows a lightweight modal instead of a
+- full-page takeover. KeyEnrollmentGate gets a new `blocking` prop
+- (default true, unchanged everywhere except MailShell) so first-time
+- key provisioning still always blocks, but an already-enrolled,
+- not-yet-unlocked mailbox no longer does.
+- Wire requestUnlock() into the three places unlocking is actually
+- required:
+- - ComposeWindow: signing/encrypting a message
+- - MessageDetailPane: viewing an already-encrypted message
+- - the inbox list and Tier 3 encrypted search (apps/www/index.tsx):
+- decrypting a loaded row's "[...]" subject/preview, or including
+- encrypted matches in search results - both silently skipped this
+- before, with no indication unlocking would help
+- Settings > Encryption keeps its existing blocking gate unchanged -
+- navigating there already means managing encryption.
+- Also adds a copy-to-clipboard button next to recovery codes on both
+- screens they're shown (initial key setup, and Settings > Encryption
+- regenerate/rotate), matching this codebase's existing
+- admin/domains/[uid].tsx copy-button convention.
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Implement Tier 2: local encrypted search index over recent mail
+- Adds the local index tier from specs/search.md's 3-tier encrypted
+- search architecture - Tier 1 (server) and Tier 3 (server-narrowed
+- candidates) already existed; this is the remaining piece, a
+- full-fidelity local index over recently-decrypted encrypted messages,
+- so their content is fast to search without a server round-trip.
+- Uses @journeyapps/wa-sqlite (PowerSync's actively-maintained fork of
+- rhashimoto/wa-sqlite - the plain "wa-sqlite" npm package is an
+- unrelated, unmaintained name-squat with no repo/license, avoided
+- deliberately) for WASM SQLite + FTS5, over the OPFS SAH Pool VFS.
+- EncryptingVFS (localIndexVFS.ts) is a from-scratch AES-256-GCM
+- page-encrypting VFS wrapping that pool VFS: per-page random nonces
+- (never reused, sidesteps any counter-persistence hazard), AAD bound
+- to filename+page index (catches block reordering/tampering, not just
+- per-block corruption), journal_mode=OFF (a documented, deliberate
+- simplification - this index has no durability requirement, spec
+- already requires discard-and-rebuild on corruption/schema
+- change/eviction). Verified twice in a real headless Chromium session
+- via Playwright before relying on it: the plain OPFS pipeline, then a
+- genuine encrypted close-to-reopen-to-decrypt round trip. Covered by
+- 7 real-WebCrypto unit tests (round-trip, tamper detection, wrong key,
+- block-position swapping).
+- Full RPC surface in the Worker (index/remove/search/coverage/
+- setWindow/destroy), FTS5 bm25() ranking matching the existing
+- subject/participants/body/attachmentText field weights, oldest-first
+- byte-budget eviction, and lifecycle hooks wired into idle-timeout,
+- the manual "destroy keys now" button, and logout (a real, previously
+- unfilled gap - logout was a bare navigation with no explicit
+- key/index teardown call at all).
+- Merges into the existing 2-way search UI as a real third source:
+- apps/www/index.tsx's mergeSearchResults()/searchMessages() now
+- combine Tier 1 + Tier 2 + Tier 3, with a coverage line showing how
+- far back local search reaches.
+- Deliberately deferred (flagged, not dropped): the full animated
+- skeleton/reordering progressive-results UI, and bounding Tier 3's
+- query to Tier 2's own coverage window (a bandwidth optimization, not
+- a correctness gap - Tier 3 still runs unbounded today).
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Make the Tier 2 local index's byte budget a user-adjustable, per-device setting
+- Defaults to 500 MB in a browser tab and 1 GB in the Electron shell (detected
+- via the window.rapidmx preload bridge, per-device via localStorage - same
+- posture as idleTimeout.ts), with a picker in Settings > Encryption to override
+- it. Supersedes the prop-threaded windowConfig plumbing added earlier this
+- session (MailShell/LocalIndexLifecycle), which required each consuming shell
+- to explicitly opt in - this resolves automatically instead.
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Implement Tier 2 search's two deferred items: composite pagination cursor and Progressive Results UI
+- Composite cursor (spec §8): threads Tier 1's server cursor, a new real OFFSET/hasMore
+- pagination path in the Tier 2 worker, and a cached/sliced Tier 3 candidate array through
+- both the fresh search and loadMore() - avoids a react-shared change (and its publish+patch
+- cycle) by caching Tier 3's one decrypt-and-match pass per query instead of adding it a
+- server-side cursor.
+- Progressive Results (spec §_Progressive Results_): unconfirmed Tier 1 metadataOnly hits
+- render as in-place skeleton rows, resolve or get pruned once Tier 2/Tier 3 report, a hard
+- result count is withheld until every tier settles, and a new "Search all mail" action lifts
+- Tier 3's default bound (tightened to Tier 2's coverage window otherwise).
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Lists a mailbox's delegates with a viewer/manager role picker, adds someone
+- by email (resolved to a user via the new lookup-by-email route), and removes
+- access behind a confirm dialog. One grant covers the mailbox's mail,
+- calendar, contacts, and tasks, since folder ACLs already inherit from the
+- mailbox. A 403 from the list call renders a "can't manage" message.
+- Patches @rapidmx/react-shared 0.3.0 with its new mailboxAccessApi.ts (real
+- tsc build output), since this repo consumes it as a published dependency.
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Show every accessible mailbox's folders in Mail, plus merged All Mailboxes folders
+- MailShell now renders each mailbox's own folder tree at once (shared ones
+- labeled), replacing the single-mailbox switcher, and adds an All Mailboxes
+- section (Inbox, Sent Items, Drafts, Deleted Items, Junk) with summed unread
+- counts. ?aggregate=<type> selects one; the inbox list then fetches that folder
+- from every mailbox in parallel and merges newest-first, labeling each row
+- with its mailbox. One mailbox's fetch failure doesn't hide the rest.
+- Deliberate limits for this pass: aggregate views show each mailbox's first
+- page only (no load more), search and Focused/Other are disabled there, and
+- unlock/decrypt stay scoped to one mailbox (the caller's own), so encrypted
+- rows from another mailbox stay locked until opened in that mailbox.
+- Compose gets a from-mailbox picker when there's more than one mailbox. Also
+- fixes a brief empty-sidebar flash before folders load.
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Show every accessible mailbox's calendars together in Calendar, color-coded per mailbox
+- CalendarShell now loads calendar folders for all accessible mailboxes in
+- parallel (replacing the mailbox switcher), and the sidebar groups them into
+- one section per mailbox, with a shared mailbox labeled and its own
+- "+ Add calendar". Events from every checked calendar render together.
+- An uncolored calendar in someone else's mailbox falls back to that mailbox's
+- accent color, so a shared mailbox's calendar is distinguishable from the
+- caller's own default blue; explicit calendar colors still win. New/edited
+- events use the target calendar's own mailbox for the organizer address and
+- calendar picker. A folder-load failure shows only in that mailbox's section.
+- Refreshes the react-shared 0.3.0 patch to include the new color helpers.
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Document the shared-mailbox feature, its scope limits, and two gotchas
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- The compose window now lists every mailbox you can send from. A new message
+- defaults to your own mailbox; a reply or forward defaults to the original
+- message's mailbox, so replying to a shared mailbox's mail sends from it.
+- Changing From discards the current unsent draft and starts a fresh one in the
+- new mailbox's Drafts folder (reloading its signing/encryption context),
+- keeping recipients, subject, and body. Once an attachment or inline image is
+- uploaded the draft can't move mailboxes, so From locks.
+- Replaces the sidebar "Compose from" picker; Contacts' Email action now also
+- defaults to your own mailbox. Refreshes the react-shared patch for
+- deleteMessage().
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- With more than one mailbox, the new-event form shows a Mailbox selector
+- (defaulting to the calendar you clicked, else your own mailbox). Picking a
+- mailbox switches the Calendar selector to that mailbox's calendars and makes
+- it the organizer. Editing an existing event is unchanged.
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- With more than one mailbox, the new-contact form shows a Mailbox selector
+- defaulting to the mailbox being viewed. Choosing another mailbox saves into
+- that mailbox's own Contacts folder; since it won't appear in the current
+- list, a notice links to that mailbox's contacts instead.
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- The Tasks quick-add form shows a Task mailbox select when the user has more than one mailbox, defaulting to the mailbox being viewed. Choosing another mailbox files the task in that mailbox's Tasks folder and shows a notice linking to its task list instead of appending the task to the current one.
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Update the tests for the branding, retention policy and encryption policy APIs now served under system/
+- Refresh the @rapidmx/react-shared patch with pluginsApi and the system/ settings paths
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Redirect administrators to the setup wizard from every admin console page and from the webmail apps while setup is required, leaving non-admins and impersonating admins alone
+- Refactored the retention policy, branding, plugins, domain DNS setup and new mailbox forms into shared components used by both their pages and the wizard; the new mailbox form now starts from the mailbox policy's default quota
+- Refresh the @rapidmx/react-shared patch with setupApi, mailboxPolicyApi and escrow key generation
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Upgraded @rapidmx/react-shared dep
+
 ## [0.3.1] - 2026-09-13
 
 ### Changed
@@ -288,7 +459,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/rapidmx/web-client/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/rapidmx/web-client/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/rapidmx/web-client/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rapidmx/web-client/releases/tag/v0.2.0
