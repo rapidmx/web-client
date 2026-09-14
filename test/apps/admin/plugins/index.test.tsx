@@ -55,6 +55,11 @@ function mockPlugins(options: { plugins?: unknown[]; status?: unknown; extra?: H
         if (custom) return custom;
         if (url === "/api/admin/release-notes") return jsonResponse(200, {});
         if (url === "/api/system/plugins/status") return jsonResponse(200, options.status ?? { hash: "current", instances: [instance()] });
+        if (url.startsWith("/api/system/plugins/plan?")) {
+            // By default a change needs nothing else.
+            const query = new URLSearchParams(url.split("?")[1]);
+            return jsonResponse(200, { plugin: { name: query.get("name"), version: query.get("packageVersion") }, install: [], enable: [], conflicts: [] });
+        }
         if (url === "/api/system/plugins" && (init?.method ?? "GET") === "GET") return jsonResponse(200, options.plugins ?? [eas, mapi]);
         throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
     });
@@ -166,7 +171,7 @@ describe("PluginsPage", () => {
                         selected: { name: "@rapidmx/autodiscover", version: "2.0.0", peerDependencies: {}, manifest: { apiVersion: 1, displayName: "Autodiscover", description: "Finds servers" } },
                     });
                 }
-                if (url === "/api/system/plugins" && init?.method === "POST") return jsonResponse(200, autodiscover);
+                if (url === "/api/system/plugins" && init?.method === "POST") return jsonResponse(200, { plugin: autodiscover, dependencies: [] });
                 return undefined;
             },
         });
@@ -427,6 +432,184 @@ describe("PluginsPage", () => {
         expect(await screen.findByText("Bad version")).toBeInTheDocument();
     });
 
+    describe("plugin dependencies", () => {
+        const autodiscover = {
+            ...mapi,
+            uid: "p-ad",
+            name: "@rapidmx/autodiscover-plugin",
+            enabled: true,
+            manifest: { apiVersion: 1, displayName: "Autodiscover", settings: [], requires: { "@rapidmx/activesync": "^1.0.0", "@rapidmx/mapi": "^1.0.0" } },
+        };
+        const plan = (extra: Record<string, unknown>) =>
+            jsonResponse(200, { plugin: { name: autodiscover.name, version: "1.0.0", manifest: autodiscover.manifest }, install: [], enable: [], conflicts: [], ...extra });
+
+        it("shows what a plugin requires and what requires it", async () => {
+            mockPlugins({ plugins: [eas, autodiscover, mapi] });
+            renderPage();
+            const row = (await screen.findByText("Autodiscover")).closest("tr") as HTMLElement;
+            expect(within(row).getByText("Requires: Exchange ActiveSync, MAPI over HTTP")).toBeInTheDocument();
+            const easRow = screen.getByText("Exchange ActiveSync").closest("tr") as HTMLElement;
+            expect(within(easRow).getByText("Required by: Autodiscover")).toBeInTheDocument();
+        });
+
+        it("confirms the plugins an install also installs and enables, then shows them all", async () => {
+            const newEas = { ...eas, uid: "p-eas2", name: "@rapidmx/activesync-plugin" };
+            const fetchMock = mockPlugins({
+                plugins: [mapi],
+                extra: (url, init) => {
+                    if (url === "/api/system/plugins/namespaces") return jsonResponse(200, []);
+                    if (url.startsWith("/api/system/plugins/search")) {
+                        return jsonResponse(200, [{ name: autodiscover.name, version: "1.0.0", allowed: true, updateAvailable: false }]);
+                    }
+                    if (url.startsWith("/api/system/plugins/plan?")) {
+                        return plan({ install: [{ name: newEas.name, version: "1.2.0", manifest: newEas.manifest }], enable: ["@rapidmx/mapi"] });
+                    }
+                    if (url === "/api/system/plugins" && init?.method === "POST") {
+                        return jsonResponse(200, { plugin: autodiscover, dependencies: [newEas, { ...mapi, enabled: true }] });
+                    }
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            const browser = within(await screen.findByRole("region", { name: "Find plugins" }));
+            await user.click(browser.getByRole("button", { name: "Search" }));
+            await user.click(await browser.findByRole("button", { name: `Install ${autodiscover.name}` }));
+
+            const dialog = await screen.findByRole("dialog", { name: `${autodiscover.name} requires other plugins` });
+            expect(within(dialog).getByText("Install Exchange ActiveSync 1.2.0")).toBeInTheDocument();
+            expect(within(dialog).getByText("Enable MAPI over HTTP")).toBeInTheDocument();
+            expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fautodiscover-plugin&packageVersion=1.0.0", expect.anything());
+            expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST")).toBe(false);
+
+            await user.click(within(dialog).getByRole("button", { name: "Continue" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(screen.getByText("Autodiscover")).toBeInTheDocument();
+            expect(screen.getByText("Exchange ActiveSync")).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Disable MAPI over HTTP" })).toBeInTheDocument();
+        });
+
+        it("doesn't install when cancelled, and keeps the confirmation open when the install fails", async () => {
+            const fetchMock = mockPlugins({
+                extra: (url, init) => {
+                    if (url.startsWith("/api/system/plugins/registry/")) {
+                        return jsonResponse(200, {
+                            package: { name: autodiscover.name, latest: "1.0.0", versions: ["1.0.0"] },
+                            selected: { name: autodiscover.name, version: "1.0.0", peerDependencies: {}, manifest: autodiscover.manifest },
+                        });
+                    }
+                    if (url.startsWith("/api/system/plugins/plan?")) return plan({ enable: ["@rapidmx/mapi"] });
+                    if (url === "/api/system/plugins" && init?.method === "POST") return jsonResponse(409, { message: "Changed meanwhile" });
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            for (const action of ["Cancel", "Continue"]) {
+                await user.click(await screen.findByRole("button", { name: "Add by name" }));
+                const add = await screen.findByRole("dialog", { name: "Add plugin" });
+                await user.type(within(add).getByLabelText("Package name"), autodiscover.name);
+                await user.click(within(add).getByRole("button", { name: "Find" }));
+                await user.click(await within(add).findByRole("button", { name: "Add plugin" }));
+                const confirm = await screen.findByRole("dialog", { name: "Autodiscover requires other plugins" });
+                await user.click(within(confirm).getByRole("button", { name: action }));
+                if (action === "Cancel") {
+                    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+                    expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST")).toBe(false);
+                } else {
+                    expect(await within(confirm).findByText("Changed meanwhile")).toBeInTheDocument();
+                }
+            }
+        });
+
+        it("explains a conflict instead of installing or upgrading", async () => {
+            const fetchMock = mockPlugins({
+                extra: (url) => {
+                    if (url === "/api/system/plugins/updates") {
+                        return jsonResponse(200, [{ uid: "p-eas", name: "@rapidmx/activesync", installedVersion: "1.0.0", latestVersion: "2.0.0", updateAvailable: true }]);
+                    }
+                    if (url === "/api/system/plugins/namespaces") return jsonResponse(200, []);
+                    if (url.startsWith("/api/system/plugins/search")) {
+                        return jsonResponse(200, [{ name: autodiscover.name, version: "1.0.0", allowed: true, updateAvailable: false }]);
+                    }
+                    if (url.startsWith("/api/system/plugins/plan?name=%40rapidmx%2Factivesync&")) {
+                        return jsonResponse(200, {
+                            plugin: { name: eas.name, version: "2.0.0" },
+                            install: [],
+                            enable: [],
+                            conflicts: ["Autodiscover requires @rapidmx/activesync ^1.0.0, which 2.0.0 doesn't satisfy."],
+                        });
+                    }
+                    if (url.startsWith("/api/system/plugins/plan?")) return plan({ conflicts: ["Autodiscover requires Exchange ActiveSync ^3.0.0, but 1.0.0 is installed."] });
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            await user.click(await screen.findByRole("button", { name: "Upgrade Exchange ActiveSync to 2.0.0" }));
+            expect(
+                await screen.findByText("Exchange ActiveSync 2.0.0 can't be installed. Autodiscover requires @rapidmx/activesync ^1.0.0, which 2.0.0 doesn't satisfy."),
+            ).toBeInTheDocument();
+
+            const browser = within(screen.getByRole("region", { name: "Find plugins" }));
+            await user.click(browser.getByRole("button", { name: "Search" }));
+            await user.click(await browser.findByRole("button", { name: `Install ${autodiscover.name}` }));
+            expect(await browser.findByText(/can't be installed\. Autodiscover requires Exchange ActiveSync \^3\.0\.0/)).toBeInTheDocument();
+            expect(fetchMock.mock.calls.some((c) => ["POST", "PUT"].includes((c[1] as RequestInit)?.method ?? ""))).toBe(false);
+        });
+
+        it("reloads the list after a version change or enable that brought in other plugins", async () => {
+            let listed: unknown[] = [eas, { ...autodiscover, enabled: false }, mapi];
+            const fetchMock = mockPlugins({
+                extra: (url, init) => {
+                    if (url === "/api/system/plugins" && (init?.method ?? "GET") === "GET") return jsonResponse(200, listed);
+                    if (url === "/api/system/plugins/registry/%40rapidmx%2Fmapi") {
+                        return jsonResponse(200, { package: { name: "@rapidmx/mapi", versions: ["2.0.0", "1.0.0"] }, selected: {} });
+                    }
+                    if (url.startsWith("/api/system/plugins/plan?")) return plan({ enable: ["@rapidmx/activesync"] });
+                    if (url === "/api/system/plugins/p-mapi" && init?.method === "PUT") {
+                        listed = [eas, { ...autodiscover, enabled: false }, { ...mapi, packageVersion: "2.0.0", manifest: { ...mapi.manifest, displayName: "MAPI 2" } }];
+                        return jsonResponse(200, { ...mapi, packageVersion: "2.0.0" });
+                    }
+                    if (url === "/api/system/plugins/p-ad" && init?.method === "PUT") {
+                        listed = [eas, autodiscover, { ...mapi, enabled: true }];
+                        return jsonResponse(200, autodiscover);
+                    }
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            const mapiRow = (await screen.findByText("MAPI over HTTP")).closest("tr") as HTMLElement;
+            await user.click(within(mapiRow).getByRole("button", { name: "Change version" }));
+            const dialog = await screen.findByRole("dialog");
+            await user.selectOptions(await within(dialog).findByLabelText("Version"), "2.0.0");
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            const confirm = await screen.findByRole("dialog", { name: "MAPI over HTTP requires other plugins" });
+            expect(within(confirm).getByText("Enable Exchange ActiveSync")).toBeInTheDocument();
+            await user.click(within(confirm).getByRole("button", { name: "Continue" }));
+            expect(await screen.findByText("MAPI 2")).toBeInTheDocument();
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({ version: 3, packageVersion: "2.0.0" });
+
+            await user.click(screen.getByRole("button", { name: "Enable Autodiscover" }));
+            expect(await screen.findByRole("button", { name: "Disable MAPI over HTTP" })).toBeInTheDocument();
+        });
+
+        it("explains why a required plugin can't be disabled", async () => {
+            mockPlugins({
+                plugins: [eas, autodiscover],
+                extra: (url, init) =>
+                    url === "/api/system/plugins/p-eas" && init?.method === "PUT"
+                        ? jsonResponse(409, { message: "Autodiscover requires Exchange ActiveSync, so it can't be disabled. Disable Autodiscover first." })
+                        : undefined,
+            });
+            const user = userEvent.setup();
+            renderPage();
+            await user.click(await screen.findByRole("button", { name: "Disable Exchange ActiveSync" }));
+            expect(await screen.findByText(/so it can't be disabled\. Disable Autodiscover first\./)).toBeInTheDocument();
+        });
+    });
+
     describe("finding plugins", () => {
         const results = [
             { name: "@acme/crm-plugin", version: "0.2.0", description: "CRM sync", allowed: true, updateAvailable: false },
@@ -477,7 +660,10 @@ describe("PluginsPage", () => {
                     if (url === "/api/system/plugins/namespaces") return jsonResponse(200, []);
                     if (url.startsWith("/api/system/plugins/search")) return jsonResponse(200, results);
                     if (url === "/api/system/plugins" && init?.method === "POST") {
-                        return jsonResponse(200, { ...mapi, uid: "p-crm", name: "@acme/crm-plugin", packageVersion: "0.2.0", enabled: true, manifest: { apiVersion: 1, displayName: "CRM", settings: [] } });
+                        return jsonResponse(200, {
+                            plugin: { ...mapi, uid: "p-crm", name: "@acme/crm-plugin", packageVersion: "0.2.0", enabled: true, manifest: { apiVersion: 1, displayName: "CRM", settings: [] } },
+                            dependencies: [],
+                        });
                     }
                     if (url === "/api/system/plugins/p-eas" && init?.method === "PUT") return jsonResponse(200, { ...eas, packageVersion: "1.4.0", version: 4 });
                     return undefined;

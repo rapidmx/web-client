@@ -11,7 +11,9 @@ import {
     listPluginNamespaces,
     listPlugins,
     lookupPluginPackage,
+    planPluginChange,
     Plugin,
+    PluginChangePlan,
     PluginInstanceStatus,
     PluginNamespace,
     PluginRegistryLookup,
@@ -38,6 +40,14 @@ function errorMessage(err: unknown, fallback: string): string {
     return err instanceof ApiRequestError ? err.message : fallback;
 }
 
+/** A change waiting for the administrator to confirm the other plugins it also installs or enables. */
+interface PendingChange {
+    displayName: string;
+    plan: PluginChangePlan;
+    apply: (plan: PluginChangePlan) => Promise<void>;
+    failure: string;
+}
+
 /** Installed plugins with their rollout status, and every plugin action - shared by the Plugins page and the
  * setup wizard. */
 export default function PluginsManager() {
@@ -50,6 +60,7 @@ export default function PluginsManager() {
     const [upgrading, setUpgrading] = useState<Plugin | null>(null);
     const [configuring, setConfiguring] = useState<Plugin | null>(null);
     const [removing, setRemoving] = useState<Plugin | null>(null);
+    const [confirming, setConfirming] = useState<PendingChange | null>(null);
     const [busyUid, setBusyUid] = useState<string | null>(null);
 
     const refreshStatus = useCallback(() => {
@@ -64,6 +75,13 @@ export default function PluginsManager() {
         return getPluginUpdates()
             .then((list) => setUpdates(new Map(list.map((info) => [info.uid, info]))))
             .catch(() => setUpdates(new Map()));
+    }, []);
+
+    /** Re-reads the list, for changes that also installed or enabled other plugins. */
+    const reload = useCallback(() => {
+        return listPlugins()
+            .then(setPlugins)
+            .catch(() => undefined);
     }, []);
 
     useEffect(() => {
@@ -85,12 +103,15 @@ export default function PluginsManager() {
         return () => clearInterval(timer);
     }, [pending, refreshStatus]);
 
-    /** Applies a saved change locally and re-reads status and updates, since saving starts a rollout. */
-    function applied(updated: Plugin) {
+    /** Applies saved changes locally and re-reads status and updates, since saving starts a rollout. */
+    function applied(...changed: Plugin[]) {
         setPlugins((prev) => {
-            const exists = prev.some((plugin) => plugin.uid === updated.uid);
-            const next = exists ? prev.map((plugin) => (plugin.uid === updated.uid ? updated : plugin)) : [...prev, updated];
-            return next.sort((a, b) => a.name.localeCompare(b.name));
+            let next = prev;
+            for (const updated of changed) {
+                const exists = next.some((plugin) => plugin.uid === updated.uid);
+                next = exists ? next.map((plugin) => (plugin.uid === updated.uid ? updated : plugin)) : [...next, updated];
+            }
+            return [...next].sort((a, b) => a.name.localeCompare(b.name));
         });
         void refreshStatus();
         void refreshUpdates();
@@ -111,18 +132,84 @@ export default function PluginsManager() {
     function toggle(plugin: Plugin) {
         return run(
             plugin,
-            () => updatePlugin(plugin.uid, { version: plugin.version, enabled: !plugin.enabled }),
+            async () => {
+                const updated = await updatePlugin(plugin.uid, { version: plugin.version, enabled: !plugin.enabled });
+                // Enabling a plugin also enables the plugins it requires.
+                if (updated.enabled && Object.keys(plugin.manifest.requires ?? {}).length > 0) {
+                    void reload();
+                }
+                return updated;
+            },
             `Could not ${plugin.enabled ? "disable" : "enable"} ${plugin.manifest.displayName}.`,
         );
     }
 
-    function upgrade(plugin: Plugin, packageVersion: string) {
-        return run(
-            plugin,
-            () => updatePlugin(plugin.uid, { version: plugin.version, packageVersion }),
+    /**
+     * Checks what installing or changing a plugin also takes before doing it. Resolves why it can't be done, or `null`
+     * once it's done - or, when it also installs or enables other plugins, once they're shown for confirmation.
+     */
+    async function planned(
+        name: string,
+        packageVersion: string,
+        displayName: string,
+        apply: (plan: PluginChangePlan) => Promise<void>,
+        failure: string,
+    ): Promise<string | null> {
+        try {
+            const plan: PluginChangePlan = await planPluginChange(name, packageVersion);
+            if (plan.conflicts.length > 0) {
+                return `${displayName} ${plan.plugin.version} can't be installed. ${plan.conflicts.join(" ")}`;
+            }
+            if (plan.install.length > 0 || plan.enable.length > 0) {
+                setConfirming({ displayName, plan, apply, failure });
+                return null;
+            }
+            await apply(plan);
+            return null;
+        } catch (err) {
+            return errorMessage(err, failure);
+        }
+    }
+
+    function install(name: string, packageVersion: string, displayName: string) {
+        return planned(
+            name,
+            packageVersion,
+            displayName,
+            async () => {
+                const result = await addPlugin(name, packageVersion);
+                applied(...result.dependencies, result.plugin);
+            },
+            `Could not install ${displayName}.`,
+        );
+    }
+
+    function changeVersion(plugin: Plugin, packageVersion: string) {
+        return planned(
+            plugin.name,
+            packageVersion,
+            plugin.manifest.displayName,
+            async (plan) => {
+                applied(await updatePlugin(plugin.uid, { version: plugin.version, packageVersion }));
+                if (plan.install.length > 0 || plan.enable.length > 0) {
+                    void reload();
+                }
+            },
             `Could not upgrade ${plugin.manifest.displayName}.`,
         );
     }
+
+    async function upgrade(plugin: Plugin, packageVersion: string) {
+        setBusyUid(plugin.uid);
+        setError(null);
+        const problem = await changeVersion(plugin, packageVersion);
+        if (problem) {
+            setError(problem);
+        }
+        setBusyUid(null);
+    }
+
+    const displayNameOf = (name: string): string => plugins.find((plugin) => plugin.name === name)?.manifest.displayName ?? name;
 
     return (
         <>
@@ -166,6 +253,10 @@ export default function PluginsManager() {
                                 const update: PluginUpdateInfo | undefined = updates.get(plugin.uid);
                                 const latest: string | undefined = update?.updateAvailable ? update.latestVersion : undefined;
                                 const busy: boolean = busyUid === plugin.uid;
+                                const requires: string[] = Object.keys(plugin.manifest.requires ?? {}).map(displayNameOf);
+                                const requiredBy: string[] = plugins
+                                    .filter((other) => other.uid !== plugin.uid && other.manifest.requires?.[plugin.name] !== undefined)
+                                    .map((other) => other.manifest.displayName);
                                 return (
                                     <tr key={plugin.uid}>
                                         <td className="py-2.5 px-2.5 border-b border-border align-top">
@@ -173,6 +264,10 @@ export default function PluginsManager() {
                                             <div className="text-xs text-text-muted">{plugin.name}</div>
                                             {plugin.manifest.description && (
                                                 <div className="text-xs text-text-muted mt-1 max-w-md">{plugin.manifest.description}</div>
+                                            )}
+                                            {requires.length > 0 && <div className="text-xs text-text-muted mt-1">Requires: {requires.join(", ")}</div>}
+                                            {requiredBy.length > 0 && (
+                                                <div className="text-xs text-text-muted mt-1">Required by: {requiredBy.join(", ")}</div>
                                             )}
                                         </td>
                                         <td className="py-2.5 px-2.5 border-b border-border align-top">
@@ -240,7 +335,7 @@ export default function PluginsManager() {
 
             <PluginBrowser
                 plugins={plugins}
-                onInstalled={applied}
+                onInstall={(result) => install(result.name, result.version, result.name)}
                 onUpgrade={(uid, packageVersion) => {
                     const plugin = plugins.find((p) => p.uid === uid);
                     return plugin ? upgrade(plugin, packageVersion) : Promise.resolve();
@@ -250,19 +345,33 @@ export default function PluginsManager() {
             <AddPluginModal
                 open={adding}
                 onClose={() => setAdding(false)}
-                onAdded={(plugin) => {
-                    setAdding(false);
-                    applied(plugin);
+                onAdd={async (name, packageVersion, displayName) => {
+                    const problem = await install(name, packageVersion, displayName);
+                    if (!problem) {
+                        setAdding(false);
+                    }
+                    return problem;
                 }}
             />
             {upgrading && (
                 <ChangeVersionModal
                     plugin={upgrading}
                     onClose={() => setUpgrading(null)}
-                    onSaved={(plugin) => {
-                        setUpgrading(null);
-                        applied(plugin);
+                    onSave={async (packageVersion) => {
+                        const problem = await changeVersion(upgrading, packageVersion);
+                        if (!problem) {
+                            setUpgrading(null);
+                        }
+                        return problem;
                     }}
+                />
+            )}
+            {confirming && (
+                <ConfirmDependenciesModal
+                    change={confirming}
+                    displayNameOf={displayNameOf}
+                    onClose={() => setConfirming(null)}
+                    onDone={() => setConfirming(null)}
                 />
             )}
             {configuring && (
@@ -296,11 +405,12 @@ const ALL_NAMESPACES = "";
 /** Searches the configured namespaces' registries for plugin packages, with install and upgrade actions. */
 function PluginBrowser({
     plugins,
-    onInstalled,
+    onInstall,
     onUpgrade,
 }: {
     plugins: Plugin[];
-    onInstalled: (plugin: Plugin) => void;
+    /** Resolves why the plugin couldn't be installed, or `null`. */
+    onInstall: (result: PluginSearchResult) => Promise<string | null>;
     onUpgrade: (uid: string, packageVersion: string) => Promise<void>;
 }) {
     const [namespaces, setNamespaces] = useState<PluginNamespace[]>([]);
@@ -344,13 +454,8 @@ function PluginBrowser({
     async function install(result: PluginSearchResult) {
         setBusyName(result.name);
         setError(null);
-        try {
-            onInstalled(await addPlugin(result.name, result.version));
-        } catch (err) {
-            setError(errorMessage(err, `Could not install ${result.name}.`));
-        } finally {
-            setBusyName(null);
-        }
+        setError(await onInstall(result));
+        setBusyName(null);
     }
 
     async function upgrade(result: PluginSearchResult) {
@@ -510,7 +615,16 @@ function PluginStatusCell({ plugin, status }: { plugin: Plugin; status: PluginSt
     );
 }
 
-function AddPluginModal({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded: (plugin: Plugin) => void }) {
+function AddPluginModal({
+    open,
+    onClose,
+    onAdd,
+}: {
+    open: boolean;
+    onClose: () => void;
+    /** Resolves why the plugin couldn't be added, or `null`. */
+    onAdd: (name: string, packageVersion: string, displayName: string) => Promise<string | null>;
+}) {
     const [name, setName] = useState("");
     const [lookup, setLookup] = useState<PluginRegistryLookup | null>(null);
     const [selectedVersion, setSelectedVersion] = useState("");
@@ -546,19 +660,17 @@ function AddPluginModal({ open, onClose, onAdded }: { open: boolean; onClose: ()
         }
     }
 
+    const manifest = lookup?.selected.manifest;
+
     async function add() {
         setBusy(true);
         setError(null);
-        try {
-            onAdded(await addPlugin(lookup!.package.name, selectedVersion));
-        } catch (err) {
-            setError(errorMessage(err, "Could not add the plugin."));
-        } finally {
-            setBusy(false);
-        }
+        const name: string = lookup!.package.name;
+        const problem = await onAdd(name, selectedVersion, typeof manifest === "object" ? manifest.displayName : name);
+        setError(problem);
+        setBusy(false);
     }
 
-    const manifest = lookup?.selected.manifest;
     return (
         <Modal open={open} onClose={onClose} title="Add plugin">
             {error && <Alert>{error}</Alert>}
@@ -615,7 +727,16 @@ function AddPluginModal({ open, onClose, onAdded }: { open: boolean; onClose: ()
     );
 }
 
-function ChangeVersionModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: () => void; onSaved: (plugin: Plugin) => void }) {
+function ChangeVersionModal({
+    plugin,
+    onClose,
+    onSave,
+}: {
+    plugin: Plugin;
+    onClose: () => void;
+    /** Resolves why the version couldn't be changed, or `null`. */
+    onSave: (packageVersion: string) => Promise<string | null>;
+}) {
     const [versions, setVersions] = useState<string[] | null>(null);
     const [latest, setLatest] = useState<string | undefined>();
     const [selected, setSelected] = useState(plugin.packageVersion);
@@ -634,11 +755,9 @@ function ChangeVersionModal({ plugin, onClose, onSaved }: { plugin: Plugin; onCl
     async function save() {
         setBusy(true);
         setError(null);
-        try {
-            onSaved(await updatePlugin(plugin.uid, { version: plugin.version, packageVersion: selected }));
-        } catch (err) {
-            setError(errorMessage(err, "Could not change the version."));
-        } finally {
+        const problem = await onSave(selected);
+        if (problem) {
+            setError(problem);
             setBusy(false);
         }
     }
@@ -678,6 +797,62 @@ function ChangeVersionModal({ plugin, onClose, onSaved }: { plugin: Plugin; onCl
                     </div>
                 </div>
             )}
+        </Modal>
+    );
+}
+
+/** Lists the plugins a change also installs or enables, and makes the change once confirmed. */
+function ConfirmDependenciesModal({
+    change,
+    displayNameOf,
+    onClose,
+    onDone,
+}: {
+    change: PendingChange;
+    displayNameOf: (name: string) => string;
+    onClose: () => void;
+    onDone: () => void;
+}) {
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const { plan } = change;
+
+    async function proceed() {
+        setBusy(true);
+        setError(null);
+        try {
+            await change.apply(plan);
+            onDone();
+        } catch (err) {
+            setError(errorMessage(err, change.failure));
+            setBusy(false);
+        }
+    }
+
+    return (
+        <Modal open onClose={onClose} title={`${change.displayName} requires other plugins`}>
+            {error && <Alert>{error}</Alert>}
+            <p className="text-sm mb-2">
+                {change.displayName} {plan.plugin.version} needs these plugins, so they&apos;ll be changed too:
+            </p>
+            <ul className="text-sm list-disc pl-5 mb-4">
+                {plan.install.map((dependency) => (
+                    <li key={dependency.name}>
+                        Install {dependency.manifest.displayName} {dependency.version}
+                    </li>
+                ))}
+                {plan.enable.map((name) => (
+                    <li key={name}>Enable {displayNameOf(name)}</li>
+                ))}
+            </ul>
+            <div className="flex gap-2 justify-end">
+                <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                    Cancel
+                </Button>
+                <Button type="button" className="!w-auto" loading={busy} disabled={busy} onClick={() => void proceed()}>
+                    Continue
+                </Button>
+            </div>
         </Modal>
     );
 }

@@ -1,8 +1,17 @@
 diff --git a/dist/admin/pluginsApi.d.ts b/dist/admin/pluginsApi.d.ts
-index 66882725c0b6e48a76ce4e3aa5b062194d954298..68a4501338d0111f93a27cf54a2f49e9f92f3705 100644
+index 66882725c0b6e48a76ce4e3aa5b062194d954298..770bf1bb479cdedd10c8ba32ffd63877d282d51e 100644
 --- a/dist/admin/pluginsApi.d.ts
 +++ b/dist/admin/pluginsApi.d.ts
-@@ -72,6 +72,35 @@ export interface PluginStatus {
+@@ -19,6 +19,8 @@ export interface PluginManifest {
+     displayName: string;
+     description?: string;
+     settings?: PluginSettingDefinition[];
++    /** Other plugins this one needs, as package name to npm version range. */
++    requires?: Record<string, string>;
+ }
+ export type PluginSettingValue = string | number | boolean;
+ /** Mirrors `@rapidmx/restapi`'s `Plugin`. `version` is the row's optimistic-lock counter; the npm version is
+@@ -72,6 +74,57 @@ export interface PluginStatus {
      hash: string;
      instances: PluginInstanceStatus[];
  }
@@ -35,10 +44,32 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..68a4501338d0111f93a27cf54a2f49e9
 +    name: string;
 +    registry?: string;
 +}
++/** What `planPluginChange()` found: dependencies that would be installed (dependencies first) and installed plugins
++ * that would be enabled. The change is refused while `conflicts` isn't empty. */
++export interface PluginChangePlan {
++    plugin: {
++        name: string;
++        version: string;
++        manifest: PluginManifest;
++    };
++    install: {
++        name: string;
++        version: string;
++        integrity?: string;
++        manifest: PluginManifest;
++    }[];
++    enable: string[];
++    conflicts: string[];
++}
++/** `addPlugin()`'s result: the added plugin and the dependencies installed or enabled with it. */
++export interface AddPluginResult {
++    plugin: Plugin;
++    dependencies: Plugin[];
++}
  export interface UpdatePluginInput {
      /** The row's optimistic-lock counter. */
      version?: number;
-@@ -82,6 +111,12 @@ export interface UpdatePluginInput {
+@@ -82,10 +135,21 @@ export interface UpdatePluginInput {
  }
  export declare function listPlugins(): Promise<Plugin[]>;
  export declare function getPluginStatus(): Promise<PluginStatus>;
@@ -50,12 +81,24 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..68a4501338d0111f93a27cf54a2f49e9
 +export declare function getPluginUpdates(): Promise<PluginUpdateInfo[]>;
  /** A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). */
  export declare function lookupPluginPackage(name: string, packageVersion?: string): Promise<PluginRegistryLookup>;
- /** Adds a plugin, at its latest version unless `packageVersion` is given. */
+-/** Adds a plugin, at its latest version unless `packageVersion` is given. */
+-export declare function addPlugin(name: string, packageVersion?: string): Promise<Plugin>;
++/** What adding `name` - or changing it, when installed - at `packageVersion` (default: latest) would also install and
++ * enable, and what would refuse it. Nothing is changed. */
++export declare function planPluginChange(name: string, packageVersion?: string): Promise<PluginChangePlan>;
++/** Adds a plugin, at its latest version unless `packageVersion` is given, installing and enabling the plugins it
++ * requires first. Refused (409) when a requirement conflicts with an installed plugin's version. */
++export declare function addPlugin(name: string, packageVersion?: string): Promise<AddPluginResult>;
+ export declare function updatePlugin(uid: string, input: UpdatePluginInput): Promise<Plugin>;
+-/** Removes a plugin. Data it stored stays in the database. */
++/** Removes a plugin. Data it stored stays in the database. Refused (409) while an enabled plugin requires it, as is
++ * disabling it with `updatePlugin()`. */
+ export declare function removePlugin(uid: string): Promise<void>;
 diff --git a/dist/admin/pluginsApi.js b/dist/admin/pluginsApi.js
-index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..0378f5364d986bf6b8728804fcedd22e309f9d4a 100644
+index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..cc848809c8e5e0a3284bd6122f6808c6bef2c06d 100644
 --- a/dist/admin/pluginsApi.js
 +++ b/dist/admin/pluginsApi.js
-@@ -16,6 +16,19 @@ export function listPlugins() {
+@@ -16,19 +16,43 @@ export function listPlugins() {
  export function getPluginStatus() {
      return apiFetch(`${BASE}/status`);
  }
@@ -75,3 +118,29 @@ index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..0378f5364d986bf6b8728804fcedd22e
  /** A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). */
  export function lookupPluginPackage(name, packageVersion) {
      const query = packageVersion ? `?packageVersion=${encodeURIComponent(packageVersion)}` : "";
+     return apiFetch(`${BASE}/registry/${encodeURIComponent(name)}${query}`);
+ }
+-/** Adds a plugin, at its latest version unless `packageVersion` is given. */
++/** What adding `name` - or changing it, when installed - at `packageVersion` (default: latest) would also install and
++ * enable, and what would refuse it. Nothing is changed. */
++export function planPluginChange(name, packageVersion) {
++    const query = new URLSearchParams({ name });
++    if (packageVersion) {
++        query.set("packageVersion", packageVersion);
++    }
++    return apiFetch(`${BASE}/plan?${query.toString()}`);
++}
++/** Adds a plugin, at its latest version unless `packageVersion` is given, installing and enabling the plugins it
++ * requires first. Refused (409) when a requirement conflicts with an installed plugin's version. */
+ export function addPlugin(name, packageVersion) {
+     return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion }) });
+ }
+ export function updatePlugin(uid, input) {
+     return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
+ }
+-/** Removes a plugin. Data it stored stays in the database. */
++/** Removes a plugin. Data it stored stays in the database. Refused (409) while an enabled plugin requires it, as is
++ * disabling it with `updatePlugin()`. */
+ export function removePlugin(uid) {
+     return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "DELETE" });
+ }
