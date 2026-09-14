@@ -15,9 +15,29 @@ export const CONSOLE_SIGN_OUT_CHANNEL = "rapidmx-localsearch";
 /** How long sign-out waits for auth-server's logout before navigating anyway (same bound as `AppShell`). */
 export const CONSOLE_LOGOUT_TIMEOUT_MS = 3_000;
 
-/** Tells every other tab of this origin that the session ended (`{ type: "sign-out" }`, `AppShell`'s message), so
- * a mail tab destroys its unlocked keys and local indexes and leaves too. A no-op where BroadcastChannel is
- * unavailable. */
+/**
+ * The local search index's pending-deletions `localStorage` key - must stay identical to `PENDING_DELETIONS_KEY`
+ * in `apps/shared/search/localIndexRpcClient.ts`, duplicated for the same bundle reason as the channel above
+ * (the test checks it). `"*"` is that module's "every index on this device" entry.
+ */
+export const CONSOLE_PENDING_DELETIONS_KEY = "rapidmx-localsearch-pending-deletions";
+const ALL_LOCAL_INDEXES = "*";
+
+/** Records that every local search index on this device must be deleted. The consoles can't delete them
+ * themselves (no local-index client here); the next mail page load retries recorded deletions before opening
+ * any index. With storage blocked nothing is recorded, and only an open mail tab hearing the broadcast deletes
+ * them. */
+function markLocalIndexesForDeletion(): void {
+    try {
+        localStorage.setItem(CONSOLE_PENDING_DELETIONS_KEY, JSON.stringify([ALL_LOCAL_INDEXES]));
+    } catch {
+        // See the doc comment.
+    }
+}
+
+/** Tells every other tab of this origin that the session ended (`{ type: "sign-out" }`, `AppShell`'s message).
+ * An open mail tab then destroys its unlocked keys and every local search index on the device, and leaves too.
+ * A no-op where BroadcastChannel is unavailable. */
 function broadcastSignOut(): void {
     if (typeof BroadcastChannel === "undefined") {
         return;
@@ -47,10 +67,12 @@ async function logOutOfAuthServer(authServerUrl: string | undefined): Promise<vo
 /**
  * Sign-out for `AdminShell`/`EscrowShell`: announces the sign-out to other tabs, ends the auth-server session
  * (clears the auth cookie and invalidates the refresh token - navigating alone would leave the session valid),
- * then navigates to auth-server (or `/`). Mirrors `AppShell.handleSignOut` minus the mail-only key/index cleanup,
- * which the consoles never create in their own tab.
+ * then navigates to auth-server (or `/`). Mirrors `AppShell.handleSignOut`, except that the consoles hold no
+ * unlocked keys and can't delete local search indexes in their own tab: they record every index for deletion
+ * (finished by the next mail page load) and rely on an open mail tab hearing the broadcast to delete them now.
  */
 export async function signOutOfConsole(authServerUrl: string | undefined): Promise<void> {
+    markLocalIndexesForDeletion();
     broadcastSignOut();
     await logOutOfAuthServer(authServerUrl);
     window.location.href = authServerUrl ?? "/";

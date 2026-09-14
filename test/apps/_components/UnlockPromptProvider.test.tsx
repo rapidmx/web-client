@@ -12,7 +12,11 @@ const { getUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
     getUnlockedKeys: vi.fn(),
     unlockWithPassword: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword }));
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => ({
+    UnopenableEncryptionKeyError: (await importOriginal<typeof import("@rapidmx/react-shared/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
+    getUnlockedKeys,
+    unlockWithPassword,
+}));
 
 const fakeUnlockedKeys = { masterKey: new Uint8Array(32) };
 
@@ -56,7 +60,7 @@ describe("UnlockPromptProvider", () => {
 
     it("shows the unlock dialog, unlocks on a correct password, and resolves requestUnlock with the unlocked keys", async () => {
         getUnlockedKeys.mockReturnValueOnce(undefined).mockReturnValue(fakeUnlockedKeys);
-        unlockWithPassword.mockResolvedValue(undefined);
+        unlockWithPassword.mockResolvedValue({ unopenableKeys: [] });
         const user = userEvent.setup();
         render(
             <UnlockPromptProvider>
@@ -92,6 +96,48 @@ describe("UnlockPromptProvider", () => {
         expect(screen.getByText("Result: idle")).toBeInTheDocument();
     });
 
+    it("says a key couldn't be opened, not 'Incorrect password', for an UnopenableEncryptionKeyError (round 5)", async () => {
+        const { UnopenableEncryptionKeyError } = await import("@rapidmx/react-shared/crypto/keySession.js");
+        getUnlockedKeys.mockReturnValue(undefined);
+        unlockWithPassword.mockRejectedValue(new UnopenableEncryptionKeyError("enc-fp", new Error("bad tag")));
+        const user = userEvent.setup();
+        render(
+            <UnlockPromptProvider>
+                <TestConsumer />
+            </UnlockPromptProvider>,
+        );
+        await user.click(screen.getByRole("button", { name: "Do encrypted thing" }));
+        await user.type(await screen.findByLabelText("Encryption password"), "right password");
+        await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+        expect(await screen.findByText(/one of your keys couldn.t be opened.*contact support/)).toBeInTheDocument();
+        expect(screen.queryByText("Incorrect password.")).not.toBeInTheDocument();
+        expect(screen.getByText("Result: idle")).toBeInTheDocument();
+    });
+
+    it.each([
+        [["sign-fp-1"], /one of your signing keys couldn.t be opened, so mail can.t be signed with it/],
+        [["sign-fp-1", "sign-fp-2"], /2 of your signing keys couldn.t be opened, so mail can.t be signed with them/],
+    ])("unlocks, then shows a dismissible notice for signing keys that couldn't be opened: %j (round 5)", async (fingerprints, text) => {
+        getUnlockedKeys.mockReturnValueOnce(undefined).mockReturnValue(fakeUnlockedKeys);
+        unlockWithPassword.mockResolvedValue({ unopenableKeys: fingerprints });
+        const user = userEvent.setup();
+        render(
+            <UnlockPromptProvider>
+                <TestConsumer />
+            </UnlockPromptProvider>,
+        );
+        await user.click(screen.getByRole("button", { name: "Do encrypted thing" }));
+        await user.type(await screen.findByLabelText("Encryption password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+        expect(await screen.findByText("Result: unlocked")).toBeInTheDocument();
+        expect(screen.getByText(text)).toBeInTheDocument();
+        expect(screen.getByText(fingerprints.join(", "))).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Dismiss" }));
+        expect(screen.queryByText(text)).not.toBeInTheDocument();
+    });
+
     it("rejects requestUnlock, without calling unlockWithPassword, when the dialog is cancelled", async () => {
         getUnlockedKeys.mockReturnValue(undefined);
         const user = userEvent.setup();
@@ -111,7 +157,7 @@ describe("UnlockPromptProvider", () => {
 
     it("a second request for the same mailbox joins the open dialog, and one unlock settles both callers", async () => {
         getUnlockedKeys.mockReturnValueOnce(undefined).mockReturnValueOnce(undefined).mockReturnValue(fakeUnlockedKeys);
-        unlockWithPassword.mockResolvedValue(undefined);
+        unlockWithPassword.mockResolvedValue({ unopenableKeys: [] });
         let request!: ReturnType<typeof useUnlockPrompt>["requestUnlock"];
         function Capture() {
             request = useUnlockPrompt().requestUnlock;
@@ -151,8 +197,8 @@ describe("UnlockPromptProvider", () => {
         const second = request("mb2", []);
         await expect(first).rejects.toThrow("superseded");
 
-        let finishUnlock!: () => void;
-        unlockWithPassword.mockReturnValueOnce(new Promise<void>((resolve) => (finishUnlock = resolve)));
+        let finishUnlock!: (result: { unopenableKeys: string[] }) => void;
+        unlockWithPassword.mockReturnValueOnce(new Promise((resolve) => (finishUnlock = resolve)));
         await user.type(await screen.findByLabelText("Encryption password"), "pw");
         await user.click(screen.getByRole("button", { name: "Unlock" }));
         expect(unlockWithPassword).toHaveBeenCalledWith("mb2", [], "pw");
@@ -163,7 +209,7 @@ describe("UnlockPromptProvider", () => {
         const thirdOutcome = expect(third).rejects.toThrow("cancelled");
         await expect(second).rejects.toThrow("superseded");
         getUnlockedKeys.mockReturnValue(fakeUnlockedKeys);
-        finishUnlock();
+        finishUnlock({ unopenableKeys: [] });
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(screen.getByText("Unlock your mailbox")).toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Cancel" }));

@@ -7,7 +7,8 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import { enrollKey, getKeyVault, PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { enrollKey, getKeyVault, PublicKey, VaultAlreadyInitializedError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { UnopenableKeysNotice, unlockErrorMessage } from "./UnlockPromptProvider.js";
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
     getUnlockedKeys,
@@ -17,7 +18,7 @@ import { buildAad, generateMasterKey, sealWithKey } from "@rapidmx/react-shared/
 import { buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
 
-type Status = "checking" | "setup_password" | "enrolling" | "show_recovery_codes" | "unlock" | "unlocking" | "ready";
+type Status = "checking" | "setup_password" | "enrolling" | "already_set_up" | "show_recovery_codes" | "unlock" | "unlocking" | "ready";
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -112,6 +113,7 @@ export default function KeyEnrollmentGate({
     const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
     const [codesSaved, setCodesSaved] = useState(false);
     const [codesCopied, setCodesCopied] = useState(false);
+    const [unopenableKeys, setUnopenableKeys] = useState<string[] | null>(null);
 
     useEffect(() => {
         if (!mailboxUid) {
@@ -148,13 +150,15 @@ export default function KeyEnrollmentGate({
         try {
             // Only reachable via "unlock", which the effect above only ever sets once mailboxUid was
             // defined.
-            await unlockWithPassword(mailboxUid!, mailboxKeys ?? [], password);
+            const result = await unlockWithPassword(mailboxUid!, mailboxKeys ?? [], password);
+            if (result.unopenableKeys.length > 0) {
+                setUnopenableKeys(result.unopenableKeys);
+            }
             setStatus("ready");
-        } catch {
-            // Deliberately generic - see `unlockWithPassword()`'s own doc comment: it throws the same way
-            // for "no password wrap enrolled" and "wrong password" today, and this UI has no way to tell
-            // those apart without leaking which is which to a potential attacker guessing passwords.
-            setError("Incorrect password.");
+        } catch (err) {
+            // "Incorrect password." unless the password was right but the encryption key won't open - see
+            // `unlockErrorMessage()`.
+            setError(unlockErrorMessage(err));
             setStatus("unlock");
         }
     }
@@ -172,12 +176,27 @@ export default function KeyEnrollmentGate({
         setError(null);
         setStatus("enrolling");
         try {
+            // The vault was only checked on mount - another tab or device may have set encryption up since.
+            // Provisioning now would publish a second master key, orphaning whichever setup lost the race, so
+            // re-check right before generating anything. restapi's enrollKey() also refuses (409) wraps for a
+            // vault that already has them, for a race inside this window.
             // Only reachable via "setup_password", which the effect above only ever sets once mailboxUid
             // was defined (and mailboxAddress necessarily came with it - see KeyEnrollmentGateProps).
+            const fresh = await getKeyVault(mailboxUid!);
+            if (fresh.wrappedKeys.length > 0 || fresh.masterKeyWraps.length > 0) {
+                setStatus("already_set_up");
+                return;
+            }
             const { recoveryCodes: codes } = await provisionEncryptionKey(mailboxUid!, mailboxAddress!, password);
             setRecoveryCodes(codes);
             setStatus("show_recovery_codes");
         } catch (err) {
+            // Only a 409 that is really "the vault already has wraps" - an unrelated lost optimistic-lock race is shown
+            // as an ordinary error.
+            if (err instanceof VaultAlreadyInitializedError) {
+                setStatus("already_set_up");
+                return;
+            }
             setError(err instanceof ApiRequestError ? err.message : "Could not set up encryption for this mailbox.");
             setStatus("setup_password");
         }
@@ -272,6 +291,24 @@ export default function KeyEnrollmentGate({
         );
     }
 
+    if (status === "already_set_up") {
+        return (
+            <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
+                <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
+                    <h1 className="text-lg font-bold mb-2">Encryption is already set up</h1>
+                    <p className="text-sm text-text-muted mb-5">
+                        This mailbox&rsquo;s encryption was set up in another tab or on another device while this
+                        page was open, so nothing was changed here. Reload the page and unlock with the password
+                        chosen there.
+                    </p>
+                    <Button type="button" onClick={() => window.location.reload()}>
+                        Reload
+                    </Button>
+                </div>
+            </div>
+        );
+    }
+
     if (status === "show_recovery_codes") {
         return (
             <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
@@ -303,5 +340,10 @@ export default function KeyEnrollmentGate({
         );
     }
 
-    return <>{children}</>;
+    return (
+        <>
+            {children}
+            {unopenableKeys && <UnopenableKeysNotice fingerprints={unopenableKeys} onDismiss={() => setUnopenableKeys(null)} />}
+        </>
+    );
 }

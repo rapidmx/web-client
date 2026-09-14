@@ -7,15 +7,26 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import RecurrenceEditor from "../../../apps/shared/components/calendar/RecurrenceEditor.js";
-import { RecurrenceRule } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
 
 /** A thin stateful wrapper so interactions can be chained realistically (each onChange re-renders
  * with the new value), rather than asserting only the first onChange call in isolation. */
-function Controlled({ initial, onChange, allDay }: { initial: RecurrenceRule | null; onChange: (v: RecurrenceRule | null) => void; allDay?: boolean }) {
+function Controlled({
+    initial,
+    onChange,
+    allDay,
+    startWeekday,
+}: {
+    initial: RecurrenceRule | null;
+    onChange: (v: RecurrenceRule | null) => void;
+    allDay?: boolean;
+    startWeekday?: WeekdayCode;
+}) {
     const [value, setValue] = useState(initial);
     return (
         <RecurrenceEditor
             allDay={allDay}
+            startWeekday={startWeekday}
             value={value}
             onChange={(v) => {
                 setValue(v);
@@ -76,16 +87,66 @@ describe("RecurrenceEditor", () => {
         expect(screen.queryByRole("button", { name: "Mon" })).not.toBeInTheDocument();
     });
 
-    it("treats a missing byDay as no days selected when switching to weekly from a rule that never had one", async () => {
+    it("switching to weekly from a rule without weekdays starts on the event's start weekday", async () => {
         const onChange = vi.fn();
         const user = userEvent.setup();
-        render(<Controlled initial={{ freq: "monthly", interval: 1, exceptions: [] }} onChange={onChange} />);
+        render(<Controlled initial={{ freq: "monthly", interval: 1, exceptions: [] }} onChange={onChange} startWeekday="TH" />);
 
         await user.selectOptions(screen.getByLabelText("Recurrence frequency"), "weekly");
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ freq: "weekly", byDay: ["TH"] }));
+        expect(screen.getByRole("button", { name: "Thu" })).toHaveAttribute("aria-pressed", "true");
         expect(screen.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "false");
 
         await user.click(screen.getByRole("button", { name: "Mon" }));
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ byDay: ["TH", "MO"] }));
+    });
+
+    it("treats a stored weekly rule with no byDay as no days selected", async () => {
+        const onChange = vi.fn();
+        const user = userEvent.setup();
+        render(<Controlled initial={{ freq: "weekly", interval: 1, exceptions: [] }} onChange={onChange} />);
+
+        expect(screen.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "false");
+        await user.click(screen.getByRole("button", { name: "Mon" }));
         expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ byDay: ["MO"] }));
+    });
+
+    it("enabling 'Repeats' starts a weekly rule on the event's start weekday", async () => {
+        const onChange = vi.fn();
+        const user = userEvent.setup();
+        render(<Controlled initial={null} onChange={onChange} startWeekday="SA" />);
+
+        await user.click(screen.getByRole("checkbox", { name: "Repeats" }));
+        expect(onChange).toHaveBeenLastCalledWith({ freq: "weekly", interval: 1, byDay: ["SA"], exceptions: [] });
+    });
+
+    it("drops the weekdays when leaving Weekly, so Daily repeats every day rather than only on those days", async () => {
+        const onChange = vi.fn();
+        const user = userEvent.setup();
+        render(<Controlled initial={{ freq: "weekly", interval: 1, byDay: ["MO", "WE"], exceptions: [] }} onChange={onChange} startWeekday="FR" />);
+
+        await user.selectOptions(screen.getByLabelText("Recurrence frequency"), "daily");
+        const daily = onChange.mock.lastCall![0] as RecurrenceRule;
+        expect(daily.freq).toBe("daily");
+        expect(daily.byDay).toBeUndefined();
+        expect(screen.getByText("Repeats every day.")).toBeInTheDocument();
+
+        // Back to Weekly: re-seeded from the start weekday, not the discarded Mon/Wed.
+        await user.selectOptions(screen.getByLabelText("Recurrence frequency"), "weekly");
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ freq: "weekly", byDay: ["FR"] }));
+    });
+
+    it("loads an existing weekly rule's weekdays untouched and keeps them through unrelated edits", () => {
+        const onChange = vi.fn();
+        render(<Controlled initial={{ freq: "weekly", interval: 1, byDay: ["TU", "TH"], count: 5, exceptions: [] }} onChange={onChange} startWeekday="MO" />);
+
+        expect(screen.getByRole("button", { name: "Tue" })).toHaveAttribute("aria-pressed", "true");
+        expect(screen.getByRole("button", { name: "Thu" })).toHaveAttribute("aria-pressed", "true");
+        expect(screen.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "false");
+        expect(onChange).not.toHaveBeenCalled();
+
+        fireEvent.change(screen.getByLabelText("Recurrence interval"), { target: { value: "2" } });
+        expect(onChange).toHaveBeenLastCalledWith({ freq: "weekly", interval: 2, byDay: ["TU", "TH"], count: 5, exceptions: [] });
     });
 
     it("toggles a weekday on and back off", async () => {

@@ -12,7 +12,7 @@ import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import { useIdleKeyTimeout } from "@rapidmx/react-shared/crypto/useIdleKeyTimeout.js";
 import ComposeProvider from "../mail/compose/ComposeContext.js";
-import { flushComposeDrafts } from "../mail/compose/composeFlushRegistry.js";
+import { flushComposeDrafts, markSigningOut } from "../mail/compose/composeFlushRegistry.js";
 import BottomTabBar from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { BrandingFooter, BrandingHeader } from "./BrandingChrome.js";
 import UserMenu from "./UserMenu.js";
@@ -135,10 +135,13 @@ export default function AppShell({
             .catch(() => undefined);
     }, [userUid, impersonating, trusted]);
 
-    // Another tab signing out (see `handleSignOut`) ended this session too - its auth cookie is gone - so this
-    // tab destroys its own unlocked keys and leaves as well, rather than keeping plaintext keys in memory
-    // behind a signed-out UI. `destroyAllLocalIndexes()` announces the sign-out on this channel; the tab that
-    // started it ignores its own announcement (it's already mid-sign-out).
+    // Another tab signing out (this app's `handleSignOut`, or the admin/escrow consoles' `signOutOfConsole()`)
+    // ended this session too - its auth cookie is gone - so this tab destroys its own unlocked keys and every
+    // local search index on the device, then leaves as well. The consoles have no local-index client of their
+    // own, so this is what actually removes the indexes after a console sign-out (the console also records a
+    // pending deletion, retried on the next mail load, in case no mail tab is open). `destroyAllLocalIndexes()`
+    // announces the sign-out on this same channel, which this tab then hears itself, so the ref is set first:
+    // each tab reacts once, and the tab that started the sign-out ignores its own announcement.
     useEffect(() => {
         if (!userUid || typeof BroadcastChannel === "undefined") {
             return;
@@ -148,14 +151,23 @@ export default function AppShell({
             if (event.data?.type !== "sign-out" || signingOutRef.current) {
                 return;
             }
+            signingOutRef.current = true;
+            // Compose windows must not ask "Leave site?" - that would let this forced navigation be cancelled.
+            markSigningOut();
             destroyUnlockedKeys();
-            window.location.href = authServerUrl ?? "/";
+            // Bounded by its own timeout and never rejects - awaited so navigating doesn't kill the Worker mid-delete.
+            void destroyAllLocalIndexes().then(() => {
+                window.location.href = authServerUrl ?? "/";
+            });
         });
         return () => channel.close();
     }, [userUid, authServerUrl]);
 
     async function handleSignOut() {
         signingOutRef.current = true;
+        // Before flushing and navigating: compose windows then skip their "Leave site?" prompt, which could
+        // otherwise cancel the sign-out's own navigation.
+        markSigningOut();
         // Unlocked private keys never outlive an explicit sign-out.
         destroyUnlockedKeys();
         // Open compose windows save edits still waiting on their autosave debounce while the session is still

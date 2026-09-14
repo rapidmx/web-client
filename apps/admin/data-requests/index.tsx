@@ -35,10 +35,19 @@ function importFormatFromFilename(filename: string): MailboxImportFormat {
     return filename.toLowerCase().endsWith(".pst") ? "pst" : "mbox";
 }
 
+/** Request statuses still waiting or running - shown as a neutral in-progress badge, never as success. Includes
+ * restapi's `processing` (exports/imports) and `in_progress` (an erasure that is running). */
+const IN_PROGRESS_STATUSES = new Set(["pending", "processing", "in_progress"]);
+
 function statusBadgeClass(status: string): string {
     if (status === "failed" || status === "denied") return "bg-danger-bg text-danger";
-    if (status === "pending" || status === "processing") return "bg-surface-alt text-text-muted";
+    if (IN_PROGRESS_STATUSES.has(status)) return "bg-surface-alt text-text-muted";
     return "bg-success text-white";
+}
+
+/** A status as shown on its badge (`in_progress` -> `in progress`). */
+function statusLabel(status: string): string {
+    return status.replace(/_/g, " ");
 }
 
 export default function DataRequestsPage(props: Omit<AdminShellProps, "active">) {
@@ -143,7 +152,7 @@ function ExportRequestsSection() {
                                 <span
                                     className={`text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill ${statusBadgeClass(request.status)}`}
                                 >
-                                    {request.status}
+                                    {statusLabel(request.status)}
                                 </span>
                                 {request.status === "ready" && (
                                     <a href={exportRequestDownloadUrl(request.uid)} className="text-primary-dark hover:underline font-medium">
@@ -291,7 +300,7 @@ function ImportRequestsSection() {
                             <span
                                 className={`text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill ${statusBadgeClass(request.status)}`}
                             >
-                                {request.status}
+                                {statusLabel(request.status)}
                             </span>
                         </li>
                     ))}
@@ -398,7 +407,7 @@ function ErasureRequestsSection() {
                                 <span
                                     className={`text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill ${statusBadgeClass(request.status)}`}
                                 >
-                                    {request.status}
+                                    {statusLabel(request.status)}
                                 </span>
                             </div>
                             {request.status === "pending" && (

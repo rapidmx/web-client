@@ -1357,3 +1357,113 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     `notAddressedToReader` stays true, re-evaluates with each alias (the API takes one address); shows an
     informational `role=status` "don't include this mailbox" notice. `header_mismatch` text mentions repeated
     From/To/Cc/Sender headers. The raw byte string is only handed to `evaluateMessageSecurity()`.
+- **2026-09-14 — Round-5 review fixes, W-A (encryption settings, KeyEnrollmentGate, lists, sign-out, status badges).**
+  Not committed. All ten findings done, plus the follow-ups from the react-shared f6c8989/f853222 and restapi part B
+  contract changes.
+  - **Rotation vs a pending signing enrollment** (`settings/encryption`): the started enrollment id is kept in
+    `localStorage` (`rapidmx.signEnrollment.<mailboxUid>`) only so a reload can ask the server
+    (`checkSignEnrollmentStatus`) about it; `signingStatus` gains `"checking"`. Rotation (inputs, button, and the
+    submit handler itself) and "Enable digital signatures" are disabled unless `signingStatus === "idle"`. Reload
+    check: pending -> resume polling; issued/failed -> clear storage (issued refetches keys, a refetch failure is
+    ignored); 404 -> clear; any other error -> assume pending and keep polling. A 409 from `rekey` shows
+    `ROTATION_CONFLICT_MESSAGE` (mentions an enrollment possibly started on another device). There is no server
+    endpoint listing pending enrollments, so a pending enrollment started on another device is only caught by
+    restapi's 409.
+  - **Escrow and rotation** (after restapi part B, react-shared f853222): `rekey()` drops old escrow wraps and 409s an
+    escrowed mailbox's rekey without a replacement. `handleRotateKeys` builds `buildEscrowWrap(newMk, ...)` BEFORE
+    `rekey` and sends it in `masterKeyWraps` whenever the freshly fetched mailbox has `escrowScopeId` (not "the vault
+    had an escrow wrap": restapi checks the assignment, and a mailbox taken out of escrow has no scope to wrap for).
+    Failing to build it aborts with "Your keys were not rotated: this mailbox is under escrow..." and no rekey. The
+    post-rekey `addMasterKeyWrap` re-add, `escrowRewrapFailed` and the interim `createdAt` staleness heuristic are
+    gone; coverage is simply "an escrow wrap exists" (pre-release, no legacy vaults).
+  - **Cancel enrollment**: while `signingStatus === "pending"` with a known id, "Cancel enrollment" sits under the
+    disabled rotation (`cancelSignEnrollment`). Result failed (= cancelled) or 404 -> clear storage, idle, no error;
+    issued -> finishes like a poll; still pending -> "couldn't be cancelled yet"; other errors shown. A rekey 409 for
+    an enrollment from another device keeps `ROTATION_CONFLICT_MESSAGE`.
+  - **Recovery code regeneration**: if an old code was removed to make room and the new add then fails, the removed
+    wrap (still in memory) is re-added; `removedEarly` is decremented only when that succeeds.
+  - **KeyEnrollmentGate**: `handleSetPassword` re-fetches the vault right before provisioning; any wrapped keys or
+    wraps -> new `"already_set_up"` screen ("set up in another tab or device", Reload button). `enrollKey`'s
+    `VaultAlreadyInitializedError` goes to the same screen; any other 409 is an ordinary error. A failing re-fetch
+    shows its error on the password step.
+  - **Unlock errors** (`UnlockPromptProvider`, which also exports `unlockErrorMessage()`/`UnopenableKeysNotice` for
+    `KeyEnrollmentGate`): `UnopenableEncryptionKeyError` -> "Your password is correct, but one of your keys couldn't be
+    opened... contact support." instead of "Incorrect password."; a non-empty `UnlockResult.unopenableKeys` shows a
+    fixed, dismissible `role=status` notice listing the fingerprints. **Tests that mock `unlockWithPassword` through
+    the provider/gate must resolve `{ unopenableKeys: [] }`** (index.test was updated). The encryption page's
+    post-rotation re-unlock ignores the result (rotation already refuses keys it can't open).
+  - **Console sign-out**: `signOutOfConsole()` writes `["*"]` to `CONSOLE_PENDING_DELETIONS_KEY` (must equal
+    `PENDING_DELETIONS_KEY`; test checks) before broadcasting. `AppShell`'s cross-tab listener now sets
+    `signingOutRef` first (it hears `destroyAllLocalIndexes()`'s own re-broadcast), destroys keys, awaits
+    `destroyAllLocalIndexes()`, then navigates. Both `handleSignOut` and that listener call `markSigningOut()`
+    (composeFlushRegistry) first, so compose windows skip "Leave site?". `signOut.ts` doesn't: the admin/escrow
+    consoles never render compose windows.
+  - **Inbox load-more stall**: `notePageLanded(addedRows, moreRemain)` also bumps `appendedPageCount` for a full page
+    that added nothing, up to `MAX_EMPTY_PAGE_CONTINUATIONS` (3) in a row; after that `loadMoreStalled` shows a
+    "Load more" button in the sentinel. Both the plain listing and search paths use it; a new run resets it. The
+    old "doesn't continue after a repeated page" tests were changed to the new behavior.
+  - **Contacts Deleted view**: hidden unless the caller owns the mailbox or `getMyMailboxAccess()` says
+    `canDelete && canUpdate` (a failed check hides it). `ContactsSidebar` has `showDeleted` (default `true`).
+    Mailbox switching is a full page load, so no reset-on-switch logic.
+  - **Outbox without a schedule** (`MessageDetailPane`): "Move to Drafts" (same `cancelScheduledSend` call) shows
+    when `isOutbox && !scheduledSendTime && draftsFolderUid`; its non-API failure text is "Could not move this
+    message to Drafts.".
+  - **Status badges** (privacy, admin data-requests, escrow matter exports): `IN_PROGRESS_STATUSES` = pending,
+    processing, in_progress -> neutral badge; labels render `_` as a space. Download links were already gated on
+    `ready`.
+    `scheduledSendError` shows as an Alert on an Outbox message.
+  - **Message security (react-shared f6c8989+)**, `MessageDetailPane`:
+    - Pins: new `mail/pinnedSigners.ts` `getPinnedSignerFingerprints(mailboxUid, address)` - the reading mailbox's
+      contacts folders (`listFolders` type `contacts`, paged 500 x 20), `pinnedSigningFingerprintsFor()`, contacts
+      cached per mailbox for 60s (failures not cached; `clearPinnedSignerCache()` in tests - a never-settling fetch in
+      one test otherwise stalls the next). Plus the mailbox's own `signingKeyFingerprints(keys)` when the sender is one
+      of its addresses. A failed lookup = no pins; `undefined` is passed when there are none.
+    - `signed_unverified_signer`/`encrypted_unverified_signer`: amber "signer not verified" badge (never green) plus
+      a `role=status` notice with the certificate's emails and fingerprint. No "trust this signer" (no client pin API).
+    - Verified states show `protectedHeaders.subject` as the heading when present; `signed_verified` with a different
+      outer Subject gets a notice (Subject is not compared in verification, list tags).
+    - Attachments: verified states, `encrypted`, and `encrypted_unverified_signer` with `result.attachments` list
+      only those (download via `decode()` into an `application/octet-stream` blob, never rendered in-origin);
+      otherwise the server list. New tests are in `MessageDetailPane.round5.test.tsx`.
+  - **Display names**: no form in W-A's files edits a mailbox display name; the only one is the admin
+    `MailboxCreateForm` (not W-A's).
+- **2026-09-14 — Round-5 review fixes, W-B (compose drafts, recurrence editor, all-day series end dates).** Not committed.
+  - **ComposeWindow saves**: `saveDraftNow()` chains on `saveInFlightRef` and reads `latestRef` only when it runs
+    (skips the request when the previous save already stored that exact content). `assembleDraft` carries no
+    version - the 409 came from two server-side assemblies racing, so serializing is the fix. Resolves to the saved
+    message or `undefined`; `saveErrorRef` holds the failure text.
+  - **Close** closes only after its save succeeds (`closing` disables Close/Discard/Send meanwhile). A failed save,
+    or no draft/body yet, opens the "Couldn't save this draft" modal (Discard / Keep editing). The modal state is
+    `closePrompt: { title, message, retry? }` (was `discardPrompt: string`). Close prompt order: encryption decided
+    (`ENCRYPTED_CLOSE_MESSAGE`), settings unavailable (`CRYPTO_UNAVAILABLE_MESSAGE` + Retry), still undetermined
+    (`CHECKING_CLOSE_MESSAGE`; also starts lookups for never-blurred recipients).
+  - **Discard**: `deleteDraft()` uses max(draft version, in-flight save's version), retries once via `getMessage()` on
+    404/409, and treats a GET 404 as already deleted. Discarding content waits for the delete; a failure keeps the
+    window open with "Couldn't discard this draft: ...". A blank window still closes at once and deletes in the
+    background (otherwise a server outage leaves it impossible to close). Uploads (files and inline images) call
+    `refreshDraftVersion()` because restapi bumps the version on upload.
+  - **Crypto context**: mailbox + policy load retries with backoff (`cryptoRetryDelaysMs`, default 1/2/4/8s; each
+    retry only fetches what's missing), then waits for manual Retry (`cryptoRetryToken`). `cryptoContextReady` still
+    flips after the first attempt so Send works. `autosaveSuppressed = encryptionDecided || encryptionUndetermined`,
+    where undetermined = not ready, **no mailbox** (its keys decide whether encryption is possible), or (encryption
+    possible and (no policy or any recipient status missing)). `cryptoCheckUnavailable` shows an in-window alert
+    with Retry. **Test mocks:** `mockCompose` now answers `/api/mail/mailboxes/mb1` with a keyless mailbox, and
+    `mockTwoMailboxes` answers both mailboxes; without that, autosave never fires.
+  - **Leaving**: beforeunload asks whenever anything is unsaved (pending, saving, or content != last saved,
+    including encrypted content never saved as a draft), and never when `isSigningOut()`. `flushPendingSave()`
+    resolves to a boolean and shows the save-failed modal when the last save failed. `flushComposeDrafts()` now
+    resolves `true` only if every flush resolved non-`false` before the timeout. `ComposeFlush` stays
+    `() => Promise<unknown>` so AppShell's test (a void flush) still type-checks.
+  - **composeFlushRegistry**: `markSigningOut()` / `clearSigningOut()` / `isSigningOut()`. **Coordinator wiring:**
+    AppShell's `handleSignOut` and its BroadcastChannel sign-out listener (and admin `signOut.ts` if it can run
+    with compose open) should call `markSigningOut()` before flushing and navigating.
+  - **RecurrenceEditor**: new `startWeekday` prop (EventModal passes `startWeekdayCode(start, allDay, timezone)` from
+    `allDay.ts`: the UTC date for all-day events, the event's timezone wall clock otherwise). Enabling Repeats and
+    switching to Weekly seed `[startWeekday]` (default MO). Switching to any other frequency sets `byDay: undefined`,
+    because react-shared passes byweekday for every freq. Existing weekly rules load and edit untouched.
+  - **All-day "Ends on"** (`recurrenceUntilDateKey`): explicit `T23:59:59.999Z` and bare UTC midnight
+    (`T00:00:00(.000)Z`, the oldest form) return their date part. Anything else is a legacy creator-local end of
+    day, read on the **local** calendar. The reviewer suggested "round to nearest UTC midnight, no -1", but that is
+    wrong west of UTC (New York gives the next day). No UTC-only rule works: legacy values span 26 hours, and
+    UTC+14 and UTC-10 values for the same date are exactly 24h apart. The local read is exact whenever the viewer
+    is in the creator's zone. Tested in Tongatapu, Kiritimati, New York and Honolulu.

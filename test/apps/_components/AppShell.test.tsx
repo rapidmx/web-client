@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import AppShell, { LOGOUT_TIMEOUT_MS } from "../../../apps/shared/components/layout/AppShell.js";
-import { registerComposeFlush } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
+import { clearSigningOut, isSigningOut, registerComposeFlush } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
 
 // The hook's own behavior (activity resets the clock, disabled at 0, cleans up on unmount, ...) is
 // already exercised end to end in react-shared's own test suite - this file only needs to confirm
@@ -35,6 +35,7 @@ beforeEach(() => {
 afterEach(() => {
     vi.unstubAllGlobals();
     useIdleKeyTimeout.mockClear();
+    clearSigningOut();
 });
 
 describe("AppShell", () => {
@@ -217,7 +218,12 @@ describe("AppShell", () => {
         const location = mockLocation();
         const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
         let finishSave!: () => void;
-        const flush = vi.fn(() => new Promise<void>((resolve) => (finishSave = resolve)));
+        // Round 5: the sign-out is marked before drafts are flushed, so compose windows skip "Leave site?".
+        let signingOutAtFlush: boolean | undefined;
+        const flush = vi.fn(() => {
+            signingOutAtFlush = isSigningOut();
+            return new Promise<void>((resolve) => (finishSave = resolve));
+        });
         const unregister = registerComposeFlush(flush);
         try {
             const user = userEvent.setup();
@@ -230,6 +236,7 @@ describe("AppShell", () => {
             await user.click(screen.getByRole("button", { name: "Account menu" }));
             await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
             await waitFor(() => expect(flush).toHaveBeenCalled());
+            expect(signingOutAtFlush).toBe(true);
             await new Promise((resolve) => setTimeout(resolve, 10));
             expect(fetchMock).not.toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/auth/logout`, expect.anything());
 
@@ -302,6 +309,7 @@ describe("AppShell", () => {
         other.postMessage({ type: "sign-out" });
         await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
         expect(destroyUnlockedKeys).toHaveBeenCalledWith();
+        expect(destroyAllLocalIndexes).toHaveBeenCalledTimes(1);
         unmount();
 
         // The signing-out tab itself: its announcement doesn't re-trigger the other-tab path.
@@ -319,6 +327,35 @@ describe("AppShell", () => {
         expect(location.href).toBe("https://mail.example.com/");
         finishDestroy(true);
         await waitFor(() => expect(location.href).toBe("/"));
+        other.close();
+    });
+
+    it("destroys every local index before leaving when another tab (e.g. an admin console) signs out, and reacts only once", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/";
+        let finishDestroy!: (ok: boolean) => void;
+        destroyAllLocalIndexes.mockReturnValueOnce(new Promise<boolean>((resolve) => (finishDestroy = resolve)));
+        const other = new BroadcastChannel("test-sign-out");
+        render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+
+        expect(isSigningOut()).toBe(false);
+        other.postMessage({ type: "sign-out" });
+        await waitFor(() => expect(destroyAllLocalIndexes).toHaveBeenCalledTimes(1));
+        // Compose windows must skip their "Leave site?" prompt for this forced navigation.
+        expect(isSigningOut()).toBe(true);
+        // destroyAllLocalIndexes() re-announces the sign-out; this tab must not react to that (or a repeat) again.
+        other.postMessage({ type: "sign-out" });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(destroyAllLocalIndexes).toHaveBeenCalledTimes(1);
+        expect(destroyUnlockedKeys).toHaveBeenCalledTimes(1);
+        expect(location.href).toBe("https://mail.example.com/");
+
+        finishDestroy(false);
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
         other.close();
     });
 

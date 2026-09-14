@@ -29,7 +29,10 @@ import {
     SignatureFailureReason,
     evaluateMessageSecurity,
 } from "@rapidmx/react-shared/crypto/messageSecurity.js";
+import type { MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
+import { signingKeyFingerprints } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
+import { getPinnedSignerFingerprints } from "./pinnedSigners.js";
 import { useCompose } from "./compose/ComposeContext.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
@@ -48,8 +51,31 @@ const SECURITY_INDICATOR: Record<MessageSecurityResult["state"], { label: string
     encrypted: { label: "Encrypted", className: "bg-primary/10 text-primary-dark" },
     signed_verified: { label: "Signed & verified", className: "bg-success/10 text-success" },
     encrypted_verified: { label: "Encrypted & verified", className: "bg-success/10 text-success" },
+    // A valid signature from a certificate the reader hasn't pinned - anyone can mint a certificate naming the
+    // sender, so this must never look like the verified states.
+    signed_unverified_signer: { label: "Signed - signer not verified", className: "bg-warning/15 text-text" },
+    encrypted_unverified_signer: { label: "Encrypted - signer not verified", className: "bg-warning/15 text-text" },
     signature_failed: { label: "Signature failed", className: "bg-danger-bg text-danger" },
 };
+
+const VERIFIED_STATES = new Set<MessageSecurityResult["state"]>(["signed_verified", "encrypted_verified"]);
+const UNVERIFIED_SIGNER_STATES = new Set<MessageSecurityResult["state"]>(["signed_unverified_signer", "encrypted_unverified_signer"]);
+
+/** Saves one attachment recovered from inside a signed/encrypted entity. Always handed to the browser as an
+ * opaque download (`application/octet-stream`), never rendered in this origin. */
+function downloadMimeAttachment(attachment: MimeAttachment): void {
+    // `decode()` is `undefined` only for invalid base64 - an empty file is the honest result then.
+    const bytes = attachment.decode() ?? new Uint8Array(0);
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/octet-stream" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = attachment.filename ?? "attachment";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Some browsers are still reading the blob after `click()` returns.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 function SecurityIndicator({ state }: { state: MessageSecurityResult["state"] }) {
     const { label, className } = SECURITY_INDICATOR[state];
@@ -294,22 +320,32 @@ function MessageDetailContent({
         }
         let cancelled = false;
         setSecurity(null);
+        // The sender's trusted signing keys: what key discovery pinned on this mailbox's contacts, plus this
+        // mailbox's own signing keys when it sent the message itself. A failed lookup means no pins, which can only
+        // ever make a signature "signer not verified", never verified.
+        const senderAddress = message.from.address;
+        const pinsPromise = getPinnedSignerFingerprints(message.mailboxUid, senderAddress).catch(() => [] as string[]);
         getMessageRawContent(message.uid)
             .then(async (rawMime) => {
                 if (cancelled) {
                     return;
                 }
-                // The raw content is a byte string - only ever handed to evaluateMessageSecurity(), never shown.
-                const unlocked = getUnlockedKeys(message.mailboxUid);
                 const [primaryAddress, ...aliasAddresses] = readerAddressesKey ? readerAddressesKey.split(" ") : [];
-                let result = await evaluateMessageSecurity(rawMime, unlocked, undefined, primaryAddress);
+                const ownAddresses = readerAddressesKey.toLowerCase().split(" ");
+                const ownPins = ownAddresses.includes(senderAddress.toLowerCase()) ? signingKeyFingerprints(readerMailbox!.keys) : [];
+                const pins = [...new Set([...(await pinsPromise), ...ownPins])];
+                const pinned = pins.length > 0 ? pins : undefined;
+                // The raw content is a byte string - only ever handed to evaluateMessageSecurity(), never shown. Keys
+                // are read after the pin lookup's await, so a lock that happened meanwhile is honored.
+                const unlocked = getUnlockedKeys(message.mailboxUid);
+                let result = await evaluateMessageSecurity(rawMime, unlocked, pinned, primaryAddress);
                 // Only one reader address can be checked per evaluation: a message sent to one of this mailbox's
                 // aliases isn't "not addressed to you", so each alias is tried before saying so.
                 for (const alias of aliasAddresses) {
                     if (!result.notAddressedToReader) {
                         break;
                     }
-                    const viaAlias = await evaluateMessageSecurity(rawMime, unlocked, undefined, alias);
+                    const viaAlias = await evaluateMessageSecurity(rawMime, unlocked, pinned, alias);
                     result = { ...result, notAddressedToReader: viaAlias.notAddressedToReader };
                 }
                 if (!cancelled) {
@@ -326,7 +362,7 @@ function MessageDetailContent({
         return () => {
             cancelled = true;
         };
-    }, [message.uid, message.mailboxUid, message.encrypted, rawEvaluationNeeded, unlockRefresh, readerAddressesKey]);
+    }, [message.uid, message.mailboxUid, message.from.address, message.encrypted, rawEvaluationNeeded, unlockRefresh, readerAddressesKey]);
 
     // Decrypted plaintext must not outlive the key session that produced it: the moment this mailbox's
     // keys are destroyed (logout, idle timeout, explicit lock), drop the recovered html/text and
@@ -411,10 +447,10 @@ function MessageDetailContent({
         }
     }
 
-    // Only ever invoked from the "Cancel" button below, which itself only renders once `message` is
-    // loaded and `isOutbox`/`message.scheduledSendTime` are both truthy — `draftsFolderUid` is required
-    // by that same rendering guard (see the prop's own doc comment), so the non-null assertion reflects
-    // a real invariant, matching `handleRecall`'s identical pattern just above.
+    // Only ever invoked from the "Cancel" button below (`isOutbox` and `message.scheduledSendTime` both truthy -
+    // `draftsFolderUid` is required whenever `isOutbox` is, see the prop's own doc comment), or from "Move to
+    // Drafts" (an Outbox message with no active schedule, which checks `draftsFolderUid` itself), so the non-null
+    // assertion reflects a real invariant, matching `handleRecall`'s identical pattern just above.
     async function handleCancelScheduledSend() {
         setCanceling(true);
         setCancelError(null);
@@ -424,7 +460,8 @@ function MessageDetailContent({
             void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
             onScheduledSendCanceled?.(updated);
         } catch (err) {
-            setCancelError(err instanceof ApiRequestError ? err.message : "Could not cancel this scheduled send.");
+            const fallback = message.scheduledSendTime ? "Could not cancel this scheduled send." : "Could not move this message to Drafts.";
+            setCancelError(err instanceof ApiRequestError ? err.message : fallback);
         } finally {
             setCanceling(false);
         }
@@ -508,6 +545,21 @@ function MessageDetailContent({
         }
     }
 
+    const verified = security !== null && VERIFIED_STATES.has(security.state);
+    // Under a verified badge, the Subject shown is the one the signature covers (RFC 9788 protected headers), when
+    // the message carries one - the outer Subject is unsigned and anyone relaying the message could change it.
+    const protectedSubject = verified ? security.protectedHeaders?.subject : undefined;
+    // Only meaningful for signed-only mail: an encrypted message's outer Subject is deliberately obscured. Not a
+    // signature failure (mailing lists legitimately tag subjects), just worth pointing out.
+    const subjectDiffers = protectedSubject !== undefined && security?.state === "signed_verified" && protectedSubject !== message.subject;
+    // Attachments inside the signed/decrypted entity. Under a verified badge only these are listed - the server's
+    // attachment records also include parts outside the signature, which the badge doesn't vouch for. For decrypted
+    // mail the server only ever saw the encrypted blob, so these are the real attachments.
+    const innerAttachments =
+        security?.attachments !== undefined && (verified || security.state === "encrypted" || security.state === "encrypted_unverified_signer")
+            ? security.attachments
+            : undefined;
+
     return (
         <div className="flex-1 min-w-0 flex flex-col">
             <div className="border-b border-border p-4">
@@ -518,7 +570,7 @@ function MessageDetailContent({
                 )}
                 <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
-                        <h1 className="text-lg font-bold tracking-tight truncate">{message.subject || "(no subject)"}</h1>
+                        <h1 className="text-lg font-bold tracking-tight truncate">{(protectedSubject ?? message.subject) || "(no subject)"}</h1>
                         {security && <SecurityIndicator state={security.state} />}
                     </div>
                     {isSentItems &&
@@ -553,11 +605,53 @@ function MessageDetailContent({
                             </Button>
                         </div>
                     )}
+                    {/* A message left in Outbox with no active schedule - a scheduled send that failed or was refused
+                        (restapi's ScheduledSendJob clears scheduledSendTime and leaves it there), which can't be sent
+                        again from Outbox (409) or archived - would otherwise be stuck. Moving it back to Drafts works for
+                        any Outbox message. */}
+                    {isOutbox && !message.scheduledSendTime && draftsFolderUid && (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto shrink-0"
+                            loading={canceling}
+                            disabled={canceling}
+                            onClick={handleCancelScheduledSend}
+                        >
+                            Move to Drafts
+                        </Button>
+                    )}
                 </div>
+                {isOutbox && message.scheduledSendError && (
+                    <div className="mt-2">
+                        <Alert>This message wasn&rsquo;t sent: {message.scheduledSendError}</Alert>
+                    </div>
+                )}
                 {cancelError && (
                     <div className="mt-2">
                         <Alert>{cancelError}</Alert>
                     </div>
+                )}
+                {security && UNVERIFIED_SIGNER_STATES.has(security.state) && (
+                    // Informational: the signature is intact, but nothing ties its certificate to this sender - anyone can
+                    // create a certificate naming any address. No "trust" action: pins are written only by key discovery.
+                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        Signed, but the signer isn&rsquo;t a trusted contact key, so the sender isn&rsquo;t verified.
+                        {security.signerEmails && security.signerEmails.length > 0 && <> Certificate for {security.signerEmails.join(", ")}.</>}
+                        {security.signerFingerprint && (
+                            <>
+                                {" "}
+                                Fingerprint <span className="font-mono text-xs break-all">{security.signerFingerprint}</span>.
+                            </>
+                        )}
+                    </p>
+                )}
+                {subjectDiffers && (
+                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        The subject shown above is the one the sender signed. It differs from the subject this message was
+                        delivered with (&ldquo;{message.subject}&rdquo;), which may have been changed on the way, e.g. by a
+                        mailing list.
+                    </p>
                 )}
                 {security?.headerTamperDetected && (
                     <div className="mt-2">
@@ -704,20 +798,36 @@ function MessageDetailContent({
                         <Alert>{receiptError}</Alert>
                     </div>
                 )}
-                {attachments.length > 0 && (
-                    <ul className="flex flex-wrap gap-2 mt-3">
-                        {attachments.map((attachment) => (
-                            <li key={attachment.uid}>
-                                <a
-                                    href={attachmentContentUrl(attachment.uid)}
-                                    className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted hover:text-primary-dark"
-                                >
-                                    {attachment.filename} ({formatBytes(attachment.sizeBytes)})
-                                </a>
-                            </li>
-                        ))}
-                    </ul>
-                )}
+                {innerAttachments
+                    ? innerAttachments.length > 0 && (
+                          <ul className="flex flex-wrap gap-2 mt-3">
+                              {innerAttachments.map((attachment, index) => (
+                                  <li key={`${index}:${attachment.filename ?? ""}`}>
+                                      <button
+                                          type="button"
+                                          onClick={() => downloadMimeAttachment(attachment)}
+                                          className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted hover:text-primary-dark"
+                                      >
+                                          {attachment.filename ?? `Unnamed ${attachment.contentType} attachment`}
+                                      </button>
+                                  </li>
+                              ))}
+                          </ul>
+                      )
+                    : attachments.length > 0 && (
+                          <ul className="flex flex-wrap gap-2 mt-3">
+                              {attachments.map((attachment) => (
+                                  <li key={attachment.uid}>
+                                      <a
+                                          href={attachmentContentUrl(attachment.uid)}
+                                          className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted hover:text-primary-dark"
+                                      >
+                                          {attachment.filename} ({formatBytes(attachment.sizeBytes)})
+                                      </a>
+                                  </li>
+                              ))}
+                          </ul>
+                      )}
             </div>
             {security?.decryptError && (
                 <div className="px-4 pt-2">

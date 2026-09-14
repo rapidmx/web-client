@@ -709,6 +709,23 @@ describe("DataRequestsPage — erasure requests", () => {
         expect(screen.getAllByRole("button", { name: "Deny" })).toHaveLength(1);
     });
 
+    it("shows processing exports and an in-progress erasure with a neutral badge, not success, and no Download link (round 5)", async () => {
+        mockShell((url) => {
+            if (url === "/api/mail/data-export-requests?limit=50&page=0") return jsonResponse(200, [exportRequest({ status: "processing" })]);
+            if (url === "/api/mail/erasure-requests?limit=50&page=0") return jsonResponse(200, [erasureRequest({ status: "in_progress" })]);
+            return undefined;
+        });
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        const processing = await screen.findByText("processing");
+        expect(processing).toHaveClass("text-text-muted");
+        expect(processing).not.toHaveClass("bg-success");
+        const inProgress = await screen.findByText("in progress");
+        expect(inProgress).toHaveClass("text-text-muted");
+        expect(inProgress).not.toHaveClass("bg-success");
+        expect(screen.queryByRole("link", { name: "Download" })).not.toBeInTheDocument();
+    });
+
     it("shows the purged-record count for a completed request", async () => {
         mockShell((url) =>
             url === "/api/mail/erasure-requests?limit=50&page=0" ? jsonResponse(200, [erasureRequest({ status: "completed", purgedCount: 128 })]) : undefined,

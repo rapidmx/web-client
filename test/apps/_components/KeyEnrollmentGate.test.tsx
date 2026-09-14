@@ -23,10 +23,16 @@ const { getKeyVault, enrollKey, getUnlockedKeys, unlockWithPassword } = vi.hoist
     unlockWithPassword: vi.fn(),
 }));
 
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault, enrollKey }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
+    // The real error classes (VaultAlreadyInitializedError) - only the network calls are mocked.
+    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+    getKeyVault,
+    enrollKey,
+}));
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => ({
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
+    UnopenableEncryptionKeyError: (await importOriginal<typeof import("@rapidmx/react-shared/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
     getUnlockedKeys,
     unlockWithPassword,
 }));
@@ -197,7 +203,7 @@ describe("KeyEnrollmentGate", () => {
 
     it("unlocks and renders children on a correct password", async () => {
         getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
-        unlockWithPassword.mockResolvedValue(undefined);
+        unlockWithPassword.mockResolvedValue({ unopenableKeys: [] });
         const mailboxKeys = [{ fingerprint: "a", useType: "encrypt" }];
         const user = userEvent.setup();
         render(
@@ -228,6 +234,46 @@ describe("KeyEnrollmentGate", () => {
 
         expect(await screen.findByText("Incorrect password.")).toBeInTheDocument();
         expect(screen.queryByText("Mail content")).not.toBeInTheDocument();
+    });
+
+    it("says the encryption key couldn't be opened, not 'Incorrect password', when the password was right (round 5)", async () => {
+        const { UnopenableEncryptionKeyError } = await import("@rapidmx/react-shared/crypto/keySession.js");
+        getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+        unlockWithPassword.mockRejectedValue(new UnopenableEncryptionKeyError("enc-fp", new Error("bad tag")));
+        const user = userEvent.setup();
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        await screen.findByText("Unlock your mailbox");
+        await user.type(screen.getByLabelText("Encryption password"), "right password");
+        await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+        expect(await screen.findByText(/one of your keys couldn.t be opened/)).toBeInTheDocument();
+        expect(screen.queryByText("Incorrect password.")).not.toBeInTheDocument();
+        expect(screen.queryByText("Mail content")).not.toBeInTheDocument();
+    });
+
+    it("unlocks, and shows a dismissible notice naming signing keys that couldn't be opened (round 5)", async () => {
+        getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+        unlockWithPassword.mockResolvedValue({ unopenableKeys: ["sign-fp-1"] });
+        const user = userEvent.setup();
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        await screen.findByText("Unlock your mailbox");
+        await user.type(screen.getByLabelText("Encryption password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+        expect(await screen.findByText("Mail content")).toBeInTheDocument();
+        expect(screen.getByText(/one of your signing keys couldn.t be opened/)).toBeInTheDocument();
+        expect(screen.getByText("sign-fp-1")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Dismiss" }));
+        expect(screen.queryByText("sign-fp-1")).not.toBeInTheDocument();
+        expect(screen.getByText("Mail content")).toBeInTheDocument();
     });
 
     it("renders children (fails open) when the key-vault check errors", async () => {
@@ -435,5 +481,89 @@ describe("KeyEnrollmentGate", () => {
 
         expect(await screen.findByText("Could not set up encryption for this mailbox.")).toBeInTheDocument();
         expect(screen.queryByText("Mail content")).not.toBeInTheDocument();
+    });
+
+    describe("round 5: concurrent first-time setup", () => {
+        async function submitSetup(user: ReturnType<typeof userEvent.setup>) {
+            await screen.findByText("Protect your mailbox");
+            await user.type(screen.getByLabelText("Encryption password"), "a good password");
+            await user.type(screen.getByLabelText("Confirm password"), "a good password");
+            await user.click(screen.getByRole("button", { name: "Continue" }));
+        }
+
+        it.each([
+            ["wrapped keys", { wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] }],
+            ["master key wraps", { wrappedKeys: [], masterKeyWraps: [{ method: "password" }] }],
+        ])("re-checks the vault before provisioning and stops, offering a reload, when another tab already added %s", async (_label, filled) => {
+            getKeyVault.mockResolvedValueOnce({ wrappedKeys: [], masterKeyWraps: [] }).mockResolvedValueOnce(filled);
+            const reload = vi.fn();
+            const originalLocation = window.location;
+            Object.defineProperty(window, "location", { value: { ...originalLocation, reload }, configurable: true });
+            try {
+                const user = userEvent.setup();
+                render(
+                    <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                        <div>Mail content</div>
+                    </KeyEnrollmentGate>,
+                );
+                await submitSetup(user);
+
+                expect(await screen.findByText("Encryption is already set up")).toBeInTheDocument();
+                expect(getKeyVault).toHaveBeenCalledTimes(2);
+                expect(enrollKey).not.toHaveBeenCalled();
+                expect(screen.queryByText("Mail content")).not.toBeInTheDocument();
+
+                await user.click(screen.getByRole("button", { name: "Reload" }));
+                expect(reload).toHaveBeenCalled();
+            } finally {
+                Object.defineProperty(window, "location", { value: originalLocation, configurable: true });
+            }
+        });
+
+        it("treats enrollKey's VaultAlreadyInitializedError (a vault that gained wraps meanwhile) the same way", async () => {
+            const { VaultAlreadyInitializedError } = await import("@rapidmx/react-shared/crypto/keyvaultApi.js");
+            getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+            enrollKey.mockRejectedValue(new VaultAlreadyInitializedError("This mailbox already has master key wraps."));
+            const user = userEvent.setup();
+            render(
+                <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                    <div>Mail content</div>
+                </KeyEnrollmentGate>,
+            );
+            await submitSetup(user);
+
+            expect(await screen.findByText("Encryption is already set up")).toBeInTheDocument();
+            expect(screen.queryByText("Save your recovery codes")).not.toBeInTheDocument();
+        });
+
+        it("shows an unrelated 409 (a lost optimistic-lock race) as an ordinary error", async () => {
+            getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+            enrollKey.mockRejectedValue(new ApiRequestError("version conflict", 409));
+            const user = userEvent.setup();
+            render(
+                <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                    <div>Mail content</div>
+                </KeyEnrollmentGate>,
+            );
+            await submitSetup(user);
+
+            expect(await screen.findByText("version conflict")).toBeInTheDocument();
+            expect(screen.queryByText("Encryption is already set up")).not.toBeInTheDocument();
+        });
+
+        it("shows an error and stays on the password step when the re-check itself fails", async () => {
+            getKeyVault.mockResolvedValueOnce({ wrappedKeys: [], masterKeyWraps: [] }).mockRejectedValueOnce(new ApiRequestError("vault unavailable", 503));
+            const user = userEvent.setup();
+            render(
+                <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                    <div>Mail content</div>
+                </KeyEnrollmentGate>,
+            );
+            await submitSetup(user);
+
+            expect(await screen.findByText("vault unavailable")).toBeInTheDocument();
+            expect(enrollKey).not.toHaveBeenCalled();
+            expect(screen.getByText("Protect your mailbox")).toBeInTheDocument();
+        });
     });
 });

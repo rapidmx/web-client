@@ -307,3 +307,61 @@ describe("EventModal (round-4 fixes)", () => {
         });
     });
 });
+
+describe("EventModal (round-5 fixes)", () => {
+    it("starts a new weekly rule on the event's own start weekday, and a switch to Daily drops the weekdays", async () => {
+        process.env.TZ = "Pacific/Tongatapu";
+        const fetchMock = mockFetch(() => jsonResponse(200, occurrence()));
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(null);
+
+        await user.type(screen.getByLabelText("Title"), "Walk");
+        await user.click(screen.getByRole("checkbox", { name: "All day" }));
+        fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-09-17" } });
+        fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-09-17" } });
+        await user.click(screen.getByRole("checkbox", { name: "Repeats" }));
+        expect(screen.getByRole("button", { name: "Thu" })).toHaveAttribute("aria-pressed", "true");
+        expect(screen.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "false");
+
+        await user.selectOptions(screen.getByLabelText("Recurrence frequency"), "daily");
+        await user.click(screen.getByRole("radio", { name: "After" }));
+        fireEvent.change(screen.getByLabelText("Number of occurrences"), { target: { value: "3" } });
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        const body = bodyOf(fetchMock, "POST");
+        expect(body.recurrenceRule.freq).toBe("daily");
+        expect(body.recurrenceRule.byDay).toBeUndefined();
+        const expanded = expandOccurrences(
+            { ...occurrence(), ...body, uid: "e9" } as CalendarEvent,
+            new Date("2026-09-01T00:00:00.000Z"),
+            new Date("2026-10-31T00:00:00.000Z"),
+        );
+        expect(expanded.map((o) => o.startDate.slice(0, 10))).toEqual(["2026-09-17", "2026-09-18", "2026-09-19"]);
+    });
+
+    it("shows a legacy all-day series' local end-of-day end date as the chosen date east of UTC+12, and re-stores it in UTC", async () => {
+        process.env.TZ = "Pacific/Tongatapu";
+        const legacyUntil = new Date(2026, 8, 28, 23, 59, 59, 999).toISOString();
+        expect(legacyUntil).toBe("2026-09-28T10:59:59.999Z");
+        const fetchMock = mockFetch(() => jsonResponse(200, occurrence()));
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(
+            occurrence({
+                allDay: true,
+                startDate: "2026-09-14T00:00:00.000Z",
+                endDate: "2026-09-15T00:00:00.000Z",
+                recurrenceRule: { freq: "weekly", interval: 1, byDay: ["MO"], until: legacyUntil, exceptions: [] },
+            }),
+        );
+
+        expect(screen.getByLabelText("End date")).toHaveValue("2026-09-28");
+        await user.click(screen.getByRole("checkbox", { name: "All day" }));
+        await user.click(screen.getByRole("checkbox", { name: "All day" }));
+        expect(screen.getByLabelText("End date")).toHaveValue("2026-09-28");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(bodyOf(fetchMock, "PUT").recurrenceRule).toEqual({ freq: "weekly", interval: 1, byDay: ["MO"], until: "2026-09-28T23:59:59.999Z", exceptions: [] });
+    });
+});

@@ -30,10 +30,19 @@ import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
+/** Request statuses still waiting or running - shown as a neutral in-progress badge, never as success. Includes
+ * restapi's `processing` (exports/imports) and `in_progress` (an erasure that is running). */
+const IN_PROGRESS_STATUSES = new Set(["pending", "processing", "in_progress"]);
+
 function statusBadgeClass(status: string): string {
-    if (status === "denied" || status === "failed") return "bg-danger-bg text-danger";
-    if (status === "pending") return "bg-surface-alt text-text-muted";
+    if (status === "failed" || status === "denied") return "bg-danger-bg text-danger";
+    if (IN_PROGRESS_STATUSES.has(status)) return "bg-surface-alt text-text-muted";
     return "bg-success text-white";
+}
+
+/** A status as shown on its badge (`in_progress` -> `in progress`). */
+function statusLabel(status: string): string {
+    return status.replace(/_/g, " ");
 }
 
 export default function MatterDetailPage(props: Omit<EscrowShellProps, "active"> & { params: { uid: string } }) {
@@ -431,7 +440,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
                                     <span
                                         className={`text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill ${statusBadgeClass(request.status)}`}
                                     >
-                                        {request.status}
+                                        {statusLabel(request.status)}
                                     </span>
                                     {/* The server refuses downloads once the matter is closed. */}
                                     {!matter.closedAt && request.status === "ready" && (

@@ -23,6 +23,7 @@ import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
+import { getMyMailboxAccess } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
@@ -113,6 +114,32 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     useEffect(() => {
         void reload();
     }, [folderUid]);
+
+    // restapi only honors `?deleted=true` for a caller with both delete and update rights on the mailbox -
+    // anyone else (a read-only delegate) silently gets the *live* contacts back, which the Deleted view would
+    // then present as deleted. An owner always has both; anyone else asks the server. Unknown (still loading,
+    // or the check failed) hides the view. `ContactsShell` only renders this with a resolved mailbox, and switching
+    // mailboxes is a full page load, so `mailboxUid` never changes under this component.
+    const ownsMailbox = mailboxes.some((mb) => mb.uid === mailboxUid && mb.ownerUserUid !== undefined && mb.ownerUserUid === userUid);
+    const [delegateCanViewDeleted, setDelegateCanViewDeleted] = useState(false);
+    useEffect(() => {
+        if (ownsMailbox) {
+            return;
+        }
+        let cancelled = false;
+        getMyMailboxAccess(mailboxUid!).then(
+            (access) => {
+                if (!cancelled) {
+                    setDelegateCanViewDeleted(access.canDelete && access.canUpdate);
+                }
+            },
+            () => undefined,
+        );
+        return () => {
+            cancelled = true;
+        };
+    }, [ownsMailbox]);
+    const canViewDeleted = ownsMailbox || delegateCanViewDeleted;
 
     useEffect(() => {
         if (view.type !== "deleted" || !folderUid) {
@@ -336,7 +363,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
 
     return (
         <div className="flex-1 flex min-h-0">
-            <ContactsSidebar mailboxUid={mailboxUid} contacts={contacts} active={view} onSelect={handleSelectView} />
+            <ContactsSidebar mailboxUid={mailboxUid} contacts={contacts} active={view} onSelect={handleSelectView} showDeleted={canViewDeleted} />
             {/* Hidden on mobile while the "new contact" form (the one form-pane state mobile keeps
                 in-place — see the pane's own comment below) is showing, so the two never compete for the
                 same row's width. Desktop always shows both side by side, unchanged. */}

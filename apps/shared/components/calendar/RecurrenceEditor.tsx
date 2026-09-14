@@ -35,6 +35,9 @@ export interface RecurrenceEditorProps {
     /** Whether the event is all-day - its series expands in UTC, so the inclusive "Ends on" date is stored as
      * the end of that UTC day rather than the local one (see `allDay.ts`'s `recurrenceUntilInstant()`). */
     allDay?: boolean;
+    /** The weekday the event starts on (in the frame its series expands in - see `allDay.ts`'s
+     * `startWeekdayCode()`): the day a new weekly rule, or one switched to Weekly, repeats on. Defaults to Monday. */
+    startWeekday?: WeekdayCode;
 }
 
 /**
@@ -43,9 +46,9 @@ export interface RecurrenceEditorProps {
  * live "every ... until/for ..." summary comes from `describeRecurrence()` (built on `rrule`'s own
  * `.toText()`), so it never drifts out of sync with what will actually be submitted.
  */
-export default function RecurrenceEditor({ value, onChange, allDay = false }: RecurrenceEditorProps) {
+export default function RecurrenceEditor({ value, onChange, allDay = false, startWeekday = "MO" }: RecurrenceEditorProps) {
     function handleEnable(enabled: boolean) {
-        onChange(enabled ? { freq: "weekly", interval: 1, byDay: ["MO"], exceptions: [] } : null);
+        onChange(enabled ? { freq: "weekly", interval: 1, byDay: [startWeekday], exceptions: [] } : null);
     }
 
     // `update`/`toggleDay` are only ever invoked from handlers rendered inside the `{value && (...)}`
@@ -62,6 +65,13 @@ export default function RecurrenceEditor({ value, onChange, allDay = false }: Re
         }
         const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
         update({ byDay: next });
+    }
+
+    // react-shared passes `byDay` to rrule for every frequency, so a weekday list left over from Weekly would
+    // turn "every day" into "every Monday". Leaving Weekly drops it; entering Weekly starts on the event's own
+    // start weekday (a select only reports an actual change, so this is never Weekly -> Weekly).
+    function handleFrequency(freq: RecurrenceFrequency) {
+        update({ freq, byDay: freq === "weekly" ? [startWeekday] : undefined });
     }
 
     function handleEndCondition(condition: EndCondition) {
@@ -119,7 +129,7 @@ export default function RecurrenceEditor({ value, onChange, allDay = false }: Re
                         <select
                             className={SELECT_CLASS}
                             value={value.freq}
-                            onChange={(e) => update({ freq: e.target.value as RecurrenceFrequency })}
+                            onChange={(e) => handleFrequency(e.target.value as RecurrenceFrequency)}
                             aria-label="Recurrence frequency"
                         >
                             <option value="daily">{value.interval === 1 ? FREQ_LABEL.daily.unit : FREQ_LABEL.daily.unitPlural}</option>

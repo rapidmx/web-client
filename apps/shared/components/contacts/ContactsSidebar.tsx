@@ -47,6 +47,10 @@ export interface ContactsSidebarProps {
     contacts: Contact[];
     active: ContactsView;
     onSelect: (view: ContactsView) => void;
+    /** Whether to offer the "Deleted" view - restapi only honors `deleted=true` for a caller with delete and
+     * update rights on the mailbox (anyone else silently gets the live contacts), so the parent hides it
+     * otherwise. Defaults to `true`. */
+    showDeleted?: boolean;
     /** Bumped by the parent whenever a contact-list membership changes, so a newly-created/renamed list
      * shows up without a full page reload. */
     refreshToken?: number;
@@ -91,7 +95,7 @@ function NavItem({
  * server-side). Owns its own contact-list data-fetching, per this app's convention of keeping
  * `ContactsShellContext` itself minimal (mailbox/folder resolution only).
  */
-export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect, refreshToken }: ContactsSidebarProps) {
+export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect, refreshToken, showDeleted = true }: ContactsSidebarProps) {
     const [lists, setLists] = useState<ContactList[]>([]);
     const [listsError, setListsError] = useState<string | null>(null);
     const [addingList, setAddingList] = useState(false);
@@ -157,7 +161,7 @@ export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect
             <div className="flex flex-col gap-0.5">
                 <NavItem label="Your contacts" count={contacts.length} active={active.type === "all"} onClick={() => handleSelect({ type: "all" })} />
                 <NavItem label="Favorites" count={favoriteCount} active={active.type === "favorites"} onClick={() => handleSelect({ type: "favorites" })} />
-                <NavItem label="Deleted" active={active.type === "deleted"} onClick={() => handleSelect({ type: "deleted" })} />
+                {showDeleted && <NavItem label="Deleted" active={active.type === "deleted"} onClick={() => handleSelect({ type: "deleted" })} />}
             </div>
 
             <div>

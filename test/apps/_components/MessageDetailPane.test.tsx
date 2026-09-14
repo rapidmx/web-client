@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MessageDetailPane from "../../../apps/shared/components/mail/MessageDetailPane.js";
+import { clearPinnedSignerCache } from "../../../apps/shared/components/mail/pinnedSigners.js";
 import ComposeProvider from "../../../apps/shared/components/mail/compose/ComposeContext.js";
 
 // The real CMS/S-MIME crypto behind evaluateMessageSecurity() is already exercised end to end (against
@@ -141,6 +142,8 @@ afterEach(() => {
     evaluateMessageSecurity.mockReset();
     getUnlockedKeys.mockReset();
     mailShellOverride.current = undefined;
+    // A never-settling contacts fetch from one test must not hold up the next test's pin lookup.
+    clearPinnedSignerCache();
 });
 
 describe("MessageDetailPane", () => {
@@ -801,6 +804,62 @@ describe("MessageDetailPane", () => {
             await user.click(screen.getByRole("button", { name: "Cancel" }));
 
             expect(await screen.findByText("Could not cancel this scheduled send.")).toBeInTheDocument();
+        });
+
+        describe("round 5: an Outbox message with no active schedule (a failed or refused scheduled send)", () => {
+            it("offers Move to Drafts, which moves it back to Drafts", async () => {
+                const updated = messageFixture({ folderUid: "f-drafts" });
+                const fetchMock = mockFetch(() => jsonResponse(200, updated));
+                const onScheduledSendCanceled = vi.fn();
+                const user = userEvent.setup();
+                render(
+                    <MessageDetailPane
+                        message={messageFixture({ scheduledSendTime: null }) as any}
+                        attachments={[]}
+                        isOutbox
+                        draftsFolderUid="f-drafts"
+                        onScheduledSendCanceled={onScheduledSendCanceled}
+                    />,
+                );
+                expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+                expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+
+                await user.click(screen.getByRole("button", { name: "Move to Drafts" }));
+
+                expect(fetchMock).toHaveBeenCalledWith(
+                    "/api/mail/messages/m1",
+                    expect.objectContaining({ method: "PUT", body: JSON.stringify({ uid: "m1", version: 0, scheduledSendTime: null, folderUid: "f-drafts" }) }),
+                );
+                await vi.waitFor(() => expect(onScheduledSendCanceled).toHaveBeenCalledWith(updated));
+            });
+
+            it("doesn't offer Move to Drafts outside Outbox, while scheduled, or without a Drafts folder", () => {
+                const { rerender } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} draftsFolderUid="f-drafts" />);
+                expect(screen.queryByRole("button", { name: "Move to Drafts" })).not.toBeInTheDocument();
+                rerender(
+                    <MessageDetailPane
+                        message={messageFixture({ scheduledSendTime: "2026-06-01T09:00:00.000Z" })}
+                        attachments={[]}
+                        isOutbox
+                        draftsFolderUid="f-drafts"
+                    />,
+                );
+                expect(screen.queryByRole("button", { name: "Move to Drafts" })).not.toBeInTheDocument();
+                rerender(<MessageDetailPane message={messageFixture()} attachments={[]} isOutbox />);
+                expect(screen.queryByRole("button", { name: "Move to Drafts" })).not.toBeInTheDocument();
+            });
+
+            it("shows a move-specific message when moving fails with a non-API error", async () => {
+                mockFetch(() => {
+                    throw new TypeError("network down");
+                });
+                const user = userEvent.setup();
+                render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isOutbox draftsFolderUid="f-drafts" />);
+
+                await user.click(screen.getByRole("button", { name: "Move to Drafts" }));
+
+                expect(await screen.findByText("Could not move this message to Drafts.")).toBeInTheDocument();
+            });
         });
     });
 

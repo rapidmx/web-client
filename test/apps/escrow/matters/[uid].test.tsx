@@ -515,6 +515,28 @@ describe("MatterDetailPage", () => {
         );
     });
 
+    it("shows a processing export with a neutral badge, not success, and no Download link (round 5)", async () => {
+        const processingExport = {
+            uid: "mer1",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            matterId: "m1",
+            requestedByUserUid: "u1",
+            status: "processing" as const,
+        };
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, []),
+            "/api/escrow/matter-export-requests": () => jsonResponse(200, [processingExport]),
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+
+        const badge = await screen.findByText("processing");
+        expect(badge).toHaveClass("text-text-muted");
+        expect(badge).not.toHaveClass("bg-success");
+        expect(screen.queryByRole("link", { name: "Download" })).not.toBeInTheDocument();
+    });
+
     it("creates a new export request and reloads the list", async () => {
         let created = false;
         const newExport = {

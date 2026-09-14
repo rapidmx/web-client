@@ -26,7 +26,7 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
-import { addDaysToKey, allDayDateKey, allDayInstant, recurrenceUntilDateKey, recurrenceUntilInstant } from "./allDay.js";
+import { addDaysToKey, allDayDateKey, allDayInstant, recurrenceUntilDateKey, recurrenceUntilInstant, startWeekdayCode } from "./allDay.js";
 import ResourcePicker from "./ResourcePicker.js";
 
 const INPUT_CLASS =
@@ -623,7 +623,12 @@ export default function EventModal({
 
                 {!editingSingleOccurrence && (
                     <FormField label="Recurrence" htmlFor="event-recurrence">
-                        <RecurrenceEditor value={recurrenceRule} onChange={setRecurrenceRule} allDay={allDay} />
+                        <RecurrenceEditor
+                            value={recurrenceRule}
+                            onChange={setRecurrenceRule}
+                            allDay={allDay}
+                            startWeekday={startWeekdayCode(start, allDay, timezone)}
+                        />
                     </FormField>
                 )}
 

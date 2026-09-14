@@ -327,6 +327,10 @@ async function resolveHitsToMessages(
 /** How far outside the scroll container's visible area the load-more sentinel still counts as "in view". */
 const LOAD_MORE_ROOT_MARGIN_PX = 200;
 
+/** How many full pages in a row that added no new rows the list keeps loading on its own before it shows a
+ * "Load more" button instead. */
+const MAX_EMPTY_PAGE_CONTINUATIONS = 3;
+
 /** `true` when `more` has at least one uid `shown` doesn't - i.e. appending it actually adds rows. */
 function hasUnseenMessages(shown: Message[], more: Message[]): boolean {
     const seen = new Set(shown.map((m) => m.uid));
@@ -469,6 +473,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // effect below keeps loading after. A counter rather than watching `loadingMore` flip back to false: a
     // fast response can settle before React ever renders the `true`, so that flip isn't reliably observable.
     const [appendedPageCount, setAppendedPageCount] = useState(0);
+    // Consecutive full pages that added no new rows (every row was already shown - e.g. new mail shifted the
+    // folder's pages). Such a page still counts as progress for the continuation effect, up to
+    // `MAX_EMPTY_PAGE_CONTINUATIONS` in a row; past that, `loadMoreStalled` shows a "Load more" button
+    // instead, so a server that keeps repeating rows is never looped on.
+    const emptyPageStreakRef = useRef(0);
+    const [loadMoreStalled, setLoadMoreStalled] = useState(false);
     const messagesRef = useRef(messages);
     messagesRef.current = messages;
     // The mailbox unlock/decrypt call sites below treat as "the" mailbox when there's no single selected
@@ -630,6 +640,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
         compositeCursorRef.current = undefined;
         setHasMore(false);
         setLoadMoreError(null);
+        setLoadMoreStalled(false);
+        emptyPageStreakRef.current = 0;
         // Every run - search or not - supersedes whatever an earlier run (or a `loadMore()` it started)
         // still has in flight; each async callback below checks this before touching state.
         searchRunIdRef.current += 1;
@@ -834,7 +846,23 @@ function InboxContent({ userUid }: { userUid?: string }) {
         // same tick, each closing over a render where `loadingMore` was still false.
         loadMoreInFlightRef.current = true;
         setLoadMoreError(null);
+        setLoadMoreStalled(false);
         setLoadingMore(true);
+        /** Records whether a landed page added rows, and whether the continuation effect should keep going. */
+        const notePageLanded = (addedRows: boolean, moreRemain: boolean) => {
+            if (addedRows) {
+                emptyPageStreakRef.current = 0;
+                setAppendedPageCount((n) => n + 1);
+            } else if (moreRemain) {
+                emptyPageStreakRef.current += 1;
+                if (emptyPageStreakRef.current <= MAX_EMPTY_PAGE_CONTINUATIONS) {
+                    setAppendedPageCount((n) => n + 1);
+                } else {
+                    emptyPageStreakRef.current = 0;
+                    setLoadMoreStalled(true);
+                }
+            }
+        };
         // A query/folder/view change while this page is in flight bumps the run id (see the effect above) -
         // its rows then belong to a list that's no longer on screen and must not be appended to the new one.
         const myRunId = searchRunIdRef.current;
@@ -864,9 +892,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 if (!isCurrentRun()) {
                     return;
                 }
-                if (hasUnseenMessages(messagesRef.current, more)) {
-                    setAppendedPageCount((n) => n + 1);
-                }
+                const addedRows = hasUnseenMessages(messagesRef.current, more);
                 setMessages((prev) => appendUnseenMessages(prev, more));
                 setSnippets((prev) => ({ ...prev, ...moreSnippets }));
 
@@ -878,7 +904,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     tier3Key: cursor.tier3Key,
                     fingerprint,
                 };
-                setHasMore(!!tier1Page.nextCursor || tier2Page.hasMore || nextTier3Offset < tier3Full.length);
+                const moreRemain = !!tier1Page.nextCursor || tier2Page.hasMore || nextTier3Offset < tier3Full.length;
+                setHasMore(moreRemain);
+                notePageLanded(addedRows, moreRemain);
             } else {
                 // The page containing the first message not fetched yet. After a local removal that offset is
                 // no longer a page boundary, so this page overlaps rows already shown - `appendUnseenMessages()`
@@ -888,12 +916,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 if (!isCurrentRun()) {
                     return;
                 }
-                if (hasUnseenMessages(messagesRef.current, more)) {
-                    setAppendedPageCount((n) => n + 1);
-                }
+                const addedRows = hasUnseenMessages(messagesRef.current, more);
                 setMessages((prev) => appendUnseenMessages(prev, more));
                 setHasMore(more.length === MESSAGE_PAGE_SIZE);
                 listedOffsetRef.current = page * MESSAGE_PAGE_SIZE + more.length;
+                notePageLanded(addedRows, more.length === MESSAGE_PAGE_SIZE);
             }
         } catch (err) {
             // Shown next to the sentinel with a Retry button - never auto-retried (see the continuation
@@ -933,9 +960,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     // An observer only reports *changes* - a sentinel still in view after a page lands (the new rows didn't
     // push it out of view, e.g. the Focused/Other filter hid every one of them) never reports again, so
-    // keep loading while it's still in view. Only after a page that actually appended rows (never after a
-    // failure, or a page of rows already shown - either would loop), and only when the sentinel's real
-    // geometry says it's still in view (the observer's last report may predate the rows that just landed).
+    // keep loading while it's still in view. Only after a page that appended rows, or a full page of rows
+    // already shown (bounded - see `emptyPageStreakRef`), never after a failure, and only when the sentinel's
+    // real geometry says it's still in view (the observer's last report may predate the rows that just landed).
     useEffect(() => {
         if (appendedPageCount === 0) {
             return;
@@ -994,6 +1021,10 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 Retry
             </button>
         </span>
+    ) : loadMoreStalled ? (
+        <button type="button" onClick={() => void loadMoreRef.current()} className="text-primary-dark hover:underline font-medium">
+            Load more
+        </button>
     ) : null;
 
     function handleSelect(message: Message) {

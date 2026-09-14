@@ -31,6 +31,25 @@ describe("NewMailboxPage", () => {
         expect(await screen.findByText("A display name is required.")).toBeInTheDocument();
     });
 
+    it("refuses a display name that contains an @, without submitting", async () => {
+        let posted = false;
+        mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+            if (url === "/api/mail/mailboxes" && init?.method === "POST") posted = true;
+            return jsonResponse(200, {});
+        });
+        const user = userEvent.setup();
+        render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New mailbox");
+
+        await user.type(screen.getByLabelText("Primary SMTP address"), "support@example.com");
+        await user.type(screen.getByLabelText("Display name"), "support@example.com");
+        await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+        expect(await screen.findByText("A display name can't contain \"@\" or line breaks.")).toBeInTheDocument();
+        expect(posted).toBe(false);
+    });
+
     it("creates the mailbox (with custom timezone/quota) and redirects to its detail page", async () => {
         let requestBody: any;
         mockFetch((url, init) => {

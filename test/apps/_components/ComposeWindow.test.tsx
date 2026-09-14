@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
@@ -11,7 +11,7 @@ import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import ComposeWindow from "../../../apps/shared/components/mail/compose/ComposeWindow.js";
 import type { ComposeSession } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
 import { clearMailboxWritabilityCache } from "../../../apps/shared/components/mail/writableMailboxes.js";
-import { flushComposeDrafts } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
+import { clearSigningOut, flushComposeDrafts, markSigningOut } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
 
 // subscribeKeySession keeps a real listener set, so tests can fire lock/unlock events via emitKeySession().
 const { getUnlockedKeys, keySessionListeners } = vi.hoisted(() => ({
@@ -144,6 +144,8 @@ function mockCompose(extra?: (url: string, init?: RequestInit) => Response | und
         if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [otherFolder, draftsFolder]);
         if (url.startsWith("/api/mail/mail-signatures")) return jsonResponse(200, []);
         if (url === "/api/mail/messages" && (init?.method ?? "GET") === "POST") return jsonResponse(200, draft);
+        // A mailbox with no encryption keys: whether a message is encrypted never hinges on the policy.
+        if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, { uid: "mb1", primarySmtpAddress: "u1@example.com", aliasAddresses: [], keys: [] });
         throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
     });
 }
@@ -185,6 +187,8 @@ describe("ComposeWindow", () => {
                 if (custom) return custom;
                 const method = init?.method ?? "GET";
                 if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, [sharedMailbox, ownMailbox]);
+                if (url === "/api/mail/mailboxes/mb-own") return jsonResponse(200, ownMailbox);
+                if (url === "/api/mail/mailboxes/mb-shared") return jsonResponse(200, sharedMailbox);
                 if (url.startsWith("/api/mail/folders")) {
                     const mailboxUid = new URLSearchParams(url.split("?")[1]).get("mailboxUid")!;
                     return jsonResponse(200, [{ ...draftsFolder, uid: `drafts-${mailboxUid}`, mailboxUid }]);
@@ -1320,15 +1324,17 @@ describe("ComposeWindow", () => {
             expect(onClose).not.toHaveBeenCalled();
         });
 
-        it("Close saves unsaved edits immediately and keeps the draft", async () => {
+        it("Close saves unsaved edits immediately, closing once they're saved, and keeps the draft", async () => {
             const fetchMock = mockSaves();
             const { onClose } = await renderReady({ autosaveDelayMs: 60_000 });
 
             fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Keep me" } });
             fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
-            expect(onClose).toHaveBeenCalledTimes(1);
-            await waitFor(() => expect(assembleCalls(fetchMock)).toEqual([expect.objectContaining({ subject: "Keep me" })]));
+            expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+            expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+            await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+            expect(assembleCalls(fetchMock)).toEqual([expect.objectContaining({ subject: "Keep me" })]);
             expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
         });
 
@@ -1389,10 +1395,11 @@ describe("ComposeWindow", () => {
             await user.click(screen.getByRole("button", { name: "Discard draft" }));
             await user.click(await screen.findByRole("button", { name: "Discard" }));
 
-            expect(onClose).toHaveBeenCalledTimes(1);
+            expect(onClose).not.toHaveBeenCalled();
             expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
             save.resolve(jsonResponse(200, { ...draft, version: 3 }));
             await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1?version=3", expect.objectContaining({ method: "DELETE" })));
+            await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
         });
 
         it("the minimized bar's Discard also confirms when there's content", async () => {
@@ -2691,6 +2698,470 @@ describe("ComposeWindow (round-4 fixes)", () => {
             expect(callsTo(fetchMock, isAssemble)).toHaveLength(1);
             await act(() => flushComposeDrafts(1_000));
             expect(callsTo(fetchMock, isAssemble)).toHaveLength(1);
+        });
+    });
+
+    describe("round-5 fixes", () => {
+        const noKeys = { ...mailboxFixture, keys: [] };
+        const attachmentFixture = {
+            uid: "a1",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            messageUid: "m1",
+            folderUid: "f-drafts",
+            mailboxUid: "mb1",
+            filename: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 12,
+            isInline: false,
+        };
+        const isUpload = (url: string, method: string) => url.startsWith("/api/mail/attachments/upload") && method === "POST";
+        const pause = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+        function beforeUnload(): Event {
+            const event = new Event("beforeunload", { cancelable: true });
+            window.dispatchEvent(event);
+            return event;
+        }
+        function assembleBodies(fetchMock: ReturnType<typeof mockFetch>) {
+            return callsTo(fetchMock, isAssemble).map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        }
+
+        describe("saves that fail keep the window open", () => {
+            it("Close offers Discard or Keep editing when the save is rejected, instead of closing silently", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                const fetchMock = mockRound4(
+                    (url, init) => (isAssemble(url) && init?.method === "POST" ? jsonResponse(400, { message: "At least one recipient is required." }) : undefined),
+                    noKeys,
+                );
+                const user = userEvent.setup();
+                const { onClose } = await renderReady();
+
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "No recipients yet" } });
+                await user.click(screen.getByRole("button", { name: "Close" }));
+
+                const dialog = await screen.findByRole("dialog", { name: "Couldn't save this draft" });
+                expect(dialog).toHaveTextContent("It couldn't be saved (At least one recipient is required). Keep editing and try again, or discard it.");
+                expect(screen.getByRole("status")).toHaveTextContent("Couldn't save draft");
+                expect(onClose).not.toHaveBeenCalled();
+
+                await user.click(screen.getByRole("button", { name: "Keep editing" }));
+                expect(screen.queryByRole("dialog", { name: "Couldn't save this draft" })).not.toBeInTheDocument();
+                expect(screen.getByLabelText("Subject")).toHaveValue("No recipients yet");
+                expect(screen.getByRole("button", { name: "Close" })).not.toBeDisabled();
+
+                await user.click(screen.getByRole("button", { name: "Close" }));
+                await screen.findByRole("dialog", { name: "Couldn't save this draft" });
+                expect(callsTo(fetchMock, isAssemble)).toHaveLength(2);
+                await user.click(screen.getByRole("button", { name: "Discard" }));
+                await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1?version=0", expect.objectContaining({ method: "DELETE" }));
+            });
+
+            it("explains a save that couldn't reach the server", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                mockRound4((url, init) => {
+                    if (isAssemble(url) && init?.method === "POST") throw new TypeError("Failed to fetch");
+                    return undefined;
+                }, noKeys);
+                const { onClose } = await renderReady();
+
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Offline" } });
+                fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+                expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toHaveTextContent("(the server couldn't be reached)");
+                expect(onClose).not.toHaveBeenCalled();
+            });
+
+            it("Close before the draft exists (or its body has loaded) can't save it, so it asks instead", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                mockRound4((url, init) => (url === "/api/mail/messages" && init?.method === "POST" ? jsonResponse(500, { message: "Drafts folder is full." }) : undefined), noKeys);
+                const onClose = vi.fn();
+                render(<ComposeWindow session={session()} onClose={onClose} onToggleMinimize={vi.fn()} autosaveDelayMs={5} />);
+                await screen.findByText("Drafts folder is full.");
+                await screen.findByTestId("html-editor");
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Nowhere to go" } });
+                await waitFor(() => expect(beforeUnload().defaultPrevented).toBe(true));
+                fireEvent.click(screen.getByRole("button", { name: "Close" }));
+                expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toHaveTextContent("(Drafts folder is full)");
+                expect(onClose).not.toHaveBeenCalled();
+                cleanup();
+
+                const creating = deferred<Response>();
+                mockRound4((url, init) => (url === "/api/mail/messages" && init?.method === "POST" ? creating.promise : undefined), noKeys);
+                render(<ComposeWindow session={session()} onClose={onClose} onToggleMinimize={vi.fn()} />);
+                await screen.findByTestId("html-editor");
+                await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeDisabled());
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Too soon" } });
+                await pause(20);
+                fireEvent.click(screen.getByRole("button", { name: "Close" }));
+                expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toHaveTextContent("(the draft hasn't been created yet)");
+                cleanup();
+
+                const signatures = deferred<Response>();
+                mockRound4((url) => (url.startsWith("/api/mail/mail-signatures") ? signatures.promise : undefined), noKeys);
+                render(<ComposeWindow session={session()} onClose={onClose} onToggleMinimize={vi.fn()} />);
+                await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Body not loaded" } });
+                fireEvent.click(screen.getByRole("button", { name: "Close" }));
+                expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toBeInTheDocument();
+                expect(onClose).not.toHaveBeenCalled();
+            });
+
+            it("Sign Out's flush reports a failed save and shows why; page-leave does the same for a save that already failed", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                let failing = true;
+                mockRound4((url, init) => (isAssemble(url) && init?.method === "POST" && failing ? jsonResponse(503, { message: "Try later." }) : undefined), noKeys);
+                const user = userEvent.setup();
+                await renderReady();
+
+                let flushed: boolean | undefined;
+                await act(async () => {
+                    flushed = await flushComposeDrafts(1_000);
+                });
+                expect(flushed).toBe(true);
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Signing out" } });
+                await act(async () => {
+                    flushed = await flushComposeDrafts(1_000);
+                });
+                expect(flushed).toBe(false);
+                expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toHaveTextContent("(Try later)");
+                await user.click(screen.getByRole("button", { name: "Keep editing" }));
+
+                // Not waiting on the debounce any more, but still unsaved after that failure.
+                expect(beforeUnload().defaultPrevented).toBe(true);
+                expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toBeInTheDocument();
+                await user.click(screen.getByRole("button", { name: "Keep editing" }));
+
+                failing = false;
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Signing out again" } });
+                await act(async () => {
+                    flushed = await flushComposeDrafts(1_000);
+                });
+                expect(flushed).toBe(true);
+                expect(beforeUnload().defaultPrevented).toBe(false);
+            });
+
+            it("page-leave saves a pending edit and shows why when that save fails", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                mockRound4((url, init) => (isAssemble(url) && init?.method === "POST" ? jsonResponse(500, { message: "Disk full" }) : undefined), noKeys);
+                await renderReady();
+
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Leaving" } });
+                expect(beforeUnload().defaultPrevented).toBe(true);
+                expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toHaveTextContent("(Disk full)");
+            });
+
+            it("page-leave asks to confirm for content that isn't saved as a draft (encrypted), without a save error, and Sign Out reports it unsaved", async () => {
+                getUnlockedKeys.mockReturnValue({
+                    masterKey: new Uint8Array(32),
+                    encryptionPrivateKey: fakeEncryptionKey,
+                    encryptionCertDer: fakeCertDer("alice-encrypt"),
+                    encryptionFingerprint: "fp-own",
+                });
+                const fetchMock = mockRound4(undefined, { ...mailboxFixture, keys: [encryptKey] });
+                const user = userEvent.setup();
+                await renderReady({ autosaveDelayMs: 5 });
+
+                await user.click(screen.getByLabelText("Encrypt this message"));
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Secret" } });
+                await pause();
+                expect(beforeUnload().defaultPrevented).toBe(true);
+                let flushed: boolean | undefined;
+                await act(async () => {
+                    flushed = await flushComposeDrafts(1_000);
+                });
+                expect(flushed).toBe(false);
+                expect(screen.queryByRole("dialog", { name: "Couldn't save this draft" })).not.toBeInTheDocument();
+                expect(callsTo(fetchMock, isAssemble)).toHaveLength(0);
+            });
+
+            it("never asks the browser to confirm leaving while signing out", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                mockRound4(undefined, noKeys);
+                await renderReady();
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Forced out" } });
+                markSigningOut();
+                try {
+                    expect(beforeUnload().defaultPrevented).toBe(false);
+                } finally {
+                    clearSigningOut();
+                }
+                expect(beforeUnload().defaultPrevented).toBe(true);
+            });
+        });
+
+        describe("overlapping saves", () => {
+            it("chains a save behind the one on the wire, and the later one sends the latest content", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                const first = deferred<Response>();
+                let assembles = 0;
+                const fetchMock = mockRound4((url, init) => {
+                    if (isAssemble(url) && init?.method === "POST") {
+                        assembles += 1;
+                        return assembles === 1 ? first.promise : jsonResponse(200, { ...draft, version: 2 });
+                    }
+                    return undefined;
+                }, noKeys);
+                await renderReady({ autosaveDelayMs: 5 });
+
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "One" } });
+                await waitFor(() => expect(assembles).toBe(1));
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Two" } });
+                await pause();
+                expect(assembles).toBe(1);
+
+                first.resolve(jsonResponse(200, { ...draft, version: 1 }));
+                await waitFor(() => expect(assembles).toBe(2));
+                await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Draft saved"));
+                await pause();
+                expect(assembleBodies(fetchMock).map((body) => body.subject)).toEqual(["One", "Two"]);
+            });
+
+            it("Close while the same content is already being saved waits for that save instead of repeating it", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                const save = deferred<Response>();
+                const fetchMock = mockRound4((url, init) => (isAssemble(url) && init?.method === "POST" ? save.promise : undefined), noKeys);
+                const { onClose } = await renderReady({ autosaveDelayMs: 5 });
+
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Once" } });
+                await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(1));
+                fireEvent.click(screen.getByRole("button", { name: "Close" }));
+                await pause(20);
+                expect(onClose).not.toHaveBeenCalled();
+
+                save.resolve(jsonResponse(200, { ...draft, version: 1 }));
+                await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+                expect(callsTo(fetchMock, isAssemble)).toHaveLength(1);
+            });
+        });
+
+        describe("encryption settings that haven't loaded", () => {
+            it("retries a failed policy load with backoff and autosaves once it loads", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                let policyCalls = 0;
+                const fetchMock = mockRound4((url) => {
+                    if (url === "/api/system/encryption-policy") {
+                        policyCalls += 1;
+                        return policyCalls < 3 ? jsonResponse(500, { message: "down" }) : undefined;
+                    }
+                    return undefined;
+                }, { ...mailboxFixture, keys: [encryptKey] });
+                await renderReady({ autosaveDelayMs: 5, cryptoRetryDelaysMs: [5, 5, 5] });
+
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Plain after all" } });
+                await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(1));
+                expect(policyCalls).toBe(3);
+                // The mailbox had loaded the first time - retries only re-fetch what's missing.
+                expect(callsTo(fetchMock, (url) => url === "/api/mail/mailboxes/mb1")).toHaveLength(1);
+                expect(screen.queryByText(/encryption settings couldn't be checked/)).not.toBeInTheDocument();
+            });
+
+            it("shows a distinct 'couldn't check' state with Retry once retries run out - never the encrypted-draft message", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                let policyUp = false;
+                let policyCalls = 0;
+                const fetchMock = mockRound4((url) => {
+                    if (url === "/api/system/encryption-policy") {
+                        policyCalls += 1;
+                        return policyUp ? undefined : jsonResponse(500, { message: "down" });
+                    }
+                    return undefined;
+                }, { ...mailboxFixture, keys: [encryptKey] });
+                const user = userEvent.setup();
+                const { onClose } = await renderReady({ autosaveDelayMs: 5, cryptoRetryDelaysMs: [5] });
+
+                await waitFor(() => expect(policyCalls).toBe(2));
+                expect(await screen.findByText(/encryption settings couldn't be checked/)).toBeInTheDocument();
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Maybe secret" } });
+                await pause();
+                expect(callsTo(fetchMock, isAssemble)).toHaveLength(0);
+                expect(policyCalls).toBe(2);
+
+                await user.click(screen.getByRole("button", { name: "Close" }));
+                const dialog = await screen.findByRole("dialog", { name: "Discard this draft?" });
+                expect(dialog).toHaveTextContent(/encryption settings couldn't be checked/);
+                expect(dialog).not.toHaveTextContent(/Encrypted messages aren't saved/);
+                expect(onClose).not.toHaveBeenCalled();
+
+                policyUp = true;
+                await user.click(within(dialog).getByRole("button", { name: "Retry" }));
+                await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(1));
+                expect(screen.queryByText(/encryption settings couldn't be checked/)).not.toBeInTheDocument();
+                expect(policyCalls).toBe(3);
+            });
+
+            it("treats a mailbox that couldn't be loaded as possibly encrypted, with an in-window Retry", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                let mailboxUp = false;
+                const fetchMock = mockRound4((url) => (url === "/api/mail/mailboxes/mb1" && !mailboxUp ? jsonResponse(502, { message: "gateway" }) : undefined), noKeys);
+                const user = userEvent.setup();
+                await renderReady({ autosaveDelayMs: 5, cryptoRetryDelaysMs: [] });
+
+                expect(await screen.findByText(/encryption settings couldn't be checked/)).toBeInTheDocument();
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Unknown" } });
+                await pause();
+                expect(callsTo(fetchMock, isAssemble)).toHaveLength(0);
+
+                mailboxUp = true;
+                await user.click(screen.getByRole("button", { name: "Retry" }));
+                await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(1));
+                expect(screen.queryByText(/encryption settings couldn't be checked/)).not.toBeInTheDocument();
+                // The policy had loaded the first time.
+                expect(callsTo(fetchMock, (url) => url === "/api/system/encryption-policy")).toHaveLength(1);
+            });
+
+            it("Close before the mailbox and policy have loaded asks rather than saving plaintext", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                const mailboxResponse = deferred<Response>();
+                const fetchMock = mockRound4((url) => (url === "/api/mail/mailboxes/mb1" ? mailboxResponse.promise : undefined), noKeys);
+                const user = userEvent.setup();
+                const onClose = vi.fn();
+                render(<ComposeWindow session={session()} onClose={onClose} onToggleMinimize={vi.fn()} autosaveDelayMs={5} />);
+                await screen.findByTestId("html-editor");
+                await waitFor(() => expect(screen.getByLabelText("Attach files")).not.toBeDisabled());
+
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Too early" } });
+                await user.click(screen.getByRole("button", { name: "Close" }));
+                expect(await screen.findByRole("dialog", { name: "Discard this draft?" })).toHaveTextContent(/still being checked/);
+                expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+                expect(callsTo(fetchMock, isAssemble)).toHaveLength(0);
+                expect(onClose).not.toHaveBeenCalled();
+
+                await user.click(screen.getByRole("button", { name: "Keep editing" }));
+                mailboxResponse.resolve(jsonResponse(200, noKeys));
+                await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(1));
+                await user.click(screen.getByRole("button", { name: "Close" }));
+                await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+            });
+
+            it("Close with a recipient whose lookup hasn't run starts it and asks instead of saving", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                const fetchMock = mockRound4(undefined, { ...mailboxFixture, keys: [encryptKey] });
+                const { onClose } = await renderReady();
+
+                fireEvent.change(screen.getByLabelText("To"), { target: { value: "carol@example.com" } });
+                fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+                expect(await screen.findByRole("dialog", { name: "Discard this draft?" })).toHaveTextContent(/still being checked/);
+                await waitFor(() => expect(callsTo(fetchMock, isLookup)).toHaveLength(1));
+                expect(callsTo(fetchMock, isAssemble)).toHaveLength(0);
+                expect(onClose).not.toHaveBeenCalled();
+            });
+        });
+
+        describe("discarding after attaching", () => {
+            it("refreshes the draft's version after an upload, so Discard deletes the draft", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                const fetchMock = mockRound4((url, init) => {
+                    const method = init?.method ?? "GET";
+                    if (isUpload(url, method)) return jsonResponse(200, attachmentFixture);
+                    if (url === "/api/mail/messages/m1" && method === "GET") return jsonResponse(200, { ...draft, version: 4, hasAttachments: true });
+                    if (url === "/api/mail/messages/m1?version=4" && method === "DELETE") return new Response(null, { status: 204 });
+                    if (url.startsWith("/api/mail/messages/m1?") && method === "DELETE") return jsonResponse(404, { message: "Not found" });
+                    return undefined;
+                }, noKeys);
+                const user = userEvent.setup();
+                const { onClose } = await renderReady();
+
+                await user.upload(screen.getByLabelText("Attach files"), new File(["hello"], "notes.txt", { type: "text/plain" }));
+                await screen.findByText("notes.txt");
+                await waitFor(() => expect(callsTo(fetchMock, (url, method) => url === "/api/mail/messages/m1" && method === "GET")).toHaveLength(1));
+
+                await user.click(screen.getByRole("button", { name: "Discard draft" }));
+                await user.click(await screen.findByRole("button", { name: "Discard" }));
+                await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+                expect(callsTo(fetchMock, (_url, method) => method === "DELETE").map(([url]) => url)).toEqual(["/api/mail/messages/m1?version=4"]);
+            });
+
+            it("keeps the version when an inserted image's refresh reports nothing newer", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                const fetchMock = mockRound4((url, init) => {
+                    const method = init?.method ?? "GET";
+                    if (isUpload(url, method)) return jsonResponse(200, { ...attachmentFixture, filename: "photo.png" });
+                    if (url === "/api/mail/messages/m1" && method === "GET") return jsonResponse(200, { ...draft, version: 0 });
+                    return undefined;
+                }, noKeys);
+                const user = userEvent.setup();
+                const { onClose } = await renderReady();
+
+                await user.click(screen.getByText("fake-upload-image"));
+                await waitFor(() => expect(callsTo(fetchMock, (url, method) => url === "/api/mail/messages/m1" && method === "GET")).toHaveLength(1));
+                await user.click(screen.getByRole("button", { name: "Discard draft" }));
+                await user.click(await screen.findByRole("button", { name: "Discard" }));
+                await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1?version=0", expect.objectContaining({ method: "DELETE" }));
+            });
+
+            it("retries a stale-version delete once with the server's version, and keeps the window open with the error when it can't", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                let attempt = 0;
+                const fetchMock = mockRound4((url, init) => {
+                    const method = init?.method ?? "GET";
+                    if (isUpload(url, method)) return jsonResponse(200, attachmentFixture);
+                    if (url === "/api/mail/messages/m1" && method === "GET") {
+                        // The post-upload refresh fails; then the lookup for Discard's retry fails once, then answers.
+                        const gets = callsTo(fetchMock, (u, m) => u === "/api/mail/messages/m1" && m === "GET").length;
+                        return gets <= 2 ? jsonResponse(500, { message: "Lookup failed." }) : jsonResponse(200, { ...draft, version: 6 });
+                    }
+                    if (url === "/api/mail/messages/m1?version=0" && method === "DELETE") {
+                        attempt += 1;
+                        if (attempt === 2) throw new TypeError("Failed to fetch");
+                        return jsonResponse(409, { message: "Version conflict" });
+                    }
+                    if (url === "/api/mail/messages/m1?version=6" && method === "DELETE") return new Response(null, { status: 204 });
+                    return undefined;
+                }, noKeys);
+                const user = userEvent.setup();
+                const { onClose } = await renderReady();
+
+                await user.upload(screen.getByLabelText("Attach files"), new File(["hello"], "notes.txt", { type: "text/plain" }));
+                await screen.findByText("notes.txt");
+                await waitFor(() => expect(callsTo(fetchMock, (url, method) => url === "/api/mail/messages/m1" && method === "GET")).toHaveLength(1));
+
+                await user.click(screen.getByRole("button", { name: "Discard draft" }));
+                await user.click(await screen.findByRole("button", { name: "Discard" }));
+                expect(await screen.findByText("Couldn't discard this draft: Lookup failed.")).toBeInTheDocument();
+                expect(onClose).not.toHaveBeenCalled();
+                expect(screen.getByRole("button", { name: "Discard draft" })).not.toBeDisabled();
+
+                await user.click(screen.getByRole("button", { name: "Discard draft" }));
+                await user.click(await screen.findByRole("button", { name: "Discard" }));
+                expect(await screen.findByText("Couldn't discard this draft: the server couldn't be reached.")).toBeInTheDocument();
+                expect(onClose).not.toHaveBeenCalled();
+
+                await user.click(screen.getByRole("button", { name: "Discard draft" }));
+                await user.click(await screen.findByRole("button", { name: "Discard" }));
+                await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1?version=6", expect.objectContaining({ method: "DELETE" }));
+            });
+
+            it("treats a draft that's already gone as discarded", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                mockRound4((url, init) => {
+                    const method = init?.method ?? "GET";
+                    if (url.startsWith("/api/mail/messages/m1?") && method === "DELETE") return jsonResponse(404, { message: "Not found" });
+                    if (url === "/api/mail/messages/m1" && method === "GET") return jsonResponse(404, { message: "Not found" });
+                    return undefined;
+                }, noKeys);
+                const { onClose } = await renderReady();
+
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Gone already" } });
+                fireEvent.click(screen.getByRole("button", { name: "Discard draft" }));
+                fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+                await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+                expect(screen.queryByText(/Couldn't discard this draft/)).not.toBeInTheDocument();
+            });
+
+            it("closes a blank window straight away even when deleting its draft fails", async () => {
+                getUnlockedKeys.mockReturnValue(undefined);
+                const fetchMock = mockRound4((url, init) => (init?.method === "DELETE" ? jsonResponse(500, { message: "down" }) : undefined), noKeys);
+                const { onClose } = await renderReady();
+
+                fireEvent.click(screen.getByRole("button", { name: "Close" }));
+                expect(onClose).toHaveBeenCalledTimes(1);
+                await waitFor(() => expect(callsTo(fetchMock, (_url, method) => method === "DELETE")).toHaveLength(1));
+            });
         });
     });
 });

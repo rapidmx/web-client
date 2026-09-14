@@ -6,16 +6,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
 import {
     CONSOLE_LOGOUT_TIMEOUT_MS,
+    CONSOLE_PENDING_DELETIONS_KEY,
     CONSOLE_SIGN_OUT_CHANNEL,
     signOutOfConsole,
 } from "../../../../apps/shared/components/admin/signOut.js";
-import { SIGN_OUT_CHANNEL } from "../../../../apps/shared/search/localIndexRpcClient.js";
+import { PENDING_DELETIONS_KEY, SIGN_OUT_CHANNEL } from "../../../../apps/shared/search/localIndexRpcClient.js";
 
 const AUTH_SERVER_URL = "https://auth.example.com";
 
 afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    localStorage.clear();
 });
 
 describe("signOutOfConsole", () => {
@@ -79,5 +82,30 @@ describe("signOutOfConsole", () => {
 
         expect(fetchMock).not.toHaveBeenCalled();
         expect(location.href).toBe("/");
+    });
+    it("uses the same pending local-index deletions key as the local index client", () => {
+        expect(CONSOLE_PENDING_DELETIONS_KEY).toBe(PENDING_DELETIONS_KEY);
+    });
+
+    it("records every local search index on this device for deletion before leaving", async () => {
+        mockLocation();
+        mockFetch(() => emptyResponse(204));
+        localStorage.setItem(CONSOLE_PENDING_DELETIONS_KEY, JSON.stringify(["mb1"]));
+
+        await signOutOfConsole(AUTH_SERVER_URL);
+
+        expect(JSON.parse(localStorage.getItem(CONSOLE_PENDING_DELETIONS_KEY)!)).toEqual(["*"]);
+    });
+
+    it("still signs out when localStorage is blocked", async () => {
+        const location = mockLocation();
+        mockFetch(() => emptyResponse(204));
+        vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+            throw new Error("blocked");
+        });
+
+        await signOutOfConsole(AUTH_SERVER_URL);
+
+        expect(location.href).toBe(AUTH_SERVER_URL);
     });
 });

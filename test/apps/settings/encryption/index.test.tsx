@@ -18,6 +18,7 @@ const {
     rekey,
     startSignEnrollment,
     checkSignEnrollmentStatus,
+    cancelSignEnrollment,
     getEscrowInfo,
 } = vi.hoisted(() => ({
     getKeyVault: vi.fn(),
@@ -27,13 +28,14 @@ const {
     rekey: vi.fn(),
     startSignEnrollment: vi.fn(),
     checkSignEnrollmentStatus: vi.fn(),
+    cancelSignEnrollment: vi.fn(),
     getEscrowInfo: vi.fn(),
 }));
 vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => {
     // `findActivePublicKey` is a pure function this page also imports - kept real (via importOriginal)
     // rather than added to every test's mock list, unlike the network-calling functions below.
     const actual = await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>();
-    return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus, getEscrowInfo };
+    return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus, cancelSignEnrollment, getEscrowInfo };
 });
 
 const { getUnlockedKeys, destroyUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
@@ -154,6 +156,7 @@ afterEach(() => {
     rekey.mockReset();
     startSignEnrollment.mockReset();
     checkSignEnrollmentStatus.mockReset();
+    cancelSignEnrollment.mockReset();
     getEscrowInfo.mockReset();
     getUnlockedKeys.mockReset();
     destroyUnlockedKeys.mockReset();
@@ -818,10 +821,12 @@ describe("SettingsEncryptionPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
 
+        // The old code removed for the failed add is put back, so only the first removal still counts.
         expect(
-            await screen.findByText(/Only 1 of 3 new recovery codes could be saved \(conflict\)\. 2 of your old recovery codes had to be removed to make room; the rest were kept and still work/),
+            await screen.findByText(/Only 1 of 3 new recovery codes could be saved \(conflict\)\. 1 of your old recovery codes had to be removed to make room; the rest were kept and still work/),
         ).toBeInTheDocument();
         expect(removeMasterKeyWrap).toHaveBeenCalledTimes(2);
+        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", expect.objectContaining({ methodId: "old-recovery-2" }));
     });
 
     it("reports a first new code that fails to save after an old code was already removed to make room", async () => {
@@ -829,7 +834,8 @@ describe("SettingsEncryptionPage", () => {
         getKeyVault.mockResolvedValue(vaultWithWraps(20, 3));
         buildRecoveryWraps.mockResolvedValue(recoveryFixture(2));
         removeMasterKeyWrap.mockResolvedValueOnce(vault);
-        addMasterKeyWrap.mockRejectedValueOnce(new Error("network down"));
+        // The new code fails, and so does putting the removed old code back.
+        addMasterKeyWrap.mockRejectedValueOnce(new Error("network down")).mockRejectedValueOnce(new Error("still down"));
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
@@ -841,6 +847,26 @@ describe("SettingsEncryptionPage", () => {
             await screen.findByText("Could not regenerate recovery codes. 1 of your old recovery codes had to be removed to make room; the rest were kept and still work."),
         ).toBeInTheDocument();
         expect(screen.queryByText("Save your new recovery codes")).not.toBeInTheDocument();
+        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", expect.objectContaining({ methodId: "old-recovery-1" }));
+    });
+
+    it("puts back the old recovery code it removed to make room when the new code then fails to save", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        const full = vaultWithWraps(20, 3);
+        getKeyVault.mockResolvedValue(full);
+        buildRecoveryWraps.mockResolvedValue(recoveryFixture(2));
+        removeMasterKeyWrap.mockResolvedValueOnce(vault);
+        addMasterKeyWrap.mockRejectedValueOnce(new ApiRequestError("vault is full", 400)).mockResolvedValueOnce(vault);
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+
+        expect(await screen.findByText("vault is full")).toBeInTheDocument();
+        expect(addMasterKeyWrap).toHaveBeenCalledTimes(2);
+        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", full.masterKeyWraps[1]);
     });
 
     it("shows an error when the fresh vault can't be fetched before regenerating", async () => {
@@ -990,26 +1016,6 @@ describe("SettingsEncryptionPage", () => {
         expect(rekey).not.toHaveBeenCalled();
     });
 
-    it("shows the new recovery codes as soon as the rekey commits, before escrow re-wrapping finishes", async () => {
-        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
-        const escrowWrap = { method: "escrow" as const, escrowScopeId: "scope-1", ciphertext: "ct", nonce: "n/a", salt: "n/a", kdf: "cms-enveloped-data", schemeVersion: 1, createdAt: 0 };
-        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, escrowWrap] });
-        mockRotationCrypto();
-        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
-        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: ["EARLY-CODE"] });
-        rekey.mockResolvedValue(vault);
-        getEscrowInfo.mockReturnValue(new Promise(() => undefined));
-        mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
-        const user = userEvent.setup();
-        render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
-
-        await submitRotation(user);
-
-        expect(await screen.findByText("EARLY-CODE")).toBeInTheDocument();
-        expect(unlockWithPassword).not.toHaveBeenCalled();
-    });
-
     it("destroys this session's stale keys when re-unlocking after a rotation fails, after the codes are acknowledged", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue(vault);
@@ -1051,7 +1057,7 @@ describe("SettingsEncryptionPage", () => {
         const newRecoveryWraps = recoveryFixture(8).wraps;
         buildRecoveryWraps.mockResolvedValue({ wraps: newRecoveryWraps, codes: newCodes });
         rekey.mockResolvedValue(vault);
-        unlockWithPassword.mockResolvedValue(undefined);
+        unlockWithPassword.mockResolvedValue({ unopenableKeys: [] });
         // A signing key the shell's one-time mailbox list never saw - only the page's fresh getMailbox() has it.
         const freshKeys = [...mailbox.keys, { ...mailbox.keys[0], useType: "sign" as const, fingerprint: "new-sign-fp" }];
         mockShell((url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(200, { ...mailbox, keys: freshKeys }) : undefined));
@@ -1090,128 +1096,100 @@ describe("SettingsEncryptionPage", () => {
         expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
     });
 
-    it("re-wraps escrow under the new MK during rotation, when the freshly fetched vault had escrow protection", async () => {
-        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
-        const staleEscrowWrap = {
+    describe("round 5: escrow in the rekey request", () => {
+        const escrowInfo = { escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } };
+        const freshEscrowWrap = {
             method: "escrow" as const,
             escrowScopeId: "scope-1",
-            ciphertext: "old-ct",
+            ciphertext: "fresh-ct",
             nonce: "n/a",
             salt: "n/a",
             kdf: "cms-enveloped-data",
             schemeVersion: 1,
-            createdAt: 0,
+            createdAt: 5,
         };
-        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
-        const newMk = mockRotationCrypto();
-        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
-        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
-        rekey.mockResolvedValue(vault);
-        unlockWithPassword.mockResolvedValue(undefined);
-        getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } });
-        const freshEscrowWrap = { ...staleEscrowWrap, ciphertext: "fresh-ct" };
-        buildEscrowWrap.mockResolvedValue(freshEscrowWrap);
-        addMasterKeyWrap.mockResolvedValue(vault);
-        mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
-        const user = userEvent.setup();
-        render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
 
-        await submitRotation(user);
+        function mockRotation() {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, { ...freshEscrowWrap, ciphertext: "old-ct" }] });
+            const newMk = mockRotationCrypto();
+            buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
+            buildRecoveryWraps.mockResolvedValue({ wraps: recoveryFixture(1).wraps, codes: ["ROTATED-1"] });
+            rekey.mockResolvedValue(vault);
+            unlockWithPassword.mockResolvedValue({ unopenableKeys: [] });
+            return newMk;
+        }
 
-        await screen.findByText("Save your new recovery codes");
-        await waitFor(() => expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", freshEscrowWrap));
-        expect(getEscrowInfo).toHaveBeenCalledWith("mb1");
-        expect(buildEscrowWrap).toHaveBeenCalledWith(newMk, "scope-1", expect.any(Uint8Array));
+        it("builds an escrow wrap of the new master key and sends it in the same rekey, never re-adding it afterwards", async () => {
+            const newMk = mockRotation();
+            getEscrowInfo.mockResolvedValue(escrowInfo);
+            buildEscrowWrap.mockResolvedValue(freshEscrowWrap);
+            mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
+            const user = userEvent.setup();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
 
-        await user.click(screen.getByRole("checkbox"));
-        await user.click(screen.getByRole("button", { name: "Done" }));
-        expect(await screen.findByText(/under legal\/compliance escrow/)).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Add escrow protection" })).not.toBeInTheDocument();
+            await submitRotation(user);
+
+            expect(await screen.findByText("ROTATED-1")).toBeInTheDocument();
+            expect(buildEscrowWrap).toHaveBeenCalledWith(newMk, "scope-1", expect.any(Uint8Array));
+            expect(rekey).toHaveBeenCalledWith(
+                "mb1",
+                expect.objectContaining({ masterKeyWraps: [expect.objectContaining({ method: "password" }), recoveryFixture(1).wraps[0], freshEscrowWrap] }),
+            );
+            expect(getEscrowInfo.mock.invocationCallOrder[0]).toBeLessThan(rekey.mock.invocationCallOrder[0]);
+            await waitFor(() => expect(unlockWithPassword).toHaveBeenCalled());
+            expect(addMasterKeyWrap).not.toHaveBeenCalled();
+        });
+
+        it("aborts the rotation, rekeying nothing, when the escrow wrap can't be prepared", async () => {
+            mockRotation();
+            getEscrowInfo.mockRejectedValue(new ApiRequestError("escrow scope no longer exists", 404));
+            mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
+            const user = userEvent.setup();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+
+            await submitRotation(user);
+
+            expect(
+                await screen.findByText(
+                    "Your keys were not rotated: this mailbox is under escrow, and escrow protection for the new keys couldn't be prepared (escrow scope no longer exists). Nothing was changed.",
+                ),
+            ).toBeInTheDocument();
+            expect(rekey).not.toHaveBeenCalled();
+            expect(screen.queryByText("ROTATED-1")).not.toBeInTheDocument();
+        });
+
+        it("leaves out the reason when building the escrow wrap fails with a non-API error", async () => {
+            mockRotation();
+            getEscrowInfo.mockResolvedValue(escrowInfo);
+            buildEscrowWrap.mockRejectedValue(new Error("bad certificate"));
+            mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
+            const user = userEvent.setup();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+
+            await submitRotation(user);
+
+            expect(await screen.findByText(/escrow protection for the new keys couldn't be prepared\. Nothing was changed\./)).toBeInTheDocument();
+            expect(rekey).not.toHaveBeenCalled();
+        });
+
+        it("sends no escrow wrap for a mailbox no longer assigned a scope, even with an old escrow wrap in the vault", async () => {
+            mockRotation();
+            mockShell();
+            const user = userEvent.setup();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+
+            await submitRotation(user);
+
+            await waitFor(() => expect(rekey).toHaveBeenCalled());
+            expect(getEscrowInfo).not.toHaveBeenCalled();
+            expect(rekey.mock.calls[0][1].masterKeyWraps.some((w: { method: string }) => w.method === "escrow")).toBe(false);
+        });
     });
-
-    it("reports an escrow re-wrap failure during rotation separately, and offers 'Add escrow protection' even though the stale escrow wrap is still on file", async () => {
-        const liveKeys = { masterKey: new Uint8Array(32).fill(4) };
-        getUnlockedKeys.mockReturnValue(liveKeys);
-        const staleEscrowWrap = {
-            method: "escrow" as const,
-            escrowScopeId: "scope-1",
-            ciphertext: "old-ct",
-            nonce: "n/a",
-            salt: "n/a",
-            kdf: "cms-enveloped-data",
-            schemeVersion: 1,
-            createdAt: 0,
-        };
-        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
-        mockRotationCrypto();
-        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
-        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
-        rekey.mockResolvedValue(vault);
-        unlockWithPassword.mockResolvedValue(undefined);
-        getEscrowInfo.mockRejectedValueOnce(new ApiRequestError("escrow scope no longer exists", 404));
-        mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
-        const user = userEvent.setup();
-        render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
-
-        await submitRotation(user);
-
-        // The rotation itself still succeeds - the recovery-codes screen appears and unlockWithPassword ran -
-        // even though re-establishing escrow protection failed.
-        expect(await screen.findByText("Save your new recovery codes")).toBeInTheDocument();
-        await waitFor(() => expect(unlockWithPassword).toHaveBeenCalledWith("mb1", mailbox.keys, "a good new password"));
-        expect(addMasterKeyWrap).not.toHaveBeenCalled();
-
-        await user.click(screen.getByRole("checkbox"));
-        await user.click(screen.getByRole("button", { name: "Done" }));
-
-        expect(await screen.findByText("escrow scope no longer exists")).toBeInTheDocument();
-        expect(screen.queryByText(/under legal\/compliance escrow/)).not.toBeInTheDocument();
-        expect(screen.getByText(/no longer covers them/)).toBeInTheDocument();
-
-        // Retrying succeeds and returns the section to its protected state.
-        getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } });
-        buildEscrowWrap.mockResolvedValue({ ...staleEscrowWrap, ciphertext: "fresh-ct" });
-        addMasterKeyWrap.mockResolvedValue(vault);
-        await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
-        expect(await screen.findByText(/under legal\/compliance escrow/)).toBeInTheDocument();
-        expect(buildEscrowWrap).toHaveBeenCalledWith(liveKeys.masterKey, "scope-1", expect.any(Uint8Array));
-    });
-
-    it("shows a generic message when an escrow re-wrap failure during rotation isn't an ApiRequestError", async () => {
-        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
-        const staleEscrowWrap = {
-            method: "escrow" as const,
-            escrowScopeId: "scope-1",
-            ciphertext: "old-ct",
-            nonce: "n/a",
-            salt: "n/a",
-            kdf: "cms-enveloped-data",
-            schemeVersion: 1,
-            createdAt: 0,
-        };
-        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
-        mockRotationCrypto();
-        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
-        buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
-        rekey.mockResolvedValue(vault);
-        unlockWithPassword.mockResolvedValue(undefined);
-        getEscrowInfo.mockRejectedValue(new Error("network down"));
-        mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
-        const user = userEvent.setup();
-        render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
-
-        await submitRotation(user);
-
-        await screen.findByText("Save your new recovery codes");
-        await user.click(screen.getByRole("checkbox"));
-        await user.click(screen.getByRole("button", { name: "Done" }));
-
-        expect(await screen.findByText(/could not be re-established automatically/)).toBeInTheDocument();
-    });
-
     it("passes an empty keys array to rekey()/unlockWithPassword() when the mailbox has none", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
@@ -1219,7 +1197,7 @@ describe("SettingsEncryptionPage", () => {
         buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
         buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
         rekey.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
-        unlockWithPassword.mockResolvedValue(undefined);
+        unlockWithPassword.mockResolvedValue({ unopenableKeys: [] });
         mockShell(mailboxRoutes({ ...mailbox, keys: undefined }));
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
@@ -1729,5 +1707,304 @@ describe("SettingsEncryptionPage", () => {
 
         await act(() => vi.advanceTimersByTimeAsync(15_000));
         expect(await screen.findByText("No keys enrolled yet.")).toBeInTheDocument();
+    });
+
+    describe("round 5: rotation vs a pending signing enrollment", () => {
+        const STORAGE_KEY = "rapidmx.signEnrollment.mb1";
+
+        function mockSigningCrypto() {
+            generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+            exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+            buildAad.mockReturnValue(new Uint8Array([9]));
+            sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        }
+
+        it("disables rotation once an enrollment starts, and remembers it for a reload", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockSigningCrypto();
+            startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+            mockShell();
+            const user = userEvent.setup();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+
+            await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+
+            expect(await screen.findByText(/Rotation is unavailable while a signing certificate enrollment is in progress/)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+            expect(screen.getByLabelText("New password for rotated keys")).toBeDisabled();
+            expect(localStorage.getItem(STORAGE_KEY)).toBe("enr-1");
+        });
+
+        it("ignores an implicit submit of the rotation form while blocked", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "pending" });
+            mockShell();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText(/Rotation is unavailable/);
+
+            const form = screen.getByRole("button", { name: "Rotate keys now" }).closest("form")!;
+            await act(async () => {
+                form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+            });
+
+            expect(screen.queryByText(/Password must be at least/)).not.toBeInTheDocument();
+            expect(getKeyVault).toHaveBeenCalledTimes(1);
+            expect(rekey).not.toHaveBeenCalled();
+        });
+
+        it("after a reload, asks the server about the stored enrollment and keeps rotation disabled while it is pending", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            let resolveStatus: (value: { status: "pending" }) => void = () => undefined;
+            checkSignEnrollmentStatus.mockReturnValue(new Promise((resolve) => (resolveStatus = resolve)));
+            mockShell();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+
+            expect(screen.getByText(/Checking whether a signing certificate enrollment is still in progress/)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+            expect(screen.getByRole("button", { name: "Enable digital signatures" })).toBeDisabled();
+            expect(checkSignEnrollmentStatus).toHaveBeenCalledWith("mb1", "enr-1");
+
+            await act(async () => resolveStatus({ status: "pending" }));
+
+            expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+            expect(localStorage.getItem(STORAGE_KEY)).toBe("enr-1");
+        });
+
+        it("after a reload, re-enables rotation and shows the new key once the server says the enrollment was issued", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "issued", certificate: "pem" });
+            const issuedMailbox = { ...mailbox, keys: [...mailbox.keys, { ...mailbox.keys[0], useType: "sign" as const, fingerprint: "new-sign-fp" }] };
+            mockShell((url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(200, issuedMailbox) : undefined));
+            render(<SettingsEncryptionPage userUid="u1" />);
+
+            expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+        });
+
+        it("after a reload, shows a failed enrollment's reason and re-enables rotation", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "failed", error: "CA said no" });
+            mockShell();
+            render(<SettingsEncryptionPage userUid="u1" />);
+
+            expect(await screen.findByText("CA said no")).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+        });
+
+        it("still finishes an issued enrollment when refreshing the mailbox's keys fails", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "issued", certificate: "pem" });
+            mockShell((url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(500, { message: "down" }) : undefined));
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+        });
+
+        it("after a reload, forgets an enrollment the server no longer knows (404)", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-gone");
+            checkSignEnrollmentStatus.mockRejectedValue(new ApiRequestError("not found", 404));
+            mockShell();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+        });
+
+        it("after a reload, treats an unanswered status check as still pending and keeps polling", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockRejectedValueOnce(new Error("network down")).mockResolvedValueOnce({ status: "failed" });
+            mockShell();
+            vi.useFakeTimers({ shouldAdvanceTime: true });
+            render(<SettingsEncryptionPage userUid="u1" />);
+
+            expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+
+            await act(() => vi.advanceTimersByTimeAsync(15_000));
+            expect(await screen.findByText("Signing certificate enrollment failed.")).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+        });
+
+        it("ignores a reload status check that answers after unmounting, whether it succeeds or fails", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            let resolveStatus: (value: { status: "failed" }) => void = () => undefined;
+            let rejectStatus: (err: Error) => void = () => undefined;
+            checkSignEnrollmentStatus
+                .mockReturnValueOnce(new Promise((resolve) => (resolveStatus = resolve)))
+                .mockReturnValueOnce(new Promise((_resolve, reject) => (rejectStatus = reject)));
+            mockShell();
+
+            const first = render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+            first.unmount();
+            await act(async () => resolveStatus({ status: "failed" }));
+            expect(localStorage.getItem(STORAGE_KEY)).toBe("enr-1");
+
+            const second = render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+            second.unmount();
+            await act(async () => rejectStatus(new ApiRequestError("not found", 404)));
+            expect(localStorage.getItem(STORAGE_KEY)).toBe("enr-1");
+        });
+
+        it("still works when localStorage is blocked", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockSigningCrypto();
+            startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-1" });
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "failed", error: "nope" });
+            const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+                throw new Error("blocked");
+            });
+            const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+                throw new Error("blocked");
+            });
+            const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+                throw new Error("blocked");
+            });
+            try {
+                mockShell();
+                vi.useFakeTimers({ shouldAdvanceTime: true });
+                const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+                render(<SettingsEncryptionPage userUid="u1" />);
+                await screen.findByText("Password");
+                expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+
+                await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
+                expect(await screen.findByText(/Requested/)).toBeInTheDocument();
+                await act(() => vi.advanceTimersByTimeAsync(15_000));
+                expect(await screen.findByText("nope")).toBeInTheDocument();
+                expect(setItem).toHaveBeenCalled();
+                expect(removeItem).toHaveBeenCalled();
+            } finally {
+                getItem.mockRestore();
+                setItem.mockRestore();
+                removeItem.mockRestore();
+            }
+        });
+
+        it("explains a 409 from rekey as a possible pending enrollment elsewhere", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockRotationCrypto();
+            buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
+            buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: ["X"] });
+            rekey.mockRejectedValue(new ApiRequestError("A signing enrollment is pending.", 409));
+            mockShell();
+            const user = userEvent.setup();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+
+            await submitRotation(user);
+
+            expect(await screen.findByText(/signing certificate enrollment is still in progress for this mailbox \(it may have been started on another device\)/)).toBeInTheDocument();
+            expect(screen.queryByText("Save your new recovery codes")).not.toBeInTheDocument();
+        });
+    });
+
+    describe("round 5: cancelling a pending signing enrollment", () => {
+        const STORAGE_KEY = "rapidmx.signEnrollment.mb1";
+
+        async function renderPending() {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "pending" });
+            const user = userEvent.setup();
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText(/Rotation is unavailable/);
+            return user;
+        }
+
+        it("cancels the enrollment and re-enables rotation", async () => {
+            cancelSignEnrollment.mockResolvedValue({ status: "failed", error: "Cancelled by the mailbox owner." });
+            mockShell();
+            const user = await renderPending();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+
+            await user.click(screen.getByRole("button", { name: "Cancel enrollment" }));
+
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
+            expect(cancelSignEnrollment).toHaveBeenCalledWith("mb1", "enr-1");
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+            expect(screen.queryByText("Cancelled by the mailbox owner.")).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Cancel enrollment" })).not.toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Enable digital signatures" })).toBeEnabled();
+        });
+
+        it("says so, and stays blocked, when the enrollment is still pending after the cancel", async () => {
+            cancelSignEnrollment.mockResolvedValue({ status: "pending" });
+            mockShell();
+            const user = await renderPending();
+
+            await user.click(screen.getByRole("button", { name: "Cancel enrollment" }));
+
+            expect(await screen.findByText("The enrollment couldn't be cancelled yet. Try again.")).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+        });
+
+        it("finishes an enrollment that was issued before the cancel landed", async () => {
+            cancelSignEnrollment.mockResolvedValue({ status: "issued", certificate: "pem" });
+            const issuedMailbox = { ...mailbox, keys: [...mailbox.keys, { ...mailbox.keys[0], useType: "sign" as const, fingerprint: "new-sign-fp" }] };
+            mockShell((url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(200, issuedMailbox) : undefined));
+            const user = await renderPending();
+
+            await user.click(screen.getByRole("button", { name: "Cancel enrollment" }));
+
+            expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+        });
+
+        it("forgets an enrollment the server no longer knows (404)", async () => {
+            cancelSignEnrollment.mockRejectedValue(new ApiRequestError("not found", 404));
+            mockShell();
+            const user = await renderPending();
+
+            await user.click(screen.getByRole("button", { name: "Cancel enrollment" }));
+
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+        });
+
+        it.each([
+            [new ApiRequestError("only the owner can cancel", 403), "only the owner can cancel"],
+            [new Error("network down"), "Could not cancel the signing certificate enrollment."],
+        ])("shows why cancelling failed (%s)", async (error, message) => {
+            cancelSignEnrollment.mockRejectedValue(error);
+            mockShell();
+            const user = await renderPending();
+
+            await user.click(screen.getByRole("button", { name: "Cancel enrollment" }));
+
+            expect(await screen.findByText(message)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+            expect(screen.getByRole("button", { name: "Cancel enrollment" })).toBeEnabled();
+        });
     });
 });

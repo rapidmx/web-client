@@ -42,7 +42,7 @@ import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } from "@rapidmx/react-shared/crypto/smimeMessage.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import type { ComposeSession } from "./ComposeContext.js";
-import { registerComposeFlush } from "./composeFlushRegistry.js";
+import { isSigningOut, registerComposeFlush } from "./composeFlushRegistry.js";
 import RichTextEditor from "./RichTextEditor.js";
 import ScheduleSendPicker from "./ScheduleSendPicker.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -61,10 +61,16 @@ export interface ComposeWindowProps {
     /** How long (ms) after the last edit the draft is autosaved. Defaults to `DEFAULT_AUTOSAVE_DELAY_MS`;
      * only overridden by tests. */
     autosaveDelayMs?: number;
+    /** Backoff (ms) between automatic retries of a failed mailbox/encryption-policy load, one entry per retry.
+     * Defaults to `DEFAULT_CRYPTO_RETRY_DELAYS_MS`; only overridden by tests. */
+    cryptoRetryDelaysMs?: number[];
 }
 
 /** Debounce between the last edit and the draft autosave. */
 export const DEFAULT_AUTOSAVE_DELAY_MS = 2000;
+
+/** Automatic retries of a failed mailbox/encryption-policy load; after the last one only "Retry" tries again. */
+export const DEFAULT_CRYPTO_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
 
 /** Signed/encrypted bodies are built client-side from the editor's HTML verbatim, so an inline image
  * (an uploaded attachment previewed via its content URL, or a `cid:` reference) would never be carried -
@@ -80,6 +86,21 @@ const POLICY_UNAVAILABLE_MESSAGE =
 const BCC_ENCRYPTED_MESSAGE = "Bcc recipients can't be used with encrypted messages. Remove Bcc recipients or turn off encryption.";
 
 const SAVE_STATUS_LABEL = { idle: "", saving: "Saving…", saved: "Draft saved", error: "Couldn't save draft" } as const;
+
+const DISCARD_TITLE = "Discard this draft?";
+const ENCRYPTED_CLOSE_MESSAGE = "Encrypted messages aren't saved as drafts, so closing this window discards what you've written.";
+const CHECKING_CLOSE_MESSAGE =
+    "This message may be encrypted, and that's still being checked, so it can't be saved as a draft yet. Keep editing and close again in a moment, or discard it.";
+const CRYPTO_UNAVAILABLE_MESSAGE =
+    "Your encryption settings couldn't be checked, so this draft isn't being saved - it might be a message that must be encrypted.";
+
+/** The confirmation shown before a Close/Discard throws content away (or when a Close couldn't save it). */
+interface ClosePrompt {
+    title: string;
+    message: string;
+    /** Also offer "Retry" for loading the encryption settings. */
+    retry?: boolean;
+}
 
 interface SecurityBlock {
     message: string;
@@ -160,6 +181,7 @@ export default function ComposeWindow({
     userUid,
     trusted,
     autosaveDelayMs = DEFAULT_AUTOSAVE_DELAY_MS,
+    cryptoRetryDelaysMs = DEFAULT_CRYPTO_RETRY_DELAYS_MS,
 }: ComposeWindowProps) {
     const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, signatureContext, suppressSigning, minimized } = session;
     // The sending ("From") mailbox. A reply/forward session names the original message's mailbox; a fresh
@@ -232,24 +254,33 @@ export default function ComposeWindow({
     // Draft autosave / discard bookkeeping.
     const [seededHtml, setSeededHtml] = useState<string | undefined>();
     const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-    const [discardPrompt, setDiscardPrompt] = useState<string | null>(null);
+    const [closePrompt, setClosePrompt] = useState<ClosePrompt | null>(null);
+    /** A Close (saving) or Discard (deleting) is on the wire - the window closes once it succeeds. */
+    const [closing, setClosing] = useState(false);
+    const [discardError, setDiscardError] = useState<string | null>(null);
+    /** Why the last save failed, cleared by the next successful one. */
+    const saveErrorRef = useRef<string | null>(null);
     /** `<draftUid>:<content key>` of the last successful save. */
     const lastSavedRef = useRef<string | null>(null);
     /** An edit is waiting on the autosave debounce - flushed if the window unmounts first. */
     const pendingSaveRef = useRef(false);
     /** Mirrors `sending` for the page-leave/sign-out flushes, which run outside React's render cycle. */
     const sendingRef = useRef(false);
-    /** The latest autosave request, if any - always settles (never rejects). */
+    /** The latest save request, if any - each save is chained after the one before it. Always settles (never
+     * rejects), to the saved message, or `undefined` when that save failed. */
     const saveInFlightRef = useRef<Promise<Message | undefined> | null>(null);
     /** Set once the window has been sent/closed/discarded - nothing more gets autosaved after that. */
     const finishedRef = useRef(false);
 
-    // Best-effort, same as the signature-list fetch below: a mailbox with no keys enrolled yet (or a
-    // failed fetch) just means sign/encrypt stay unavailable for this compose session, never a blocking
-    // error - encryption is optional and gradual by design (see `KeyEnrollmentGate`'s own doc comment).
+    // A mailbox with no keys enrolled yet just means sign/encrypt stay unavailable for this compose session -
+    // encryption is optional and gradual by design (see `KeyEnrollmentGate`'s own doc comment).
     // `cryptoContextReady` (below) gates Send/Send-later until both calls have settled either way, so a
     // send that happens to race this fetch can't silently skip encryption the spec says should apply.
+    // A failed load is retried with backoff (`cryptoRetryDelaysMs`), then on demand ("Retry"): until both have
+    // loaded, whether this message must be encrypted is unknown, so it isn't autosaved (see `autosaveSuppressed`).
     const [cryptoContextReady, setCryptoContextReady] = useState(false);
+    const [cryptoLoadFailed, setCryptoLoadFailed] = useState(false);
+    const [cryptoRetryToken, setCryptoRetryToken] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
@@ -281,40 +312,52 @@ export default function ComposeWindow({
             return;
         }
         let cancelled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        // A retry only fetches what's still missing.
+        let mailboxLoaded = mailbox?.uid === mailboxUid;
+        let policyLoaded = !!encryptionPolicy;
+        let retries = 0;
         setCryptoContextReady(false);
-        let mailboxSettled = false;
-        let policySettled = false;
-        function checkReady() {
-            if (!cancelled && mailboxSettled && policySettled) {
-                setCryptoContextReady(true);
+        setCryptoLoadFailed(false);
+        async function load() {
+            await Promise.all([
+                mailboxLoaded ||
+                    getMailbox(mailboxUid!).then(
+                        (result) => {
+                            mailboxLoaded = true;
+                            if (!cancelled) {
+                                setMailbox(result);
+                            }
+                        },
+                        () => undefined,
+                    ),
+                policyLoaded ||
+                    getEncryptionPolicy().then(
+                        (result) => {
+                            policyLoaded = true;
+                            if (!cancelled) {
+                                setEncryptionPolicy(result);
+                            }
+                        },
+                        () => undefined,
+                    ),
+            ]);
+            if (cancelled) {
+                return;
+            }
+            const failed = !mailboxLoaded || !policyLoaded;
+            setCryptoContextReady(true);
+            setCryptoLoadFailed(failed);
+            if (failed && retries < cryptoRetryDelaysMs.length) {
+                timer = setTimeout(() => void load(), cryptoRetryDelaysMs[retries++]);
             }
         }
-        getMailbox(mailboxUid)
-            .then((result) => {
-                if (!cancelled) {
-                    setMailbox(result);
-                }
-            })
-            .catch(() => undefined)
-            .finally(() => {
-                mailboxSettled = true;
-                checkReady();
-            });
-        getEncryptionPolicy()
-            .then((result) => {
-                if (!cancelled) {
-                    setEncryptionPolicy(result);
-                }
-            })
-            .catch(() => undefined)
-            .finally(() => {
-                policySettled = true;
-                checkReady();
-            });
+        void load();
         return () => {
             cancelled = true;
+            clearTimeout(timer);
         };
-    }, [mailboxUid]);
+    }, [mailboxUid, cryptoRetryToken]);
 
     useEffect(() => {
         if (!mailboxUid) {
@@ -577,10 +620,23 @@ export default function ComposeWindow({
         try {
             const attachment = await uploadAttachment(draft.uid, file);
             setHasUploads(true);
+            void refreshDraftVersion(draft.uid);
             return attachmentContentUrl(attachment.uid);
         } catch (err) {
             setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload image.");
             return null;
+        }
+    }
+
+    /** Uploading an attachment bumps the draft's version server-side (it records `hasAttachments`), so a later
+     * Discard would otherwise send a stale `?version=`. Best-effort: Discard also retries with the server's
+     * current version. */
+    async function refreshDraftVersion(uid: string) {
+        try {
+            const fresh = await getMessage(uid);
+            setDraft((prev) => (prev?.uid === fresh.uid && fresh.version > prev.version ? { ...prev, version: fresh.version } : prev));
+        } catch {
+            // Discard's own retry covers a version this couldn't refresh.
         }
     }
 
@@ -598,6 +654,7 @@ export default function ComposeWindow({
                 const attachment = await uploadAttachment(draft!.uid, file);
                 setHasUploads(true);
                 setAttachments((prev) => [...prev, attachment]);
+                void refreshDraftVersion(draft!.uid);
             } catch (err) {
                 setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload attachment.");
             }
@@ -805,24 +862,34 @@ export default function ComposeWindow({
 
     /**
      * Saves the window's current recipients/subject/body onto its server draft via `assembleDraft()` (the
-     * same plaintext assembly a normal send uses). Reads `latestRef` rather than render-time values so the
-     * unmount flush below saves what was last typed. Never rejects.
+     * same plaintext assembly a normal send uses). Chained after any save already on the wire - two
+     * overlapping assemblies of the same draft race on its version and the later one is rejected - and reads
+     * `latestRef` only once it actually runs, so it saves what was last typed (skipping the request when the
+     * save before it already stored exactly that). Never rejects; resolves to `undefined` when the save failed.
      */
     function saveDraftNow(): Promise<Message | undefined> {
-        const current = latestRef.current;
-        const target = current.draft!;
-        const savedKey = `${target.uid}:${current.contentKey}`;
+        const target = latestRef.current.draft!;
+        const previous = saveInFlightRef.current;
         pendingSaveRef.current = false;
         setSaveStatus("saving");
-        const request = assembleDraft(target.uid, {
-            to: parseAddresses(current.to),
-            cc: parseAddresses(current.cc),
-            bcc: parseAddresses(current.bcc),
-            subject: current.subject,
-            html: current.html,
-        })
-            .then((saved) => {
+        const request = (async () => {
+            const before = await previous;
+            const current = latestRef.current;
+            const savedKey = `${target.uid}:${current.contentKey}`;
+            if (before?.uid === target.uid && lastSavedRef.current === savedKey) {
+                setSaveStatus("saved");
+                return before;
+            }
+            try {
+                const saved = await assembleDraft(target.uid, {
+                    to: parseAddresses(current.to),
+                    cc: parseAddresses(current.cc),
+                    bcc: parseAddresses(current.bcc),
+                    subject: current.subject,
+                    html: current.html,
+                });
                 lastSavedRef.current = savedKey;
+                saveErrorRef.current = null;
                 // A From switch may have replaced the draft while this was in flight - never resurrect it,
                 // but do keep its superseded copy's version current so its pending delete still matches.
                 setDraft((prev) => (prev?.uid === saved.uid ? saved : prev));
@@ -832,29 +899,77 @@ export default function ComposeWindow({
                 }
                 setSaveStatus("saved");
                 return saved;
-            })
-            .catch(() => {
+            } catch (err) {
+                saveErrorRef.current = err instanceof ApiRequestError ? err.message : "the server couldn't be reached";
                 setSaveStatus("error");
                 return undefined;
-            });
+            }
+        })();
         saveInFlightRef.current = request;
         return request;
     }
 
-    /** Deletes this window's server draft - once any autosave already on the wire has landed, so the delete
-     * carries the draft's current version - and closes the window. */
-    function discardNow() {
+    /** Keeps the window open after its content couldn't be saved, offering Discard or Keep editing. */
+    function showSaveFailedPrompt() {
+        setClosePrompt({
+            title: "Couldn't save this draft",
+            message: `It couldn't be saved (${saveErrorRef.current!.replace(/\.$/, "")}). Keep editing and try again, or discard it.`,
+        });
+    }
+
+    /**
+     * Deletes `current` (this window's server draft) once any save already on the wire has landed, so the delete
+     * carries the draft's current version. A delete rejected for a stale version (404/409: e.g. an attachment
+     * upload bumped it) is retried once with the version the server holds - and a draft the server no longer has
+     * counts as deleted. Rejects when the draft couldn't be deleted.
+     */
+    async function deleteDraft(current: Message): Promise<void> {
+        const saved = await saveInFlightRef.current;
+        const version = Math.max(current.version, saved?.uid === current.uid ? saved.version : 0);
+        try {
+            await deleteMessage(current.uid, version);
+        } catch (err) {
+            if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status !== 409)) {
+                throw err;
+            }
+            const fresh = await getMessage(current.uid).catch((getErr: unknown) => {
+                if (getErr instanceof ApiRequestError && getErr.status === 404) {
+                    return null;
+                }
+                throw getErr;
+            });
+            if (fresh) {
+                await deleteMessage(fresh.uid, fresh.version);
+            }
+        }
+    }
+
+    /**
+     * Discards the window's draft and closes it. With nothing the user would lose (a blank draft) it closes
+     * straight away and deletes the draft in the background; otherwise it closes only once the draft is
+     * deleted, and a delete that fails keeps the window open with the error.
+     */
+    async function discardNow() {
         finishedRef.current = true;
         pendingSaveRef.current = false;
-        setDiscardPrompt(null);
+        setClosePrompt(null);
+        setDiscardError(null);
         const current = draft;
-        if (current) {
-            const inFlight = saveInFlightRef.current;
-            void (async () => {
-                const saved = await inFlight;
-                const target = saved?.uid === current.uid ? saved : current;
-                await deleteMessage(target.uid, target.version);
-            })().catch(() => undefined);
+        if (!current || !hasUserContent) {
+            if (current) {
+                void deleteDraft(current).catch(() => undefined);
+            }
+            onClose();
+            return;
+        }
+        setClosing(true);
+        try {
+            await deleteDraft(current);
+        } catch (err) {
+            finishedRef.current = false;
+            setClosing(false);
+            setDiscardError(`Couldn't discard this draft: ${err instanceof ApiRequestError ? err.message : "the server couldn't be reached."}`);
+            return;
         }
         onClose();
     }
@@ -862,31 +977,58 @@ export default function ComposeWindow({
     /** "Discard draft": confirms first whenever there's anything the user would lose. */
     function handleDiscard() {
         if (hasUserContent) {
-            setDiscardPrompt("This permanently deletes this draft and everything you've written in it.");
+            setClosePrompt({ title: DISCARD_TITLE, message: "This permanently deletes this draft and everything you've written in it." });
         } else {
-            discardNow();
+            void discardNow();
         }
     }
 
-    /** "Close": keeps the draft (saving any unsaved edits first) - unless there's nothing in it worth keeping,
-     * or it can't be saved at all because it's (or may be) headed for encryption, which needs the same
-     * confirmation as a discard. Close and Discard are both disabled while a send is in progress: deleting
-     * the draft, or saving a plaintext copy over the message the send just assembled, mid-send would lose or
-     * leak it. */
-    function handleClose() {
+    /** "Close": keeps the draft (saving any unsaved edits first, and closing only once that save succeeded) -
+     * unless there's nothing in it worth keeping, or it can't be saved because it's headed for encryption, or
+     * whether it is can't be told yet (settings loading or unavailable, recipient lookups pending): those need
+     * the same confirmation as a discard. A failed save keeps the window open with Discard / Keep editing.
+     * Close and Discard are both disabled while a send is in progress: deleting the draft, or saving a
+     * plaintext copy over the message the send just assembled, mid-send would lose or leak it. */
+    async function handleClose() {
         if (!hasUserContent) {
-            discardNow();
+            void discardNow();
             return;
         }
-        if (autosaveSuppressed) {
-            setDiscardPrompt("Encrypted messages aren't saved as drafts, so closing this window discards what you've written.");
+        if (encryptionDecided) {
+            setClosePrompt({ title: DISCARD_TITLE, message: ENCRYPTED_CLOSE_MESSAGE });
             return;
+        }
+        if (cryptoCheckUnavailable) {
+            setClosePrompt({ title: DISCARD_TITLE, message: CRYPTO_UNAVAILABLE_MESSAGE, retry: true });
+            return;
+        }
+        if (encryptionUndetermined) {
+            // A recipient typed but never blurred has no lookup running yet.
+            checkRecipientDiscovery([...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)]);
+            setClosePrompt({ title: DISCARD_TITLE, message: CHECKING_CLOSE_MESSAGE });
+            return;
+        }
+        if (!draft || !contentReady) {
+            saveErrorRef.current = draftError ?? "the draft hasn't been created yet";
+            showSaveFailedPrompt();
+            return;
+        }
+        if (lastSavedRef.current !== `${draft.uid}:${contentKey}`) {
+            setClosing(true);
+            const saved = await saveDraftNow();
+            setClosing(false);
+            if (!saved) {
+                showSaveFailedPrompt();
+                return;
+            }
         }
         finishedRef.current = true;
-        if (draft && contentReady && lastSavedRef.current !== `${draft.uid}:${contentKey}`) {
-            void saveDraftNow();
-        }
         onClose();
+    }
+
+    function retryCryptoContext() {
+        setClosePrompt(null);
+        setCryptoRetryToken((n) => n + 1);
     }
 
     // A plain read from keySession.ts's module-level session store, not React state - see that module's
@@ -924,19 +1066,21 @@ export default function ComposeWindow({
     const baselineKey = JSON.stringify([initialTo ?? "", initialCc ?? "", "", initialSubject ?? "", seededHtml ?? ""]);
     const hasUserContent = contentKey !== baselineKey || hasUploads;
     // A message headed for encryption is never autosaved: the draft would store its plaintext server-side,
-    // defeating end-to-end encryption. Whenever this message could be encrypted at all (an unlocked or
-    // enrolled encryption key), that holds until it's known not to be: while the policy is missing, while
-    // any current recipient's lookup is still pending (or hasn't run), and when policy would auto-encrypt.
+    // defeating end-to-end encryption. Until it's known not to be, it isn't either: while the mailbox (whose
+    // enrolled keys say whether encryption is possible at all) or the encryption policy hasn't loaded, and -
+    // whenever this message could be encrypted (an unlocked or enrolled encryption key) - while the policy is
+    // missing or any current recipient's lookup is still pending (or hasn't run).
     const currentStatuses = [...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)].map((r) => recipientStatuses[r.address]);
     const encryptionPossible = !!unlockedKeys?.encryptionPrivateKey || hasEnrolledEncryptionKey || offeredCryptoRef.current.encrypt;
-    const autosaveSuppressed =
-        encryptRequested ||
-        (encryptionPossible &&
-            (!encryptionPolicy ||
-                currentStatuses.some((s) => !s) ||
-                decideMessageEncryption(currentStatuses).autoEncrypt));
-    const latestRef = useRef({ draft, to, cc, bcc, subject, html, contentKey, saveStatus });
-    latestRef.current = { draft, to, cc, bcc, subject, html, contentKey, saveStatus };
+    const encryptionUndetermined =
+        !cryptoContextReady || !mailbox || (encryptionPossible && (!encryptionPolicy || currentStatuses.some((s) => !s)));
+    /** Known to be headed for encryption: requested, or policy auto-encrypts it. */
+    const encryptionDecided = encryptRequested || (!encryptionUndetermined && encryptionPossible && decideMessageEncryption(currentStatuses).autoEncrypt);
+    const autosaveSuppressed = encryptionDecided || encryptionUndetermined;
+    /** Loading the mailbox/policy failed (retries may still be pending) and this message's encryption hinges on it. */
+    const cryptoCheckUnavailable = cryptoContextReady && cryptoLoadFailed && (!mailbox || (encryptionPossible && !encryptionPolicy));
+    const latestRef = useRef({ draft, to, cc, bcc, subject, html, contentKey, saveStatus, hasUserContent });
+    latestRef.current = { draft, to, cc, bcc, subject, html, contentKey, saveStatus, hasUserContent };
 
     useEffect(() => {
         const due =
@@ -967,23 +1111,46 @@ export default function ComposeWindow({
     );
 
     /** Saves an edit still waiting on the debounce now, and resolves once that save - or one already on the
-     * wire - has settled. A send clears `pendingSaveRef` before it starts, so this never saves mid-send. */
-    function flushPendingSave(): Promise<unknown> {
+     * wire - has settled, to whether the window's content is saved. A save that failed keeps the window open
+     * with Discard / Keep editing. A send clears `pendingSaveRef` before it starts, so this never saves mid-send. */
+    async function flushPendingSave(): Promise<boolean> {
         if (pendingSaveRef.current && !finishedRef.current) {
-            return saveDraftNow();
+            const saved = await saveDraftNow();
+            if (!saved) {
+                showSaveFailedPrompt();
+            }
+            return !!saved;
         }
-        return Promise.resolve(saveInFlightRef.current);
+        await saveInFlightRef.current;
+        const latest = latestRef.current;
+        if (finishedRef.current || !latest.hasUserContent || (!!latest.draft && lastSavedRef.current === `${latest.draft.uid}:${latest.contentKey}`)) {
+            return true;
+        }
+        // Unsaved because the last save failed (rather than, say, an encrypted message never being saved).
+        if (saveErrorRef.current) {
+            showSaveFailedPrompt();
+        }
+        return false;
     }
 
     // Sign Out (AppShell) waits for this before ending the session.
     useEffect(() => registerComposeFlush(flushPendingSave), []);
 
-    // Leaving the page (reload, closing the tab, following a link) with an edit not yet saved: start the save
-    // straight away and ask the browser to confirm, so the last couple of seconds of typing aren't lost.
+    // Leaving the page (reload, closing the tab, following a link) with anything not saved: start a save that's
+    // waiting on the debounce straight away and ask the browser to confirm, so the last couple of seconds of
+    // typing (or content that can't be saved as a draft, or failed to) aren't lost silently. Never while signing
+    // out - that navigation must not be cancellable.
     useEffect(() => {
         function handleBeforeUnload(event: BeforeUnloadEvent) {
-            const unsaved = pendingSaveRef.current || latestRef.current.saveStatus === "saving";
-            if (!unsaved || finishedRef.current || sendingRef.current) {
+            if (finishedRef.current || sendingRef.current || isSigningOut()) {
+                return;
+            }
+            const latest = latestRef.current;
+            const unsaved =
+                pendingSaveRef.current ||
+                latest.saveStatus === "saving" ||
+                (latest.hasUserContent && lastSavedRef.current !== `${latest.draft?.uid}:${latest.contentKey}`);
+            if (!unsaved) {
                 return;
             }
             void flushPendingSave();
@@ -998,13 +1165,18 @@ export default function ComposeWindow({
     const titleId = `compose-title-${id}`;
 
     const discardModal = (
-        <Modal open={discardPrompt !== null} onClose={() => setDiscardPrompt(null)} title="Discard this draft?">
-            <p className="text-sm text-text-muted mb-4">{discardPrompt}</p>
+        <Modal open={closePrompt !== null} onClose={() => setClosePrompt(null)} title={closePrompt?.title ?? DISCARD_TITLE}>
+            <p className="text-sm text-text-muted mb-4">{closePrompt?.message}</p>
             <div className="flex gap-3">
-                <Button type="button" onClick={discardNow} disabled={sending} className="!w-auto">
+                {closePrompt?.retry && (
+                    <Button type="button" onClick={retryCryptoContext} className="!w-auto">
+                        Retry
+                    </Button>
+                )}
+                <Button type="button" onClick={() => void discardNow()} disabled={sending || closing} className="!w-auto">
                     Discard
                 </Button>
-                <Button type="button" variant="secondary" onClick={() => setDiscardPrompt(null)} className="!w-auto">
+                <Button type="button" variant="secondary" onClick={() => setClosePrompt(null)} className="!w-auto">
                     Keep editing
                 </Button>
             </div>
@@ -1022,7 +1194,7 @@ export default function ComposeWindow({
                     <span className="text-sm font-medium truncate">{title}</span>
                     <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
                         <HeaderButton label="Restore" onClick={onToggleMinimize} icon={HiOutlineArrowsPointingOut} />
-                        <HeaderButton label="Discard draft" onClick={handleDiscard} icon={HiOutlineXMark} disabled={sending} />
+                        <HeaderButton label="Discard draft" onClick={handleDiscard} icon={HiOutlineXMark} disabled={sending || closing} />
                     </div>
                 </div>
             </div>
@@ -1082,17 +1254,29 @@ export default function ComposeWindow({
                             icon={expanded ? HiOutlineArrowsPointingIn : HiOutlineArrowsPointingOut}
                         />
                     )}
-                    <HeaderButton label="Close" onClick={handleClose} icon={HiOutlineXMark} disabled={sending} />
+                    <HeaderButton label="Close" onClick={() => void handleClose()} icon={HiOutlineXMark} disabled={sending || closing} />
                 </div>
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col">
-                {(folderError || draftError || sendError || attachError) && (
+                {(folderError || draftError || sendError || attachError || discardError) && (
                     <div className="px-3 pt-2">
                         {folderError && <Alert>{folderError}</Alert>}
                         {draftError && <Alert>{draftError}</Alert>}
                         {sendError && <Alert>{sendError}</Alert>}
                         {attachError && <Alert>{attachError}</Alert>}
+                        {discardError && <Alert>{discardError}</Alert>}
+                    </div>
+                )}
+
+                {cryptoCheckUnavailable && (
+                    <div className="px-3 pt-2">
+                        <Alert>
+                            <p className="mb-2">{CRYPTO_UNAVAILABLE_MESSAGE}</p>
+                            <Button type="button" variant="secondary" className="!w-auto" onClick={retryCryptoContext}>
+                                Retry
+                            </Button>
+                        </Alert>
                     </div>
                 )}
 
@@ -1287,7 +1471,7 @@ export default function ComposeWindow({
                         <button
                             type="button"
                             onClick={() => void submit(false)}
-                            disabled={!draft || sending || !cryptoContextReady}
+                            disabled={!draft || sending || closing || !cryptoContextReady}
                             className="py-1.5 pl-5 pr-3 font-semibold text-sm hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >
                             {sending ? "Sending…" : "Send"}
@@ -1298,7 +1482,7 @@ export default function ComposeWindow({
                             aria-label="Send later"
                             aria-haspopup="true"
                             aria-expanded={schedulePickerOpen}
-                            disabled={!draft || sending || !cryptoContextReady}
+                            disabled={!draft || sending || closing || !cryptoContextReady}
                             onClick={() => setSchedulePickerOpen((o) => !o)}
                             className="py-1.5 px-2 border-l border-white/30 hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >
@@ -1331,7 +1515,7 @@ export default function ComposeWindow({
                         aria-label="Discard draft"
                         title="Discard draft"
                         onClick={handleDiscard}
-                        disabled={sending}
+                        disabled={sending || closing}
                         className="w-8 h-8 flex items-center justify-center rounded-full text-text-muted hover:bg-surface-alt hover:text-text disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                         <HiOutlineTrash size={18} />

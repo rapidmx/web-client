@@ -84,6 +84,11 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
             setError("A display name is required.");
             return;
         }
+        // restapi refuses these (400): a display name shown in From must not look like an address.
+        if (/[@\r\n]/.test(displayName)) {
+            setError("A display name can't contain \"@\" or line breaks.");
+            return;
+        }
 
         setSaving(true);
         try {

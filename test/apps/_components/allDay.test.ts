@@ -11,6 +11,7 @@ import {
     occursOnDay,
     recurrenceUntilDateKey,
     recurrenceUntilInstant,
+    startWeekdayCode,
     startsOnDay,
 } from "../../../apps/shared/components/calendar/allDay.js";
 
@@ -26,6 +27,62 @@ describe("recurrence end dates (round 4)", () => {
             // An older all-day series stored with the creator's local end of day still reads as that date.
             expect(recurrenceUntilDateKey("2026-09-29T03:59:59.999Z", true)).toBe("2026-09-28");
             expect(recurrenceUntilDateKey("2026-09-28T21:59:59.999Z", true)).toBe("2026-09-28");
+        } finally {
+            process.env.TZ = originalTz;
+        }
+    });
+});
+
+describe("recurrence end dates (round 5)", () => {
+    const zones = ["Pacific/Tongatapu", "Pacific/Kiritimati", "America/New_York", "Pacific/Honolulu"];
+
+    /** What the round-3 editor stored for an all-day series' "Ends on" date: the creator's local end of day. */
+    function legacyLocalEndOfDay(dateKey: string): string {
+        const [y, m, d] = dateKey.split("-").map(Number);
+        return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+    }
+
+    it.each(zones)("reads the stored, the oldest (UTC midnight) and a legacy local end-of-day all-day end date as the chosen date in %s", (zone) => {
+        const originalTz = process.env.TZ;
+        process.env.TZ = zone;
+        try {
+            for (const dateKey of ["2026-03-10", "2026-09-28", "2026-12-31"]) {
+                expect(recurrenceUntilDateKey(recurrenceUntilInstant(dateKey, true), true)).toBe(dateKey);
+                expect(recurrenceUntilDateKey(`${dateKey}T00:00:00.000Z`, true)).toBe(dateKey);
+                expect(recurrenceUntilDateKey(`${dateKey}T00:00:00Z`, true)).toBe(dateKey);
+                expect(recurrenceUntilDateKey(legacyLocalEndOfDay(dateKey), true)).toBe(dateKey);
+                // Timed series still round-trip on the local calendar.
+                expect(recurrenceUntilDateKey(recurrenceUntilInstant(dateKey, false), false)).toBe(dateKey);
+            }
+        } finally {
+            process.env.TZ = originalTz;
+        }
+    });
+
+    it("pins the UTC+13/+14 legacy values that used to read a day early", () => {
+        const originalTz = process.env.TZ;
+        try {
+            process.env.TZ = "Pacific/Tongatapu";
+            expect(legacyLocalEndOfDay("2026-09-28")).toBe("2026-09-28T10:59:59.999Z");
+            expect(recurrenceUntilDateKey("2026-09-28T10:59:59.999Z", true)).toBe("2026-09-28");
+            process.env.TZ = "Pacific/Kiritimati";
+            expect(recurrenceUntilDateKey("2026-09-28T09:59:59.999Z", true)).toBe("2026-09-28");
+        } finally {
+            process.env.TZ = originalTz;
+        }
+    });
+
+    it("finds an event's start weekday in the frame its series expands in", () => {
+        const originalTz = process.env.TZ;
+        try {
+            process.env.TZ = "Pacific/Kiritimati";
+            // All-day: the UTC date, whatever the viewer's zone.
+            expect(startWeekdayCode("2026-09-14T00:00", true, "Pacific/Kiritimati")).toBe("MO");
+            // Timed: 2026-09-14 08:00 in Kiritimati is Sunday 18:00 in New York.
+            expect(startWeekdayCode("2026-09-14T08:00", false, "Pacific/Kiritimati")).toBe("MO");
+            expect(startWeekdayCode("2026-09-14T08:00", false, "America/New_York")).toBe("SU");
+            expect(startWeekdayCode("", false, "America/New_York")).toBeUndefined();
+            expect(startWeekdayCode("", true, "America/New_York")).toBeUndefined();
         } finally {
             process.env.TZ = originalTz;
         }

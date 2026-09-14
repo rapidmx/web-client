@@ -1325,4 +1325,77 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
             );
         });
     });
+    describe("round 5: the Deleted view for delegates", () => {
+        const delegatedMailbox = { ...mailbox, ownerUserUid: "boss" };
+
+        function mockDelegate(access: (() => Response) | undefined) {
+            return mockFetch((url, init) => {
+                if (url === "/api/mail/mailboxes/mb1/access/me") {
+                    if (!access) throw new Error("network down");
+                    return access();
+                }
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [delegatedMailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [contactsFolder]);
+                if (url.startsWith("/api/mail/contact-lists")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [bob]);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+        }
+
+        const accessWith = (canUpdate: boolean, canDelete: boolean) => () =>
+            jsonResponse(200, { canRead: true, canCreate: canUpdate, canUpdate, canDelete, canManage: false });
+
+        it("offers the Deleted view to an owner without asking the server", async () => {
+            const fetchMock = mockShellAndContacts([bob]);
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Bob Smith");
+
+            expect(screen.getAllByRole("button", { name: "Deleted" }).length).toBeGreaterThan(0);
+            expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/access/me"))).toBe(false);
+        });
+
+        it("offers the Deleted view to a delegate with delete and update rights", async () => {
+            mockDelegate(accessWith(true, true));
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Bob Smith");
+
+            expect((await screen.findAllByRole("button", { name: "Deleted" })).length).toBeGreaterThan(0);
+        });
+
+        it.each([
+            ["update but not delete", accessWith(true, false)],
+            ["delete but not update", accessWith(false, true)],
+            ["read only", accessWith(false, false)],
+        ])("hides the Deleted view from a delegate with %s", async (_label, access) => {
+            const fetchMock = mockDelegate(access);
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Bob Smith");
+
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/mailboxes/mb1/access/me")).toBe(true));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(screen.queryByRole("button", { name: "Deleted" })).not.toBeInTheDocument();
+        });
+
+        it("hides the Deleted view when the access check fails", async () => {
+            const fetchMock = mockDelegate(undefined);
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Bob Smith");
+
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/mailboxes/mb1/access/me")).toBe(true));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(screen.queryByRole("button", { name: "Deleted" })).not.toBeInTheDocument();
+        });
+
+        it("ignores an access answer that arrives after unmounting", async () => {
+            let answer!: (response: Response) => void;
+            mockDelegate(() => new Promise<Response>((resolve) => (answer = resolve)) as unknown as Response);
+            const { unmount } = render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Bob Smith");
+            await waitFor(() => expect(answer).toBeDefined());
+
+            unmount();
+            answer(accessWith(true, true)());
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+    });
 });

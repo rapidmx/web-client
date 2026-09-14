@@ -96,16 +96,24 @@ index b5687b04c25e7a3ac5f987d7301a65e66f13c131..c90b8cba6898fe66edadcc122b205776
  /** Walks the entire hash chain end to end. `@RequiresTrustedRole()`-only server-side, deliberately not
   * holder-accessible — the chain is global across every scope, so `brokenAtSequence` would leak the
 diff --git a/dist/admin/matterExportApi.d.ts b/dist/admin/matterExportApi.d.ts
-index 1f75c92aaf8f7fe49621ec34651c92f800bd65db..5d9783ac11732def1ab0e6b7456469290ef71f97 100644
+index 1f75c92aaf8f7fe49621ec34651c92f800bd65db..4bad8097e12a117d6cc3569d552fb49f8be00518 100644
 --- a/dist/admin/matterExportApi.d.ts
 +++ b/dist/admin/matterExportApi.d.ts
-@@ -1,3 +1,5 @@
+@@ -1,4 +1,6 @@
+-export type MatterExportStatus = "pending" | "ready" | "failed";
 +import { RequestListParams } from "../util/apiQuery.js";
 +export type { RequestListParams };
- export type MatterExportStatus = "pending" | "ready" | "failed";
++export type MatterExportStatus = "pending" | "processing" | "ready" | "failed";
  export interface MatterExportRequest {
      uid: string;
-@@ -12,8 +14,9 @@ export interface MatterExportRequest {
+     version: number;
+@@ -9,11 +11,15 @@ export interface MatterExportRequest {
+     status: MatterExportStatus;
+     blobKey?: string;
+     errorMessage?: string;
++    /** How many times the server job has claimed this request into `"processing"` (a stalled claim is reclaimed
++     * back to `"pending"` until the job's max attempts, then marked `"failed"`). */
++    processingAttempts?: number;
  }
  export declare function createMatterExportRequest(matterId: string): Promise<MatterExportRequest>;
  /** Scoped server-side to matters under scopes the caller holds — never all requests, even for a trusted
@@ -571,20 +579,24 @@ index 320c77759192486fb87a96f2ccf3c7c15c0880db..f73915d6a350be19aeac0403fc83922c
  export declare function detachOccurrence(occurrence: CalendarOccurrence, fields: Partial<CalendarEventInput>): Promise<CalendarEvent>;
  /** Deletes an entire recurring series (or a genuinely non-recurring event) outright. */
 diff --git a/dist/calendar/calendarMutations.js b/dist/calendar/calendarMutations.js
-index ac8af38e7c7874c972a749401c92c1c396c612a2..9d279cd5f9b781252b76722deabe5920895732f2 100644
+index ac8af38e7c7874c972a749401c92c1c396c612a2..9082cc65637fb0dc3253433e6f2e1e2ec513f510 100644
 --- a/dist/calendar/calendarMutations.js
 +++ b/dist/calendar/calendarMutations.js
-@@ -15,7 +15,8 @@
+@@ -15,7 +15,12 @@
   * fields, with `recurrenceId` set to that original occurrence's start for traceability — mirroring
   * how `CalendarEvent.recurrenceId` is documented to work.
   */
 -import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "./calendarApi.js";
 +import { createCalendarEvent, deleteCalendarEvent, getCalendarEvent, listCalendarEvents, updateCalendarEvent, } from "./calendarApi.js";
 +import { fromEventWallClock, toEventWallClock } from "./recurrence.js";
++const MS_PER_DAY = 24 * 60 * 60 * 1000;
++function positiveModulo(value, modulus) {
++    return ((value % modulus) + modulus) % modulus;
++}
  function addException(event, occurrenceStart) {
      const rule = event.recurrenceRule;
      return updateCalendarEvent({
-@@ -24,17 +25,73 @@ function addException(event, occurrenceStart) {
+@@ -24,17 +29,84 @@ function addException(event, occurrenceStart) {
          recurrenceRule: { ...rule, exceptions: [...rule.exceptions, occurrenceStart] },
      });
  }
@@ -616,7 +628,18 @@ index ac8af38e7c7874c972a749401c92c1c396c612a2..9d279cd5f9b781252b76722deabe5920
 +    if (deltaWallMs === 0 && newTimezone === master.timezone && newAllDay === master.allDay) {
 +        return updateCalendarEvent(update);
 +    }
-+    const shift = (instant) => new Date(fromEventWallClock(toEventWallClock(Date.parse(instant), master.timezone, master.allDay) + deltaWallMs, newTimezone, newAllDay)).toISOString();
++    // An occurrence is identified by its nominal wall-clock start (the rule's date + the master's time of day),
++    // not by the instant's own wall time: one that fell in a DST gap was pushed forward (02:30 -> 03:30 EDT),
++    // so shifting that pushed wall time would miss the occurrence the moved rule generates on that date.
++    const masterTimeOfDay = positiveModulo(oldStartWall, MS_PER_DAY);
++    const nominalWall = (instantMs) => {
++        const wall = toEventWallClock(instantMs, master.timezone, master.allDay);
++        const dayStart = wall - positiveModulo(wall, MS_PER_DAY);
++        const candidates = [dayStart + masterTimeOfDay, dayStart - MS_PER_DAY + masterTimeOfDay];
++        // An instant the rule couldn't have generated (e.g. a hand-edited exception) shifts by its own wall time.
++        return candidates.find((candidate) => fromEventWallClock(candidate, master.timezone, master.allDay) === instantMs) ?? wall;
++    };
++    const shift = (instant) => new Date(fromEventWallClock(nominalWall(Date.parse(instant)) + deltaWallMs, newTimezone, newAllDay)).toISOString();
 +    const rule = fields.recurrenceRule ?? master.recurrenceRule;
 +    if (rule) {
 +        update.recurrenceRule = { ...rule, exceptions: rule.exceptions.map(shift) };
@@ -663,7 +686,7 @@ index ac8af38e7c7874c972a749401c92c1c396c612a2..9d279cd5f9b781252b76722deabe5920
          mailboxUid: occurrence.mailboxUid,
          folderUid: occurrence.folderUid,
          title: occurrence.title,
-@@ -48,8 +105,22 @@ export async function detachOccurrence(occurrence, fields) {
+@@ -48,8 +120,22 @@ export async function detachOccurrence(occurrence, fields) {
          status: occurrence.status,
          busyStatus: occurrence.busyStatus,
          reminderMinutesBeforeStart: occurrence.reminderMinutesBeforeStart,
@@ -1238,10 +1261,46 @@ index 0000000000000000000000000000000000000000..15d19d076fa92602e502f92fb3053cf7
 +    return depth + 1;
 +}
 diff --git a/dist/contacts/contactsApi.d.ts b/dist/contacts/contactsApi.d.ts
-index 535b446cce3b3cf086dc849d521c8c856bebae7f..b2b2c47864b614d21aa6a46a461a469ee5f89608 100644
+index 535b446cce3b3cf086dc849d521c8c856bebae7f..da52ac4b6c24aea0c0e550ffe658dda31927e0e4 100644
 --- a/dist/contacts/contactsApi.d.ts
 +++ b/dist/contacts/contactsApi.d.ts
-@@ -100,9 +100,15 @@ export interface UpdateContactInput extends ContactInput {
+@@ -1,7 +1,7 @@
+ /** Typed wrappers over `@rapidmx/restapi`'s `/mail/contacts` REST surface — see `mailApi.ts`'s own header
+  * comment for the shared ACL/authorization model every wrapper file here follows. */
+ import { ListParams } from "../util/apiQuery.js";
+-import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
++import { type EncryptionPreference, type PublicKey } from "../crypto/keyvaultApi.js";
+ export type ContactAddressKind = "home" | "work" | "other";
+ export interface ContactEmail {
+     address: string;
+@@ -65,8 +65,25 @@ export interface Contact {
+ /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
+  * `listDeletedContacts()` for those. */
+ export declare function listContacts(folderUid: string, params?: ListParams): Promise<Contact[]>;
++/** The pinned signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
++ * `address` - see `keyvaultApi.ts`'s `signingKeyFingerprints()`. De-duplicated; `[]` when no contact matches or none
++ * has a pinned signing key. */
++export declare function pinnedSigningFingerprintsFor(contacts: Contact[], address: string): string[];
++/** Page size and page cap for `fetchPinnedSigningFingerprints()` (500 is restapi's own `limit` cap). */
++export declare const PINNED_FINGERPRINT_PAGE_SIZE = 500;
++export declare const PINNED_FINGERPRINT_MAX_PAGES = 20;
+ /**
+- * Lists a folder's soft-deleted contacts (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
++ * Fetches the pinned signing-key fingerprints for a message sender's `address` from the contacts in `folderUids`
++ * (the reader's contacts folders), for `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what key
++ * discovery already stored on the reader's own contacts - never triggers a Discovery lookup, which must not happen
++ * on message receipt (it would leak read timing to the sender's server). Pages through each folder
++ * (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many
++ * messages should cache the contact list and use `pinnedSigningFingerprintsFor()` instead.
++ */
++export declare function fetchPinnedSigningFingerprints(folderUids: string[], address: string): Promise<string[]>;
++/**
++ * Lists a folder's soft-deleted contacts
++ (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
+  * queryable field on `Contact` (a `RecoverableBaseEntity`), so this is the same `find()` the plain listing
+  * above uses, just constrained to `deleted: true` instead of the framework's own default of excluding them.
+  *
+@@ -100,9 +117,15 @@ export interface UpdateContactInput extends ContactInput {
      uid: string;
      version: number;
  }
@@ -1260,10 +1319,59 @@ index 535b446cce3b3cf086dc849d521c8c856bebae7f..b2b2c47864b614d21aa6a46a461a469e
  export declare function deleteContact(uid: string, version: number): Promise<void>;
  export interface ContactList {
 diff --git a/dist/contacts/contactsApi.js b/dist/contacts/contactsApi.js
-index 9ff7edbc15133e01784f58fc74c416417a72487f..ddb1eb3fbc9b9f9c126e11d1bcc27c3e2cc8c854 100644
+index 9ff7edbc15133e01784f58fc74c416417a72487f..f6c137f2655aede1b77c69c1851a41904d901251 100644
 --- a/dist/contacts/contactsApi.js
 +++ b/dist/contacts/contactsApi.js
-@@ -35,16 +35,17 @@ export function createContact(input) {
+@@ -6,13 +6,47 @@
+  * comment for the shared ACL/authorization model every wrapper file here follows. */
+ import { apiFetch } from "../util/api.js";
+ import { buildQuery } from "../util/apiQuery.js";
++import { signingKeyFingerprints } from "../crypto/keyvaultApi.js";
+ /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
+  * `listDeletedContacts()` for those. */
+ export function listContacts(folderUid, params = {}) {
+     return apiFetch(`/mail/contacts?${buildQuery(params, { folderUid, sort: JSON.stringify({ displayName: "ASC" }) })}`);
+ }
++/** The pinned signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
++ * `address` - see `keyvaultApi.ts`'s `signingKeyFingerprints()`. De-duplicated; `[]` when no contact matches or none
++ * has a pinned signing key. */
++export function pinnedSigningFingerprintsFor(contacts, address) {
++    const wanted = address.trim().toLowerCase();
++    const matching = contacts.filter((contact) => contact.emails.some((email) => email.address.trim().toLowerCase() === wanted));
++    return [...new Set(matching.flatMap((contact) => signingKeyFingerprints(contact.keys)))];
++}
++/** Page size and page cap for `fetchPinnedSigningFingerprints()` (500 is restapi's own `limit` cap). */
++export const PINNED_FINGERPRINT_PAGE_SIZE = 500;
++export const PINNED_FINGERPRINT_MAX_PAGES = 20;
+ /**
+- * Lists a folder's soft-deleted contacts (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
++ * Fetches the pinned signing-key fingerprints for a message sender's `address` from the contacts in `folderUids`
++ * (the reader's contacts folders), for `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what key
++ * discovery already stored on the reader's own contacts - never triggers a Discovery lookup, which must not happen
++ * on message receipt (it would leak read timing to the sender's server). Pages through each folder
++ * (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many
++ * messages should cache the contact list and use `pinnedSigningFingerprintsFor()` instead.
++ */
++export async function fetchPinnedSigningFingerprints(folderUids, address) {
++    const contacts = [];
++    for (const folderUid of folderUids) {
++        for (let page = 0; page < PINNED_FINGERPRINT_MAX_PAGES; page++) {
++            const batch = await listContacts(folderUid, { limit: PINNED_FINGERPRINT_PAGE_SIZE, page });
++            contacts.push(...batch);
++            if (batch.length < PINNED_FINGERPRINT_PAGE_SIZE) {
++                break;
++            }
++        }
++    }
++    return pinnedSigningFingerprintsFor(contacts, address);
++}
++/**
++ * Lists a folder's soft-deleted contacts
++ (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
+  * queryable field on `Contact` (a `RecoverableBaseEntity`), so this is the same `find()` the plain listing
+  * above uses, just constrained to `deleted: true` instead of the framework's own default of excluding them.
+  *
+@@ -35,16 +69,17 @@ export function createContact(input) {
          body: JSON.stringify({ emails: [], phones: [], addresses: [], ...input }),
      });
  }
@@ -1305,7 +1413,7 @@ index 4104814c82fdc5c4d05b792a9575ca5643b8bdfa..615a3f30eee14d6ac28d3b5f9364d2fb
   */
  export declare function parseVCards(text: string): ParsedVCardContact[];
 diff --git a/dist/contacts/vcard.js b/dist/contacts/vcard.js
-index aeca77931cf5e2f92cf70f7a732c177d3b090ca0..2ddb02ad6ac975fba6d181448def2d003f1fa1c5 100644
+index aeca77931cf5e2f92cf70f7a732c177d3b090ca0..c22a81f37f7e01fc507d6d5bc40d82ea0884fcb9 100644
 --- a/dist/contacts/vcard.js
 +++ b/dist/contacts/vcard.js
 @@ -1,8 +1,37 @@
@@ -1348,7 +1456,7 @@ index aeca77931cf5e2f92cf70f7a732c177d3b090ca0..2ddb02ad6ac975fba6d181448def2d00
  }
  /** Builds a single vCard 3.0 record for one contact. */
  export function contactToVCard(contact) {
-@@ -44,34 +73,70 @@ export function contactToVCard(contact) {
+@@ -44,34 +73,73 @@ export function contactToVCard(contact) {
  export function contactsToVCardFile(contacts) {
      return contacts.map(contactToVCard).join("\r\n");
  }
@@ -1396,11 +1504,14 @@ index aeca77931cf5e2f92cf70f7a732c177d3b090ca0..2ddb02ad6ac975fba6d181448def2d00
 + * `normalizeType()`); structured values are split on unescaped `;` only.
   */
  export function parseVCards(text) {
-     const cards = text.split(/BEGIN:VCARD/i).slice(1);
+-    const cards = text.split(/BEGIN:VCARD/i).slice(1);
++    // Unfold first, then split only on a line that is exactly BEGIN:VCARD - a NOTE (or a folded line) that
++    // merely contains the text "BEGIN:VCARD" must not start a bogus record.
++    const unfolded = text.replace(/(?:\r\n|\r|\n)[ \t]/g, "");
++    const cards = unfolded.split(/^[ \t]*BEGIN:VCARD[ \t]*$/im).slice(1);
      return cards.map((card) => {
          const contact = { displayName: "", emails: [], phones: [], addresses: [] };
--        const lines = card.split(/\r\n|\r|\n/);
-+        const lines = card.replace(/(?:\r\n|\r|\n)[ \t]/g, "").split(/\r\n|\r|\n/);
+         const lines = card.split(/\r\n|\r|\n/);
          for (const rawLine of lines) {
              const line = rawLine.trim();
 -            const colonIndex = line.indexOf(":");
@@ -1429,7 +1540,7 @@ index aeca77931cf5e2f92cf70f7a732c177d3b090ca0..2ddb02ad6ac975fba6d181448def2d00
                      if (surname)
                          contact.surname = surname;
                      if (given)
-@@ -79,7 +144,8 @@ export function parseVCards(text) {
+@@ -79,7 +147,8 @@ export function parseVCards(text) {
                      break;
                  }
                  case "ORG":
@@ -1439,7 +1550,7 @@ index aeca77931cf5e2f92cf70f7a732c177d3b090ca0..2ddb02ad6ac975fba6d181448def2d00
                      break;
                  case "TITLE":
                      contact.jobTitle = value;
-@@ -91,7 +157,7 @@ export function parseVCards(text) {
+@@ -91,7 +160,7 @@ export function parseVCards(text) {
                      contact.phones.push({ phoneNumber: value, type });
                      break;
                  case "ADR": {
@@ -1491,20 +1602,22 @@ index 81236f1dceed4b282f723ca148bad3a6a66ece00..a6fd0fb85efb83b7a181fd671edcbd22
  /** See this module's own doc comment for why this is an approximation, not an authoritative classification. */
  export function classifyRecipientTier(ownAddress, recipientAddress, hasDiscoveredKeys) {
 diff --git a/dist/crypto/keyRotation.d.ts b/dist/crypto/keyRotation.d.ts
-index 02ddd122b1f534fbca1b2c15716b6de7d3728f71..d7fa003cd91eb700a9fdfc2d35273890ffec637a 100644
+index 02ddd122b1f534fbca1b2c15716b6de7d3728f71..d2a1f9963930313e6fc03cfb20ec709e48dd30da 100644
 --- a/dist/crypto/keyRotation.d.ts
 +++ b/dist/crypto/keyRotation.d.ts
-@@ -13,6 +13,7 @@ export interface RewrappedPrivateKeys {
+@@ -13,6 +13,9 @@ export interface RewrappedPrivateKeys {
   * reused unchanged, only its protection changes. A mailbox with only an encryption key (signing keys
   * have no real enrolment path yet — see `KeyEnrollmentGate.tsx`'s own doc comment) simply produces one
   * `WrappedPrivateKey`, not two; this function never invents key material `unlocked` doesn't already
 - * have decrypted.
 + * have decrypted. Throws `KeysLockedError` for an `UnlockedKeys` object that `destroyUnlockedKeys()` has
-+ * since destroyed (its private keys are gone, so a rotation would silently wrap nothing).
++ * since destroyed (its private keys are gone, so a rotation would silently wrap nothing) - checked on entry
++ * and again before returning, so a lock during the export/seal awaits also fails (the new master key is
++ * zeroed first).
   */
  export declare function rewrapPrivateKeysUnderNewMasterKey(mailboxUid: string, unlocked: UnlockedKeys): Promise<RewrappedPrivateKeys>;
 diff --git a/dist/crypto/keyRotation.js b/dist/crypto/keyRotation.js
-index 30b8b79458347f0b5e09555bd986dd43022d9622..c1fc5f1d8ce03fba1e9e2f4d1fedaaa93bbd13e3 100644
+index 30b8b79458347f0b5e09555bd986dd43022d9622..2bccf4aef0df5c6dbea2676cf81c1d7781eaeba2 100644
 --- a/dist/crypto/keyRotation.js
 +++ b/dist/crypto/keyRotation.js
 @@ -12,7 +12,7 @@
@@ -1516,23 +1629,64 @@ index 30b8b79458347f0b5e09555bd986dd43022d9622..c1fc5f1d8ce03fba1e9e2f4d1fedaaa9
  import { ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE, SIGNING_PRIVATE_KEY_AAD_PURPOSE } from "./keySession.js";
  /**
   * Generates a fresh master key and re-wraps whichever of `unlocked`'s already-decrypted private keys
-@@ -20,9 +20,13 @@ import { ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE, SIGNING_PRIVATE_KEY_AAD_PURPOSE } f
+@@ -20,32 +20,48 @@ import { ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE, SIGNING_PRIVATE_KEY_AAD_PURPOSE } f
   * reused unchanged, only its protection changes. A mailbox with only an encryption key (signing keys
   * have no real enrolment path yet — see `KeyEnrollmentGate.tsx`'s own doc comment) simply produces one
   * `WrappedPrivateKey`, not two; this function never invents key material `unlocked` doesn't already
 - * have decrypted.
 + * have decrypted. Throws `KeysLockedError` for an `UnlockedKeys` object that `destroyUnlockedKeys()` has
-+ * since destroyed (its private keys are gone, so a rotation would silently wrap nothing).
++ * since destroyed (its private keys are gone, so a rotation would silently wrap nothing) - checked on entry
++ * and again before returning, so a lock during the export/seal awaits also fails (the new master key is
++ * zeroed first).
   */
  export async function rewrapPrivateKeysUnderNewMasterKey(mailboxUid, unlocked) {
 +    if (unlocked.destroyed) {
 +        throw new KeysLockedError();
 +    }
++    // Captured before the first await: `destroyUnlockedKeys()` deletes these handles from `unlocked`, so
++    // re-reading them after an await would silently skip a key that was present when rotation started.
++    const { signingPrivateKey, signingFingerprint, encryptionPrivateKey, encryptionFingerprint } = unlocked;
      const mk = generateMasterKey();
      const wrappedKeys = [];
-     if (unlocked.signingPrivateKey && unlocked.signingFingerprint) {
+-    if (unlocked.signingPrivateKey && unlocked.signingFingerprint) {
+-        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", unlocked.signingPrivateKey));
++    if (signingPrivateKey && signingFingerprint) {
++        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", signingPrivateKey));
+         const sealed = await sealWithKey(mk, raw, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
++        raw.fill(0);
+         wrappedKeys.push({
+             ciphertext: sealed.ciphertext,
+             nonce: sealed.nonce,
+             algorithm: "AES-256-GCM",
+-            fingerprint: unlocked.signingFingerprint,
++            fingerprint: signingFingerprint,
+             useType: "sign",
+         });
+     }
+-    if (unlocked.encryptionPrivateKey && unlocked.encryptionFingerprint) {
+-        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", unlocked.encryptionPrivateKey));
++    if (encryptionPrivateKey && encryptionFingerprint) {
++        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", encryptionPrivateKey));
+         const sealed = await sealWithKey(mk, raw, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
++        raw.fill(0);
+         wrappedKeys.push({
+             ciphertext: sealed.ciphertext,
+             nonce: sealed.nonce,
+             algorithm: "AES-256-GCM",
+-            fingerprint: unlocked.encryptionFingerprint,
++            fingerprint: encryptionFingerprint,
+             useType: "encrypt",
+         });
+     }
++    if (unlocked.destroyed) {
++        // Locked mid-rotation: don't hand back a new master key wrapping keys the user just locked away.
++        mk.fill(0);
++        throw new KeysLockedError();
++    }
+     return { mk, wrappedKeys };
+ }
 diff --git a/dist/crypto/keySession.d.ts b/dist/crypto/keySession.d.ts
-index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d8f56c25626a08ceb9f823d062f2cfe1aa094ca4 100644
+index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..989e33c8bcdaa1221ffed12e0221c62a79eddfce 100644
 --- a/dist/crypto/keySession.d.ts
 +++ b/dist/crypto/keySession.d.ts
 @@ -16,14 +16,21 @@
@@ -1558,7 +1712,7 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d8f56c25626a08ceb9f823d062f2cfe1
      masterKey: Uint8Array;
      signingPrivateKey?: CryptoKey;
      signingCertDer?: Uint8Array;
-@@ -32,11 +39,35 @@ export interface UnlockedKeys {
+@@ -32,12 +39,60 @@ export interface UnlockedKeys {
      encryptionCertDer?: Uint8Array;
      encryptionFingerprint?: string;
  }
@@ -1592,15 +1746,55 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d8f56c25626a08ceb9f823d062f2cfe1
 + * private key `CryptoKey` handles are removed (their material is never exposed to JS, so there is nothing
 + * to zero - but a stale holder must not keep signing/decrypting with them after a lock). Sealing/opening
 + * with the zeroed master key throws `KeysLockedError` (see `masterKey.ts`).
++ *
++ * Every object handed out for the mailbox is destroyed - including ones a re-unlock already replaced in the
++ * store - and an `unlockWithPassword()` still in flight for it when this runs throws `KeysLockedError`
++ * instead of restoring keys after the lock.
 + */
  export declare function destroyUnlockedKeys(mailboxUid?: string): void;
++/** What `unlockWithPassword()` resolves with. */
++export interface UnlockResult {
++    /** Fingerprints of active *signing* keys whose wrapped private key couldn't be opened with the (correctly
++     * unwrapped) master key - e.g. a wrap sealed under a master key a later rekey replaced. The unlock still
++     * succeeds without them (no `signingPrivateKey`), so a user isn't locked out of reading mail by a signing
++     * key they can re-enroll. Empty when every active key opened. */
++    unopenableKeys: string[];
++}
++/**
++ * Thrown by `unlockWithPassword()` when the password was right (the master key unwrapped) but the active
++ * *encryption* key's wrapped private key couldn't be opened or imported with it. Distinct from the
++ * wrong-password failure (which rejects with the underlying AEAD error from opening the password wrap), so a
++ * UI can say "your encryption key can't be opened" instead of "incorrect password".
++ */
++export declare class UnopenableEncryptionKeyError extends Error {
++    readonly fingerprint: string;
++    /** The underlying AEAD/import failure. */
++    readonly cause: unknown;
++    constructor(fingerprint: string, cause?: unknown);
++}
  /**
   * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
+  * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
+@@ -45,7 +100,11 @@ export declare function destroyUnlockedKeys(mailboxUid?: string): void;
+  * currently-active public keys for. Stores the result in this module's in-memory session store.
+  *
+  * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
+- * wrong (AEAD authentication failure) — callers should present this as "incorrect password," not a
+- * generic error, but this module doesn't presume a specific UI's error copy.
++ * wrong (AEAD authentication failure opening the password wrap) — callers should present this as
++ * "incorrect password," not a generic error, but this module doesn't presume a specific UI's error copy.
++ * Once the master key has opened, the password is known to be right: an active signing key that then
++ * won't open is skipped and listed in `UnlockResult.unopenableKeys`; an active encryption key that won't
++ * open still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
++ * `destroyUnlockedKeys()` locked this mailbox (or all mailboxes) while the unlock was in flight.
+  */
+-export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<void>;
++export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<UnlockResult>;
 diff --git a/dist/crypto/keySession.js b/dist/crypto/keySession.js
-index 763759b94580beb99c25cdf780ab1cad7a6f8e60..0b478f84bea0edcaa019f3a65d7bc0bbf9d57d05 100644
+index 763759b94580beb99c25cdf780ab1cad7a6f8e60..b6b495f23d451da3431a1900d66a1e823ce7b6d5 100644
 --- a/dist/crypto/keySession.js
 +++ b/dist/crypto/keySession.js
-@@ -1,29 +1,96 @@
+@@ -1,35 +1,154 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1639,6 +1833,17 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..0b478f84bea0edcaa019f3a65d7bc0bb
  export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
 +export { KeysLockedError };
  const sessions = new Map();
++/** Every `UnlockedKeys` object this store has handed out per mailbox and not yet destroyed - a re-unlock
++ * replaces the store entry but leaves the previous object usable for in-flight consumers, so a lock must
++ * reach all of them, not only the newest. */
++const issued = new Map();
++/** Bumped by every `destroyUnlockedKeys()` call for that mailbox (`lockAllGeneration` for a destroy-all),
++ * so an unlock still awaiting the vault/KDF when a lock happens can tell and discard what it unwrapped. */
++const lockGenerations = new Map();
++let lockAllGeneration = 0;
++function lockGeneration(mailboxUid) {
++    return `${lockAllGeneration}:${lockGenerations.get(mailboxUid) ?? 0}`;
++}
 +const listeners = new Set();
 +function notify(event) {
 +    // Iterate a snapshot so a listener that unsubscribes (or subscribes another) mid-dispatch can't skip
@@ -1685,29 +1890,91 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..0b478f84bea0edcaa019f3a65d7bc0bb
 + * private key `CryptoKey` handles are removed (their material is never exposed to JS, so there is nothing
 + * to zero - but a stale holder must not keep signing/decrypting with them after a lock). Sealing/opening
 + * with the zeroed master key throws `KeysLockedError` (see `masterKey.ts`).
++ *
++ * Every object handed out for the mailbox is destroyed - including ones a re-unlock already replaced in the
++ * store - and an `unlockWithPassword()` still in flight for it when this runs throws `KeysLockedError`
++ * instead of restoring keys after the lock.
 + */
  export function destroyUnlockedKeys(mailboxUid) {
--    if (mailboxUid) {
+     if (mailboxUid) {
 -        sessions.delete(mailboxUid);
--    }
--    else {
++        lockGenerations.set(mailboxUid, (lockGenerations.get(mailboxUid) ?? 0) + 1);
+     }
+     else {
 -        sessions.clear();
-+    const uids = mailboxUid ? [mailboxUid] : [...sessions.keys()];
++        lockAllGeneration++;
++    }
++    const uids = mailboxUid ? [mailboxUid] : [...issued.keys()];
 +    for (const uid of uids) {
-+        const unlocked = sessions.get(uid);
-+        if (!unlocked) {
++        const objects = issued.get(uid);
++        if (!objects) {
 +            continue;
 +        }
-+        unlocked.masterKey.fill(0);
-+        unlocked.destroyed = true;
-+        delete unlocked.signingPrivateKey;
-+        delete unlocked.encryptionPrivateKey;
++        for (const unlocked of objects) {
++            destroyObject(unlocked);
++        }
++        issued.delete(uid);
 +        sessions.delete(uid);
 +        notify({ mailboxUid: uid, state: "locked" });
      }
  }
++function destroyObject(unlocked) {
++    unlocked.masterKey.fill(0);
++    unlocked.destroyed = true;
++    delete unlocked.signingPrivateKey;
++    delete unlocked.encryptionPrivateKey;
++}
  /** Finds the wrapped private key whose fingerprint matches a given published public key. */
-@@ -54,21 +121,44 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
+ function findWrappedPrivateKey(vault, fingerprint) {
+     return vault.wrappedKeys.find((k) => k.fingerprint === fingerprint);
+ }
++/**
++ * Thrown by `unlockWithPassword()` when the password was right (the master key unwrapped) but the active
++ * *encryption* key's wrapped private key couldn't be opened or imported with it. Distinct from the
++ * wrong-password failure (which rejects with the underlying AEAD error from opening the password wrap), so a
++ * UI can say "your encryption key can't be opened" instead of "incorrect password".
++ */
++export class UnopenableEncryptionKeyError extends Error {
++    constructor(fingerprint, cause) {
++        super(`The encryption key ${fingerprint} for this mailbox couldn't be opened with its master key.`);
++        this.name = "UnopenableEncryptionKeyError";
++        this.fingerprint = fingerprint;
++        this.cause = cause;
++    }
++}
++/** Opens one wrapped PKCS#8 private key under `masterKey` and imports it (extractable), zeroing the
++ * transient plaintext whether or not the import succeeds. */
++async function openPrivateKey(masterKey, wrapped, aad, algorithm, usages) {
++    const raw = await openWithKey(masterKey, wrapped, aad);
++    try {
++        return await importPrivateKeyPkcs8(raw, algorithm, usages, true);
++    }
++    finally {
++        raw.fill(0);
++    }
++}
+ /**
+  * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
+  * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
+@@ -37,10 +156,15 @@ function findWrappedPrivateKey(vault, fingerprint) {
+  * currently-active public keys for. Stores the result in this module's in-memory session store.
+  *
+  * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
+- * wrong (AEAD authentication failure) — callers should present this as "incorrect password," not a
+- * generic error, but this module doesn't presume a specific UI's error copy.
++ * wrong (AEAD authentication failure opening the password wrap) — callers should present this as
++ * "incorrect password," not a generic error, but this module doesn't presume a specific UI's error copy.
++ * Once the master key has opened, the password is known to be right: an active signing key that then
++ * won't open is skipped and listed in `UnlockResult.unopenableKeys`; an active encryption key that won't
++ * open still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
++ * `destroyUnlockedKeys()` locked this mailbox (or all mailboxes) while the unlock was in flight.
+  */
+ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
++    const generation = lockGeneration(mailboxUid);
+     const vault = await getKeyVault(mailboxUid);
+     const passwordWrap = vault.masterKeyWraps.find((w) => w.method === "password");
+     if (!passwordWrap) {
+@@ -54,21 +178,61 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
      const { wrappingKey } = await deriveFromPassword(password, salt, kdfParams);
      const masterKey = await openWithKey(wrappingKey, { ciphertext: passwordWrap.ciphertext, nonce: passwordWrap.nonce }, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
      const unlocked = { masterKey };
@@ -1718,6 +1985,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..0b478f84bea0edcaa019f3a65d7bc0bb
 -        unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"]);
 -        unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
 -        unlocked.signingFingerprint = signingPublicKey.fingerprint;
++    const unopenableKeys = [];
 +    // The unwrapped private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default)
 +    // for exactly one consumer: `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, which re-seals
 +    // these session keys' PKCS#8 bytes under a new master key via `crypto.subtle.exportKey()` (web-client's
@@ -1731,20 +1999,32 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..0b478f84bea0edcaa019f3a65d7bc0bb
 +        const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
 +        const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);
 +        if (signingPublicKey && wrappedSigningKey) {
-+            const raw = await openWithKey(masterKey, wrappedSigningKey, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
-+            unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"], true);
-+            raw.fill(0);
-+            unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
-+            unlocked.signingFingerprint = signingPublicKey.fingerprint;
++            try {
++                const aad = buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE);
++                unlocked.signingPrivateKey = await openPrivateKey(masterKey, wrappedSigningKey, aad, { name: "ECDSA", namedCurve: "P-256" }, ["sign"]);
++                unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
++                unlocked.signingFingerprint = signingPublicKey.fingerprint;
++            }
++            catch {
++                unopenableKeys.push(signingPublicKey.fingerprint);
++            }
 +        }
 +        const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
 +        const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
 +        if (encryptionPublicKey && wrappedEncryptionKey) {
-+            const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
-+            unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], true);
-+            raw.fill(0);
++            try {
++                const aad = buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
++                unlocked.encryptionPrivateKey = await openPrivateKey(masterKey, wrappedEncryptionKey, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
++            }
++            catch (err) {
++                throw new UnopenableEncryptionKeyError(encryptionPublicKey.fingerprint, err);
++            }
 +            unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
 +            unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
++        }
++        if (lockGeneration(mailboxUid) !== generation) {
++            // Locked (e.g. logout) while this unlock was awaiting - never restore keys after that.
++            throw new KeysLockedError();
 +        }
      }
 -    const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
@@ -1756,15 +2036,19 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..0b478f84bea0edcaa019f3a65d7bc0bb
 -        unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
 +    catch (err) {
 +        // A failed unlock never reaches the session store, so nothing else would ever zero this.
-+        masterKey.fill(0);
++        destroyObject(unlocked);
 +        throw err;
      }
 +    // A re-unlock replacing existing keys (e.g. `settings/encryption`'s post-rotation refresh) deliberately
 +    // does NOT zero the previous entry's master key: an in-flight consumer that captured the old
 +    // `UnlockedKeys` object (e.g. a local-index build pass) is still legitimately using it, and nothing
-+    // "destroyed" the session - only `destroyUnlockedKeys()` does that.
++    // "destroyed" the session - only `destroyUnlockedKeys()` does that, and it destroys every issued object.
      sessions.set(mailboxUid, unlocked);
++    const objects = issued.get(mailboxUid) ?? new Set();
++    objects.add(unlocked);
++    issued.set(mailboxUid, objects);
 +    notify({ mailboxUid, state: "unlocked" });
++    return { unopenableKeys };
  }
 diff --git a/dist/crypto/keys.d.ts b/dist/crypto/keys.d.ts
 index 37fae09b31b59d842afd9a0feba0be54cd2bb77e..09f75c9c775a3a1b9d00bb9a710b88bfaedb5c43 100644
@@ -1812,6 +2096,174 @@ index 509f0888cb0a588e1a404f15baacb2dad03fc613..eddf7c9f701060061d52b3d7c9bfcf87
 +export async function importPrivateKeyPkcs8(raw, algorithm, usages, extractable = false) {
 +    return crypto.subtle.importKey("pkcs8", raw, algorithm, extractable, usages);
  }
+diff --git a/dist/crypto/keyvaultApi.d.ts b/dist/crypto/keyvaultApi.d.ts
+index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..32f80d2f4a443246ad3c112aace8c0d51ef1b7c7 100644
+--- a/dist/crypto/keyvaultApi.d.ts
++++ b/dist/crypto/keyvaultApi.d.ts
+@@ -1,3 +1,12 @@
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s E2E encryption endpoints (`BaseKeyVaultRoute`,
++ * `BaseKeyLookupRoute`, `BaseEncryptionPolicyRoute` — mounted in `server` at `mail/mailboxes` and
++ * `system/encryption-policy`, see `src/{mongo,sql}/routes/{KeyVaultRoute,KeyLookupRoute,
++ * EncryptionPolicyRoute}.ts`). These calls carry only wrapped/ciphertext key material and public
++ * certificates — the server never sees an unwrapped private key or master key; see `crypto/masterKey.ts`
++ * and `crypto/keys.ts` for the client-side cryptography that produces the values passed here.
++ */
++import { ApiRequestError } from "../util/api.js";
+ /** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
+  * `@rapidmx/restapi`'s `PublicKey` type exactly. */
+ export interface PublicKey {
+@@ -67,6 +76,11 @@ export declare function getKeyVault(mailboxUid: string): Promise<KeyVault>;
+  * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
+  * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
+ export declare function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt"): PublicKey | undefined;
++/** The fingerprints (lowercased) of every signing key in `keys` that hasn't been revoked - the trusted pins to pass
++ * to `messageSecurity.ts`'s `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys`, which only key
++ * discovery can write) or a `Mailbox` (its own `keys`). Expired keys are kept: mail signed while a key was valid
++ * stays verifiable after it expires. */
++export declare function signingKeyFingerprints(keys: PublicKey[] | undefined): string[];
+ export interface EnrollKeyInput {
+     useType: "sign" | "encrypt";
+     /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
+@@ -78,8 +92,19 @@ export interface EnrollKeyInput {
+     /** Only meaningful the very first time a mailbox enrolls a key at all (bootstraps its master key). */
+     masterKeyWraps?: MasterKeyWrap[];
+ }
++/**
++ * Thrown by `enrollKey()` when `masterKeyWraps` were supplied (a first-time vault setup) but the mailbox's vault
++ * already has master-key wraps - e.g. another device or tab finished setting it up first. restapi answers `409`;
++ * this subclass (still an `ApiRequestError` with `status` 409) is only used once a re-read of the vault confirms it
++ * really has wraps, so an unrelated `409` (a lost optimistic-lock race) isn't mistaken for it. A caller should
++ * unlock the existing vault instead of enrolling a new master key.
++ */
++export declare class VaultAlreadyInitializedError extends ApiRequestError {
++    constructor(message: string, code?: string);
++}
+ /** Enrolls a new signing or encryption key. See `EnrollKeyInput`'s own doc comments for which fields
+- * matter for which `useType`. */
++ * matter for which `useType`. Rejects with `VaultAlreadyInitializedError` when `masterKeyWraps` were supplied
++ * but the vault is already set up (see that class). */
+ export declare function enrollKey(mailboxUid: string, input: EnrollKeyInput): Promise<KeyVault>;
+ export interface SignEnrollmentRequest {
+     /** A PEM-encoded PKCS#10 CSR for the signing key pair to enroll. */
+@@ -111,6 +136,10 @@ export declare function startSignEnrollment(mailboxUid: string, input: SignEnrol
+ /** Reports the current status of a previously started automated enrollment — see
+  * `startSignEnrollment()`. */
+ export declare function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult>;
++/** Cancels a pending automated enrollment of this mailbox, so no key is installed from it afterwards, and returns its
++ * resulting status. Owner-only. `rekey()` is refused (409) while an enrollment holding a wrapped key is in flight, so
++ * this is how an owner with an enrollment stuck at the CA gets to rotate their keys. */
++export declare function cancelSignEnrollment(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult>;
+ /** An escrow scope's public key, exposed only via `getEscrowInfo()` below. Mirrors `@rapidmx/restapi`'s
+  * `EscrowScopePublicKey` exactly - the same shape as `PublicKey` minus `useType` (an escrow scope's key
+  * is only ever used for encryption, never signing). */
+@@ -146,11 +175,16 @@ export declare function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap
+ export declare function removeMasterKeyWrap(mailboxUid: string, method: string, methodId?: string): Promise<KeyVault>;
+ export interface RekeyInput {
+     wrappedKeys: WrappedPrivateKey[];
++    /** Every wrap of the new master key. For a mailbox assigned an escrow scope, this must include a fresh escrow wrap
++     * for that scope (`buildEscrowWrap()`): `rekey()` drops the old escrow wraps and refuses (409) an escrowed
++     * mailbox's rekey without a replacement. */
+     masterKeyWraps: MasterKeyWrap[];
+     keys: PublicKey[];
+ }
+ /** Full, atomic replacement of the mailbox's key-vault contents — the only real revocation mechanism
+- * for a captured wrap. Restricted server-side to the mailbox's actual owner. */
++ * for a captured wrap. Restricted server-side to the mailbox's actual owner. Refused (409) while a signing enrollment
++ * holding a wrapped key is in flight (see `cancelSignEnrollment()`), or when an escrowed mailbox's request carries no
++ * replacement escrow wrap. */
+ export declare function rekey(mailboxUid: string, input: RekeyInput): Promise<KeyVault>;
+ /** The wire shape `GET /mail/mailboxes/:id/keys/lookup` returns. */
+ export interface KeyLookupResult {
+diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
+index 0c20e1474cff85aa06a91446979ccab550d1b282..3baaa04235491512866af4bcd6f78bf3a8182ea6 100644
+--- a/dist/crypto/keyvaultApi.js
++++ b/dist/crypto/keyvaultApi.js
+@@ -10,7 +10,7 @@
+  * certificates — the server never sees an unwrapped private key or master key; see `crypto/masterKey.ts`
+  * and `crypto/keys.ts` for the client-side cryptography that produces the values passed here.
+  */
+-import { apiFetch } from "../util/api.js";
++import { ApiRequestError, apiFetch } from "../util/api.js";
+ /** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
+ export function getKeyVault(mailboxUid) {
+     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`);
+@@ -26,13 +26,45 @@ export function findActivePublicKey(keys, useType) {
+         .filter((k) => k.useType === useType && !k.revokedAt && k.notAfter > now)
+         .sort((a, b) => b.notBefore - a.notBefore)[0];
+ }
++/** The fingerprints (lowercased) of every signing key in `keys` that hasn't been revoked - the trusted pins to pass
++ * to `messageSecurity.ts`'s `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys`, which only key
++ * discovery can write) or a `Mailbox` (its own `keys`). Expired keys are kept: mail signed while a key was valid
++ * stays verifiable after it expires. */
++export function signingKeyFingerprints(keys) {
++    return (keys ?? []).filter((key) => key.useType === "sign" && !key.revokedAt).map((key) => key.fingerprint.toLowerCase());
++}
++/**
++ * Thrown by `enrollKey()` when `masterKeyWraps` were supplied (a first-time vault setup) but the mailbox's vault
++ * already has master-key wraps - e.g. another device or tab finished setting it up first. restapi answers `409`;
++ * this subclass (still an `ApiRequestError` with `status` 409) is only used once a re-read of the vault confirms it
++ * really has wraps, so an unrelated `409` (a lost optimistic-lock race) isn't mistaken for it. A caller should
++ * unlock the existing vault instead of enrolling a new master key.
++ */
++export class VaultAlreadyInitializedError extends ApiRequestError {
++    constructor(message, code) {
++        super(message, 409, code);
++        this.name = "VaultAlreadyInitializedError";
++    }
++}
+ /** Enrolls a new signing or encryption key. See `EnrollKeyInput`'s own doc comments for which fields
+- * matter for which `useType`. */
+-export function enrollKey(mailboxUid, input) {
+-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys`, {
+-        method: "POST",
+-        body: JSON.stringify(input),
+-    });
++ * matter for which `useType`. Rejects with `VaultAlreadyInitializedError` when `masterKeyWraps` were supplied
++ * but the vault is already set up (see that class). */
++export async function enrollKey(mailboxUid, input) {
++    try {
++        return await apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys`, {
++            method: "POST",
++            body: JSON.stringify(input),
++        });
++    }
++    catch (err) {
++        if (err instanceof ApiRequestError && err.status === 409 && input.masterKeyWraps?.length) {
++            const vault = await getKeyVault(mailboxUid).catch(() => undefined);
++            if (vault && vault.masterKeyWraps.length > 0) {
++                throw new VaultAlreadyInitializedError(err.message, err.code);
++            }
++        }
++        throw err;
++    }
+ }
+ /** Starts an automated (RFC 8823 email-reply-00 ACME) public-CA signing-certificate enrollment —
+  * only meaningful when the deployment has `mail:pki:signing_enrollment:backend` set to `"rfc8823"`
+@@ -52,6 +84,12 @@ export function startSignEnrollment(mailboxUid, input) {
+ export function checkSignEnrollmentStatus(mailboxUid, enrollmentId) {
+     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`);
+ }
++/** Cancels a pending automated enrollment of this mailbox, so no key is installed from it afterwards, and returns its
++ * resulting status. Owner-only. `rekey()` is refused (409) while an enrollment holding a wrapped key is in flight, so
++ * this is how an owner with an enrollment stuck at the CA gets to rotate their keys. */
++export function cancelSignEnrollment(mailboxUid, enrollmentId) {
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`, { method: "DELETE" });
++}
+ /** Fetches `{escrowScopeId, publicKey}` for the `EscrowScope` this mailbox is currently assigned to
+  * (`Mailbox.escrowScopeId`, an admin-only assignment - see `EscrowInfo`'s own doc comment). 404s if the
+  * mailbox has no escrow scope assigned, the scope no longer exists, or the caller can't access this
+@@ -78,7 +116,9 @@ export function removeMasterKeyWrap(mailboxUid, method, methodId) {
+     });
+ }
+ /** Full, atomic replacement of the mailbox's key-vault contents — the only real revocation mechanism
+- * for a captured wrap. Restricted server-side to the mailbox's actual owner. */
++ * for a captured wrap. Restricted server-side to the mailbox's actual owner. Refused (409) while a signing enrollment
++ * holding a wrapped key is in flight (see `cancelSignEnrollment()`), or when an escrowed mailbox's request carries no
++ * replacement escrow wrap. */
+ export function rekey(mailboxUid, input) {
+     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/rekey`, {
+         method: "PUT",
 diff --git a/dist/crypto/masterKey.d.ts b/dist/crypto/masterKey.d.ts
 index 77156c2b0c8817ff89d1e132e43435aae1707800..c13e90b56daf1f5767dc51e6f72c913117e7e119 100644
 --- a/dist/crypto/masterKey.d.ts
@@ -1977,46 +2429,61 @@ index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..4cb94be11ffb5efb25b44a922e6d064e
      return {
          method: "escrow",
 diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
-index 39c737137ae875767f859affc408f254493a87b5..eb1b3eb77d43d697c24df1a18721ad9672a8d6b7 100644
+index 39c737137ae875767f859affc408f254493a87b5..ee7881de41adfdddd893fe4e61cadaa1c9ff89ed 100644
 --- a/dist/crypto/messageSecurity.d.ts
 +++ b/dist/crypto/messageSecurity.d.ts
-@@ -1,39 +1,97 @@
+@@ -1,39 +1,138 @@
+-export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
 +/**
 + * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
-+ * "Message Security Indicators" five states, and recovers the plaintext body when applicable. Reads the
++ * "Message Security Indicators" states, and recovers the plaintext body when applicable. Reads the
 + * outer envelope's own `Content-Type` (via `mime.ts`'s `parseMimeEntity()`) to decide whether the message
 + * is `multipart/signed`, `application/pkcs7-mime; smime-type="enveloped-data"`, or neither.
 + *
 + * **What a verified state means.** `"signed_verified"`/`"encrypted_verified"` require ALL of: (1) a
 + * cryptographically valid CMS signature (`smime.ts` - detached signatures carrying their own eContent are
-+ * rejected, and the signer certificate is the one matched to the SignerInfo, never simply the first
-+ * embedded certificate); (2) when `pinnedSignerFingerprint` is supplied, that signer certificate's
-+ * fingerprint matches it - and a supplied pin with no resolvable certificate fails closed; (3) the signer
++ * rejected, the signer certificate is the one matched to the SignerInfo, never simply the first embedded
++ * certificate, and a `multipart/signed` body must hold exactly the signed part and the signature); (2) the
++ * signer certificate's fingerprint is one the reader already trusts - a pinned `Contact` signing key passed
++ * as `pinnedSignerFingerprints`, or the unlocked mailbox's own `signingFingerprint`; (3) the signer
 + * certificate names the sender: one of its email addresses (SAN rfc822Name, else subject emailAddress /
 + * email-shaped CN) equals the single address in the protected `From` (or the outer `From` when the signed
-+ * content carries no protected headers, as with non-RFC 9788 senders); (4) the protected `From`/`To`
-+ * address sets (when present) equal the outer envelope's - the outer envelope is what the mail list and
-+ * reading pane display as the sender - and neither the outer envelope nor the protected headers carry more
-+ * than one `From`/`To`/`Cc`/`Sender` field (a duplicate lets a forged second `From` be what a client
-+ * displays while the first one is what was checked). Any failure downgrades to `"signature_failed"`, with `signatureFailureReason` saying which check failed.
-+ * The state union itself is unchanged (a distinct identity-mismatch state would break existing
-+ * exhaustive consumers); the reason is an additive, optional field.
++ * content carries no protected headers, as with non-RFC 9788 senders); (4) the protected `From`/`To`/`Cc`
++ * address sets (when present) equal the outer envelope's, a signed-only message's protected `Subject` equals
++ * its outer one (what the mail list shows), and neither header block carries more than one
++ * `From`/`To`/`Cc`/`Sender` field.
 + *
-+ * **Trust Model gap, disclosed not silent**: the spec's own Trust Model requires validating a signature
-+ * "against the known public key in the Contact's record" (TOFU pinning). Without a
-+ * `pinnedSignerFingerprint`, check 2 is skipped and a self-issued certificate naming the sender's address
-+ * passes checks 1, 3 and 4 - callers that have a pinned Contact key MUST pass it.
++ * **No trust anchor, no verified badge.** Certificates aren't chain-validated (there is no trust store), so
++ * checks 1, 3 and 4 alone prove only that *someone* holding a certificate naming the sender signed it - a
++ * self-issued certificate with SAN `ceo@victim.com` passes them. Without a matching pin the result is
++ * `"signed_unverified_signer"`/`"encrypted_unverified_signer"` instead, carrying `signerFingerprint` and
++ * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A pin that was
++ * supplied but doesn't match is `"signature_failed"` (`untrusted_signer`), and a failure of checks 1, 3 or 4
++ * is `"signature_failed"` with `signatureFailureReason` saying which check failed.
 + */
-+import { MimeHeaderField } from "./mime.js";
++import { MimeAttachment, MimeHeaderField } from "./mime.js";
 +import { ProtectedHeaders } from "./smimeMessage.js";
- export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
++export { signingKeyFingerprints } from "./keyvaultApi.js";
++/** `"signed_unverified_signer"`/`"encrypted_unverified_signer"`: the signature is valid and its certificate
++ * names the sender, but the certificate isn't one the reader trusts (no pinned key matched) - see this module's
++ * doc comment. The encrypted variant's content was decrypted like `"encrypted_verified"`'s. */
++export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signed_unverified_signer" | "encrypted_unverified_signer" | "signature_failed" | "unprotected";
 +/** Why a message is `"signature_failed"`. `invalid_signature`: the CMS signature itself is malformed or
-+ * doesn't verify over the content. `untrusted_signer`: a pinned fingerprint was supplied and the signer
-+ * certificate doesn't match it (or no signer certificate could be resolved at all).
-+ * `signer_identity_mismatch`: the signer certificate doesn't name the message's `From` address (or `From`
-+ * doesn't hold exactly one address). `header_mismatch`: the signed/protected `From`/`To` disagree with
-+ * the outer envelope's, or either header block repeats a `From`/`To`/`Cc`/`Sender` field. */
++ * doesn't verify over the content (or a `multipart/signed` body doesn't hold exactly two parts).
++ * `untrusted_signer`: pinned fingerprints were supplied and the signer certificate matches none of them (or no
++ * signer certificate could be resolved at all). `signer_identity_mismatch`: the signer certificate doesn't name
++ * the message's `From` address (or `From` doesn't hold exactly one address). `header_mismatch`: the
++ * signed/protected `From`/`To`/`Cc` (or a signed-only message's `Subject`) disagree with the outer envelope's,
++ * or either header block repeats a `From`/`To`/`Cc`/`Sender` field. */
 +export type SignatureFailureReason = "invalid_signature" | "untrusted_signer" | "signer_identity_mismatch" | "header_mismatch";
++/** The header fields recovered from inside the signed/encrypted entity (RFC 9788 header protection), decoded
++ * for display where they are text. */
++export interface MessageProtectedHeaders {
++    from: string;
++    to: string;
++    cc?: string;
++    subject: string;
++}
  export interface MessageSecurityResult {
      state: MessageSecurityState;
 -    /** The verified/decrypted plaintext HTML this module recovered - still needs client-side
@@ -2064,14 +2531,28 @@ index 39c737137ae875767f859affc408f254493a87b5..eb1b3eb77d43d697c24df1a18721ad96
 -     * `"unprotected"` or a failed decrypt, where the caller already has the real, non-obscured
 -     * `Message.subject` directly and needs no override. */
 +     * obscures the outer envelope's own `Subject` to `"[...]"`. Populated only when content was actually
-+     * recovered (`signed_verified`/`encrypted`/`encrypted_verified`/`signature_failed` after decrypt). */
++     * recovered and it carried a protected Subject. */
      subject?: string;
- }
++    /** Every protected header recovered from inside the signed/decrypted entity - present only when that entity
++     * carries RFC 9788 protected headers (a protected `From`). Absent for a legacy S/MIME sender's signed-only
++     * message: its outer Subject/To/Cc were then never signed, and a UI should not present them as verified. */
++    protectedHeaders?: MessageProtectedHeaders;
++    /** The attachments inside the verified/decrypted entity - for a signed-only message the only attachments the
++     * signature covers, so a UI showing a verified badge should list these rather than the server's attachment
++     * records (which include anything outside the signed part). Present whenever content was recovered. */
++    attachments?: MimeAttachment[];
++    /** SHA-256 fingerprint (hex) of the certificate that produced a cryptographically valid signature - present
++     * for `"signed_verified"`, `"encrypted_verified"`, the `*_unverified_signer` states and a `"signature_failed"`
++     * whose signature itself was valid. Compare against / pin as a `PublicKey.fingerprint`. */
++    signerFingerprint?: string;
++    /** The email addresses that signer certificate asserts (lowercased), alongside `signerFingerprint`. */
++    signerEmails?: string[];
++}
 +export interface SignerBindingInput {
 +    /** The certificate matched to the verified SignerInfo; `undefined` fails closed. */
 +    signerCertificateDer: Uint8Array | undefined;
 +    /** Headers recovered from inside the signed content (RFC 9788), if any. */
-+    protectedHeaders: Pick<ProtectedHeaders, "from" | "to"> | undefined;
++    protectedHeaders: (Pick<ProtectedHeaders, "from" | "to"> & Partial<Pick<ProtectedHeaders, "cc" | "subject">>) | undefined;
 +    /** The received message's outer header map (lowercased names), as `parseMimeEntity()` returns it. */
 +    outerHeaders: Record<string, string>;
 +    /** Every outer header field in order (`parseMimeEntity()`'s `fields`) - checked for repeated
@@ -2079,10 +2560,18 @@ index 39c737137ae875767f859affc408f254493a87b5..eb1b3eb77d43d697c24df1a18721ad96
 +    outerFields?: MimeHeaderField[];
 +    /** Every protected header field in order - checked for repeats the same way. */
 +    protectedFields?: MimeHeaderField[];
-+    pinnedSignerFingerprint?: string;
-+}
++    /** One trusted fingerprint or several (any match is accepted). An empty array counts as none supplied. */
++    pinnedSignerFingerprint?: string | string[];
++    /** Also require the protected `Subject` (when protected headers are present) to equal the outer one - right for
++     * a signed-only (`hp="clear"`) message, wrong for an encrypted one whose outer Subject is obscured. */
++    compareSubject?: boolean;
+ }
 +/** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
-+ * Returns `undefined` when the signer is accepted, otherwise the failure reason. */
++ * Returns `undefined` when the signer is accepted, otherwise the failure reason.
++ *
++ * With no `pinnedSignerFingerprint` (or an empty array), check 2 is skipped and `undefined` means only that the
++ * certificate names the sender consistently - NOT that the signer is trusted. Use `evaluateMessageSecurity()`
++ * (which reports that case as `*_unverified_signer`) unless you enforce a pin yourself. */
 +export declare function checkSignerBinding(input: SignerBindingInput): Promise<SignatureFailureReason | undefined>;
  /**
   * Evaluates one received message's raw MIME source (see `mailApi.ts`'s `getMessageRawContent()`) into
@@ -2091,43 +2580,35 @@ index 39c737137ae875767f859affc408f254493a87b5..eb1b3eb77d43d697c24df1a18721ad96
 - * "malformed input is the signature-failed case, not an exception" contract.
 + * content type all degrade to a result the caller can render directly.
 + *
-+ * `readerAddress` - the unlocked mailbox's own address - enables `notAddressedToReader`.
++ * `pinnedSignerFingerprints` - the sender's trusted signing-key fingerprint(s): `signingKeyFingerprints()` of the
++ * sender's `Contact.keys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). The unlocked mailbox's own
++ * `signingFingerprint` is always trusted too (mail this mailbox signed itself). Omitted or empty, a valid signature
++ * from any other certificate is `*_unverified_signer`, never verified. `readerAddress` - the unlocked mailbox's own
++ * address - enables `notAddressedToReader`.
   */
  export declare function evaluateMessageSecurity(rawMime: string, unlocked: {
      encryptionPrivateKey?: CryptoKey;
      encryptionCertDer?: Uint8Array;
 -} | undefined, pinnedSignerFingerprint?: string): Promise<MessageSecurityResult>;
-+} | undefined, pinnedSignerFingerprint?: string, readerAddress?: string): Promise<MessageSecurityResult>;
++    signingFingerprint?: string;
++} | undefined, pinnedSignerFingerprints?: string | string[], readerAddress?: string): Promise<MessageSecurityResult>;
 diff --git a/dist/crypto/messageSecurity.js b/dist/crypto/messageSecurity.js
-index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179d4ef02a2 100644
+index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f74e9778b 100644
 --- a/dist/crypto/messageSecurity.js
 +++ b/dist/crypto/messageSecurity.js
-@@ -5,54 +5,115 @@
+@@ -4,55 +4,147 @@
+ ///////////////////////////////////////////////////////////////////////////////
  /**
   * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
-  * "Message Security Indicators" five states, and recovers the plaintext body when applicable. Reads the
+- * "Message Security Indicators" five states, and recovers the plaintext body when applicable. Reads the
 - * outer envelope's own `Content-Type` (via `smimeMessage.ts`'s `splitHeadersAndBody()`) to decide
 - * whether the message is one this system's own `buildSignedOnlyMessage()`/`buildEncryptedMessage()`
 - * shape (`multipart/signed`, `application/pkcs7-mime; smime-type="enveloped-data"`) or neither.
++ * "Message Security Indicators" states, and recovers the plaintext body when applicable. Reads the
 + * outer envelope's own `Content-Type` (via `mime.ts`'s `parseMimeEntity()`) to decide whether the message
 + * is `multipart/signed`, `application/pkcs7-mime; smime-type="enveloped-data"`, or neither.
-+ *
-+ * **What a verified state means.** `"signed_verified"`/`"encrypted_verified"` require ALL of: (1) a
-+ * cryptographically valid CMS signature (`smime.ts` - detached signatures carrying their own eContent are
-+ * rejected, and the signer certificate is the one matched to the SignerInfo, never simply the first
-+ * embedded certificate); (2) when `pinnedSignerFingerprint` is supplied, that signer certificate's
-+ * fingerprint matches it - and a supplied pin with no resolvable certificate fails closed; (3) the signer
-+ * certificate names the sender: one of its email addresses (SAN rfc822Name, else subject emailAddress /
-+ * email-shaped CN) equals the single address in the protected `From` (or the outer `From` when the signed
-+ * content carries no protected headers, as with non-RFC 9788 senders); (4) the protected `From`/`To`
-+ * address sets (when present) equal the outer envelope's - the outer envelope is what the mail list and
-+ * reading pane display as the sender - and neither the outer envelope nor the protected headers carry more
-+ * than one `From`/`To`/`Cc`/`Sender` field (a duplicate lets a forged second `From` be what a client
-+ * displays while the first one is what was checked). Any failure downgrades to `"signature_failed"`, with `signatureFailureReason` saying which check failed.
-+ * The state union itself is unchanged (a distinct identity-mismatch state would break existing
-+ * exhaustive consumers); the reason is an additive, optional field.
   *
-  * **Trust Model gap, disclosed not silent**: the spec's own Trust Model requires validating a signature
+- * **Trust Model gap, disclosed not silent**: the spec's own Trust Model requires validating a signature
 - * "against the known public key in the Contact's record" (TOFU pinning), not merely checking that the
 - * embedded certificate's signature is mathematically self-consistent. `evaluateMessageSecurity()` takes
 - * an optional `pinnedSignerFingerprint` for exactly this - when supplied, a cryptographically valid
@@ -2135,17 +2616,35 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
 - * than trusted. No caller passes it yet (Contact key-pinning UI is Phase 4's "Discovery & contacts UI"
 - * work, not this pass) - every signature this module verifies today is checked for mathematical
 - * validity only, not against a pinned identity.
-+ * "against the known public key in the Contact's record" (TOFU pinning). Without a
-+ * `pinnedSignerFingerprint`, check 2 is skipped and a self-issued certificate naming the sender's address
-+ * passes checks 1, 3 and 4 - callers that have a pinned Contact key MUST pass it.
++ * **What a verified state means.** `"signed_verified"`/`"encrypted_verified"` require ALL of: (1) a
++ * cryptographically valid CMS signature (`smime.ts` - detached signatures carrying their own eContent are
++ * rejected, the signer certificate is the one matched to the SignerInfo, never simply the first embedded
++ * certificate, and a `multipart/signed` body must hold exactly the signed part and the signature); (2) the
++ * signer certificate's fingerprint is one the reader already trusts - a pinned `Contact` signing key passed
++ * as `pinnedSignerFingerprints`, or the unlocked mailbox's own `signingFingerprint`; (3) the signer
++ * certificate names the sender: one of its email addresses (SAN rfc822Name, else subject emailAddress /
++ * email-shaped CN) equals the single address in the protected `From` (or the outer `From` when the signed
++ * content carries no protected headers, as with non-RFC 9788 senders); (4) the protected `From`/`To`/`Cc`
++ * address sets (when present) equal the outer envelope's, a signed-only message's protected `Subject` equals
++ * its outer one (what the mail list shows), and neither header block carries more than one
++ * `From`/`To`/`Cc`/`Sender` field.
++ *
++ * **No trust anchor, no verified badge.** Certificates aren't chain-validated (there is no trust store), so
++ * checks 1, 3 and 4 alone prove only that *someone* holding a certificate naming the sender signed it - a
++ * self-issued certificate with SAN `ceo@victim.com` passes them. Without a matching pin the result is
++ * `"signed_unverified_signer"`/`"encrypted_unverified_signer"` instead, carrying `signerFingerprint` and
++ * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A pin that was
++ * supplied but doesn't match is `"signature_failed"` (`untrusted_signer`), and a failure of checks 1, 3 or 4
++ * is `"signature_failed"` with `signatureFailureReason` saying which check failed.
   */
 -import { computeCertFingerprint } from "./smime.js";
 -import { parseEncryptedMessage, parseSignedOnlyMessage, splitHeadersAndBody } from "./smimeMessage.js";
 -function isSignedOnlyContentType(contentType) {
 -    return contentType.toLowerCase().trimStart().startsWith("multipart/signed");
-+import { extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
++import { decodeHeaderText, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
 +import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
 +import { parseEncryptedMessage, parseSignedOnlyMessage } from "./smimeMessage.js";
++export { signingKeyFingerprints } from "./keyvaultApi.js";
 +function isSignedOnlyContentType(contentTypeValue) {
 +    return contentTypeValue === "multipart/signed";
  }
@@ -2184,6 +2683,12 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
 +    const right = new Set(b);
 +    return left.size === right.size && [...left].every((address) => right.has(address));
 +}
++/** Normalizes whitespace runs, so a Subject refolded in transit still compares equal. */
++function normalizeSubject(value) {
++    return decodeHeaderText(value ?? "")
++        .replace(/\s+/g, " ")
++        .trim();
++}
 +/** Address header fields a message must carry at most once (RFC 5322 §3.6 allows exactly zero or one). */
 +const SINGLETON_ADDRESS_FIELDS = ["from", "to", "cc", "sender"];
 +function hasRepeatedAddressField(fields) {
@@ -2194,13 +2699,21 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
 +    }
 +    return SINGLETON_ADDRESS_FIELDS.some((name) => (counts.get(name) ?? 0) > 1);
 +}
++function normalizePins(pins) {
++    return (Array.isArray(pins) ? pins : pins === undefined ? [] : [pins]).map((pin) => pin.toLowerCase());
++}
 +/** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
-+ * Returns `undefined` when the signer is accepted, otherwise the failure reason. */
++ * Returns `undefined` when the signer is accepted, otherwise the failure reason.
++ *
++ * With no `pinnedSignerFingerprint` (or an empty array), check 2 is skipped and `undefined` means only that the
++ * certificate names the sender consistently - NOT that the signer is trusted. Use `evaluateMessageSecurity()`
++ * (which reports that case as `*_unverified_signer`) unless you enforce a pin yourself. */
 +export async function checkSignerBinding(input) {
-+    const { protectedHeaders, outerHeaders, pinnedSignerFingerprint } = input;
++    const { protectedHeaders, outerHeaders } = input;
++    const pins = normalizePins(input.pinnedSignerFingerprint);
 +    // Fail closed: an absent certificate hashes/extracts as empty, which can never match a pin or From.
 +    const certDer = input.signerCertificateDer ?? new Uint8Array();
-+    if (pinnedSignerFingerprint !== undefined && (await computeCertFingerprint(certDer)) !== pinnedSignerFingerprint.toLowerCase()) {
++    if (pins.length > 0 && !pins.includes(await computeCertFingerprint(certDer))) {
 +        return "untrusted_signer";
 +    }
 +    if (hasRepeatedAddressField(input.outerFields) || hasRepeatedAddressField(input.protectedFields)) {
@@ -2216,6 +2729,16 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
 +    if (!sameAddressSet(senderAddresses, outerFrom) || (protectedTo.length > 0 && !sameAddressSet(protectedTo, extractAddresses(outerHeaders["to"])))) {
 +        return "header_mismatch";
 +    }
++    if (protectedFrom.length > 0) {
++        // RFC 9788 protected headers are present, so Cc (possibly absent on both sides) and - for a signed-only
++        // message - Subject were signed: an outer copy that differs was changed (or added) after signing.
++        if (!sameAddressSet(extractAddresses(protectedHeaders?.cc), extractAddresses(outerHeaders["cc"]))) {
++            return "header_mismatch";
++        }
++        if (input.compareSubject && normalizeSubject(protectedHeaders?.subject) !== normalizeSubject(outerHeaders["subject"])) {
++            return "header_mismatch";
++        }
++    }
 +    return undefined;
 +}
  /**
@@ -2225,18 +2748,23 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
 - * "malformed input is the signature-failed case, not an exception" contract.
 + * content type all degrade to a result the caller can render directly.
 + *
-+ * `readerAddress` - the unlocked mailbox's own address - enables `notAddressedToReader`.
++ * `pinnedSignerFingerprints` - the sender's trusted signing-key fingerprint(s): `signingKeyFingerprints()` of the
++ * sender's `Contact.keys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). The unlocked mailbox's own
++ * `signingFingerprint` is always trusted too (mail this mailbox signed itself). Omitted or empty, a valid signature
++ * from any other certificate is `*_unverified_signer`, never verified. `readerAddress` - the unlocked mailbox's own
++ * address - enables `notAddressedToReader`.
   */
 -export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprint) {
 -    const { contentType, body, headers } = splitHeadersAndBody(rawMime);
 -    if (!contentType) {
-+export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprint, readerAddress) {
++export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprints, readerAddress) {
 +    const { headers, body, fields } = parseMimeEntity(rawMime);
 +    const rawContentType = headers["content-type"];
 +    if (!rawContentType) {
          return { state: "unprotected" };
      }
 +    const contentType = parseParameterizedHeader(rawContentType);
++    const callerPins = normalizePins(pinnedSignerFingerprints);
      // The received message's own *real* outer envelope - what `HP-Outer`'s field copies (written at
 -    // send time, inside the encrypted content) are compared against to detect post-send tampering with
 -    // the unprotected envelope. Built from whichever of these five headers this outer envelope actually
@@ -2245,14 +2773,31 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
      const actualOuterHeaders = {
          from: headers["from"],
          to: headers["to"],
-@@ -60,18 +121,29 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+@@ -60,18 +152,56 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
          date: headers["date"],
          subject: headers["subject"],
      };
 -    async function checkPinning(signerCertificateDer) {
 -        if (!pinnedSignerFingerprint || !signerCertificateDer) {
 -            return true;
-+    const checkSigner = (signerCertificateDer, protectedHeaders, protectedFields) => checkSignerBinding({ signerCertificateDer, protectedHeaders, outerHeaders: headers, outerFields: fields, protectedFields, pinnedSignerFingerprint });
++    /** Runs checks 2-4 and resolves the trust outcome: a failure reason, or whether a pin matched. */
++    const checkSigner = async (signerCertificateDer, protectedHeaders, protectedFields, compareSubject) => {
++        const certDer = signerCertificateDer ?? new Uint8Array();
++        const fingerprint = await computeCertFingerprint(certDer);
++        const signer = signerCertificateDer ? { signerFingerprint: fingerprint, signerEmails: extractCertificateEmails(certDer) } : {};
++        const trustedPins = unlocked?.signingFingerprint ? [...callerPins, unlocked.signingFingerprint.toLowerCase()] : callerPins;
++        const failure = await checkSignerBinding({
++            signerCertificateDer,
++            protectedHeaders,
++            outerHeaders: headers,
++            outerFields: fields,
++            protectedFields,
++            // Only pins the caller supplied make a mismatch a failure; the mailbox's own key alone never does.
++            pinnedSignerFingerprint: callerPins.length > 0 ? trustedPins : undefined,
++            compareSubject,
++        });
++        return { failure, trusted: trustedPins.includes(fingerprint), signer };
++    };
 +    const addressing = (protectedHeaders) => {
 +        const recipients = [...extractAddresses(protectedHeaders?.to), ...extractAddresses(protectedHeaders?.cc)];
 +        if (!readerAddress || recipients.length === 0) {
@@ -2266,26 +2811,36 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
 -            return { state: "signature_failed" };
 +        return { notAddressedToReader: !recipients.includes(readerAddress.trim().toLowerCase()) };
 +    };
++    const exposedHeaders = (protectedHeaders) => {
++        if (!protectedHeaders || extractAddresses(protectedHeaders.from).length === 0) {
++            return {};
++        }
++        const { from, to, cc, subject } = protectedHeaders;
++        return { protectedHeaders: { from, to, ...(cc !== undefined ? { cc } : {}), subject } };
++    };
 +    if (isSignedOnlyContentType(contentType.value)) {
 +        const parsed = await parseSignedOnlyMessage(rawContentType, body);
 +        if (!parsed.verified) {
 +            return { state: "signature_failed", signatureFailureReason: "invalid_signature" };
-+        }
-+        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields);
-+        if (failure) {
-+            return { state: "signature_failed", signatureFailureReason: failure };
          }
 -        return { state: "signed_verified", html: parsed.bodyText, subject: parsed.protectedHeaders?.subject };
++        const { failure, trusted, signer } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
++        if (failure) {
++            return { state: "signature_failed", signatureFailureReason: failure, ...signer };
++        }
 +        return {
-+            state: "signed_verified",
++            state: trusted ? "signed_verified" : "signed_unverified_signer",
 +            ...renderDisplayBody(parsed.displayBody),
 +            subject: parsed.protectedHeaders?.subject || undefined,
++            ...exposedHeaders(parsed.protectedHeaders),
++            attachments: parsed.attachments,
++            ...signer,
 +            ...addressing(parsed.protectedHeaders),
 +        };
      }
      if (isEncryptedContentType(contentType)) {
          if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
-@@ -79,16 +151,25 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+@@ -79,16 +209,27 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
          }
          const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
          if (!parsed.decrypted) {
@@ -2297,6 +2852,8 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
 +            ...renderDisplayBody(parsed.displayBody),
 +            headerTamperDetected: parsed.headerTamperDetected,
 +            subject: parsed.protectedHeaders?.subject || undefined,
++            ...exposedHeaders(parsed.protectedHeaders),
++            attachments: parsed.attachments,
 +            ...addressing(parsed.protectedHeaders),
 +        };
          if (parsed.signatureVerified === undefined) {
@@ -2308,21 +2865,21 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..c2ea04388eaac8c078fa11316fa2a179
          }
 -        if (parsed.signatureVerified && (await checkPinning(parsed.signerCertificateDer))) {
 -            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
-+        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields);
++        const { failure, trusted, signer } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
 +        if (failure) {
-+            return { state: "signature_failed", signatureFailureReason: failure, ...content };
++            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...signer };
          }
 -        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
-+        return { state: "encrypted_verified", ...content };
++        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...signer };
      }
      return { state: "unprotected" };
  }
 diff --git a/dist/crypto/mime.d.ts b/dist/crypto/mime.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..2ba586c0a7f561bd944025389b7ccf05463001a2
+index 0000000000000000000000000000000000000000..64c816b8dc7dc984569d62eb2b8f76eba205112b
 --- /dev/null
 +++ b/dist/crypto/mime.d.ts
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,143 @@
 +/**
 + * A small, dependency-free MIME (RFC 5322 / RFC 2045-2047) parser used by `smimeMessage.ts` and
 + * `messageSecurity.ts` to read *received* messages - which, unlike this package's own output, can come
@@ -2395,8 +2952,10 @@ index 0000000000000000000000000000000000000000..2ba586c0a7f561bd944025389b7ccf05
 +export declare function bytesToBinaryString(bytes: Uint8Array): string;
 +/** Decodes a quoted-printable body (RFC 2045 §6.7) into bytes, in one linear pass into a preallocated
 + * buffer. Literal text between escapes (which can't legally be non-ASCII in QP, but is after an
-+ * 8-bit-unsafe gateway) is written run by run: as the run's own bytes when it is a binary string, else as
-+ * its UTF-8 encoding. A run always ends at an ASCII `=`, so a surrogate pair is never split. */
++ * 8-bit-unsafe gateway) is written run by run, decided once for the whole input: as the runs' own bytes
++ * when the input is a binary string, else as their UTF-8 encoding (so an already-decoded `é` next to an
++ * emoji isn't written as a lone 0xE9 byte). A run always ends at an ASCII `=`, so a surrogate pair is never
++ * split. */
 +export declare function decodeQuotedPrintable(text: string): Uint8Array;
 +/** Decodes an entity's body into bytes per its `Content-Transfer-Encoding`. 7bit/8bit/binary (or no
 + * header) return the body's own bytes (see `binaryStringToBytes()`). Returns `undefined` only for invalid
@@ -2421,7 +2980,9 @@ index 0000000000000000000000000000000000000000..2ba586c0a7f561bd944025389b7ccf05
 + * Makes an address-list header value (`From`/`To`/`Cc`) safe to serialize: CR/LF/NUL become a space, and
 + * each mailbox's non-ASCII display name (`Zoë <z@example.com>`, quoted or not) is RFC 2047-encoded while
 + * its addr-spec is kept verbatim (an internationalized address is left to SMTPUTF8, never encoded -
-+ * RFC 2047 §5 forbids encoded-words in an addr-spec).
++ * RFC 2047 §5 forbids encoded-words in an addr-spec). RFC 5322 group syntax (`Équipe: Zoë <z@x>, b@x;`)
++ * keeps its `:` and `;`, with the group label encoded as a phrase of its own. A top-level `:` only opens
++ * a group when a `;` follows it, so a stray colon in an unquoted display name isn't mistaken for one.
 + */
 +export declare function encodeAddressListHeaderValue(value: string): string;
 +/** A message's displayable content: `html` only for a real `text/html` part, `text` only for a
@@ -2434,6 +2995,28 @@ index 0000000000000000000000000000000000000000..2ba586c0a7f561bd944025389b7ccf05
 + * multipart entity is searched (non-attachment children only, bounded depth). Entities with no
 + * Content-Type default to text/plain per RFC 2045 §5.2. */
 +export declare function extractDisplayBody(entity: MimeEntity, depth?: number): DisplayBody;
++/** One attachment found inside a MIME entity (see `extractAttachments()`). */
++export interface MimeAttachment {
++    /** The `Content-Disposition` `filename` (else the `Content-Type` `name`), RFC 2047-decoded; absent if neither. */
++    filename?: string;
++    /** The lowercased MIME type, e.g. `application/pdf`. */
++    contentType: string;
++    /** `"attachment"` for `Content-Disposition: attachment`, `"inline"` otherwise (an inline image, or a part with a
++     * filename and no disposition). */
++    disposition: "attachment" | "inline";
++    /** The `Content-ID` without its angle brackets, if any - how an HTML body references an inline part. */
++    contentId?: string;
++    /** Decodes the part's content (transfer encoding undone) - lazily, so evaluating a message never pays for
++     * attachments nobody opens. `undefined` for invalid base64. */
++    decode(): Uint8Array | undefined;
++}
++/**
++ * Lists the attachments inside `entity` (descending into multipart children, bounded depth): every leaf part
++ * with `Content-Disposition: attachment`, a filename, or a non-text type. The `text/plain`/`text/html` parts a
++ * reader would display (no disposition, no filename) are not attachments. Nested `message/rfc822` content is
++ * reported as one attachment, never expanded.
++ */
++export declare function extractAttachments(entity: MimeEntity, depth?: number): MimeAttachment[];
 +/** HTML-escapes plain text and wraps it in a whitespace-preserving `<pre>`, so a `text/plain` body can be
 + * rendered through the same HTML path without ever being interpreted as markup. */
 +export declare function plainTextToHtml(text: string): string;
@@ -2442,10 +3025,10 @@ index 0000000000000000000000000000000000000000..2ba586c0a7f561bd944025389b7ccf05
 +export declare function extractAddresses(headerValue: string | undefined): string[];
 diff --git a/dist/crypto/mime.js b/dist/crypto/mime.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..ab5cbcd0fd8d29822c4d5b07063f0b9060da55fe
+index 0000000000000000000000000000000000000000..431a89be74f0b534806091b1605cb9e3d1d25e20
 --- /dev/null
 +++ b/dist/crypto/mime.js
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,504 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -2639,24 +3222,26 @@ index 0000000000000000000000000000000000000000..ab5cbcd0fd8d29822c4d5b07063f0b90
 +}
 +/** Decodes a quoted-printable body (RFC 2045 §6.7) into bytes, in one linear pass into a preallocated
 + * buffer. Literal text between escapes (which can't legally be non-ASCII in QP, but is after an
-+ * 8-bit-unsafe gateway) is written run by run: as the run's own bytes when it is a binary string, else as
-+ * its UTF-8 encoding. A run always ends at an ASCII `=`, so a surrogate pair is never split. */
++ * 8-bit-unsafe gateway) is written run by run, decided once for the whole input: as the runs' own bytes
++ * when the input is a binary string, else as their UTF-8 encoding (so an already-decoded `é` next to an
++ * emoji isn't written as a lone 0xE9 byte). A run always ends at an ASCII `=`, so a surrogate pair is never
++ * split. */
 +export function decodeQuotedPrintable(text) {
 +    const input = text.replace(/=[ \t]*\r?\n/g, "");
++    const binary = isBinaryString(input);
 +    // At most 3 UTF-8 bytes per UTF-16 code unit, which only a non-binary string can need.
-+    const out = new Uint8Array(isBinaryString(input) ? input.length : input.length * 3);
++    const out = new Uint8Array(binary ? input.length : input.length * 3);
 +    const encoder = new TextEncoder();
 +    let length = 0;
 +    let runStart = 0;
 +    const flushRun = (end) => {
-+        const run = input.slice(runStart, end);
-+        if (isBinaryString(run)) {
-+            for (let j = 0; j < run.length; j++) {
-+                out[length++] = run.charCodeAt(j);
++        if (binary) {
++            for (let j = runStart; j < end; j++) {
++                out[length++] = input.charCodeAt(j);
 +            }
 +        }
 +        else {
-+            length += encoder.encodeInto(run, out.subarray(length)).written;
++            length += encoder.encodeInto(input.slice(runStart, end), out.subarray(length)).written;
 +        }
 +    };
 +    for (let i = 0; i + 2 < input.length; i++) {
@@ -2781,20 +3366,49 @@ index 0000000000000000000000000000000000000000..ab5cbcd0fd8d29822c4d5b07063f0b90
 +    const flattened = value.replace(HEADER_BREAKING, " ");
 +    return NEEDS_ENCODING.test(flattened) ? encodeWords(flattened) : flattened;
 +}
++/** Encodes one mailbox (`Name <addr>` or a bare addr-spec) - see `encodeAddressListHeaderValue()`. */
++function encodeMailbox(mailbox) {
++    const angle = mailbox.lastIndexOf("<");
++    if (angle === -1) {
++        // A bare addr-spec (possibly internationalized) stays verbatim; stray non-ASCII text that
++        // isn't an address at all is encoded rather than written raw.
++        const bare = mailbox.trim();
++        return bare.includes("@") || !NEEDS_ENCODING.test(bare) ? bare : encodeWords(bare);
++    }
++    const rawName = mailbox.slice(0, angle).trim();
++    const address = mailbox.slice(angle).trim();
++    const name = encodePhrase(rawName);
++    return name ? `${name} ${address}` : address;
++}
++/** Encodes a display-name phrase (a mailbox's name or a group's label): unquoted and RFC 2047-encoded when
++ * it holds non-ASCII, else kept exactly as written. */
++function encodePhrase(rawPhrase) {
++    const phrase = rawPhrase.trim();
++    const unquoted = /^".*"$/.test(phrase) ? phrase.slice(1, -1).replace(/\\(.)/g, "$1") : phrase;
++    return NEEDS_ENCODING.test(unquoted) ? encodeWords(unquoted) : phrase;
++}
 +/**
 + * Makes an address-list header value (`From`/`To`/`Cc`) safe to serialize: CR/LF/NUL become a space, and
 + * each mailbox's non-ASCII display name (`Zoë <z@example.com>`, quoted or not) is RFC 2047-encoded while
 + * its addr-spec is kept verbatim (an internationalized address is left to SMTPUTF8, never encoded -
-+ * RFC 2047 §5 forbids encoded-words in an addr-spec).
++ * RFC 2047 §5 forbids encoded-words in an addr-spec). RFC 5322 group syntax (`Équipe: Zoë <z@x>, b@x;`)
++ * keeps its `:` and `;`, with the group label encoded as a phrase of its own. A top-level `:` only opens
++ * a group when a `;` follows it, so a stray colon in an unquoted display name isn't mistaken for one.
 + */
 +export function encodeAddressListHeaderValue(value) {
 +    const flattened = value.replace(HEADER_BREAKING, " ");
 +    if (!NEEDS_ENCODING.test(flattened)) {
 +        return flattened;
 +    }
-+    const mailboxes = [];
++    let out = "";
 +    let current = "";
 +    let inQuotes = false;
++    let inAngle = false;
++    let inGroup = false;
++    const emit = (encoded, delimiter) => {
++        out += (encoded && /[,:;]$/.test(out) ? " " : "") + encoded + delimiter;
++        current = "";
++    };
 +    for (let i = 0; i < flattened.length; i++) {
 +        const ch = flattened[i];
 +        if (inQuotes && ch === "\\" && i + 1 < flattened.length) {
@@ -2804,32 +3418,32 @@ index 0000000000000000000000000000000000000000..ab5cbcd0fd8d29822c4d5b07063f0b90
 +        if (ch === '"') {
 +            inQuotes = !inQuotes;
 +        }
-+        else if (ch === "," && !inQuotes) {
-+            mailboxes.push(current);
-+            current = "";
-+            continue;
++        else if (!inQuotes && ch === "<") {
++            inAngle = true;
++        }
++        else if (!inQuotes && ch === ">") {
++            inAngle = false;
++        }
++        else if (!inQuotes && !inAngle) {
++            if (ch === ",") {
++                emit(encodeMailbox(current), ",");
++                continue;
++            }
++            if (ch === ":" && !inGroup && flattened.includes(";", i)) {
++                emit(encodePhrase(current), ":");
++                inGroup = true;
++                continue;
++            }
++            if (ch === ";" && inGroup) {
++                emit(encodeMailbox(current), ";");
++                inGroup = false;
++                continue;
++            }
 +        }
 +        current += ch;
 +    }
-+    mailboxes.push(current);
-+    return mailboxes
-+        .map((mailbox) => {
-+        const angle = mailbox.lastIndexOf("<");
-+        if (angle === -1) {
-+            // A bare addr-spec (possibly internationalized) stays verbatim; stray non-ASCII text that
-+            // isn't an address at all is encoded rather than written raw.
-+            const bare = mailbox.trim();
-+            return bare.includes("@") || !NEEDS_ENCODING.test(bare) ? bare : encodeWords(bare);
-+        }
-+        const rawName = mailbox.slice(0, angle).trim();
-+        const address = mailbox.slice(angle).trim();
-+        const name = /^".*"$/.test(rawName) ? rawName.slice(1, -1).replace(/\\(.)/g, "$1") : rawName;
-+        if (!name) {
-+            return address;
-+        }
-+        return NEEDS_ENCODING.test(name) ? `${encodeWords(name)} ${address}` : `${rawName} ${address}`;
-+    })
-+        .join(", ");
++    emit(encodeMailbox(current), "");
++    return out;
 +}
 +function isAttachment(entity) {
 +    return parseParameterizedHeader(entity.headers["content-disposition"]).value === "attachment";
@@ -2862,6 +3476,38 @@ index 0000000000000000000000000000000000000000..ab5cbcd0fd8d29822c4d5b07063f0b90
 +        text ?? (text = found.text);
 +    }
 +    return text === undefined ? {} : { text };
++}
++/**
++ * Lists the attachments inside `entity` (descending into multipart children, bounded depth): every leaf part
++ * with `Content-Disposition: attachment`, a filename, or a non-text type. The `text/plain`/`text/html` parts a
++ * reader would display (no disposition, no filename) are not attachments. Nested `message/rfc822` content is
++ * reported as one attachment, never expanded.
++ */
++export function extractAttachments(entity, depth = 0) {
++    const contentType = parseParameterizedHeader(entity.headers["content-type"] ?? "text/plain");
++    const disposition = parseParameterizedHeader(entity.headers["content-disposition"]);
++    const boundary = contentType.params["boundary"];
++    if (contentType.value.startsWith("multipart/")) {
++        if (!boundary || depth >= MAX_MULTIPART_DEPTH) {
++            return [];
++        }
++        return splitMultipart(entity.body, boundary).flatMap((part) => extractAttachments(parseMimeEntity(part), depth + 1));
++    }
++    const rawFilename = disposition.params["filename"] ?? contentType.params["name"];
++    const isAttachmentDisposition = disposition.value === "attachment";
++    if (!isAttachmentDisposition && rawFilename === undefined && contentType.value.startsWith("text/")) {
++        return [];
++    }
++    const contentId = entity.headers["content-id"]?.trim().replace(/^<(.*)>$/, "$1");
++    return [
++        {
++            ...(rawFilename !== undefined ? { filename: decodeHeaderText(rawFilename) } : {}),
++            contentType: contentType.value,
++            disposition: isAttachmentDisposition ? "attachment" : "inline",
++            ...(contentId ? { contentId } : {}),
++            decode: () => decodeBodyBytes(entity),
++        },
++    ];
 +}
 +/** HTML-escapes plain text and wraps it in a whitespace-preserving `<pre>`, so a `text/plain` body can be
 + * rendered through the same HTML path without ever being interpreted as markup. */
@@ -3216,15 +3862,15 @@ index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfe
      let lastError;
      for (let index = 0; index < envelopedData.recipientInfos.length; index++) {
 diff --git a/dist/crypto/smimeMessage.d.ts b/dist/crypto/smimeMessage.d.ts
-index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..69f0ffa7ec287fdcd75649d53450e9eb6c24e488 100644
+index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..753aab68b63514cd6f74096e87e072c6f593d6ae 100644
 --- a/dist/crypto/smimeMessage.d.ts
 +++ b/dist/crypto/smimeMessage.d.ts
 @@ -1,3 +1,4 @@
-+import { DisplayBody, MimeHeaderField } from "./mime.js";
++import { DisplayBody, MimeAttachment, MimeHeaderField } from "./mime.js";
  export interface ProtectedHeaders {
      from: string;
      to: string;
-@@ -29,14 +30,24 @@ export interface MimePart {
+@@ -29,14 +30,28 @@ export interface MimePart {
  export declare function buildSignedOnlyMessage(bodyContentType: string, bodyText: string, protectedHeaders: ProtectedHeaders, signingCertDer: Uint8Array, signingPrivateKey: CryptoKey): Promise<MimePart>;
  export interface ParsedSignedOnlyMessage {
      verified: boolean;
@@ -3240,6 +3886,8 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..69f0ffa7ec287fdcd75649d53450e9eb
      bodyText?: string;
 +    /** The displayable body: `html` only for a real text/html part, `text` for text/plain. */
 +    displayBody?: DisplayBody;
++    /** The attachments inside the *signed* entity - the only ones the signature covers. */
++    attachments?: MimeAttachment[];
  }
 -/** Parses and verifies a `multipart/signed` message built by `buildSignedOnlyMessage()`. Returns
 - * `{ verified: false }` (never throws) for anything malformed — same "degrade to a failed-signature
@@ -3248,11 +3896,13 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..69f0ffa7ec287fdcd75649d53450e9eb
 + * throws) for anything malformed — same "degrade to a failed-signature state, don't crash" contract as
 + * `smime.ts`'s own verify functions. Accepts foreign-MUA framing: unquoted/case-varied parameters,
 + * preamble/epilogue, transport padding, and a signed part stored with bare-LF line endings (retried in
-+ * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). */
++ * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). The body must hold exactly two
++ * parts (RFC 1847 §2.1): a third part isn't covered by the signature, so a message carrying one is rejected
++ * rather than shown - partly unsigned - under a verified badge. */
  export declare function parseSignedOnlyMessage(contentType: string, body: string): Promise<ParsedSignedOnlyMessage>;
  /**
   * Builds an `application/pkcs7-mime; smime-type="enveloped-data"` message with RFC 9788 header
-@@ -55,7 +66,8 @@ export declare function buildEncryptedMessage(bodyContentType: string, bodyText:
+@@ -55,7 +70,8 @@ export declare function buildEncryptedMessage(bodyContentType: string, bodyText:
   * (`applyBaselineOuterHeaders()`'s output) - this function does no obscuring itself, it only serializes
   * whatever headers it's given. Deliberately excludes `Bcc`: that recipient list is submission-only and
   * must never appear as a message header (see `AssembleDraftRawInput`'s own doc comment - `bcc` is passed
@@ -3262,7 +3912,7 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..69f0ffa7ec287fdcd75649d53450e9eb
   */
  export declare function assembleOutboundMime(outerHeaders: ProtectedHeaders, part: MimePart): string;
  export interface ParsedEncryptedMessage {
-@@ -65,6 +77,8 @@ export interface ParsedEncryptedMessage {
+@@ -65,6 +81,8 @@ export interface ParsedEncryptedMessage {
      signatureVerified?: boolean;
      signerCertificateDer?: Uint8Array;
      protectedHeaders?: ProtectedHeaders;
@@ -3271,7 +3921,7 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..69f0ffa7ec287fdcd75649d53450e9eb
      bodyContentType?: string;
      bodyText?: string;
      /** `true` when `actualOuterHeaders` was supplied and disagrees with the `HP-Outer:` field copies
-@@ -75,6 +89,11 @@ export interface ParsedEncryptedMessage {
+@@ -75,6 +93,13 @@ export interface ParsedEncryptedMessage {
       * carries no `HP-Outer:` lines at all (a foreign sender's S/MIME implementation that doesn't write
       * them, or a message from before this field existed). */
      headerTamperDetected?: boolean;
@@ -3280,10 +3930,12 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..69f0ffa7ec287fdcd75649d53450e9eb
 +    /** `true` when decryption was refused because the content encryption isn't AEAD (see `smime.ts`'s
 +     * `UnsupportedContentEncryptionError`) - lets the caller explain that instead of "wrong key". */
 +    unsupportedContentEncryption?: boolean;
++    /** The attachments inside the decrypted (and, when signed, verified) entity. */
++    attachments?: MimeAttachment[];
  }
  /** RFC 9788's `HP-Outer:` field-copy fields to actually compare - a subset of `ProtectedHeaders`
   * (`messageId` has no `HP-Outer` counterpart; only the fields the outer envelope itself carries do).
-@@ -90,15 +109,10 @@ export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to
+@@ -90,15 +115,10 @@ export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to
   * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
   */
  export declare function parseEncryptedMessage(base64Body: string, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey, actualOuterHeaders?: ComparableOuterHeaders): Promise<ParsedEncryptedMessage>;
@@ -3304,7 +3956,7 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..69f0ffa7ec287fdcd75649d53450e9eb
      headers: Record<string, string>;
      contentType?: string;
 diff --git a/dist/crypto/smimeMessage.js b/dist/crypto/smimeMessage.js
-index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906bc9babd75 100644
+index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..6e189129e254f9d9e532259745d1871bb4b1cd92 100644
 --- a/dist/crypto/smimeMessage.js
 +++ b/dist/crypto/smimeMessage.js
 @@ -26,8 +26,9 @@
@@ -3314,7 +3966,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
 -import { fromBase64, toBase64 } from "./encoding.js";
 -import { decryptEnvelopedData, encryptForRecipients, signDetached, signOpaque, verifyDetached, verifyOpaque, } from "./smime.js";
 +import { toBase64 } from "./encoding.js";
-+import { binaryStringToBytes, bytesToBinaryString, decodeBase64Text, decodeBodyText, decodeHeaderText, encodeAddressListHeaderValue, encodeUnstructuredHeaderValue, isBinaryString, extractDisplayBody, parseMimeEntity, parseParameterizedHeader, splitMultipart, } from "./mime.js";
++import { binaryStringToBytes, bytesToBinaryString, decodeBase64Text, decodeBodyText, decodeHeaderText, encodeAddressListHeaderValue, encodeUnstructuredHeaderValue, isBinaryString, extractAttachments, extractDisplayBody, parseMimeEntity, parseParameterizedHeader, splitMultipart, } from "./mime.js";
 +import { decryptEnvelopedData, encryptForRecipients, signDetached, signOpaque, UnsupportedContentEncryptionError, verifyDetached, verifyOpaque, } from "./smime.js";
  const CRLF = "\r\n";
  /** RFC 2045's own line-length limit for base64-encoded body content. */
@@ -3390,7 +4042,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
      const signature = await signDetached(new TextEncoder().encode(innerEntity), signingCertDer, signingPrivateKey);
      const body = [
          `--${boundary}`,
-@@ -98,34 +114,64 @@ export async function buildSignedOnlyMessage(bodyContentType, bodyText, protecte
+@@ -98,34 +114,67 @@ export async function buildSignedOnlyMessage(bodyContentType, bodyText, protecte
      ].join(CRLF);
      return { contentType: `multipart/signed; protocol="application/pkcs7-signature"; micalg=sha-256; boundary="${boundary}"`, body };
  }
@@ -3403,7 +4055,9 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
 + * throws) for anything malformed — same "degrade to a failed-signature state, don't crash" contract as
 + * `smime.ts`'s own verify functions. Accepts foreign-MUA framing: unquoted/case-varied parameters,
 + * preamble/epilogue, transport padding, and a signed part stored with bare-LF line endings (retried in
-+ * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). */
++ * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). The body must hold exactly two
++ * parts (RFC 1847 §2.1): a third part isn't covered by the signature, so a message carrying one is rejected
++ * rather than shown - partly unsigned - under a verified badge. */
  export async function parseSignedOnlyMessage(contentType, body) {
 -    const boundary = extractBoundary(contentType);
 +    const boundary = parseParameterizedHeader(contentType).params["boundary"];
@@ -3411,18 +4065,19 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
          return { verified: false };
      }
 -    const parts = splitOnBoundary(body, boundary);
+-    if (parts.length < 2) {
 +    const parts = splitMultipart(body, boundary);
-     if (parts.length < 2) {
++    if (parts.length !== 2) {
++        return { verified: false };
++    }
++    const [innerText, signaturePartText] = parts;
++    const signaturePart = parseMimeEntity(signaturePartText);
++    if (!SIGNATURE_CONTENT_TYPES.has(parseParameterizedHeader(signaturePart.headers["content-type"]).value)) {
          return { verified: false };
      }
 -    const [innerEntity, signaturePart] = parts;
 -    const signatureDer = extractBase64Body(signaturePart);
 -    if (!signatureDer) {
-+    const [innerText, signaturePartText] = parts;
-+    const signaturePart = parseMimeEntity(signaturePartText);
-+    if (!SIGNATURE_CONTENT_TYPES.has(parseParameterizedHeader(signaturePart.headers["content-type"]).value)) {
-+        return { verified: false };
-+    }
 +    // The signature part is always base64 in practice (binary DER can't survive a text transport); a
 +    // missing Content-Transfer-Encoding header is treated as base64 too, matching common senders.
 +    const signatureDer = decodeBase64Text(signaturePart.body);
@@ -3465,10 +4120,11 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
 +        bodyContentType: inner.headers["content-type"],
 +        bodyText: decodeBodyText(inner),
 +        displayBody: extractDisplayBody(inner),
++        attachments: extractAttachments(inner),
      };
  }
  /**
-@@ -137,7 +183,7 @@ export async function parseSignedOnlyMessage(contentType, body) {
+@@ -137,7 +186,7 @@ export async function parseSignedOnlyMessage(contentType, body) {
  export async function buildEncryptedMessage(bodyContentType, bodyText, protectedHeaders, outerHeaders, recipientCertDers, signing) {
      const plaintextEntity = [
          protectedHeaderLines(protectedHeaders, outerHeaders),
@@ -3477,7 +4133,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
          "",
          bodyText,
      ].join(CRLF);
-@@ -168,19 +214,15 @@ export async function buildEncryptedMessage(bodyContentType, bodyText, protected
+@@ -168,19 +217,15 @@ export async function buildEncryptedMessage(bodyContentType, bodyText, protected
   * (`applyBaselineOuterHeaders()`'s output) - this function does no obscuring itself, it only serializes
   * whatever headers it's given. Deliberately excludes `Bcc`: that recipient list is submission-only and
   * must never appear as a message header (see `AssembleDraftRawInput`'s own doc comment - `bcc` is passed
@@ -3502,7 +4158,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
          "",
          part.body,
      ];
-@@ -192,17 +234,16 @@ export function assembleOutboundMime(outerHeaders, part) {
+@@ -192,17 +237,16 @@ export function assembleOutboundMime(outerHeaders, part) {
   * (a real bug if reused for this - JSON/`Record` keys aren't multi-valued). Scans the raw header block
   * text directly instead. Returns `undefined` when no `HP-Outer:` lines are present at all, so a caller
   * can distinguish "nothing to compare" from "compared and everything matched". */
@@ -3524,7 +4180,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
      }
      return found ? result : undefined;
  }
-@@ -222,7 +263,7 @@ function outerHeadersMatch(hpOuter, actualOuterHeaders) {
+@@ -222,7 +266,7 @@ function outerHeadersMatch(hpOuter, actualOuterHeaders) {
   * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
   */
  export async function parseEncryptedMessage(base64Body, recipientCertDer, recipientPrivateKey, actualOuterHeaders) {
@@ -3533,7 +4189,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
      if (!envelopedDer) {
          return { decrypted: false };
      }
-@@ -230,100 +271,51 @@ export async function parseEncryptedMessage(base64Body, recipientCertDer, recipi
+@@ -230,100 +274,52 @@ export async function parseEncryptedMessage(base64Body, recipientCertDer, recipi
      try {
          decrypted = await decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey);
      }
@@ -3598,6 +4254,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
 +        bodyContentType: entity.headers["content-type"],
 +        bodyText: decodeBodyText(entity),
 +        displayBody: extractDisplayBody(entity),
++        attachments: extractAttachments(entity),
 +        headerTamperDetected: compareTamper(entity.fields),
      };
  }
@@ -3661,7 +4318,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..575807839af7dc8ea4cbfda50646906b
  }
  function headersToProtectedHeaders(headers) {
      return {
-@@ -331,7 +323,9 @@ function headersToProtectedHeaders(headers) {
+@@ -331,7 +327,9 @@ function headersToProtectedHeaders(headers) {
          to: headers["to"] ?? "",
          cc: headers["cc"],
          date: headers["date"] ?? "",
@@ -3826,7 +4483,7 @@ index 6507d543d18d97693f23e9b9961c403119b7c8a7..e5058406d57b8d7473e383c5dbe72e46
      }, []);
  }
 diff --git a/dist/mail/dataExportApi.d.ts b/dist/mail/dataExportApi.d.ts
-index f510c2cbac228525c2c32a702d78298e24662484..ec2cf7e3146a46144f05a03b17956216a4f6b607 100644
+index f510c2cbac228525c2c32a702d78298e24662484..194334c5e7048b740e8e316532becbbdf8f19db5 100644
 --- a/dist/mail/dataExportApi.d.ts
 +++ b/dist/mail/dataExportApi.d.ts
 @@ -1,5 +1,8 @@
@@ -3839,7 +4496,17 @@ index f510c2cbac228525c2c32a702d78298e24662484..ec2cf7e3146a46144f05a03b17956216
  export interface DataExportRequest {
      uid: string;
      version: number;
-@@ -19,8 +22,9 @@ export interface CreateDataExportRequestInput {
+@@ -11,6 +14,9 @@ export interface DataExportRequest {
+     status: DataExportStatus;
+     blobKey?: string;
+     errorMessage?: string;
++    /** How many times the server job has claimed this request into `"processing"` (a stalled claim is reclaimed
++     * back to `"pending"` until the job's max attempts, then marked `"failed"`). */
++    processingAttempts?: number;
+ }
+ export interface CreateDataExportRequestInput {
+     format: DataExportFormat;
+@@ -19,8 +25,9 @@ export interface CreateDataExportRequestInput {
      mailboxUid?: string;
  }
  export declare function createExportRequest(input: CreateDataExportRequestInput): Promise<DataExportRequest>;
@@ -3886,15 +4553,17 @@ index b98e80f1b4a321c9b2f53a9e490a9ce786b2a922..5434e8890638da81760364785ab72927
 +    return apiUrl(`/mail/data-export-requests/${encodeURIComponent(uid)}/download`);
  }
 diff --git a/dist/mail/erasureRequestApi.d.ts b/dist/mail/erasureRequestApi.d.ts
-index c38b85847049e2752b268c1df403ece4fcdba482..f89e37522fc368bdf34e17e4d9969f52651ce7e9 100644
+index c38b85847049e2752b268c1df403ece4fcdba482..9dba9d31dbee1b741097c31b3ce09237130c121b 100644
 --- a/dist/mail/erasureRequestApi.d.ts
 +++ b/dist/mail/erasureRequestApi.d.ts
-@@ -1,3 +1,5 @@
+@@ -1,4 +1,6 @@
+-export type DataSubjectErasureStatus = "pending" | "approved" | "denied" | "completed";
 +import { RequestListParams } from "../util/apiQuery.js";
 +export type { RequestListParams };
- export type DataSubjectErasureStatus = "pending" | "approved" | "denied" | "completed";
++export type DataSubjectErasureStatus = "pending" | "approved" | "in_progress" | "denied" | "completed";
  export interface DataSubjectErasureRequest {
      uid: string;
+     version: number;
 @@ -15,8 +17,9 @@ export interface DataSubjectErasureRequest {
  }
  /** Always the caller's own mailbox — 409s if a `pending` request for it already exists. */
@@ -4016,7 +4685,7 @@ index bea762b42aeba1188618323fb761bfdecc78d0b9..cdbfb0b42041450ec40889ee455c862a
 +    return perFolder.flat().sort((a, b) => new Date(b.receivedDate).getTime() - new Date(a.receivedDate).getTime());
  }
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
-index 6210243d49fef06808114567464c199e117ca3af..206c5f5654af915ca88dba5da01cb8dba57d8b95 100644
+index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5df179b00 100644
 --- a/dist/mail/mailApi.d.ts
 +++ b/dist/mail/mailApi.d.ts
 @@ -56,11 +56,16 @@ export interface Mailbox {
@@ -4049,7 +4718,7 @@ index 6210243d49fef06808114567464c199e117ca3af..206c5f5654af915ca88dba5da01cb8db
  export interface UpdateMailboxInput {
      uid: string;
      version: number;
-@@ -137,20 +148,25 @@ export interface UpdateMailboxInput {
+@@ -137,24 +148,29 @@ export interface UpdateMailboxInput {
      quotaBytes?: number;
      aliasAddresses?: string[];
      isResource?: boolean;
@@ -4081,6 +4750,11 @@ index 6210243d49fef06808114567464c199e117ca3af..206c5f5654af915ca88dba5da01cb8db
  }
  export declare function updateMailbox(input: UpdateMailboxInput): Promise<Mailbox>;
  export declare function deleteMailbox(uid: string, version: number): Promise<void>;
+-export type QuarantineReason = "infected" | "spam_policy" | "other";
++export type QuarantineReason = "infected" | "spam_policy" | "transport_rule" | "other";
+ export interface QuarantineEntry {
+     uid: string;
+     version: number;
 @@ -187,6 +203,13 @@ export interface IngestQueueEntry {
      rawBlobKey: string;
      status: IngestStatus;
@@ -4104,7 +4778,7 @@ index 6210243d49fef06808114567464c199e117ca3af..206c5f5654af915ca88dba5da01cb8db
  export interface Folder {
      uid: string;
      version: number;
-@@ -284,8 +307,8 @@ export interface Message {
+@@ -284,12 +307,24 @@ export interface Message {
       * best-effort (see that function's own doc comment), so this is the only signal a caller gets;
       * there is no separate "recalled successfully"/"failed" outcome synced onto the record itself. */
      recallRequestedAt?: string;
@@ -4115,7 +4789,23 @@ index 6210243d49fef06808114567464c199e117ca3af..206c5f5654af915ca88dba5da01cb8db
       * `outbox` folder (lazily created on the first scheduled send — never eagerly provisioned the way
       * Drafts/Sent Items are) until `@rapidmx/restapi`'s own `ScheduledSendJob` relays it and clears
       * this field. */
-@@ -367,26 +390,15 @@ export declare function setMessageRead(message: Message, read: boolean): Promise
+     scheduledSendTime?: string;
++    /** Consecutive failed `ScheduledSendJob` attempts for the current scheduled send - each failure pushes
++     * `scheduledSendTime` forward; cleared on success and when the job gives up. */
++    scheduledSendAttempts?: number;
++    /** Why `ScheduledSendJob` gave up on (or refused) this scheduled send. Set together with clearing
++     * `scheduledSendTime`, so the message stays in Outbox unsent - show it so the user can fix and resend.
++     * Cleared on a successful send. */
++    scheduledSendError?: string;
++    /** Set once the transport accepted this message; cleared when it is filed into Sent Items. */
++    scheduledSendRelayedAt?: string;
++    /** The in-flight marker of a send (the claim's lease expiry). While it lies in the future the message can't be
++     * moved out of Outbox. */
++    scheduledSendLeaseExpiresAt?: string;
+     /** Absent means Focused — see `classifyMessage()` and `@rapidmx/restapi`'s own
+      * `FocusedInboxUtils.classifyMessage()` doc comment for the full precedence rule this reflects. */
+     inferenceClassification?: MessageClassification;
+@@ -367,26 +402,15 @@ export declare function setMessageRead(message: Message, read: boolean): Promise
   * comment) - this is only for a user explicitly applying/removing labels on one message. */
  export declare function setMessageLabels(message: Message, labelUids: string[]): Promise<Message>;
  /**
@@ -4146,7 +4836,7 @@ index 6210243d49fef06808114567464c199e117ca3af..206c5f5654af915ca88dba5da01cb8db
   */
  export declare function setMessageRequestReceipt(message: Message, requestReceipt: boolean): Promise<Message>;
  export type ReceiptType = "delivery" | "read";
-@@ -410,7 +422,8 @@ export interface Attachment {
+@@ -410,7 +434,8 @@ export interface Attachment {
  }
  /** Lists the attachments belonging to a single message. */
  export declare function listAttachments(folderUid: string, messageUid: string): Promise<Attachment[]>;
@@ -4156,7 +4846,7 @@ index 6210243d49fef06808114567464c199e117ca3af..206c5f5654af915ca88dba5da01cb8db
  export declare function attachmentContentUrl(uid: string): string;
  /**
   * Uploads a file's raw bytes as a new attachment on a not-yet-sent draft. Bypasses `apiFetch` — that helper
-@@ -462,14 +475,29 @@ export interface AssembleDraftRawInput {
+@@ -462,14 +487,29 @@ export interface AssembleDraftRawInput {
   * own doc comment in `server`.
   */
  export declare function assembleDraftRaw(messageUid: string, input: AssembleDraftRawInput): Promise<Message>;
@@ -4388,7 +5078,7 @@ index d08ecc009f4948281e4f0105d7e63c2e77e56a35..0f734f06ca695d7e20738b727b5d0597
  export function removeMailboxAccess(mailboxUid, userOrRoleId) {
      return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, { method: "DELETE" });
 diff --git a/dist/mail/mailboxImportApi.d.ts b/dist/mail/mailboxImportApi.d.ts
-index a9805f1642a12c21f2430f86461c23ee19bd6d4e..c015f07cf129e3635fc1c4c545af85f8fd99d887 100644
+index a9805f1642a12c21f2430f86461c23ee19bd6d4e..ffb4626615e9a6507f2d8a3260692d9307fbe94e 100644
 --- a/dist/mail/mailboxImportApi.d.ts
 +++ b/dist/mail/mailboxImportApi.d.ts
 @@ -1,3 +1,5 @@
@@ -4397,7 +5087,17 @@ index a9805f1642a12c21f2430f86461c23ee19bd6d4e..c015f07cf129e3635fc1c4c545af85f8
  export type MailboxImportFormat = "mbox" | "pst";
  export type MailboxImportStatus = "pending" | "processing" | "completed" | "failed";
  export interface MailboxImportRequest {
-@@ -30,6 +32,7 @@ export interface UploadMailboxImportInput {
+@@ -14,6 +16,9 @@ export interface MailboxImportRequest {
+     importedCount?: number;
+     failedCount?: number;
+     errorMessage?: string;
++    /** How many times the server job has claimed this request into `"processing"` (a stalled claim is reclaimed
++     * back to `"pending"` until the job's max attempts, then marked `"failed"`). */
++    processingAttempts?: number;
+ }
+ export interface UploadMailboxImportInput {
+     format: MailboxImportFormat;
+@@ -30,6 +35,7 @@ export interface UploadMailboxImportInput {
   * shape `mailApi.ts`'s `uploadAttachment()` already establishes for a raw-bytes upload.
   */
  export declare function uploadMailboxImport(file: File, input: UploadMailboxImportInput): Promise<MailboxImportRequest>;
@@ -4535,10 +5235,10 @@ index 8ca651f1418ad32942601e9d73b52300d90fa4c3..1ad3e8c00f1065772ef827feae89096d
  }
  export function candidates(params = {}) {
 diff --git a/dist/search/searchTier3.d.ts b/dist/search/searchTier3.d.ts
-index a620cdc61051fa0ce773ebf75ac979d27f0934c8..9ff76cf86a65bac993675cdcee94600393cb34f1 100644
+index a620cdc61051fa0ce773ebf75ac979d27f0934c8..fc90c267a1c02ca2dadf28b1168724e7e84fb5d7 100644
 --- a/dist/search/searchTier3.d.ts
 +++ b/dist/search/searchTier3.d.ts
-@@ -17,15 +17,47 @@
+@@ -17,15 +17,48 @@
  import type { UnlockedKeys } from "../crypto/keySession.js";
  import type { ParsedSearchQuery } from "./queryGrammar.js";
  import { SearchResult } from "./searchApi.js";
@@ -4584,7 +5284,8 @@ index a620cdc61051fa0ce773ebf75ac979d27f0934c8..9ff76cf86a65bac993675cdcee946003
 + * never pays for a decrypt). The candidates endpoint accepts neither filter, so both are applied here.
   *
 - * Returns `[]` (never throws) when `unlocked` is absent - nothing can be decrypted without it, so
-+ * Returns `[]` (never throws) when `unlocked` is absent or already destroyed (`UnlockedKeys.destroyed`) - nothing can be decrypted without it, so
++ * Returns `[]` (never throws) when `unlocked` is absent or destroyed (`UnlockedKeys.destroyed`, checked on
++ * entry, before each decrypt and again before building results) - nothing can be decrypted without it, so
   * there is nothing this tier can contribute - or when the query has no free text and no structured
   * filter at all, mirroring `BaseSearchRoute`'s own "at least one of q or a filter" requirement rather
   * than pulling a pointless full-mailbox candidate set.
@@ -4592,7 +5293,7 @@ index a620cdc61051fa0ce773ebf75ac979d27f0934c8..9ff76cf86a65bac993675cdcee946003
 -export declare function searchEncryptedCandidates(parsed: ParsedSearchQuery, unlocked: UnlockedKeys | undefined, limit?: number): Promise<SearchResult[]>;
 +export declare function searchEncryptedCandidates(parsed: ParsedSearchQuery, unlocked: UnlockedKeys | undefined, limit?: number, options?: SearchEncryptedCandidatesOptions): Promise<SearchResult[]>;
 diff --git a/dist/search/searchTier3.js b/dist/search/searchTier3.js
-index 6fef764d904128d7b711048d2cbcb3a327853c56..fce458f3b80845d55231cbf6494feca02a33a2e1 100644
+index 6fef764d904128d7b711048d2cbcb3a327853c56..0e692f2b7d5ac14a809fbb30bcf79b5bb82ad38e 100644
 --- a/dist/search/searchTier3.js
 +++ b/dist/search/searchTier3.js
 @@ -1,19 +1,80 @@
@@ -4683,7 +5384,7 @@ index 6fef764d904128d7b711048d2cbcb3a327853c56..fce458f3b80845d55231cbf6494feca0
          .replace(/&nbsp;/gi, " ")
          .replace(/&amp;/gi, "&")
          .replace(/&lt;/gi, "<")
-@@ -160,19 +221,47 @@ function hasAnyFilter(parsed) {
+@@ -160,19 +221,48 @@ function hasAnyFilter(parsed) {
          parsed.flags?.length ||
          parsed.labels?.length);
  }
@@ -4725,7 +5426,8 @@ index 6fef764d904128d7b711048d2cbcb3a327853c56..fce458f3b80845d55231cbf6494feca0
 + * never pays for a decrypt). The candidates endpoint accepts neither filter, so both are applied here.
   *
 - * Returns `[]` (never throws) when `unlocked` is absent - nothing can be decrypted without it, so
-+ * Returns `[]` (never throws) when `unlocked` is absent or already destroyed (`UnlockedKeys.destroyed`) - nothing can be decrypted without it, so
++ * Returns `[]` (never throws) when `unlocked` is absent or destroyed (`UnlockedKeys.destroyed`, checked on
++ * entry, before each decrypt and again before building results) - nothing can be decrypted without it, so
   * there is nothing this tier can contribute - or when the query has no free text and no structured
   * filter at all, mirroring `BaseSearchRoute`'s own "at least one of q or a filter" requirement rather
   * than pulling a pointless full-mailbox candidate set.
@@ -4737,7 +5439,7 @@ index 6fef764d904128d7b711048d2cbcb3a327853c56..fce458f3b80845d55231cbf6494feca0
          return [];
      }
      const participants = [parsed.from, parsed.to, parsed.cc].filter((value) => Boolean(value));
-@@ -185,17 +274,23 @@ export async function searchEncryptedCandidates(parsed, unlocked, limit = 50) {
+@@ -185,17 +275,30 @@ export async function searchEncryptedCandidates(parsed, unlocked, limit = 50) {
          flags: parsed.flags,
          labels: parsed.labels,
          limit,
@@ -4754,10 +5456,17 @@ index 6fef764d904128d7b711048d2cbcb3a327853c56..fce458f3b80845d55231cbf6494feca0
 +            }
 +        }
          const rawMime = await getMessageRawContent(candidate.entityUid);
++        if (unlocked.destroyed) {
++            return undefined;
++        }
          const security = await evaluateMessageSecurity(rawMime, unlocked);
          return { entityUid: candidate.entityUid, security };
 -    }));
 +    });
++    if (unlocked.destroyed) {
++        // Locked while candidates were being fetched/decrypted - don't surface decrypted content after a lock.
++        return [];
++    }
 +    const subjectFilter = parsed.subject?.toLowerCase();
      const results = [];
      for (const outcome of settled) {
@@ -4766,7 +5475,7 @@ index 6fef764d904128d7b711048d2cbcb3a327853c56..fce458f3b80845d55231cbf6494feca0
              continue;
          }
          const { entityUid, security } = outcome.value;
-@@ -206,7 +301,13 @@ export async function searchEncryptedCandidates(parsed, unlocked, limit = 50) {
+@@ -206,7 +309,13 @@ export async function searchEncryptedCandidates(parsed, unlocked, limit = 50) {
              continue;
          }
          const subjectText = security.subject ?? "";

@@ -5,11 +5,13 @@
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
+    EnrollmentResult,
     KeyVault,
     MasterKeyWrap,
     PublicKey,
     WrappedPrivateKey,
     addMasterKeyWrap,
+    cancelSignEnrollment,
     checkSignEnrollmentStatus,
     findActivePublicKey,
     getEscrowInfo,
@@ -53,6 +55,14 @@ const MIN_PASSWORD_LENGTH = 8;
 export const MAX_MASTER_KEY_WRAPS = 20;
 
 const KEYS_LOCKED_MESSAGE = "Your encryption keys were locked before this could finish. Unlock them and try again.";
+
+/** Thrown inside `handleRotateKeys()` when the escrow wrap of the new master key can't be built - the rotation is
+ * then abandoned before `rekey()`. */
+class EscrowWrapUnavailableError extends Error {
+    constructor(readonly cause: unknown) {
+        super("Could not prepare escrow protection for the new master key.");
+    }
+}
 
 /** Thrown by `rewrapVaultPrivateKeys()` when a vault entry can't be opened with the current master key. */
 class UncoveredVaultKeysError extends Error {
@@ -114,6 +124,38 @@ async function rewrapVaultPrivateKeys(
 // RFC 8823 ACME issuance is a real email round-trip with a public CA - "likely minutes," not seconds -
 // so this polls infrequently rather than hammering the endpoint.
 const SIGNING_ENROLLMENT_POLL_INTERVAL_MS = 15_000;
+
+/**
+ * A started signing enrollment's id, per mailbox. Kept only so a reload can ask the server
+ * (`checkSignEnrollmentStatus()`) whether that enrollment is still pending: a rotation while it is pending
+ * would strand the enrollment's already-submitted private key under a master key that no longer exists. The
+ * stored id is never trusted on its own - the server's answer decides the state, and restapi's own `rekey()`
+ * refuses (409) a rotation during an enrollment this browser never saw (e.g. one started on another device).
+ */
+const SIGN_ENROLLMENT_STORAGE_PREFIX = "rapidmx.signEnrollment.";
+
+function readStoredSignEnrollment(mailboxUid: string): string | null {
+    try {
+        return localStorage.getItem(SIGN_ENROLLMENT_STORAGE_PREFIX + mailboxUid);
+    } catch {
+        return null;
+    }
+}
+
+function storeSignEnrollment(mailboxUid: string, enrollmentId: string | null): void {
+    try {
+        if (enrollmentId) {
+            localStorage.setItem(SIGN_ENROLLMENT_STORAGE_PREFIX + mailboxUid, enrollmentId);
+        } else {
+            localStorage.removeItem(SIGN_ENROLLMENT_STORAGE_PREFIX + mailboxUid);
+        }
+    } catch {
+        // Storage blocked - restapi's own 409 on rekey still guards a rotation.
+    }
+}
+
+const ROTATION_CONFLICT_MESSAGE =
+    "Your keys were not rotated because the server reported a conflicting change. If a signing certificate enrollment is still in progress for this mailbox (it may have been started on another device), wait for it to finish, then try again. Nothing was changed.";
 
 const METHOD_LABELS: Record<string, string> = {
     password: "Password",
@@ -215,17 +257,23 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     const displayedKeys = refreshedKeys ?? mailbox.keys ?? [];
     const activeSigningKey = findActivePublicKey(displayedKeys, "sign");
 
-    const [signingStatus, setSigningStatus] = useState<"idle" | "enrolling" | "pending">("idle");
+    // "checking" = a stored enrollment id is being confirmed with the server. Rotation stays disabled unless
+    // this is "idle".
+    const [signingStatus, setSigningStatus] = useState<"checking" | "idle" | "enrolling" | "pending">(() =>
+        readStoredSignEnrollment(mailboxUid!) ? "checking" : "idle",
+    );
     const [signingEnrollmentId, setSigningEnrollmentId] = useState<string | null>(null);
     const [signingError, setSigningError] = useState<string | null>(null);
+    const rotationBlockedBySigning = signingStatus !== "idle";
 
+    const [cancelingEnrollment, setCancelingEnrollment] = useState(false);
+    const [cancelEnrollmentError, setCancelEnrollmentError] = useState<string | null>(null);
+
+    // restapi's rekey() drops every old escrow wrap and requires a fresh one for the new master key (see
+    // handleRotateKeys), so an escrow wrap in the vault always covers the current master key.
     const hasEscrowWrap = vault?.masterKeyWraps.some((w) => w.method === "escrow") ?? false;
     const [wrappingEscrow, setWrappingEscrow] = useState(false);
     const [escrowError, setEscrowError] = useState<string | null>(null);
-    // Set when a rotation's escrow re-wrap failed - the vault still holds the old escrow wrap (restapi's
-    // rekey() preserves it verbatim), but it encrypts a master key that no longer exists, so
-    // `hasEscrowWrap` alone must not hide "Add escrow protection".
-    const [escrowRewrapFailed, setEscrowRewrapFailed] = useState(false);
 
     /**
      * This mailbox's unlocked keys *right now* - never a copy read at render time, which a lock (idle
@@ -256,7 +304,6 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             const escrowInfo = await getEscrowInfo(mailboxUid!);
             const wrap = await buildEscrowWrap(current.masterKey, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
             await addMasterKeyWrap(mailboxUid!, wrap);
-            setEscrowRewrapFailed(false);
             await loadVault();
         } catch (err) {
             setEscrowError(errorMessage(err, "Could not add escrow protection for this mailbox."));
@@ -264,6 +311,59 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             setWrappingEscrow(false);
         }
     }
+
+    /** Applies a server-reported enrollment status - shared by the reload check and the poll below. */
+    async function applyEnrollmentResult(enrollmentId: string, result: EnrollmentResult, isCancelled: () => boolean) {
+        if (result.status === "pending") {
+            setSigningEnrollmentId(enrollmentId);
+            setSigningStatus("pending");
+            return;
+        }
+        storeSignEnrollment(mailboxUid!, null);
+        setSigningStatus("idle");
+        setSigningEnrollmentId(null);
+        if (result.status === "failed") {
+            setSigningError(result.error ?? "Signing certificate enrollment failed.");
+            return;
+        }
+        try {
+            const refreshed = await getMailbox(mailboxUid!);
+            if (!isCancelled()) {
+                setRefreshedKeys(refreshed.keys ?? []);
+            }
+        } catch {
+            // The new key shows on the next load - the enrollment itself is finished either way.
+        }
+    }
+
+    // Confirms an enrollment started before a reload with the server before rotation is offered again.
+    useEffect(() => {
+        const storedId = readStoredSignEnrollment(mailboxUid!);
+        if (!storedId) {
+            return;
+        }
+        let cancelled = false;
+        setSigningStatus("checking");
+        checkSignEnrollmentStatus(mailboxUid!, storedId)
+            .then((result) => (cancelled ? undefined : applyEnrollmentResult(storedId, result, () => cancelled)))
+            .catch((err) => {
+                if (cancelled) {
+                    return;
+                }
+                if (err instanceof ApiRequestError && err.status === 404) {
+                    // The server no longer knows this enrollment, so nothing is pending.
+                    storeSignEnrollment(mailboxUid!, null);
+                    setSigningStatus("idle");
+                    return;
+                }
+                // Unknown (e.g. a network error): assume it is still pending, and let polling keep asking.
+                setSigningEnrollmentId(storedId);
+                setSigningStatus("pending");
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [mailboxUid]);
 
     useEffect(() => {
         if (signingStatus !== "pending" || !signingEnrollmentId) {
@@ -273,22 +373,9 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         const interval = setInterval(async () => {
             try {
                 const result = await checkSignEnrollmentStatus(mailboxUid!, signingEnrollmentId);
-                if (cancelled) {
-                    return;
+                if (!cancelled) {
+                    await applyEnrollmentResult(signingEnrollmentId, result, () => cancelled);
                 }
-                if (result.status === "issued") {
-                    setSigningStatus("idle");
-                    setSigningEnrollmentId(null);
-                    const refreshed = await getMailbox(mailboxUid!);
-                    if (!cancelled) {
-                        setRefreshedKeys(refreshed.keys ?? []);
-                    }
-                } else if (result.status === "failed") {
-                    setSigningStatus("idle");
-                    setSigningEnrollmentId(null);
-                    setSigningError(result.error ?? "Signing certificate enrollment failed.");
-                }
-                // "pending" leaves state as-is - the interval below just tries again.
             } catch {
                 // Transient network error - keep polling rather than surfacing a one-off failure.
             }
@@ -298,6 +385,37 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             clearInterval(interval);
         };
     }, [signingStatus, signingEnrollmentId, mailboxUid]);
+
+    /** Cancels the pending enrollment (restapi's owner-only DELETE), which is what lets rotation run again. */
+    async function handleCancelEnrollment(enrollmentId: string) {
+        setCancelEnrollmentError(null);
+        setCancelingEnrollment(true);
+        try {
+            const result = await cancelSignEnrollment(mailboxUid!, enrollmentId);
+            if (result.status === "pending") {
+                setCancelEnrollmentError("The enrollment couldn't be cancelled yet. Try again.");
+            } else if (result.status === "failed") {
+                // Cancelled - the "failure" is the cancellation itself, not something to report.
+                storeSignEnrollment(mailboxUid!, null);
+                setSigningStatus("idle");
+                setSigningEnrollmentId(null);
+            } else {
+                // Issued before the cancel landed: it finishes like any other issued enrollment.
+                await applyEnrollmentResult(enrollmentId, result, () => false);
+            }
+        } catch (err) {
+            if (err instanceof ApiRequestError && err.status === 404) {
+                // The server no longer knows this enrollment, so nothing is pending.
+                storeSignEnrollment(mailboxUid!, null);
+                setSigningStatus("idle");
+                setSigningEnrollmentId(null);
+            } else {
+                setCancelEnrollmentError(errorMessage(err, "Could not cancel the signing certificate enrollment."));
+            }
+        } finally {
+            setCancelingEnrollment(false);
+        }
+    }
 
     async function handleEnrollSigning() {
         setSigningError(null);
@@ -315,6 +433,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                 csr: csrPem,
                 wrappedKey: { ciphertext: wrappedKeySealed.ciphertext, nonce: wrappedKeySealed.nonce, algorithm: "AES-256-GCM" },
             });
+            storeSignEnrollment(mailboxUid!, enrollmentId);
             setSigningEnrollmentId(enrollmentId);
             setSigningStatus("pending");
         } catch (err) {
@@ -450,11 +569,15 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         const savedCodes: string[] = [];
         let addError: unknown = null;
         for (let i = 0; i < built.wraps.length; i++) {
+            // The old wrap removed to make room for this new one, if any - put back if the add then fails, so a
+            // failed add never costs a working code.
+            let removedForThis: MasterKeyWrap | null = null;
             try {
                 if (free <= 0) {
                     // Guaranteed non-empty by the shortfall check above.
                     const old = pendingOld.shift()!;
                     await removeMasterKeyWrap(mailboxUid!, "recovery", old.methodId);
+                    removedForThis = old;
                     removedEarly++;
                     free++;
                 }
@@ -463,6 +586,14 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                 savedCodes.push(built.codes[i]);
             } catch (err) {
                 addError = err;
+                if (removedForThis) {
+                    try {
+                        await addMasterKeyWrap(mailboxUid!, removedForThis);
+                        removedEarly--;
+                    } catch {
+                        // Still counted in removedEarly, which the messages below report.
+                    }
+                }
                 break;
             }
         }
@@ -534,6 +665,10 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
      */
     async function handleRotateKeys(e: FormEvent) {
         e.preventDefault();
+        if (rotationBlockedBySigning) {
+            // The form's controls are disabled in this state too; this also covers an implicit submit.
+            return;
+        }
         if (rotationPassword.length < MIN_PASSWORD_LENGTH) {
             setActionError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
             return;
@@ -546,25 +681,43 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         setEscrowError(null);
         setRotating(true);
         let keys: PublicKey[];
-        let mk: Uint8Array;
         let codes: string[];
-        let hadEscrowWrap: boolean;
         try {
             const current = await currentUnlockedKeys();
             const [freshVault, freshMailbox] = await Promise.all([getKeyVault(mailboxUid!), getMailbox(mailboxUid!)]);
             keys = freshMailbox.keys ?? [];
-            hadEscrowWrap = freshVault.masterKeyWraps.some((w) => w.method === "escrow");
             const rewrapped = await rewrapVaultPrivateKeys(mailboxUid!, current.masterKey, freshVault.wrappedKeys);
-            mk = rewrapped.mk;
+            const mk = rewrapped.mk;
             const passwordWrap = await buildPasswordWrap(mailboxUid!, mk, rotationPassword);
             const recovery = await buildRecoveryWraps(mailboxUid!, mk);
             codes = recovery.codes;
-            await rekey(mailboxUid!, { wrappedKeys: rewrapped.wrappedKeys, masterKeyWraps: [passwordWrap, ...recovery.wraps], keys });
+            const masterKeyWraps = [passwordWrap, ...recovery.wraps];
+            // restapi's rekey() drops the old escrow wraps and refuses (409) to rekey a mailbox assigned an escrow
+            // scope without a fresh escrow wrap of the new master key, so it is built here and sent in the same
+            // request. Decided by the mailbox's current assignment (not by an old escrow wrap in the vault): that
+            // is what restapi checks, and a mailbox taken out of escrow has no scope left to wrap for. Failing to
+            // build it aborts the rotation - rotating without it would silently end escrow coverage.
+            if (freshMailbox.escrowScopeId) {
+                try {
+                    const escrowInfo = await getEscrowInfo(mailboxUid!);
+                    masterKeyWraps.push(await buildEscrowWrap(mk, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey)));
+                } catch (err) {
+                    throw new EscrowWrapUnavailableError(err);
+                }
+            }
+            await rekey(mailboxUid!, { wrappedKeys: rewrapped.wrappedKeys, masterKeyWraps, keys });
         } catch (err) {
             if (err instanceof UncoveredVaultKeysError) {
                 setActionError(
                     `Your key vault holds ${err.fingerprints.length === 1 ? "a private key" : `${err.fingerprints.length} private keys`} this session can't open (${err.fingerprints.join(", ")}), so rotating now would lose ${err.fingerprints.length === 1 ? "it" : "them"}. Nothing was changed.`,
                 );
+            } else if (err instanceof EscrowWrapUnavailableError) {
+                const reason = err.cause instanceof ApiRequestError ? ` (${err.cause.message})` : "";
+                setActionError(
+                    `Your keys were not rotated: this mailbox is under escrow, and escrow protection for the new keys couldn't be prepared${reason}. Nothing was changed.`,
+                );
+            } else if (err instanceof ApiRequestError && err.status === 409) {
+                setActionError(ROTATION_CONFLICT_MESSAGE);
             } else {
                 setActionError(errorMessage(err, "Could not rotate your encryption keys."));
             }
@@ -583,30 +736,6 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         setCodesSaved(false);
         setRefreshedKeys(keys);
         try {
-            // restapi's own rekey() can never accept a fresh escrow wrap (its validateMasterKeyWrap()
-            // always passes allowEscrow: false there) - it preserves this mailbox's existing escrow wrap
-            // verbatim instead, which now encrypts a master key nobody has any longer. Re-wrap it
-            // separately, via the same addMasterKeyWrap() path "Add escrow protection" above already
-            // uses, so rotating keys for an unrelated reason (lost device, password hygiene) doesn't
-            // silently drop real escrow coverage. A failure here is reported via escrowError (and keeps
-            // "Add escrow protection" offered), not as a rotation failure - the rotation itself already
-            // succeeded by this point and must not be rolled back for an escrow-specific hiccup.
-            if (hadEscrowWrap) {
-                try {
-                    const escrowInfo = await getEscrowInfo(mailboxUid!);
-                    const escrowWrap = await buildEscrowWrap(mk, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
-                    await addMasterKeyWrap(mailboxUid!, escrowWrap);
-                    setEscrowRewrapFailed(false);
-                } catch (err) {
-                    setEscrowRewrapFailed(true);
-                    setEscrowError(
-                        err instanceof ApiRequestError
-                            ? err.message
-                            : 'Your keys were rotated, but escrow protection could not be re-established automatically. Use "Add escrow protection" below to restore it.',
-                    );
-                }
-            }
-
             // Refreshes this session's own cached keys against the new MK, via the password we just set -
             // the underlying private key material didn't change, but the stale MK in memory would silently
             // build wrong future wraps if left as-is. If that fails, the stale keys are destroyed instead.
@@ -751,7 +880,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                                 variant="secondary"
                                 className="!w-auto"
                                 loading={signingStatus === "enrolling"}
-                                disabled={signingStatus === "enrolling"}
+                                disabled={signingStatus !== "idle"}
                                 onClick={handleEnrollSigning}
                             >
                                 Enable digital signatures
@@ -763,11 +892,8 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                 {mailbox.escrowScopeId && (
                     <div>
                         <h2 className="text-sm font-semibold mb-2">Escrow</h2>
-                        {/* Rendered regardless of hasEscrowWrap - a rotation-triggered re-wrap failure
-                            (see handleRotateKeys) leaves the mailbox's old, now-stale escrow wrap in place,
-                            so hasEscrowWrap alone can't be trusted to hide this. */}
                         {escrowError && <Alert>{escrowError}</Alert>}
-                        {hasEscrowWrap && !escrowRewrapFailed ? (
+                        {hasEscrowWrap ? (
                             <p className="text-sm text-text-muted">
                                 This mailbox is under legal/compliance escrow — an authorized holder in your
                                 organization can recover its encrypted mail if needed. This does not weaken
@@ -776,9 +902,9 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                         ) : (
                             <div className="flex flex-col gap-2">
                                 <p className="text-xs text-text-muted">
-                                    {escrowRewrapFailed
-                                        ? "Your keys were rotated, so this mailbox's escrow protection no longer covers them — an authorized holder cannot recover this mailbox's encrypted mail until you re-establish it."
-                                        : "Your organization has assigned this mailbox to an escrow scope, but nothing has been protected yet — an authorized holder cannot recover this mailbox's encrypted mail until you complete this step."}{" "}
+                                    Your organization has assigned this mailbox to an escrow scope, but nothing has been
+                                    protected yet — an authorized holder cannot recover this mailbox&rsquo;s encrypted mail
+                                    until you complete this step.{" "}
                                     This does not weaken protection against anyone else.
                                 </p>
                                 {canManageKeys && (
@@ -927,6 +1053,30 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                                 and anything else on file) stops working immediately; you&rsquo;ll set a new password and
                                 get new recovery codes below.
                             </p>
+                            {rotationBlockedBySigning && (
+                                <p className="text-xs text-text-muted">
+                                    {signingStatus === "checking"
+                                        ? "Checking whether a signing certificate enrollment is still in progress..."
+                                        : "Rotation is unavailable while a signing certificate enrollment is in progress - rotating now would lose the key being enrolled. Try again once it finishes, or cancel the enrollment."}
+                                </p>
+                            )}
+                            {signingStatus === "pending" && signingEnrollmentId && (
+                                <div className="flex flex-col gap-2">
+                                    {cancelEnrollmentError && <Alert>{cancelEnrollmentError}</Alert>}
+                                    <div>
+                                        <Button
+                                            type="button"
+                                            variant="secondary"
+                                            className="!w-auto"
+                                            loading={cancelingEnrollment}
+                                            disabled={cancelingEnrollment}
+                                            onClick={() => handleCancelEnrollment(signingEnrollmentId)}
+                                        >
+                                            Cancel enrollment
+                                        </Button>
+                                    </div>
+                                </div>
+                            )}
                             <input
                                 type="password"
                                 aria-label="New password for rotated keys"
@@ -934,7 +1084,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                                 className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
                                 value={rotationPassword}
                                 onChange={(e) => setRotationPassword(e.target.value)}
-                                disabled={rotating}
+                                disabled={rotating || rotationBlockedBySigning}
                                 autoComplete="new-password"
                             />
                             <input
@@ -944,11 +1094,17 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                                 className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
                                 value={rotationConfirmPassword}
                                 onChange={(e) => setRotationConfirmPassword(e.target.value)}
-                                disabled={rotating}
+                                disabled={rotating || rotationBlockedBySigning}
                                 autoComplete="new-password"
                             />
                             <div>
-                                <Button type="submit" variant="secondary" className="!w-auto text-danger" loading={rotating} disabled={rotating}>
+                                <Button
+                                    type="submit"
+                                    variant="secondary"
+                                    className="!w-auto text-danger"
+                                    loading={rotating}
+                                    disabled={rotating || rotationBlockedBySigning}
+                                >
                                     Rotate keys now
                                 </Button>
                             </div>

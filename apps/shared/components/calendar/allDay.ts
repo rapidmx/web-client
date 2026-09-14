@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { format } from "date-fns";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { CalendarOccurrence, toEventWallClock } from "@rapidmx/react-shared/calendar/recurrence.js";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -51,10 +52,41 @@ export function recurrenceUntilInstant(dateKey: string, allDay: boolean): string
     return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
 }
 
-/** Inverse of `recurrenceUntilInstant()`. An all-day series' value rounds to the nearest UTC midnight (the
- * day after), so an older one stored as the creator's local end of day still reads as the intended date. */
+/** The stored form of an all-day series' "Ends on" date - the last millisecond of that UTC day. */
+const ALL_DAY_UNTIL_PATTERN = /^(\d{4}-\d{2}-\d{2})T23:59:59\.999Z$/;
+/** A bare UTC midnight - how the oldest editor (and date-only `UNTIL` values) stored the chosen date itself. */
+const UTC_MIDNIGHT_PATTERN = /^(\d{4}-\d{2}-\d{2})T00:00:00(?:\.000)?Z$/;
+
+/**
+ * Inverse of `recurrenceUntilInstant()`. An all-day series' value is recognized explicitly in its stored
+ * `T23:59:59.999Z` form (and as a bare UTC midnight, the oldest form). Anything else is a legacy value stored
+ * as the creator's *local* end of day, which can land anywhere from just before 10:00Z on the chosen date (UTC+14)
+ * to just before 12:00Z the day after (UTC-12) - a 26-hour spread no UTC-only rounding can resolve (UTC+14 and UTC-10
+ * creators' values are exactly 24h apart for the same date), so it reads back on the local calendar, the
+ * frame it was written in.
+ */
 export function recurrenceUntilDateKey(until: string, allDay: boolean): string {
-    return allDay ? addDaysToKey(allDayDateKey(until), -1) : format(new Date(until), "yyyy-MM-dd");
+    if (allDay) {
+        const stored = ALL_DAY_UNTIL_PATTERN.exec(until) ?? UTC_MIDNIGHT_PATTERN.exec(until);
+        if (stored) {
+            return stored[1];
+        }
+    }
+    return format(new Date(until), "yyyy-MM-dd");
+}
+
+/** `Date#getUTCDay()` index -> RFC 5545 weekday code. */
+const JS_WEEKDAY_CODES: WeekdayCode[] = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+
+/** The weekday an event starts on, in the frame its series expands in: the UTC date for an all-day event
+ * (`start`'s date part), the event's own timezone otherwise (`start` being a local `datetime-local` value).
+ * `undefined` while the start input is empty/invalid. */
+export function startWeekdayCode(start: string, allDay: boolean, timezone: string | undefined): WeekdayCode | undefined {
+    const ms = allDay ? new Date(allDayInstant(start.slice(0, 10))).getTime() : new Date(start).getTime();
+    if (Number.isNaN(ms)) {
+        return undefined;
+    }
+    return JS_WEEKDAY_CODES[new Date(toEventWallClock(ms, timezone, allDay)).getUTCDay()];
 }
 
 /**

@@ -1309,6 +1309,7 @@ describe("InboxPage", () => {
             getUnlockedKeys.mockReturnValue(undefined);
             unlockWithPassword.mockImplementation(async () => {
                 getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+                return { unopenableKeys: [] };
             });
             searchEncryptedCandidates.mockImplementation(async (_parsed: unknown, unlocked: unknown) =>
                 unlocked
@@ -1657,7 +1658,7 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Second hit")).toBeInTheDocument();
         });
 
-        it("doesn't keep loading search results after a page that only repeated hits already shown", async () => {
+        it("stops loading search results after a few pages in a row that only repeated hits already shown", async () => {
             const hit = messageFixture({ uid: "m1", subject: "First hit" });
             const io = mockIntersectionObserver();
             let searchRequests = 0;
@@ -1683,9 +1684,10 @@ describe("InboxPage", () => {
 
             io.trigger();
 
-            await waitFor(() => expect(searchRequests).toBe(before + 1));
+            // Three repeat pages continue on their own; the fourth stops and offers a button instead.
+            expect(await screen.findByRole("button", { name: "Load more" }, { timeout: 5000 })).toBeInTheDocument();
             await new Promise((resolve) => setTimeout(resolve, 50));
-            expect(searchRequests).toBe(before + 1);
+            expect(searchRequests).toBe(before + 4);
             expect(screen.getAllByText("First hit")).toHaveLength(1);
         });
 
@@ -1816,10 +1818,23 @@ describe("InboxPage", () => {
             }
         });
 
-        it("doesn't continue after a page that only repeated rows already shown", async () => {
+        it("keeps going past a full page that only repeated rows already shown (round 5: it used to stall)", async () => {
             const io = mockIntersectionObserver();
             const first = fullPage(0);
-            const requests = pagedFolder({ 0: first, 1: first });
+            const requests = pagedFolder({ 0: first, 1: first, 2: [messageFixture({ uid: "last", subject: "Last message" })] });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 message 0");
+
+            io.trigger();
+
+            expect(await screen.findByText("Last message")).toBeInTheDocument();
+            expect(requests.filter((p) => p > 0)).toEqual([1, 2]);
+        });
+
+        it("doesn't continue after a short page that only repeated rows already shown", async () => {
+            const io = mockIntersectionObserver();
+            const first = fullPage(0);
+            const requests = pagedFolder({ 0: first, 1: first.slice(0, 10) });
             render(<InboxPage userUid="u1" />);
             await screen.findByText("Page 0 message 0");
 
@@ -1828,6 +1843,26 @@ describe("InboxPage", () => {
             await waitFor(() => expect(requests.filter((p) => p > 0)).toEqual([1]));
             await new Promise((resolve) => setTimeout(resolve, 50));
             expect(requests.filter((p) => p > 0)).toEqual([1]);
+        });
+
+        it("stops after a few full pages in a row that add nothing, offering a Load more button that resumes", async () => {
+            const io = mockIntersectionObserver();
+            const first = fullPage(0);
+            const requests = pagedFolder({ 0: first, 1: first, 2: first, 3: first, 4: first, 5: fullPage(5) });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 message 0");
+
+            io.trigger();
+
+            const button = await screen.findByRole("button", { name: "Load more" }, { timeout: 5000 });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect(requests.filter((p) => p > 0)).toEqual([1, 2, 3, 4]);
+
+            await user.click(button);
+
+            expect(await screen.findByText("Page 5 message 0")).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
         });
 
         it("issues one request for two sentinel reports in the same tick", async () => {
@@ -1851,6 +1886,7 @@ describe("InboxPage", () => {
             getUnlockedKeys.mockReturnValue(undefined);
             unlockWithPassword.mockImplementation(async () => {
                 getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+                return { unopenableKeys: [] };
             });
             evaluateMessageSecurity.mockResolvedValue({
                 state: "encrypted_verified",
@@ -1968,6 +2004,7 @@ describe("InboxPage", () => {
             getUnlockedKeys.mockReturnValue(undefined);
             unlockWithPassword.mockImplementation(async () => {
                 getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+                return { unopenableKeys: [] };
             });
             let resolveDecrypt!: (value: unknown) => void;
             evaluateMessageSecurity.mockReturnValue(new Promise((resolve) => (resolveDecrypt = resolve)));

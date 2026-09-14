@@ -518,6 +518,25 @@ describe("SettingsPrivacyPage", () => {
         expect(screen.getByText("denied")).toBeInTheDocument();
     });
 
+    it("shows processing exports and an in-progress erasure with a neutral badge, not success, and no Download link (round 5)", async () => {
+        mockShell((url, init) => {
+            if (url === "/api/mail/data-export-requests") return jsonResponse(200, [exportRequest({ uid: "der1", status: "processing" })]);
+            if (url.startsWith("/api/mail/erasure-requests") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, [erasureRequest({ status: "in_progress" })]);
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+
+        const processing = await screen.findByText("processing");
+        expect(processing).toHaveClass("text-text-muted");
+        expect(processing).not.toHaveClass("bg-success");
+        const inProgress = await screen.findByText("in progress");
+        expect(inProgress).toHaveClass("text-text-muted");
+        expect(inProgress).not.toHaveClass("bg-success");
+        expect(screen.queryByRole("link", { name: "Download" })).not.toBeInTheDocument();
+    });
+
     it("disables the button while a request is already pending", async () => {
         mockShell((url, init) => {
             if (url.startsWith("/api/mail/erasure-requests") && (init?.method ?? "GET") === "GET") {
