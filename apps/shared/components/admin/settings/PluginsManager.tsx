@@ -7,15 +7,21 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     addPlugin,
     getPluginStatus,
+    getPluginUpdates,
+    listPluginNamespaces,
     listPlugins,
     lookupPluginPackage,
     Plugin,
     PluginInstanceStatus,
+    PluginNamespace,
     PluginRegistryLookup,
+    PluginSearchResult,
     PluginSettingDefinition,
     PluginSettingValue,
     PluginStatus,
+    PluginUpdateInfo,
     removePlugin,
+    searchPlugins,
     updatePlugin,
 } from "@rapidmx/react-shared/admin/pluginsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -37,6 +43,7 @@ function errorMessage(err: unknown, fallback: string): string {
 export default function PluginsManager() {
     const [plugins, setPlugins] = useState<Plugin[]>([]);
     const [status, setStatus] = useState<PluginStatus | null>(null);
+    const [updates, setUpdates] = useState<Map<string, PluginUpdateInfo>>(new Map());
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [adding, setAdding] = useState(false);
@@ -52,12 +59,22 @@ export default function PluginsManager() {
             .catch(() => setStatus(null));
     }, []);
 
+    const refreshUpdates = useCallback(() => {
+        // Also advisory: a registry that can't be reached just means no update badges.
+        return getPluginUpdates()
+            .then((list) => setUpdates(new Map(list.map((info) => [info.uid, info]))))
+            .catch(() => setUpdates(new Map()));
+    }, []);
+
     useEffect(() => {
         Promise.all([listPlugins(), refreshStatus()])
-            .then(([list]) => setPlugins(list))
+            .then(([list]) => {
+                setPlugins(list);
+                void refreshUpdates();
+            })
             .catch((err) => setError(errorMessage(err, "Could not load plugins.")))
             .finally(() => setLoading(false));
-    }, [refreshStatus]);
+    }, [refreshStatus, refreshUpdates]);
 
     const pending: boolean = !!status && status.instances.some((instance) => instance.hash !== status.hash);
     useEffect(() => {
@@ -68,7 +85,7 @@ export default function PluginsManager() {
         return () => clearInterval(timer);
     }, [pending, refreshStatus]);
 
-    /** Applies a saved change locally and re-reads status, since saving starts a rollout. */
+    /** Applies a saved change locally and re-reads status and updates, since saving starts a rollout. */
     function applied(updated: Plugin) {
         setPlugins((prev) => {
             const exists = prev.some((plugin) => plugin.uid === updated.uid);
@@ -76,26 +93,43 @@ export default function PluginsManager() {
             return next.sort((a, b) => a.name.localeCompare(b.name));
         });
         void refreshStatus();
+        void refreshUpdates();
     }
 
-    async function toggle(plugin: Plugin) {
+    async function run(plugin: Plugin, action: () => Promise<Plugin>, failure: string) {
         setBusyUid(plugin.uid);
         setError(null);
         try {
-            applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: !plugin.enabled }));
+            applied(await action());
         } catch (err) {
-            setError(errorMessage(err, `Could not ${plugin.enabled ? "disable" : "enable"} ${plugin.manifest.displayName}.`));
+            setError(errorMessage(err, failure));
         } finally {
             setBusyUid(null);
         }
+    }
+
+    function toggle(plugin: Plugin) {
+        return run(
+            plugin,
+            () => updatePlugin(plugin.uid, { version: plugin.version, enabled: !plugin.enabled }),
+            `Could not ${plugin.enabled ? "disable" : "enable"} ${plugin.manifest.displayName}.`,
+        );
+    }
+
+    function upgrade(plugin: Plugin, packageVersion: string) {
+        return run(
+            plugin,
+            () => updatePlugin(plugin.uid, { version: plugin.version, packageVersion }),
+            `Could not upgrade ${plugin.manifest.displayName}.`,
+        );
     }
 
     return (
         <>
             <div className="flex items-center justify-between mb-2">
                 <h1 className="text-xl font-bold uppercase tracking-wide">Plugins</h1>
-                <Button type="button" className="!w-auto" onClick={() => setAdding(true)}>
-                    + Add plugin
+                <Button type="button" variant="secondary" className="!w-auto" onClick={() => setAdding(true)}>
+                    Add by name
                 </Button>
             </div>
             <p className="text-sm text-text-muted mb-5 max-w-3xl">
@@ -107,6 +141,7 @@ export default function PluginsManager() {
             {error && <Alert>{error}</Alert>}
             <RolloutBanner status={status} />
 
+            <h2 className="text-sm font-bold uppercase tracking-wide mb-2">Installed plugins</h2>
             {loading ? (
                 <p className="text-sm text-text-muted">Loading&hellip;</p>
             ) : plugins.length === 0 ? (
@@ -116,7 +151,7 @@ export default function PluginsManager() {
                     <table className="w-full text-sm border-collapse">
                         <thead>
                             <tr>
-                                {["Plugin", "Version", "Status", "Enabled", ""].map((h) => (
+                                {["Plugin", "Version", "State", "Servers", ""].map((h) => (
                                     <th
                                         key={h}
                                         className="text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border"
@@ -127,49 +162,90 @@ export default function PluginsManager() {
                             </tr>
                         </thead>
                         <tbody>
-                            {plugins.map((plugin) => (
-                                <tr key={plugin.uid}>
-                                    <td className="py-2.5 px-2.5 border-b border-border align-top">
-                                        <div className="font-semibold">{plugin.manifest.displayName}</div>
-                                        <div className="text-xs text-text-muted">{plugin.name}</div>
-                                        {plugin.manifest.description && (
-                                            <div className="text-xs text-text-muted mt-1 max-w-md">{plugin.manifest.description}</div>
-                                        )}
-                                    </td>
-                                    <td className="py-2.5 px-2.5 border-b border-border align-top">{plugin.packageVersion}</td>
-                                    <td className="py-2.5 px-2.5 border-b border-border align-top">
-                                        <PluginStatusCell plugin={plugin} status={status} />
-                                    </td>
-                                    <td className="py-2.5 px-2.5 border-b border-border align-top">
-                                        <label className="inline-flex items-center gap-2">
-                                            <input
-                                                type="checkbox"
-                                                aria-label={`Enable ${plugin.manifest.displayName}`}
-                                                checked={plugin.enabled}
-                                                disabled={busyUid === plugin.uid}
-                                                onChange={() => void toggle(plugin)}
-                                            />
-                                        </label>
-                                    </td>
-                                    <td className="py-2.5 px-2.5 border-b border-border align-top text-right whitespace-nowrap">
-                                        {(plugin.manifest.settings ?? []).length > 0 && (
-                                            <Button variant="text" type="button" className="!w-auto" onClick={() => setConfiguring(plugin)}>
-                                                Settings
+                            {plugins.map((plugin) => {
+                                const update: PluginUpdateInfo | undefined = updates.get(plugin.uid);
+                                const latest: string | undefined = update?.updateAvailable ? update.latestVersion : undefined;
+                                const busy: boolean = busyUid === plugin.uid;
+                                return (
+                                    <tr key={plugin.uid}>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                            <div className="font-semibold">{plugin.manifest.displayName}</div>
+                                            <div className="text-xs text-text-muted">{plugin.name}</div>
+                                            {plugin.manifest.description && (
+                                                <div className="text-xs text-text-muted mt-1 max-w-md">{plugin.manifest.description}</div>
+                                            )}
+                                        </td>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                            <div>{plugin.packageVersion}</div>
+                                            {latest && (
+                                                <div className="mt-1 flex flex-col items-start gap-1">
+                                                    <span className="text-xs font-semibold text-primary-dark">Update available: {latest}</span>
+                                                    <Button
+                                                        type="button"
+                                                        variant="secondary"
+                                                        className="!w-auto !py-1 !px-2 !text-xs"
+                                                        aria-label={`Upgrade ${plugin.manifest.displayName} to ${latest}`}
+                                                        disabled={busy}
+                                                        onClick={() => void upgrade(plugin, latest)}
+                                                    >
+                                                        Upgrade
+                                                    </Button>
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                            {plugin.enabled ? (
+                                                <span className="text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill bg-success text-white">
+                                                    Enabled
+                                                </span>
+                                            ) : (
+                                                <span className="text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill bg-surface-alt text-text-muted">
+                                                    Disabled
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                            <PluginStatusCell plugin={plugin} status={status} />
+                                        </td>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top text-right whitespace-nowrap">
+                                            <Button
+                                                variant="text"
+                                                type="button"
+                                                className="!w-auto"
+                                                aria-label={`${plugin.enabled ? "Disable" : "Enable"} ${plugin.manifest.displayName}`}
+                                                disabled={busy}
+                                                onClick={() => void toggle(plugin)}
+                                            >
+                                                {plugin.enabled ? "Disable" : "Enable"}
                                             </Button>
-                                        )}
-                                        <Button variant="text" type="button" className="!w-auto" onClick={() => setUpgrading(plugin)}>
-                                            Change version
-                                        </Button>
-                                        <Button variant="text" type="button" className="!w-auto" onClick={() => setRemoving(plugin)}>
-                                            Remove
-                                        </Button>
-                                    </td>
-                                </tr>
-                            ))}
+                                            {(plugin.manifest.settings ?? []).length > 0 && (
+                                                <Button variant="text" type="button" className="!w-auto" onClick={() => setConfiguring(plugin)}>
+                                                    Settings
+                                                </Button>
+                                            )}
+                                            <Button variant="text" type="button" className="!w-auto" onClick={() => setUpgrading(plugin)}>
+                                                Change version
+                                            </Button>
+                                            <Button variant="text" type="button" className="!w-auto" onClick={() => setRemoving(plugin)}>
+                                                Uninstall
+                                            </Button>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
                         </tbody>
                     </table>
                 </div>
             )}
+
+            <PluginBrowser
+                plugins={plugins}
+                onInstalled={applied}
+                onUpgrade={(uid, packageVersion) => {
+                    const plugin = plugins.find((p) => p.uid === uid);
+                    return plugin ? upgrade(plugin, packageVersion) : Promise.resolve();
+                }}
+            />
 
             <AddPluginModal
                 open={adding}
@@ -212,6 +288,172 @@ export default function PluginsManager() {
                 />
             )}
         </>
+    );
+}
+
+const ALL_NAMESPACES = "";
+
+/** Searches the configured namespaces' registries for plugin packages, with install and upgrade actions. */
+function PluginBrowser({
+    plugins,
+    onInstalled,
+    onUpgrade,
+}: {
+    plugins: Plugin[];
+    onInstalled: (plugin: Plugin) => void;
+    onUpgrade: (uid: string, packageVersion: string) => Promise<void>;
+}) {
+    const [namespaces, setNamespaces] = useState<PluginNamespace[]>([]);
+    const [namespace, setNamespace] = useState(ALL_NAMESPACES);
+    const [results, setResults] = useState<PluginSearchResult[] | null>(null);
+    const [searching, setSearching] = useState(false);
+    const [busyName, setBusyName] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        listPluginNamespaces()
+            .then(setNamespaces)
+            .catch(() => setNamespaces([]));
+    }, []);
+
+    async function search(e: FormEvent) {
+        e.preventDefault();
+        setSearching(true);
+        setError(null);
+        try {
+            setResults(await searchPlugins(namespace || undefined));
+        } catch (err) {
+            setResults(null);
+            setError(errorMessage(err, "Could not search for plugins."));
+        } finally {
+            setSearching(false);
+        }
+    }
+
+    // Keep results in step with installs and upgrades made anywhere on the page.
+    const rows: PluginSearchResult[] = (results ?? []).map((result) => {
+        const installed: Plugin | undefined = plugins.find((plugin) => plugin.name === result.name);
+        return {
+            ...result,
+            installedUid: installed?.uid,
+            installedVersion: installed?.packageVersion,
+            updateAvailable: !!installed && installed.packageVersion !== result.version && result.updateAvailable,
+        };
+    });
+
+    async function install(result: PluginSearchResult) {
+        setBusyName(result.name);
+        setError(null);
+        try {
+            onInstalled(await addPlugin(result.name, result.version));
+        } catch (err) {
+            setError(errorMessage(err, `Could not install ${result.name}.`));
+        } finally {
+            setBusyName(null);
+        }
+    }
+
+    async function upgrade(result: PluginSearchResult) {
+        setBusyName(result.name);
+        try {
+            await onUpgrade(result.installedUid!, result.version);
+        } finally {
+            setBusyName(null);
+        }
+    }
+
+    return (
+        <section aria-labelledby="plugin-browser-title" className="mt-8">
+            <h2 id="plugin-browser-title" className="text-sm font-bold uppercase tracking-wide mb-2">
+                Find plugins
+            </h2>
+            <form onSubmit={(e) => void search(e)} className="flex flex-wrap gap-2 items-end mb-3">
+                <label className="flex flex-col gap-1.5 text-sm">
+                    <span className="font-semibold">Namespace</span>
+                    <select aria-label="Namespace" className={INPUT_CLASS} value={namespace} onChange={(e) => setNamespace(e.target.value)}>
+                        <option value={ALL_NAMESPACES}>All namespaces</option>
+                        {namespaces.map((ns) => (
+                            <option key={ns.name} value={ns.name}>
+                                {ns.name}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+                <Button type="submit" className="!w-auto" loading={searching} disabled={searching}>
+                    Search
+                </Button>
+            </form>
+            {error && <Alert>{error}</Alert>}
+            {results !== null &&
+                (rows.length === 0 ? (
+                    <p className="text-sm text-text-muted">No plugins found.</p>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm border-collapse">
+                            <thead>
+                                <tr>
+                                    {["Package", "Latest version", "Status", ""].map((h) => (
+                                        <th
+                                            key={h}
+                                            className="text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border"
+                                        >
+                                            {h}
+                                        </th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rows.map((result) => (
+                                    <tr key={result.name}>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                            <div className="font-semibold">{result.name}</div>
+                                            {result.description && <div className="text-xs text-text-muted max-w-md">{result.description}</div>}
+                                        </td>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top">{result.version}</td>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top text-text-muted">
+                                            {result.updateAvailable
+                                                ? `Installed ${result.installedVersion} - update available`
+                                                : result.installedUid
+                                                  ? `Installed ${result.installedVersion}`
+                                                  : result.allowed
+                                                    ? "Not installed"
+                                                    : "Not allowed on this server"}
+                                        </td>
+                                        <td className="py-2.5 px-2.5 border-b border-border align-top text-right">
+                                            {result.updateAvailable ? (
+                                                <Button
+                                                    type="button"
+                                                    variant="secondary"
+                                                    className="!w-auto"
+                                                    aria-label={`Upgrade ${result.name} to ${result.version}`}
+                                                    disabled={busyName === result.name}
+                                                    onClick={() => void upgrade(result)}
+                                                >
+                                                    Upgrade
+                                                </Button>
+                                            ) : (
+                                                !result.installedUid &&
+                                                result.allowed && (
+                                                    <Button
+                                                        type="button"
+                                                        className="!w-auto"
+                                                        aria-label={`Install ${result.name}`}
+                                                        loading={busyName === result.name}
+                                                        disabled={busyName === result.name}
+                                                        onClick={() => void install(result)}
+                                                    >
+                                                        Install
+                                                    </Button>
+                                                )
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                ))}
+        </section>
     );
 }
 
@@ -570,13 +812,13 @@ function RemoveModal({ plugin, onClose, onRemoved }: { plugin: Plugin; onClose: 
             await removePlugin(plugin.uid);
             onRemoved();
         } catch (err) {
-            setError(errorMessage(err, "Could not remove the plugin."));
+            setError(errorMessage(err, "Could not uninstall the plugin."));
             setBusy(false);
         }
     }
 
     return (
-        <Modal open onClose={onClose} title={`Remove ${plugin.manifest.displayName}?`}>
+        <Modal open onClose={onClose} title={`Uninstall ${plugin.manifest.displayName}?`}>
             {error && <Alert>{error}</Alert>}
             <p className="text-sm mb-4">
                 The servers stop running this plugin after they restart. Data it stored stays in the database, and adding
@@ -587,7 +829,7 @@ function RemoveModal({ plugin, onClose, onRemoved }: { plugin: Plugin; onClose: 
                     Cancel
                 </Button>
                 <Button type="button" className="!w-auto" loading={busy} disabled={busy} onClick={() => void remove()}>
-                    Remove
+                    Uninstall
                 </Button>
             </div>
         </Modal>

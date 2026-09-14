@@ -1,0 +1,77 @@
+diff --git a/dist/admin/pluginsApi.d.ts b/dist/admin/pluginsApi.d.ts
+index 66882725c0b6e48a76ce4e3aa5b062194d954298..68a4501338d0111f93a27cf54a2f49e9f92f3705 100644
+--- a/dist/admin/pluginsApi.d.ts
++++ b/dist/admin/pluginsApi.d.ts
+@@ -72,6 +72,35 @@ export interface PluginStatus {
+     hash: string;
+     instances: PluginInstanceStatus[];
+ }
++/** A plugin package found by `searchPlugins()`. `version` is its latest published version. */
++export interface PluginSearchResult {
++    name: string;
++    version: string;
++    description?: string;
++    date?: string;
++    /** Whether this server's configuration lets an administrator add it. */
++    allowed: boolean;
++    /** Set when the package is already installed. */
++    installedUid?: string;
++    installedVersion?: string;
++    /** Whether `version` is newer than the installed version. */
++    updateAvailable: boolean;
++}
++/** An installed plugin's latest published version, from `getPluginUpdates()`. */
++export interface PluginUpdateInfo {
++    uid: string;
++    name: string;
++    installedVersion: string;
++    latestVersion?: string;
++    updateAvailable: boolean;
++    /** Why the registry couldn't be checked for this plugin. */
++    error?: string;
++}
++/** A namespace (npm scope) this server searches for plugins. */
++export interface PluginNamespace {
++    name: string;
++    registry?: string;
++}
+ export interface UpdatePluginInput {
+     /** The row's optimistic-lock counter. */
+     version?: number;
+@@ -82,6 +111,12 @@ export interface UpdatePluginInput {
+ }
+ export declare function listPlugins(): Promise<Plugin[]>;
+ export declare function getPluginStatus(): Promise<PluginStatus>;
++/** The namespaces this server searches for plugins. */
++export declare function listPluginNamespaces(): Promise<PluginNamespace[]>;
++/** Plugin packages (named `*-plugin`) in `namespace`, or in every configured namespace when it's omitted. */
++export declare function searchPlugins(namespace?: string): Promise<PluginSearchResult[]>;
++/** Each installed plugin's latest published version. */
++export declare function getPluginUpdates(): Promise<PluginUpdateInfo[]>;
+ /** A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). */
+ export declare function lookupPluginPackage(name: string, packageVersion?: string): Promise<PluginRegistryLookup>;
+ /** Adds a plugin, at its latest version unless `packageVersion` is given. */
+diff --git a/dist/admin/pluginsApi.js b/dist/admin/pluginsApi.js
+index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..0378f5364d986bf6b8728804fcedd22e309f9d4a 100644
+--- a/dist/admin/pluginsApi.js
++++ b/dist/admin/pluginsApi.js
+@@ -16,6 +16,19 @@ export function listPlugins() {
+ export function getPluginStatus() {
+     return apiFetch(`${BASE}/status`);
+ }
++/** The namespaces this server searches for plugins. */
++export function listPluginNamespaces() {
++    return apiFetch(`${BASE}/namespaces`);
++}
++/** Plugin packages (named `*-plugin`) in `namespace`, or in every configured namespace when it's omitted. */
++export function searchPlugins(namespace) {
++    const query = namespace ? `?namespace=${encodeURIComponent(namespace)}` : "";
++    return apiFetch(`${BASE}/search${query}`);
++}
++/** Each installed plugin's latest published version. */
++export function getPluginUpdates() {
++    return apiFetch(`${BASE}/updates`);
++}
+ /** A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). */
+ export function lookupPluginPackage(name, packageVersion) {
+     const query = packageVersion ? `?packageVersion=${encodeURIComponent(packageVersion)}` : "";

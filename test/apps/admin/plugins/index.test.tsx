@@ -92,10 +92,14 @@ describe("PluginsPage", () => {
         expect(within(row).getByText("Phone sync")).toBeInTheDocument();
         expect(within(row).getByText("Loaded on 1 of 2 servers")).toBeInTheDocument();
         expect(within(row).getByText("pod-b: npm failed")).toBeInTheDocument();
-        expect(within(row).getByRole("checkbox", { name: "Enable Exchange ActiveSync" })).toBeChecked();
+        expect(within(row).getByText("Enabled")).toBeInTheDocument();
+        expect(within(row).getByRole("button", { name: "Disable Exchange ActiveSync" })).toBeInTheDocument();
+        expect(within(row).getByRole("button", { name: "Uninstall" })).toBeInTheDocument();
 
         const mapiRow = screen.getByText("MAPI over HTTP").closest("tr") as HTMLElement;
-        expect(within(mapiRow).getByText("Disabled")).toBeInTheDocument();
+        // Both the state badge and the per-server status say so.
+        expect(within(mapiRow).getAllByText("Disabled")).toHaveLength(2);
+        expect(within(mapiRow).getByRole("button", { name: "Enable MAPI over HTTP" })).toBeInTheDocument();
         // No settings declared, so no Settings button.
         expect(within(mapiRow).queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
     });
@@ -137,8 +141,8 @@ describe("PluginsPage", () => {
         });
         const user = userEvent.setup();
         renderPage();
-        await user.click(await screen.findByRole("checkbox", { name: "Enable MAPI over HTTP" }));
-        await waitFor(() => expect(screen.getByRole("checkbox", { name: "Enable MAPI over HTTP" })).toBeChecked());
+        await user.click(await screen.findByRole("button", { name: "Enable MAPI over HTTP" }));
+        expect(await screen.findByRole("button", { name: "Disable MAPI over HTTP" })).toBeInTheDocument();
         expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({ version: 3, enabled: true });
     });
 
@@ -148,7 +152,7 @@ describe("PluginsPage", () => {
         });
         const user = userEvent.setup();
         renderPage();
-        await user.click(await screen.findByRole("checkbox", { name: "Enable Exchange ActiveSync" }));
+        await user.click(await screen.findByRole("button", { name: "Disable Exchange ActiveSync" }));
         expect(await screen.findByText("Version conflict")).toBeInTheDocument();
     });
 
@@ -168,7 +172,7 @@ describe("PluginsPage", () => {
         });
         const user = userEvent.setup();
         renderPage();
-        await user.click(await screen.findByRole("button", { name: "+ Add plugin" }));
+        await user.click(await screen.findByRole("button", { name: "Add by name" }));
         const dialog = await screen.findByRole("dialog");
         await user.click(within(dialog).getByRole("button", { name: "Find" }));
         expect(within(dialog).getByText("Enter a package name.")).toBeInTheDocument();
@@ -201,7 +205,7 @@ describe("PluginsPage", () => {
         });
         const user = userEvent.setup();
         renderPage();
-        await user.click(await screen.findByRole("button", { name: "+ Add plugin" }));
+        await user.click(await screen.findByRole("button", { name: "Add by name" }));
         const dialog = await screen.findByRole("dialog");
         await user.type(within(dialog).getByLabelText("Package name"), "left-pad");
         await user.click(within(dialog).getByRole("button", { name: "Find" }));
@@ -307,7 +311,7 @@ describe("PluginsPage", () => {
             await user.click(await within(await screen.findByRole("dialog")).findByRole("button", { name: "Cancel" }));
             expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
         }
-        await user.click(screen.getByRole("button", { name: "+ Add plugin" }));
+        await user.click(screen.getByRole("button", { name: "Add by name" }));
         await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Close" }));
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
@@ -330,7 +334,7 @@ describe("PluginsPage", () => {
         });
         const user = userEvent.setup();
         renderPage();
-        await user.click(await screen.findByRole("button", { name: "+ Add plugin" }));
+        await user.click(await screen.findByRole("button", { name: "Add by name" }));
         let dialog = await screen.findByRole("dialog");
         await user.type(within(dialog).getByLabelText("Package name"), "@rapidmx/x");
         await user.click(within(dialog).getByRole("button", { name: "Find" }));
@@ -359,10 +363,10 @@ describe("PluginsPage", () => {
         const user = userEvent.setup();
         renderPage();
         const row = (await screen.findByText("MAPI over HTTP")).closest("tr") as HTMLElement;
-        await user.click(within(row).getByRole("button", { name: "Remove" }));
-        const dialog = await screen.findByRole("dialog", { name: "Remove MAPI over HTTP?" });
+        await user.click(within(row).getByRole("button", { name: "Uninstall" }));
+        const dialog = await screen.findByRole("dialog", { name: "Uninstall MAPI over HTTP?" });
         expect(within(dialog).getByText(/Data it stored stays in the database/)).toBeInTheDocument();
-        await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+        await user.click(within(dialog).getByRole("button", { name: "Uninstall" }));
         await waitFor(() => expect(screen.queryByText("MAPI over HTTP")).not.toBeInTheDocument());
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/p-mapi", expect.objectContaining({ method: "DELETE" }));
     });
@@ -374,11 +378,153 @@ describe("PluginsPage", () => {
         const user = userEvent.setup();
         renderPage();
         const row = (await screen.findByText("MAPI over HTTP")).closest("tr") as HTMLElement;
-        await user.click(within(row).getByRole("button", { name: "Remove" }));
+        await user.click(within(row).getByRole("button", { name: "Uninstall" }));
         const dialog = await screen.findByRole("dialog");
-        await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+        await user.click(within(dialog).getByRole("button", { name: "Uninstall" }));
         expect(await within(dialog).findByText("Not found")).toBeInTheDocument();
         await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("shows when a newer version is available and upgrades to it", async () => {
+        const fetchMock = mockPlugins({
+            extra: (url, init) => {
+                if (url === "/api/system/plugins/updates") {
+                    return jsonResponse(200, [
+                        { uid: "p-eas", name: "@rapidmx/activesync", installedVersion: "1.0.0", latestVersion: "1.3.0", updateAvailable: true },
+                        { uid: "p-mapi", name: "@rapidmx/mapi", installedVersion: "1.0.0", updateAvailable: false, error: "offline" },
+                    ]);
+                }
+                if (url === "/api/system/plugins/p-eas" && init?.method === "PUT") return jsonResponse(200, { ...eas, packageVersion: "1.3.0", version: 4 });
+                return undefined;
+            },
+        });
+        const user = userEvent.setup();
+        renderPage();
+        const row = (await screen.findByText("Exchange ActiveSync")).closest("tr") as HTMLElement;
+        expect(await within(row).findByText("Update available: 1.3.0")).toBeInTheDocument();
+        const mapiRow = screen.getByText("MAPI over HTTP").closest("tr") as HTMLElement;
+        expect(within(mapiRow).queryByText(/Update available/)).not.toBeInTheDocument();
+
+        await user.click(within(row).getByRole("button", { name: "Upgrade Exchange ActiveSync to 1.3.0" }));
+        await waitFor(() => expect(within(row).getByText("1.3.0")).toBeInTheDocument());
+        expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, packageVersion: "1.3.0" });
+    });
+
+    it("shows an error when upgrading fails", async () => {
+        mockPlugins({
+            extra: (url, init) => {
+                if (url === "/api/system/plugins/updates") {
+                    return jsonResponse(200, [{ uid: "p-eas", name: "@rapidmx/activesync", installedVersion: "1.0.0", latestVersion: "2.0.0", updateAvailable: true }]);
+                }
+                if (url === "/api/system/plugins/p-eas" && init?.method === "PUT") return jsonResponse(400, { message: "Bad version" });
+                return undefined;
+            },
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.click(await screen.findByRole("button", { name: "Upgrade Exchange ActiveSync to 2.0.0" }));
+        expect(await screen.findByText("Bad version")).toBeInTheDocument();
+    });
+
+    describe("finding plugins", () => {
+        const results = [
+            { name: "@acme/crm-plugin", version: "0.2.0", description: "CRM sync", allowed: true, updateAvailable: false },
+            { name: "@other/thing-plugin", version: "3.0.0", allowed: false, updateAvailable: false },
+            { name: "@rapidmx/activesync", version: "1.4.0", allowed: true, installedUid: "p-eas", installedVersion: "1.0.0", updateAvailable: true },
+            { name: "@rapidmx/mapi", version: "1.0.0", allowed: true, installedUid: "p-mapi", installedVersion: "1.0.0", updateAvailable: false },
+        ];
+
+        it("lists namespaces, searches them, and shows each plugin's version and install state", async () => {
+            const fetchMock = mockPlugins({
+                extra: (url) => {
+                    if (url === "/api/system/plugins/namespaces") return jsonResponse(200, [{ name: "@rapidmx" }, { name: "@acme", registry: "https://npm.acme.test" }]);
+                    if (url.startsWith("/api/system/plugins/search")) return jsonResponse(200, results);
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            const browser = within(await screen.findByRole("region", { name: "Find plugins" }));
+            expect(await browser.findByRole("option", { name: "@acme" })).toBeInTheDocument();
+
+            await user.click(browser.getByRole("button", { name: "Search" }));
+            const crm = (await browser.findByText("@acme/crm-plugin")).closest("tr") as HTMLElement;
+            expect(within(crm).getByText("0.2.0")).toBeInTheDocument();
+            expect(within(crm).getByText("CRM sync")).toBeInTheDocument();
+            expect(within(crm).getByText("Not installed")).toBeInTheDocument();
+            expect(within(crm).getByRole("button", { name: "Install @acme/crm-plugin" })).toBeInTheDocument();
+
+            const other = browser.getByText("@other/thing-plugin").closest("tr") as HTMLElement;
+            expect(within(other).getByText("Not allowed on this server")).toBeInTheDocument();
+            expect(within(other).queryByRole("button")).not.toBeInTheDocument();
+
+            const easRow = browser.getByText("@rapidmx/activesync").closest("tr") as HTMLElement;
+            expect(within(easRow).getByText("Installed 1.0.0 - update available")).toBeInTheDocument();
+            const mapi = browser.getByText("@rapidmx/mapi").closest("tr") as HTMLElement;
+            expect(within(mapi).getByText("Installed 1.0.0")).toBeInTheDocument();
+            expect(within(mapi).queryByRole("button")).not.toBeInTheDocument();
+
+            await user.selectOptions(browser.getByLabelText("Namespace"), "@acme");
+            await user.click(browser.getByRole("button", { name: "Search" }));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/search?namespace=%40acme", expect.anything()));
+            expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/search", expect.anything());
+        });
+
+        it("installs a found plugin at its latest version and upgrades an installed one", async () => {
+            const fetchMock = mockPlugins({
+                extra: (url, init) => {
+                    if (url === "/api/system/plugins/namespaces") return jsonResponse(200, []);
+                    if (url.startsWith("/api/system/plugins/search")) return jsonResponse(200, results);
+                    if (url === "/api/system/plugins" && init?.method === "POST") {
+                        return jsonResponse(200, { ...mapi, uid: "p-crm", name: "@acme/crm-plugin", packageVersion: "0.2.0", enabled: true, manifest: { apiVersion: 1, displayName: "CRM", settings: [] } });
+                    }
+                    if (url === "/api/system/plugins/p-eas" && init?.method === "PUT") return jsonResponse(200, { ...eas, packageVersion: "1.4.0", version: 4 });
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            const browser = within(await screen.findByRole("region", { name: "Find plugins" }));
+            await user.click(browser.getByRole("button", { name: "Search" }));
+
+            await user.click(await browser.findByRole("button", { name: "Install @acme/crm-plugin" }));
+            expect(await screen.findByText("CRM")).toBeInTheDocument();
+            expect(requestBody(fetchMock, "/api/system/plugins", "POST")).toEqual({ name: "@acme/crm-plugin", packageVersion: "0.2.0" });
+            const crm = browser.getByText("@acme/crm-plugin").closest("tr") as HTMLElement;
+            expect(within(crm).getByText("Installed 0.2.0")).toBeInTheDocument();
+
+            await user.click(browser.getByRole("button", { name: "Upgrade @rapidmx/activesync to 1.4.0" }));
+            await waitFor(() => expect(requestBody(fetchMock, "/api/system/plugins/p-eas", "PUT")).toEqual({ version: 3, packageVersion: "1.4.0" }));
+            const easRow = browser.getByText("@rapidmx/activesync").closest("tr") as HTMLElement;
+            await waitFor(() => expect(within(easRow).getByText("Installed 1.4.0")).toBeInTheDocument());
+        });
+
+        it("shows no results, a search error, and an install error", async () => {
+            let searchResponse: () => Response = () => jsonResponse(200, []);
+            mockPlugins({
+                extra: (url, init) => {
+                    if (url === "/api/system/plugins/namespaces") return jsonResponse(500, {});
+                    if (url.startsWith("/api/system/plugins/search")) return searchResponse();
+                    if (url === "/api/system/plugins" && init?.method === "POST") return jsonResponse(400, { message: "Not a RapidMX plugin" });
+                    return undefined;
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            const browser = within(await screen.findByRole("region", { name: "Find plugins" }));
+            await user.click(browser.getByRole("button", { name: "Search" }));
+            expect(await browser.findByText("No plugins found.")).toBeInTheDocument();
+
+            searchResponse = () => jsonResponse(502, { message: "Registry unreachable" });
+            await user.click(browser.getByRole("button", { name: "Search" }));
+            expect(await browser.findByText("Registry unreachable")).toBeInTheDocument();
+            expect(browser.queryByText("No plugins found.")).not.toBeInTheDocument();
+
+            searchResponse = () => jsonResponse(200, [results[0]]);
+            await user.click(browser.getByRole("button", { name: "Search" }));
+            await user.click(await browser.findByRole("button", { name: "Install @acme/crm-plugin" }));
+            expect(await browser.findByText("Not a RapidMX plugin")).toBeInTheDocument();
+        });
     });
 });
