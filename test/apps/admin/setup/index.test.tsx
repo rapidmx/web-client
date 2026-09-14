@@ -275,6 +275,13 @@ describe("SetupPage", () => {
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
         expect(screen.getByRole("heading", { name: "Step 3 of 6: Server settings" })).toBeInTheDocument();
 
+        // Choosing the step already shown does nothing - in particular it doesn't forget the unsaved edits.
+        await user.click(within(screen.getByRole("list", { name: "Setup steps" })).getByRole("button", { name: /Server settings/ }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Discard unsaved changes?" })).getByRole("button", { name: "Keep editing" }));
+        expect(screen.getByLabelText("Default quota (GB)")).toHaveValue(5);
+
         // Once saved, there's nothing to lose.
         const mailboxForm = quota.closest("form") as HTMLElement;
         await user.click(within(mailboxForm).getByRole("button", { name: "Save" }));

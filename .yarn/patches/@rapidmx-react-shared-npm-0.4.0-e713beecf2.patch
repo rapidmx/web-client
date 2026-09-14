@@ -1,5 +1,5 @@
 diff --git a/dist/admin/pluginsApi.d.ts b/dist/admin/pluginsApi.d.ts
-index 66882725c0b6e48a76ce4e3aa5b062194d954298..6e73e1fa2546f74f0967695bd5fd61327c230774 100644
+index 66882725c0b6e48a76ce4e3aa5b062194d954298..523c613736c0e84fb8606c894887ce9d748e4ab4 100644
 --- a/dist/admin/pluginsApi.d.ts
 +++ b/dist/admin/pluginsApi.d.ts
 @@ -19,6 +19,8 @@ export interface PluginManifest {
@@ -11,7 +11,7 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..6e73e1fa2546f74f0967695bd5fd6132
  }
  export type PluginSettingValue = string | number | boolean;
  /** Mirrors `@rapidmx/restapi`'s `Plugin`. `version` is the row's optimistic-lock counter; the npm version is
-@@ -72,6 +74,71 @@ export interface PluginStatus {
+@@ -72,6 +74,77 @@ export interface PluginStatus {
      hash: string;
      instances: PluginInstanceStatus[];
  }
@@ -72,6 +72,8 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..6e73e1fa2546f74f0967695bd5fd6132
 + * refuses the change (409) when what it would do now differs, e.g. because a new dependency appeared since. Send empty
 + * lists to require that nothing else is installed or enabled. */
 +export interface PluginExpectedPlan {
++    /** The version of the plugin itself that was previewed. */
++    version?: string;
 +    install: {
 +        name: string;
 +        version: string;
@@ -79,11 +81,15 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..6e73e1fa2546f74f0967695bd5fd6132
 +    enable: string[];
 +}
 +/** The `expectedPlan` to send for a change previewed as `plan`. */
-+export declare function expectedPlanOf(plan: Pick<PluginChangePlan, "install" | "enable">): PluginExpectedPlan;
++export declare function expectedPlanOf(plan: Pick<PluginChangePlan, "install" | "enable"> & {
++    plugin?: {
++        version: string;
++    };
++}): PluginExpectedPlan;
  export interface UpdatePluginInput {
      /** The row's optimistic-lock counter. */
      version?: number;
-@@ -79,13 +146,27 @@ export interface UpdatePluginInput {
+@@ -79,13 +152,27 @@ export interface UpdatePluginInput {
      enabled?: boolean;
      /** A `null` value clears a setting back to the plugin's own default. */
      settings?: Record<string, PluginSettingValue | null>;
@@ -115,21 +121,25 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..6e73e1fa2546f74f0967695bd5fd6132
 + * disabling it with `updatePlugin()`. */
  export declare function removePlugin(uid: string): Promise<void>;
 diff --git a/dist/admin/pluginsApi.js b/dist/admin/pluginsApi.js
-index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..efcdf68975dfd3b0790451967e071101a702a60f 100644
+index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..5b018c92c02f66a6fa34676f1c1a875ca7a732dd 100644
 --- a/dist/admin/pluginsApi.js
 +++ b/dist/admin/pluginsApi.js
-@@ -9,6 +9,10 @@
+@@ -9,6 +9,14 @@
   * `getPluginStatus()`.
   */
  import { apiFetch } from "../util/api.js";
 +/** The `expectedPlan` to send for a change previewed as `plan`. */
 +export function expectedPlanOf(plan) {
-+    return { install: plan.install.map(({ name, version }) => ({ name, version })), enable: [...plan.enable] };
++    return {
++        ...(plan.plugin ? { version: plan.plugin.version } : {}),
++        install: plan.install.map(({ name, version }) => ({ name, version })),
++        enable: [...plan.enable],
++    };
 +}
  const BASE = "/system/plugins";
  export function listPlugins() {
      return apiFetch(BASE);
-@@ -16,19 +20,44 @@ export function listPlugins() {
+@@ -16,19 +24,44 @@ export function listPlugins() {
  export function getPluginStatus() {
      return apiFetch(`${BASE}/status`);
  }
@@ -178,8 +188,41 @@ index 5d0fe585c05b1c868ced1478c5f2ea47503619ff..efcdf68975dfd3b0790451967e071101
  export function removePlugin(uid) {
      return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "DELETE" });
  }
+diff --git a/dist/admin/retentionPolicyApi.d.ts b/dist/admin/retentionPolicyApi.d.ts
+index 4ebfb6dcd3f8950f2b5d44dcf4b20041d1b551c5..db31a60d13c934858fe1365e408e8d4d0d6ed8a5 100644
+--- a/dist/admin/retentionPolicyApi.d.ts
++++ b/dist/admin/retentionPolicyApi.d.ts
+@@ -13,7 +13,9 @@ export interface RetentionPolicy {
+  * the server enforces this regardless. */
+ export declare const MIN_AUDIT_LOG_RETENTION_DAYS = 2190;
+ export declare function getRetentionPolicy(): Promise<RetentionPolicy>;
+-/** Partial patch — only supplied fields are changed. There is no way to clear a previously-configured
+- * field back to "no automatic purge" through this endpoint (matches the route's own real behavior,
+- * not a client-side limitation to work around). */
+-export declare function updateRetentionPolicy(patch: Partial<RetentionPolicy>): Promise<RetentionPolicy>;
++/** A retention policy change: a field left out is left alone, and `null` clears it back to "no automatic purge". */
++export type RetentionPolicyUpdate = {
++    [K in keyof RetentionPolicy]?: RetentionPolicy[K] | null;
++};
++/** Partial patch — only supplied fields are changed, and a `null` field is cleared. */
++export declare function updateRetentionPolicy(patch: RetentionPolicyUpdate): Promise<RetentionPolicy>;
+diff --git a/dist/admin/retentionPolicyApi.js b/dist/admin/retentionPolicyApi.js
+index 8b04e4b0d0cb7547322949db1862d2a7ca8fab7a..73ca0f585cb88efc023e81941f4b4ed3537d70d6 100644
+--- a/dist/admin/retentionPolicyApi.js
++++ b/dist/admin/retentionPolicyApi.js
+@@ -17,9 +17,7 @@ export const MIN_AUDIT_LOG_RETENTION_DAYS = 2190;
+ export function getRetentionPolicy() {
+     return apiFetch(`/system/retention-policy`);
+ }
+-/** Partial patch — only supplied fields are changed. There is no way to clear a previously-configured
+- * field back to "no automatic purge" through this endpoint (matches the route's own real behavior,
+- * not a client-side limitation to work around). */
++/** Partial patch — only supplied fields are changed, and a `null` field is cleared. */
+ export function updateRetentionPolicy(patch) {
+     return apiFetch(`/system/retention-policy`, {
+         method: "PUT",
 diff --git a/dist/mail/mailboxAccessApi.d.ts b/dist/mail/mailboxAccessApi.d.ts
-index e0d05d30172c848527f600d7943cc7a00c8ccd73..fa9adf7a574b097a01e0d26504d24f29877ca624 100644
+index e0d05d30172c848527f600d7943cc7a00c8ccd73..6bf239f5b17e893ad5688e62a2cf72274bda75a9 100644
 --- a/dist/mail/mailboxAccessApi.d.ts
 +++ b/dist/mail/mailboxAccessApi.d.ts
 @@ -1,7 +1,13 @@
@@ -197,3 +240,38 @@ index e0d05d30172c848527f600d7943cc7a00c8ccd73..fa9adf7a574b097a01e0d26504d24f29
  }
  export interface MailboxOwnerLookup {
      userUid: string;
+@@ -12,6 +18,19 @@ export interface MailboxOwnerLookup {
+ export declare function listMailboxAccess(mailboxUid: string): Promise<MailboxAccessMember[]>;
+ /** Grants (or, if already a member, updates the role of) a delegate's access to a mailbox. */
+ export declare function setMailboxAccess(mailboxUid: string, userOrRoleId: string, role: MailboxAccessRole): Promise<MailboxAccessMember>;
++/** What the signed-in caller may do in a mailbox, as the server's ACLs evaluate it (owners and trusted callers
++ * included). */
++export interface MyMailboxAccess {
++    canRead: boolean;
++    /** Create items in the mailbox: drafts, events, contacts, to-dos. */
++    canCreate: boolean;
++    canUpdate: boolean;
++    canDelete: boolean;
++    /** Manage who else has access. */
++    canManage: boolean;
++}
++/** The signed-in caller's own access to a mailbox. */
++export declare function getMyMailboxAccess(mailboxUid: string): Promise<MyMailboxAccess>;
+ /** Revokes a delegate's access to a mailbox - never rejects for a `userOrRoleId` that wasn't a member. */
+ export declare function removeMailboxAccess(mailboxUid: string, userOrRoleId: string): Promise<void>;
+ /**
+diff --git a/dist/mail/mailboxAccessApi.js b/dist/mail/mailboxAccessApi.js
+index d08ecc009f4948281e4f0105d7e63c2e77e56a35..0f734f06ca695d7e20738b727b5d0597a3e3e2b3 100644
+--- a/dist/mail/mailboxAccessApi.js
++++ b/dist/mail/mailboxAccessApi.js
+@@ -25,6 +25,10 @@ export function setMailboxAccess(mailboxUid, userOrRoleId, role) {
+         body: JSON.stringify({ role }),
+     });
+ }
++/** The signed-in caller's own access to a mailbox. */
++export function getMyMailboxAccess(mailboxUid) {
++    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/me`);
++}
+ /** Revokes a delegate's access to a mailbox - never rejects for a `userOrRoleId` that wasn't a member. */
+ export function removeMailboxAccess(mailboxUid, userOrRoleId) {
+     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, { method: "DELETE" });

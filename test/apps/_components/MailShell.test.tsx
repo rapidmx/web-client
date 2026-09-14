@@ -7,7 +7,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import MailShell, { useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
+import MailShell, { MAILBOX_LIST_LIMIT, useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
 
 // MailShell now wraps its content in KeyEnrollmentGate (see that component), which checks
 // getKeyVault() once mailboxUid resolves. Mocked at the module level rather than via the shared
@@ -41,6 +41,15 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     getUnlockedKeys: vi.fn().mockReturnValue({ masterKey: new Uint8Array(32) }),
     unlockWithPassword: vi.fn(),
+}));
+
+// The local search index's lifecycle has its own test file; here only the props MailShell hands it matter.
+const { lifecycleProps } = vi.hoisted(() => ({ lifecycleProps: [] as { accessibleMailboxUids?: string[] }[] }));
+vi.mock("../../../apps/shared/search/LocalIndexLifecycle.js", () => ({
+    default: (props: { accessibleMailboxUids?: string[] }) => {
+        lifecycleProps.push(props);
+        return null;
+    },
 }));
 
 const AUTH_SERVER_URL = "https://auth.example.com";
@@ -110,6 +119,21 @@ afterEach(() => {
 });
 
 describe("MailShell", () => {
+    it("hands the local index lifecycle the accessible mailboxes to keep - but only when the list isn't a possibly-truncated full page", async () => {
+        lifecycleProps.length = 0;
+        mockPerMailboxFolders([mailboxA, mailboxB]);
+        const { unmount } = render(<MailShell userUid="u1">content</MailShell>);
+        await waitFor(() => expect(lifecycleProps.at(-1)?.accessibleMailboxUids).toEqual(["mb-a", "mb-b"]));
+        unmount();
+
+        lifecycleProps.length = 0;
+        const fullPage = Array.from({ length: MAILBOX_LIST_LIMIT }, (_, i) => ({ ...mailboxA, uid: `mb-${i}`, displayName: `Mailbox ${i}` }));
+        mockPerMailboxFolders(fullPage);
+        render(<MailShell userUid="u1">content</MailShell>);
+        expect((await screen.findAllByText("Mailbox 99")).length).toBeGreaterThan(0);
+        expect(lifecycleProps.every((props) => props.accessibleMailboxUids === undefined)).toBe(true);
+    });
+
     it("redirects to auth-server's sign-in page when there is no userUid", async () => {
         const location = mockLocation();
         location.href = "https://mail.example.com/";

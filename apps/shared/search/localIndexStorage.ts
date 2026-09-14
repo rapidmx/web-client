@@ -64,22 +64,28 @@ export interface LocalIndexRemovalResult {
     failed: string[];
 }
 
-/** Removes every local index directory on this origin except those whose mailbox uid is in `keep`. */
-export async function removeLocalIndexDirectories(keep: ReadonlySet<string> = new Set()): Promise<LocalIndexRemovalResult> {
-    const result: LocalIndexRemovalResult = { removed: [], failed: [] };
+/** Every mailbox uid that has a local index directory on this origin. */
+export async function listLocalIndexMailboxUids(): Promise<string[]> {
     const root = await getOpfsRoot();
     if (!root) {
-        return result;
+        return [];
     }
     const mailboxUids: string[] = [];
     // `keys()` is part of the OPFS spec and every browser that has `getDirectory()` at all, but isn't in
     // this TypeScript version's DOM lib yet.
     for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) {
         const mailboxUid = mailboxUidFromPoolName(name);
-        if (mailboxUid && !keep.has(mailboxUid)) {
+        if (mailboxUid) {
             mailboxUids.push(mailboxUid);
         }
     }
+    return mailboxUids;
+}
+
+/** Removes every local index directory on this origin except those whose mailbox uid is in `keep`. */
+export async function removeLocalIndexDirectories(keep: ReadonlySet<string> = new Set()): Promise<LocalIndexRemovalResult> {
+    const result: LocalIndexRemovalResult = { removed: [], failed: [] };
+    const mailboxUids = (await listLocalIndexMailboxUids()).filter((mailboxUid) => !keep.has(mailboxUid));
     for (const mailboxUid of mailboxUids) {
         try {
             await removeLocalIndexDirectory(mailboxUid);

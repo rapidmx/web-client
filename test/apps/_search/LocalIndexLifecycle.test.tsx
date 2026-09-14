@@ -11,8 +11,8 @@ import LocalIndexLifecycle, { POLL_INTERVAL_MS } from "../../../apps/shared/sear
 const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
 vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
 
-const { buildLocalIndex } = vi.hoisted(() => ({ buildLocalIndex: vi.fn() }));
-vi.mock("../../../apps/shared/search/localIndexBuilder.js", () => ({ buildLocalIndex }));
+const { buildLocalIndex, cancelLocalIndexBuild } = vi.hoisted(() => ({ buildLocalIndex: vi.fn(), cancelLocalIndexBuild: vi.fn() }));
+vi.mock("../../../apps/shared/search/localIndexBuilder.js", () => ({ buildLocalIndex, cancelLocalIndexBuild }));
 
 const { destroyLocalIndex, pruneInaccessibleLocalIndexes } = vi.hoisted(() => ({
     destroyLocalIndex: vi.fn(),
@@ -29,6 +29,7 @@ beforeEach(() => {
     getUnlockedKeys.mockImplementation((uid: string) => (unlockedMailboxes.has(uid) ? { masterKey: new Uint8Array(32) } : undefined));
     buildLocalIndex.mockResolvedValue(undefined);
     destroyLocalIndex.mockResolvedValue(true);
+    cancelLocalIndexBuild.mockResolvedValue(undefined);
     pruneInaccessibleLocalIndexes.mockResolvedValue(undefined);
 });
 
@@ -81,6 +82,9 @@ describe("LocalIndexLifecycle", () => {
         await tick();
         expect(destroyLocalIndex).toHaveBeenCalledWith("mb1");
         expect(destroyLocalIndex).toHaveBeenCalledWith("mb2");
+        // Any pass still running with the destroyed keys is stopped too.
+        expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb1");
+        expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb2");
 
         // Not destroyed twice; rebuilt after a re-unlock.
         await tick();

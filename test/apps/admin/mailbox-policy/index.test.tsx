@@ -46,7 +46,8 @@ describe("MailboxPolicyPage", () => {
         await user.type(screen.getByLabelText("Default quota (GB)"), "10");
         await user.click(screen.getByRole("button", { name: "Save" }));
         expect(await screen.findByText("Saved.")).toBeInTheDocument();
-        expect(saved).toEqual([{ defaultQuotaBytes: 10_000_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 2_500_000_000 }]);
+        // Only what changed is sent.
+        expect(saved).toEqual([{ defaultQuotaBytes: 10_000_000_000, autoProvisionEnabled: true }]);
     });
 
     it("saves an edited self-created mailbox quota, and shows a generic error for a non-API failure", async () => {
@@ -65,9 +66,10 @@ describe("MailboxPolicyPage", () => {
         await user.type(autoQuota, "3");
         await user.click(screen.getByRole("button", { name: "Save" }));
         expect(await screen.findByText("Saved.")).toBeInTheDocument();
-        expect(saved).toEqual([{ defaultQuotaBytes: 5_000_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 3_000_000_000 }]);
+        expect(saved).toEqual([{ autoProvisionQuotaBytes: 3_000_000_000 }]);
 
         fail = true;
+        await user.type(autoQuota, "5");
         await user.click(screen.getByRole("button", { name: "Save" }));
         expect(await screen.findByText("Could not save the mailbox policy.")).toBeInTheDocument();
     });
@@ -83,11 +85,36 @@ describe("MailboxPolicyPage", () => {
         expect(put).not.toHaveBeenCalled();
     });
 
+    it("shows small and unrounded quotas exactly, and keeps a quota's stored bytes when saving something else", async () => {
+        const saved: any[] = [];
+        mockPolicy(
+            (body) => {
+                saved.push(body);
+                return jsonResponse(200, { defaultQuotaBytes: 4_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 1_073_741_824, ...body });
+            },
+            jsonResponse(200, { defaultQuotaBytes: 4_000_000, autoProvisionEnabled: false, autoProvisionQuotaBytes: 1_073_741_824 }),
+        );
+        const user = userEvent.setup();
+        renderPage();
+        expect(await screen.findByLabelText("Default quota (GB)")).toHaveValue(0.004);
+
+        // Nothing changed: nothing to send.
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(saved).toEqual([]);
+
+        await user.click(screen.getByLabelText(/Let people create their own mailbox/));
+        expect(screen.getByLabelText("Quota for self-created mailboxes (GB)")).toHaveValue(1.073741824);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await vi.waitFor(() => expect(saved).toEqual([{ autoProvisionEnabled: true }]));
+    });
+
     it("shows load and save errors", async () => {
         mockPolicy(() => jsonResponse(400, { message: "Too big" }));
         const user = userEvent.setup();
         const { unmount } = renderPage();
-        await user.click(await screen.findByRole("button", { name: "Save" }));
+        await user.click(await screen.findByLabelText(/Let people create their own mailbox/));
+        await user.click(screen.getByRole("button", { name: "Save" }));
         expect(await screen.findByText("Too big")).toBeInTheDocument();
         unmount();
 

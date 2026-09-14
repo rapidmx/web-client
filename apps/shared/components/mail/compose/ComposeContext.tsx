@@ -67,7 +67,7 @@ export function useCompose(): ComposeContextValue {
  * opening Compose from Contacts' "Email" action, for instance, overlays the window on top of whatever
  * app is currently showing, exactly like opening it from Mail's own sidebar button.
  */
-export default function ComposeProvider({ children, userUid }: PropsWithChildren<{ userUid?: string }>) {
+export default function ComposeProvider({ children, userUid, trusted }: PropsWithChildren<{ userUid?: string; trusted?: boolean }>) {
     const [sessions, setSessions] = useState<ComposeSession[]>([]);
     const isMobile = useIsMobile();
 
@@ -117,6 +117,7 @@ export default function ComposeProvider({ children, userUid }: PropsWithChildren
                             key={session.id}
                             session={session}
                             userUid={userUid}
+                            trusted={trusted}
                             onClose={() => closeCompose(session.id)}
                             onToggleMinimize={() => toggleMinimize(session.id)}
                         />

@@ -99,6 +99,9 @@ function aggregateUnreadCount(mailboxFolders: MailboxFolders[], type: AggregateF
 
 type Status = "checking" | "error" | "ready";
 
+/** Page size of the one `listMailboxes()` call this shell makes. */
+export const MAILBOX_LIST_LIMIT = 100;
+
 /**
  * A separate component (not inlined into `MailShell`'s own render) so `useCompose()` resolves against
  * `ComposeProvider` correctly: that provider is rendered *inside* the `AppShell` that `MailShell` itself
@@ -168,7 +171,7 @@ export default function MailShell({
         if (!userUid) {
             return;
         }
-        listMailboxes({ limit: 100 })
+        listMailboxes({ limit: MAILBOX_LIST_LIMIT })
             .then((result) => {
                 setMailboxes(result);
                 setStatus("ready");
@@ -392,7 +395,9 @@ export default function MailShell({
                 mailboxUid={activeMailboxUid}
                 mailboxKeys={activeMailbox?.keys}
                 folders={mailboxFolders.find((mf) => mf.mailbox.uid === activeMailboxUid)?.folders ?? []}
-                accessibleMailboxUids={status === "ready" ? mailboxes.map((mb) => mb.uid) : undefined}
+                // A full page may be truncated - pruning against it would delete indexes of accessible mailboxes
+                // beyond the limit, so it's only trusted as the complete list when it came back short.
+                accessibleMailboxUids={status === "ready" && mailboxes.length < MAILBOX_LIST_LIMIT ? mailboxes.map((mb) => mb.uid) : undefined}
             />
             <AppShell
                 active="mail"

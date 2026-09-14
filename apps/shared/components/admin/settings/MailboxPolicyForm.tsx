@@ -13,8 +13,16 @@ const INPUT_CLASS =
 
 const GB = 1_000_000_000;
 
+/** Unrounded, so a quota that isn't a whole number of hundredths of a GB (say 4 MB) is shown as it is. */
 function toGb(bytes: number): string {
-    return String(Math.round((bytes / GB) * 100) / 100);
+    return String(bytes / GB);
+}
+
+/** The form's values as they were loaded or last saved. */
+interface Baseline {
+    defaultQuotaGb: string;
+    autoProvisionEnabled: boolean;
+    autoProvisionQuotaGb: string;
 }
 
 export interface MailboxPolicyFormProps {
@@ -34,30 +42,46 @@ export default function MailboxPolicyForm({ policy, onChange, onDirtyChange }: M
     const [saved, setSaved] = useState(false);
 
     // Edits are unsaved until they match what was loaded or last saved.
-    const snapshot = JSON.stringify([defaultQuotaGb, autoProvisionEnabled, autoProvisionQuotaGb]);
-    const [savedSnapshot, setSavedSnapshot] = useState(snapshot);
-    const dirty: boolean = snapshot !== savedSnapshot;
+    const [baseline, setBaseline] = useState<Baseline>({ defaultQuotaGb, autoProvisionEnabled, autoProvisionQuotaGb });
+    const dirty: boolean =
+        defaultQuotaGb !== baseline.defaultQuotaGb ||
+        autoProvisionEnabled !== baseline.autoProvisionEnabled ||
+        autoProvisionQuotaGb !== baseline.autoProvisionQuotaGb;
     useEffect(() => onDirtyChange?.(dirty), [dirty]);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
         setError(null);
         setSaved(false);
-        const defaultQuota = Number(defaultQuotaGb);
-        const autoQuota = Number(autoProvisionQuotaGb);
-        if (!(defaultQuota > 0) || !(autoQuota > 0)) {
-            setError("Quotas must be more than 0 GB.");
+        // Only fields the administrator changed are sent, so a quota left alone keeps its exact stored bytes.
+        const patch: Partial<MailboxPolicy> = {};
+        for (const [field, text, base] of [
+            ["defaultQuotaBytes", defaultQuotaGb, baseline.defaultQuotaGb],
+            ["autoProvisionQuotaBytes", autoProvisionQuotaGb, baseline.autoProvisionQuotaGb],
+        ] as const) {
+            if (text === base) {
+                continue;
+            }
+            const bytes: number = Math.round(Number(text) * GB);
+            if (!(bytes >= 1)) {
+                setError("Quotas must be more than 0 GB.");
+                return;
+            }
+            patch[field] = bytes;
+        }
+        if (autoProvisionEnabled !== baseline.autoProvisionEnabled) {
+            patch.autoProvisionEnabled = autoProvisionEnabled;
+        }
+        const current: Baseline = { defaultQuotaGb, autoProvisionEnabled, autoProvisionQuotaGb };
+        if (Object.keys(patch).length === 0) {
+            setSaved(true);
             return;
         }
         setSaving(true);
         try {
-            const updated = await updateMailboxPolicy({
-                defaultQuotaBytes: Math.round(defaultQuota * GB),
-                autoProvisionEnabled,
-                autoProvisionQuotaBytes: Math.round(autoQuota * GB),
-            });
+            const updated = await updateMailboxPolicy(patch);
             onChange(updated);
-            setSavedSnapshot(snapshot);
+            setBaseline(current);
             setSaved(true);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save the mailbox policy.");

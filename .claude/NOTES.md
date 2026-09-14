@@ -996,3 +996,95 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   - Lint: fixed pre-existing errors in the touched files, including stale
     `eslint-disable react-hooks/exhaustive-deps` comments (that plugin isn't configured, so the disable
     itself is an error).
+
+- **2026-09-14 — Round-2 review fixes, admin side (Plugins, setup wizard, mailbox/retention policy).** Not
+  committed. Coded against restapi's concurrent contract changes (`expectedPlan.version` checked; planning an
+  installed plugin at its installed version uses the stored manifest; a PUT that leaves a plugin disabled
+  ignores `expectedPlan`).
+  - **Plugin settings (`PluginsManager` `SettingsModal`)**: round 1's "send only changed settings" wiped every
+    other saved setting, because restapi replaces the whole `settings` object. Now every setting is sent: an
+    untouched one as saved (`null` when unsaved, so it keeps following the plugin default rather than pinning the
+    displayed default), a changed one as entered. Kept: a required select with no saved value/default starts on
+    (and saves) its first option; nothing changed still just closes.
+  - **Enable**: planned at the installed version (no registry needed per the contract). If the plan request
+    itself fails, falls back to a plain `updatePlugin({enabled:true})` with no `expectedPlan`, then reloads the
+    list; server refusals show as usual. Install/version-change plan failures still just show the error.
+  - **Version change / Upgrade of a disabled plugin**: no plan, no confirmation - `updatePlugin({packageVersion})`.
+  - **Busy rows**: a `Set` of busy uids; a row whose change is waiting in the dependency confirmation is also busy
+    (derived from `confirming.uid`), so it stays disabled until that dialog closes.
+  - **Reload failure** after a change that brought in other plugins shows "may be out of date" + Retry.
+  - **Status polling**: one read in flight at a time (`statusRequest` ref shared by ticks/`watchRollout`); when no
+    status has ever been read, retries with backoff 5s, 10s, 20s... capped at 60s.
+  - **AddPluginModal**: an add that resolves after the dialog closed no longer sets error/busy on a reopened dialog
+    (`openToken`); closing also resets `busy`.
+  - **SetupWizard**: `requestGoTo(step)` for the step already shown is a no-op (it used to clear `unsaved` while the
+    forms kept their edits, so a later Continue dropped them without asking).
+  - **MailboxPolicyForm**: sends only changed fields, each only if its GB text changed, so untouched quotas keep
+    their exact bytes; GB shown unrounded (`bytes / 1e9`, e.g. 4 MB = 0.004 instead of "0" which blocked saves).
+    Nothing changed = "Saved." without a request. A quota rounding to < 1 byte is rejected client-side.
+  - **RetentionPolicyForm - not fixed as asked**: restapi's `BaseRetentionPolicyRoute.validateUpdate()` rejects
+    `null` (400, must be a positive integer) and `extractPatch()` ignores omitted fields, so a configured retention
+    period can't be cleared at all (its doc comment says so: a fast-follow). Instead of a false "Saved.", blanking a
+    period that's already set now shows an error and sends nothing. Needs a restapi change to support clearing.
+  - Sharing page access members (finding 11) is mail-side - left to that agent.
+
+- **2026-09-14 — Round-2 review fixes, mail/search side (Tier 2 coverage honesty, build lifecycle, compose From).**
+  Not committed. Supersedes parts of the round-1 mail/search entry above where they conflict.
+  - **Coverage only counts a pass completed this session, and only up to when it started**: nothing indexes mail
+    arriving after a pass, so `build_complete` alone went stale (reload, new mail). The worker now clears
+    `building`/`build_complete`/`covered_from`/`covered_until` whenever it opens an index (`init`), and a complete
+    pass records `covered_until` = pass start minus `CLOCK_SKEW_MARGIN_MS` (10 min). `Coverage.indexedUntil` is
+    set only while complete. Chose this over incremental indexing of new mail (simpler, same correctness).
+  - **Tier 3 narrowing** (`apps/www/index.tsx`): `tightenBeforeToCoverage()` replaced by `tier3Windows()`, which
+    returns the query range minus `[indexedFrom, indexedUntil]` - up to two windows (`before: indexedFrom`,
+    `after: indexedUntil`), none if the query lies inside the coverage; no narrowing without `indexedUntil`.
+    `searchTier3Windows()` runs each and de-dupes by uid. The Tier 3 cache key is now the JSON of the windows
+    actually run (+ mailbox, unlocked), and `CompositeCursor.tier3Key` carries it so `loadMore()` slices the same
+    entry (it no longer recomputes a key; it does nothing while the current query has no cursor yet).
+  - **Folders**: `user` (custom) folders are walked; any folder type in neither the mail nor the known non-mail set
+    (`calendar/contacts/tasks/notes`) makes the pass incomplete.
+  - **Offset pagination during a long walk**: `listMessages()` has no cursor/`before` param (react-shared), so the
+    builder reads folder `totalCount`s (`listFolders`) before and after each walk; a folder whose count changed is
+    re-walked (up to `MAX_WALK_ATTEMPTS` = 3, version skip keeps it cheap). Only steady folders are "reliable":
+    `pruneEntities` takes `folderUids` and only deletes unseen rows filed in those; the pass is complete only if
+    every mail folder was reliable. Count lookup failure = indexed but not reliable. Known gap: a +1/-1 change
+    during a walk leaves the count equal.
+  - **Build generations**: `nextLocalIndexGeneration()` (rpc client) is one counter shared by builds and destroys.
+    Every build call (`init/setWindow/setBuilding/indexEntities/pruneEntities`) carries its generation; the worker
+    records a destroy's generation synchronously on arrival (so an already-queued stale call is rejected too) and
+    rejects older generations with `StaleGenerationError`; `destroyAll` records a global one. The builder also keeps
+    one pass per mailbox (`AbortController`; a new pass aborts and awaits the old) and exports
+    `cancelLocalIndexBuild()`, which `LocalIndexLifecycle` calls on a lock transition. Final `setBuilding(false)`
+    failures are swallowed.
+  - **Eviction watermark**: `applyEviction` stores `evicted_before` (newest cutoff deleted; never moves backwards);
+    `indexEntities`/`setWindow` return it. The builder skips fetching messages strictly older than it and stops a
+    folder when a page's oldest message is older (only if the watermark is inside the time floor) - replaces
+    "stop when anything was evicted", so older retained pages refresh flags again. `setWindow` clears it when the
+    budget is 0 or used bytes are <= 90% of budget (hysteresis). Budget-limited passes still count as incomplete;
+    prune `since` is the watermark when it's inside the floor.
+  - **Worker hardening**: the fresh connection after a discard (open-time and mid-session) is closed if schema
+    creation fails (`openFreshConnection`). Corruption = `LocalIndexCorruptedError`, `vfs.corruptionDetected`,
+    `SQLITE_CORRUPT`/`SQLITE_NOTADB`, or an exact "database disk image is malformed"/"file is not a database"
+    message - the old `/malformed|not a database/` substring match wiped the index on FTS5 errors echoing the query.
+  - **Sign-out / deletions**: `destroyAllLocalIndexes()` broadcasts `{type:"sign-out"}` on BroadcastChannel
+    `rapidmx-localsearch`; a tab with a Worker (listener registered in `getWorker()`) runs `destroyAll`, and every
+    tab refuses further `initLocalIndex` (`signedOut`). Worker `destroyAll` now closes and removes each mailbox's
+    directory inside that mailbox's queue. Failed deletions are recorded in localStorage
+    (`rapidmx-localsearch-pending-deletions`; `"*"` is written before a sign-out starts = remove everything) and
+    retried once per page load before the first `init` (`retryPendingLocalIndexDeletions()`). Accepted cost: a
+    pending entry for an index another tab legitimately reopened gets deleted later and rebuilt.
+  - **Compose From / writability** (`writableMailboxes.ts`): uses `getMyMailboxAccess(uid).canCreate`
+    (`GET /mail/mailboxes/:id/access/me`, restapi side in progress) instead of `listMailboxAccess()` (wrong proxy:
+    gated at `update`). Owner or `trusted` short-circuits to writable (`AppShell` passes `trusted && !impersonating`
+    through `ComposeProvider`); answers are cached per page load in module maps with in-flight de-dupe; errors
+    (incl. a 404 from an older server) are "unknown" = listed and not cached. `filterWritableMailboxes()` removed;
+    new `useMailboxWritability()`/`peekMailboxWritability()`. Pickers list everything immediately and drop view-only
+    mailboxes as answers arrive (was: only owned ones until every check settled). ComposeWindow never defaults to a
+    known view-only mailbox, and switches a sender that turns out view-only (e.g. a reply in a read-only share) to
+    the caller's own / a writable / an unknown mailbox via `handleFromChange`. Tests must call
+    `clearMailboxWritabilityCache()` between cases. Calendar/Contacts pages don't get `trusted` (not plumbed).
+  - **Small ones**: ComposeWindow deletes `supersededDraftsRef` drafts on unmount (close/send). MailShell passes
+    `accessibleMailboxUids` only when `listMailboxes` returned fewer than `MAILBOX_LIST_LIMIT` (100). A 503 from
+    `autoProvisionMailbox()` shows "Couldn't check right now" + Retry instead of "No mailbox available".
+  - **Test gotcha**: a builder test whose `listMessages` mock resolves immediately forever never yields to timers,
+    so `vi.waitFor` can't poll and the fork dies with exit 134 (OOM) - make endless mocks `await` a `setTimeout`.

@@ -44,11 +44,40 @@ class FakeWorker {
     }
 }
 
+/** An in-process BroadcastChannel: delivers to every other instance with the same name, like tabs. */
+class FakeBroadcastChannel {
+    static open: FakeBroadcastChannel[] = [];
+    #listeners: ((event: { data: unknown }) => void)[] = [];
+    constructor(readonly name: string) {
+        FakeBroadcastChannel.open.push(this);
+    }
+    addEventListener(_type: string, listener: (event: { data: unknown }) => void) {
+        this.#listeners.push(listener);
+    }
+    postMessage(data: unknown) {
+        for (const other of FakeBroadcastChannel.open) {
+            if (other !== this && other.name === this.name) {
+                other.#listeners.forEach((listener) => listener({ data }));
+            }
+        }
+    }
+}
+
+let storage: Map<string, string>;
+
 beforeEach(async () => {
     posted = [];
     respond = () => ({ ok: true, result: undefined });
     rootEntries = new Set();
     FakeWorker.instances = 0;
+    FakeBroadcastChannel.open = [];
+    storage = new Map();
+    vi.stubGlobal("BroadcastChannel", FakeBroadcastChannel);
+    vi.stubGlobal("localStorage", {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+        removeItem: (key: string) => storage.delete(key),
+    });
     vi.stubGlobal("Worker", FakeWorker);
     vi.stubGlobal("navigator", {
         storage: {
@@ -204,6 +233,139 @@ describe("localIndexRpcClient", () => {
         });
         await expect(rpc.destroyAllLocalIndexes()).resolves.toBe(false);
         await expect(rpc.pruneInaccessibleLocalIndexes(["mine"])).resolves.toBeUndefined();
+    });
+
+    describe("generations", () => {
+        it("hands out increasing generations, and tags destroys and build calls with them", async () => {
+            const first = rpc.nextLocalIndexGeneration();
+            expect(rpc.nextLocalIndexGeneration()).toBe(first + 1);
+            await rpc.destroyLocalIndex("mb1");
+            await rpc.initLocalIndex({ mailboxUid: "mb1", indexKey: new Uint8Array(32), generation: 9 });
+            await rpc.indexLocalEntities("mb1", [], 9);
+            await rpc.setLocalIndexWindow("mb1", 12, 100, 9);
+            await rpc.pruneLocalEntities("mb1", ["m1"], undefined, { folderUids: ["inbox"], generation: 9 });
+            await rpc.setLocalIndexBuilding("mb1", false, { complete: true, coveredUntil: "2026-09-01", generation: 9 });
+            expect(posted.map((p) => [p.method, p.params])).toEqual([
+                ["destroy", { mailboxUid: "mb1", generation: first + 2 }],
+                ["init", expect.objectContaining({ generation: 9 })],
+                ["indexEntities", { mailboxUid: "mb1", entities: [], generation: 9 }],
+                ["setWindow", { mailboxUid: "mb1", timeFloorMonths: 12, byteBudgetBytes: 100, generation: 9 }],
+                ["pruneEntities", { mailboxUid: "mb1", keepEntityUids: ["m1"], since: undefined, folderUids: ["inbox"], generation: 9 }],
+                ["setBuilding", { mailboxUid: "mb1", building: false, complete: true, coveredUntil: "2026-09-01", generation: 9 }],
+            ]);
+        });
+    });
+
+    describe("pending deletions", () => {
+        it("records a destroy that failed and forgets one that succeeded", async () => {
+            respond = () => ({ ok: false, error: "in use" });
+            await rpc.destroyLocalIndex("mb1");
+            await rpc.destroyLocalIndex("mb2");
+            expect(JSON.parse(storage.get(rpc.PENDING_DELETIONS_KEY)!)).toEqual(["mb1", "mb2"]);
+
+            respond = () => ({ ok: true, result: undefined });
+            await rpc.destroyLocalIndex("mb1");
+            expect(JSON.parse(storage.get(rpc.PENDING_DELETIONS_KEY)!)).toEqual(["mb2"]);
+            await rpc.destroyLocalIndex("mb2");
+            expect(storage.has(rpc.PENDING_DELETIONS_KEY)).toBe(false);
+        });
+
+        it("retries them once, before this tab's first init, keeping only the ones that still fail", async () => {
+            storage.set(rpc.PENDING_DELETIONS_KEY, JSON.stringify(["gone", "still-busy", 42]));
+            rootEntries = new Set(["rapidmx-localsearch-gone", "rapidmx-localsearch-still-busy", "rapidmx-localsearch-kept"]);
+
+            await rpc.initLocalIndex({ mailboxUid: "kept", indexKey: new Uint8Array(32) });
+            await rpc.initLocalIndex({ mailboxUid: "kept", indexKey: new Uint8Array(32) });
+
+            expect([...rootEntries].sort()).toEqual(["rapidmx-localsearch-kept", "rapidmx-localsearch-still-busy"]);
+            expect(JSON.parse(storage.get(rpc.PENDING_DELETIONS_KEY)!)).toEqual(["still-busy"]);
+        });
+
+        it("finishes an interrupted sign-out on the next load by removing every index", async () => {
+            respond = (message) => (message.method === "destroyAll" ? undefined : { ok: true, result: undefined }); // never answers
+            await rpc.initLocalIndex({ mailboxUid: "mb1", indexKey: new Uint8Array(32) });
+            vi.useFakeTimers();
+            const signOut = rpc.destroyAllLocalIndexes(1_000);
+            await vi.advanceTimersByTimeAsync(1_000);
+            await signOut;
+            vi.useRealTimers();
+            expect(JSON.parse(storage.get(rpc.PENDING_DELETIONS_KEY)!)).toEqual(["*"]);
+
+            vi.resetModules();
+            rpc = await import("../../../apps/shared/search/localIndexRpcClient.js");
+            rootEntries = new Set(["rapidmx-localsearch-mb1", "rapidmx-localsearch-busy"]);
+            await rpc.retryPendingLocalIndexDeletions();
+            expect([...rootEntries]).toEqual(["rapidmx-localsearch-busy"]);
+            expect(JSON.parse(storage.get(rpc.PENDING_DELETIONS_KEY)!)).toEqual(["busy"]);
+        });
+
+        it("keeps the all-indexes marker when OPFS itself fails during the retry, and ignores unreadable or blocked storage", async () => {
+            storage.set(rpc.PENDING_DELETIONS_KEY, JSON.stringify(["*"]));
+            vi.stubGlobal("navigator", {
+                storage: {
+                    getDirectory: async () => {
+                        throw new Error("SecurityError");
+                    },
+                },
+            });
+            await rpc.retryPendingLocalIndexDeletions();
+            expect(JSON.parse(storage.get(rpc.PENDING_DELETIONS_KEY)!)).toEqual(["*"]);
+
+            vi.resetModules();
+            rpc = await import("../../../apps/shared/search/localIndexRpcClient.js");
+            storage.set(rpc.PENDING_DELETIONS_KEY, "{not json");
+            await expect(rpc.retryPendingLocalIndexDeletions()).resolves.toBeUndefined();
+            storage.set(rpc.PENDING_DELETIONS_KEY, JSON.stringify({ not: "a list" }));
+            respond = () => ({ ok: false, error: "in use" });
+            await expect(rpc.destroyLocalIndex("mb1")).resolves.toBe(false);
+            expect(JSON.parse(storage.get(rpc.PENDING_DELETIONS_KEY)!)).toEqual(["mb1"]);
+            vi.stubGlobal("localStorage", undefined);
+            await expect(rpc.destroyLocalIndex("mb1")).resolves.toBe(false);
+        });
+    });
+
+    describe("sign-out across tabs", () => {
+        it("tells other tabs to close their indexes and refuse new ones; this tab refuses them too", async () => {
+            // The "other tab" - its own module instance with a running Worker.
+            const otherTab = rpc;
+            await otherTab.initLocalIndex({ mailboxUid: "mb1", indexKey: new Uint8Array(32) });
+
+            vi.resetModules();
+            const thisTab = await import("../../../apps/shared/search/localIndexRpcClient.js");
+            await thisTab.destroyAllLocalIndexes();
+
+            // This tab never started a Worker, so the only destroyAll is the other tab's.
+            await vi.waitFor(() => expect(posted.map((p) => p.method)).toEqual(["init", "destroyAll"]));
+            expect(posted[1].params).toEqual({ generation: expect.any(Number) });
+            await expect(otherTab.initLocalIndex({ mailboxUid: "mb1", indexKey: new Uint8Array(32) })).rejects.toThrow("Signed out");
+            await expect(thisTab.initLocalIndex({ mailboxUid: "mb1", indexKey: new Uint8Array(32) })).rejects.toThrow("Signed out");
+
+            // Unrelated messages are ignored; a Worker-side failure while closing is swallowed.
+            const sender = new FakeBroadcastChannel(otherTab.SIGN_OUT_CHANNEL);
+            sender.postMessage({ type: "something-else" });
+            sender.postMessage(null);
+            expect(posted).toHaveLength(2);
+            respond = () => ({ ok: false, error: "crashed" });
+            sender.postMessage({ type: "sign-out" });
+            await vi.waitFor(() => expect(posted).toHaveLength(3));
+        });
+
+        it("still signs out where BroadcastChannel is unavailable or fails to post", async () => {
+            vi.stubGlobal("BroadcastChannel", undefined);
+            await expect(rpc.destroyAllLocalIndexes()).resolves.toBe(true);
+
+            vi.resetModules();
+            rpc = await import("../../../apps/shared/search/localIndexRpcClient.js");
+            vi.stubGlobal(
+                "BroadcastChannel",
+                class {
+                    postMessage() {
+                        throw new Error("closed");
+                    }
+                },
+            );
+            await expect(rpc.destroyAllLocalIndexes()).resolves.toBe(true);
+        });
     });
 
     it("does nothing where OPFS isn't available", async () => {

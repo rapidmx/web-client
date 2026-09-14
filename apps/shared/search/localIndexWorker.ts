@@ -33,7 +33,7 @@ import SQLiteESMFactory from "@journeyapps/wa-sqlite/dist/wa-sqlite-async.mjs";
 import * as SQLite from "@journeyapps/wa-sqlite";
 import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { EncryptingVFS } from "./localIndexVFS.js";
-import { poolNameFor, removeLocalIndexDirectories, removeLocalIndexDirectory } from "./localIndexStorage.js";
+import { listLocalIndexMailboxUids, poolNameFor, removeLocalIndexDirectory } from "./localIndexStorage.js";
 import {
     BM25_WEIGHTS_SQL,
     CREATE_SCHEMA_SQL,
@@ -72,7 +72,19 @@ export type LocalIndexResponse =
     | { id: number; ok: true; result: unknown }
     | { id: number; ok: false; error: string };
 
-export interface InitParams {
+/**
+ * Carried by every call a build pass makes (`init`, `setWindow`, `setBuilding`, `indexEntities`,
+ * `pruneEntities`). Generations come from one monotonic counter on the main thread
+ * (`localIndexRpcClient.ts`), shared with `destroy`/`destroyAll`: a call whose generation is older than the
+ * last destroy of its mailbox is rejected (`StaleGenerationError`), so a build started before a lock/sign-out
+ * can't recreate the index with its captured keys or write into a rebuild that started after it. Calls
+ * without a generation (search, coverage, in-session moves) are never rejected.
+ */
+export interface GenerationParams {
+    generation?: number;
+}
+
+export interface InitParams extends GenerationParams {
     mailboxUid: string;
     /** The mailbox's already-derived local-index key (`localIndexKey.ts`'s `deriveLocalIndexKey()`) -
      * this Worker never touches the master key itself, only this one purpose-derived value, matching
@@ -80,15 +92,27 @@ export interface InitParams {
     indexKey: Uint8Array;
 }
 
-export interface IndexEntitiesParams {
+export interface IndexEntitiesParams extends GenerationParams {
     mailboxUid: string;
     entities: LocalIndexEntity[];
 }
 
 export interface IndexEntitiesResult {
-    /** `true` when this call's eviction pass had to delete anything to get back under the byte budget -
-     * the builder's signal that walking further back in time would only insert rows that get evicted. */
+    /** `true` when this call's eviction pass had to delete anything to get back under the byte budget. */
     budgetReached: boolean;
+    /** The eviction watermark after this call - see `WindowState.evictedBefore`. */
+    evictedBefore?: string;
+}
+
+export interface WindowState {
+    /** Set once the byte budget has forced an eviction: messages dated strictly before this were evicted (or
+     * would be, on insert), so a build pass neither re-fetches them nor walks past them. Cleared by
+     * `setWindow` once the index has comfortably shrunk back under budget (or the budget was raised). */
+    evictedBefore?: string;
+}
+
+export interface DestroyParams extends GenerationParams {
+    mailboxUid: string;
 }
 
 export interface RemoveEntityParams {
@@ -107,13 +131,16 @@ export interface IndexedVersionsParams {
     entityUids: string[];
 }
 
-export interface PruneEntitiesParams {
+export interface PruneEntitiesParams extends GenerationParams {
     mailboxUid: string;
-    /** Every entity uid a complete build pass saw on the server. */
+    /** Every entity uid a build pass saw on the server. */
     keepEntityUids: string[];
     /** Only rows at or after this `date_for_sort` are candidates (the walk's own time floor - anything
      * older was never re-listed, so its absence proves nothing). `undefined` means no floor. */
     since?: string;
+    /** Only rows currently filed in one of these folders are candidates - folders whose listing was reliable
+     * for the whole walk. `undefined` means every folder. */
+    folderUids?: string[];
 }
 
 export interface SearchParams {
@@ -148,25 +175,31 @@ export interface Coverage {
     indexedFrom?: string;
     indexedCount: number;
     building: boolean;
-    /** `true` only once a build pass has walked every mail folder all the way back to its time floor with
-     * no errors and no budget cut-off. Callers MUST NOT treat `indexedFrom` as a coverage guarantee (e.g.
-     * to narrow Tier 3) unless this is `true` and `building` is `false`. */
+    /** `true` only once a build pass *in this connection's lifetime* has walked every mail folder all the
+     * way back to its time floor with no errors and no budget cut-off - reset whenever the index is opened,
+     * so a completion persisted by an earlier session never counts. Callers MUST NOT treat `indexedFrom` as
+     * a coverage guarantee (e.g. to narrow Tier 3) unless this is `true` and `building` is `false`. */
     complete: boolean;
+    /** Only set while `complete`: the guarantee ends here. Nothing indexes mail that arrives after a pass
+     * started, so everything dated after this (ISO) is NOT covered and must still be searched elsewhere. */
+    indexedUntil?: string;
 }
 
-export interface SetWindowParams {
+export interface SetWindowParams extends GenerationParams {
     mailboxUid: string;
     timeFloorMonths: number;
     byteBudgetBytes: number;
 }
 
-export interface SetBuildingParams {
+export interface SetBuildingParams extends GenerationParams {
     mailboxUid: string;
     building: boolean;
     /** Only meaningful with `building: false` - whether the pass that just ended walked everything. */
     complete?: boolean;
     /** Only meaningful with `complete: true` - the pass's time floor (ISO), or `undefined` for none. */
     coveredFrom?: string;
+    /** Only meaningful with `complete: true` - when the pass started (ISO, minus a clock-skew margin). */
+    coveredUntil?: string;
 }
 
 interface OpenConnection {
@@ -199,6 +232,38 @@ export function runExclusive<T>(mailboxUid: string, task: () => Promise<T>): Pro
         }
     });
     return result;
+}
+
+/** Generation of the most recent `destroy` per mailbox, and of the most recent `destroyAll`. */
+const destroyedGenerations = new Map<string, number>();
+let destroyedAllGeneration = 0;
+
+/** Rejects a build-pass call issued before its mailbox's index was last destroyed. */
+export class StaleGenerationError extends Error {
+    constructor(mailboxUid: string) {
+        super(`Local search index for mailbox ${mailboxUid} was destroyed after this build started.`);
+        this.name = "StaleGenerationError";
+    }
+}
+
+function assertCurrentGeneration(mailboxUid: string, generation: number | undefined): void {
+    if (generation === undefined) {
+        return;
+    }
+    if (generation < Math.max(destroyedGenerations.get(mailboxUid) ?? 0, destroyedAllGeneration)) {
+        throw new StaleGenerationError(mailboxUid);
+    }
+}
+
+function recordDestroyGeneration(mailboxUid: string | undefined, generation: number | undefined): void {
+    if (generation === undefined) {
+        return;
+    }
+    if (mailboxUid === undefined) {
+        destroyedAllGeneration = Math.max(destroyedAllGeneration, generation);
+    } else {
+        destroyedGenerations.set(mailboxUid, Math.max(destroyedGenerations.get(mailboxUid) ?? 0, generation));
+    }
 }
 
 /** Thrown by `init` when another tab already holds this mailbox's index open. */
@@ -241,6 +306,11 @@ class LocalIndexCorruptedError extends Error {
     }
 }
 
+/** SQLite's own exact messages for `SQLITE_CORRUPT`/`SQLITE_NOTADB`, for an error that lost its code. Anchored
+ * on both ends: an FTS5 error echoes the user's query text back (e.g. `no such column: malformed`), and a
+ * loose substring match on that used to wipe the whole index. */
+const CORRUPTION_MESSAGE = /^(database disk image is malformed|file is not a database)$/i;
+
 /** A real corruption signal (discard and rebuild) versus an ordinary error (e.g. a malformed MATCH). */
 function isCorruptionError(err: unknown, connection: OpenConnection | undefined): boolean {
     if (err instanceof LocalIndexCorruptedError || connection?.vfs.corruptionDetected) {
@@ -250,8 +320,7 @@ function isCorruptionError(err: unknown, connection: OpenConnection | undefined)
     if (code === SQLite.SQLITE_CORRUPT || code === SQLite.SQLITE_NOTADB) {
         return true;
     }
-    const message = err instanceof Error ? err.message : String(err);
-    return /malformed|not a database|failed to decrypt/i.test(message);
+    return err instanceof Error && CORRUPTION_MESSAGE.test(err.message);
 }
 
 async function openRawConnection(params: InitParams): Promise<OpenConnection> {
@@ -314,6 +383,19 @@ async function initializeSchema(connection: OpenConnection): Promise<boolean> {
     return true;
 }
 
+/** Opens a just-discarded (empty) index and creates its schema - closing the connection again if the schema
+ * step fails, so its OPFS access handles aren't leaked for the rest of the Worker's life. */
+async function openFreshConnection(params: InitParams): Promise<OpenConnection> {
+    const connection = await openRawConnection(params);
+    try {
+        await initializeSchema(connection);
+    } catch (err) {
+        await closeRawConnection(connection).catch(() => undefined);
+        throw err;
+    }
+    return connection;
+}
+
 async function openConnection(params: InitParams): Promise<OpenConnection> {
     const releaseLock = await acquireIndexLock(params.mailboxUid);
     try {
@@ -339,8 +421,7 @@ async function openConnection(params: InitParams): Promise<OpenConnection> {
                 await closeRawConnection(connection).catch(() => undefined);
             }
             await removeLocalIndexDirectory(params.mailboxUid);
-            connection = await openRawConnection(params);
-            await initializeSchema(connection);
+            connection = await openFreshConnection(params);
         }
         connection.releaseLock = releaseLock;
         return connection;
@@ -362,11 +443,22 @@ async function writeMeta(connection: OpenConnection, key: string, value: string)
 }
 
 async function init(params: InitParams): Promise<void> {
+    assertCurrentGeneration(params.mailboxUid, params.generation);
     if (connections.has(params.mailboxUid)) {
         return;
     }
     try {
-        connections.set(params.mailboxUid, await openConnection(params));
+        const connection = await openConnection(params);
+        try {
+            // A completion (or an in-progress flag) persisted by an earlier session proves nothing about mail
+            // that arrived since - only a pass that finishes while this connection is open may narrow Tier 3.
+            await clearBuildState(connection);
+        } catch (err) {
+            await closeRawConnection(connection).catch(() => undefined);
+            connection.releaseLock?.();
+            throw err;
+        }
+        connections.set(params.mailboxUid, connection);
     } catch (err) {
         // Tier 2 degrades to "contributes nothing" in this tab - say why, once per attempt, rather than
         // leaving a silently empty local tier.
@@ -416,6 +508,12 @@ async function withConnection<T>(mailboxUid: string, operation: (connection: Ope
     }
 }
 
+/** `withConnection()` for a build-pass call - rejected first if the call's generation is stale. */
+async function withCurrentConnection<T>(params: GenerationParams & { mailboxUid: string }, operation: (connection: OpenConnection) => Promise<T>): Promise<T> {
+    assertCurrentGeneration(params.mailboxUid, params.generation);
+    return withConnection(params.mailboxUid, operation);
+}
+
 /** Discards a corrupted index and reopens it empty under the same key and Web Lock. If reopening fails,
  * the mailbox is left uninitialized (lock released) - the next `init()` tries again from scratch. */
 async function resetCorruptedConnection(mailboxUid: string, connection: OpenConnection): Promise<void> {
@@ -424,8 +522,7 @@ async function resetCorruptedConnection(mailboxUid: string, connection: OpenConn
     await closeRawConnection(connection).catch(() => undefined);
     try {
         await removeLocalIndexDirectory(mailboxUid);
-        const fresh = await openRawConnection(connection.params);
-        await initializeSchema(fresh);
+        const fresh = await openFreshConnection(connection.params);
         fresh.releaseLock = connection.releaseLock;
         connections.set(mailboxUid, fresh);
     } catch {
@@ -466,7 +563,8 @@ async function applyEviction(connection: OpenConnection): Promise<boolean> {
     if (!byteBudget) {
         return false;
     }
-    let evicted = false;
+    // The newest cutoff actually deleted up to; `undefined` while nothing has been evicted.
+    let watermark: string | undefined;
     for (let round = 0; round < MAX_EVICTION_ROUNDS; round++) {
         const used = await usedBytes(connection);
         if (used <= byteBudget) {
@@ -502,13 +600,20 @@ async function applyEviction(connection: OpenConnection): Promise<boolean> {
         )) {
             connection.sqlite3.bind_collection(stmt, [cutoffDate, cutoffDate, cutoffRowid]);
             await connection.sqlite3.step(stmt);
-            evicted = evicted || connection.sqlite3.changes(connection.db) > 0;
         }
+        // The cutoff row was just read, so this always deleted at least that row.
+        watermark = cutoffDate;
     }
-    if (evicted) {
+    if (watermark !== undefined) {
+        // Rows at exactly `watermark` may be partly evicted (the rowid tiebreaker), so only strictly older
+        // messages are treated as out of the window. Never moves backwards while at budget.
+        const previous = await readMeta(connection, "evicted_before");
+        if (!previous || watermark > previous) {
+            await writeMeta(connection, "evicted_before", watermark);
+        }
         await connection.sqlite3.exec(connection.db, "PRAGMA incremental_vacuum;");
     }
-    return evicted;
+    return watermark !== undefined;
 }
 
 async function indexEntities(connection: OpenConnection, entities: LocalIndexEntity[]): Promise<IndexEntitiesResult> {
@@ -518,7 +623,8 @@ async function indexEntities(connection: OpenConnection, entities: LocalIndexEnt
             await connection.sqlite3.step(stmt);
         }
     }
-    return { budgetReached: await applyEviction(connection) };
+    const budgetReached = await applyEviction(connection);
+    return { budgetReached, ...(await readWindowState(connection)) };
 }
 
 async function removeEntity(connection: OpenConnection, entityUid: string): Promise<void> {
@@ -562,19 +668,21 @@ async function indexedVersions(connection: OpenConnection, entityUids: string[])
 
 /** Deletes rows a complete build pass didn't see (deleted, or moved out of every mail folder, on any
  * client) within the pass's own time floor. Resolves how many rows were removed. */
-async function pruneEntities(connection: OpenConnection, keepEntityUids: string[], since: string | undefined): Promise<number> {
+async function pruneEntities(connection: OpenConnection, { keepEntityUids, since, folderUids }: PruneEntitiesParams): Promise<number> {
     const keep = new Set(keepEntityUids);
+    const folders = folderUids ? new Set(folderUids) : undefined;
     const stale: string[] = [];
     for await (const stmt of connection.sqlite3.statements(
         connection.db,
-        since ? "SELECT entity_uid FROM entities WHERE date_for_sort >= ?" : "SELECT entity_uid FROM entities",
+        since ? "SELECT entity_uid, folder_uid FROM entities WHERE date_for_sort >= ?" : "SELECT entity_uid, folder_uid FROM entities",
     )) {
         if (since) {
             connection.sqlite3.bind_collection(stmt, [since]);
         }
         while ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
             const uid = connection.sqlite3.column(stmt, 0) as string;
-            if (!keep.has(uid)) {
+            const folderUid = connection.sqlite3.column(stmt, 1) as string;
+            if (!keep.has(uid) && (!folders || folders.has(folderUid))) {
                 stale.push(uid);
             }
         }
@@ -640,28 +748,48 @@ async function coverage(connection: OpenConnection): Promise<Coverage & { fileBy
     // A complete pass walked every folder back to its time floor, but a folder's last page can reach
     // further back than another folder's did - so the guaranteed frontier is the later of the two.
     const indexedFrom = complete && oldest && coveredFrom && coveredFrom > oldest ? coveredFrom : oldest;
+    const coveredUntil = await readMeta(connection, "covered_until");
     return {
         indexedFrom,
         indexedCount: (await queryValue<number>(connection, "SELECT COUNT(*) FROM entities")) ?? 0,
         building: (await readMeta(connection, "building")) === "1",
         complete,
+        indexedUntil: complete && coveredUntil ? coveredUntil : undefined,
         fileBytes: await fileBytes(connection),
     };
 }
 
-async function setWindow(connection: OpenConnection, { timeFloorMonths, byteBudgetBytes }: SetWindowParams): Promise<void> {
+/** Below this fraction of the budget, the eviction watermark is dropped so older mail can come back in -
+ * the gap between it and 1.0 keeps a pass from evicting and re-fetching the same boundary every time. */
+const WATERMARK_RESET_FRACTION = 0.9;
+
+async function readWindowState(connection: OpenConnection): Promise<WindowState> {
+    return { evictedBefore: (await readMeta(connection, "evicted_before")) || undefined };
+}
+
+async function setWindow(connection: OpenConnection, { timeFloorMonths, byteBudgetBytes }: SetWindowParams): Promise<WindowState> {
     await writeMeta(connection, "time_floor_months", String(timeFloorMonths));
     await writeMeta(connection, "byte_budget", String(byteBudgetBytes));
     // A lowered budget must shrink the window immediately, not just gate future inserts (spec §11 "the
     // client MUST reduce the window rather than fail writes when the budget is reached").
-    await applyEviction(connection);
+    const evicted = await applyEviction(connection);
+    if (!evicted && (!byteBudgetBytes || (await usedBytes(connection)) <= byteBudgetBytes * WATERMARK_RESET_FRACTION)) {
+        await writeMeta(connection, "evicted_before", "");
+    }
+    return readWindowState(connection);
 }
 
-async function setBuilding(connection: OpenConnection, { building, complete, coveredFrom }: SetBuildingParams): Promise<void> {
+async function setBuilding(connection: OpenConnection, { building, complete, coveredFrom, coveredUntil }: SetBuildingParams): Promise<void> {
+    const done = !building && !!complete;
     await writeMeta(connection, "building", building ? "1" : "0");
     // Starting a pass invalidates the previous pass's completeness until this one finishes.
-    await writeMeta(connection, "build_complete", !building && complete ? "1" : "0");
-    await writeMeta(connection, "covered_from", !building && complete && coveredFrom ? coveredFrom : "");
+    await writeMeta(connection, "build_complete", done ? "1" : "0");
+    await writeMeta(connection, "covered_from", done && coveredFrom ? coveredFrom : "");
+    await writeMeta(connection, "covered_until", done && coveredUntil ? coveredUntil : "");
+}
+
+async function clearBuildState(connection: OpenConnection): Promise<void> {
+    await setBuilding(connection, { mailboxUid: connection.params.mailboxUid, building: false, complete: false });
 }
 
 /** Closes the connection (if open) and deletes the mailbox's entire OPFS directory - the spec's "MUST be
@@ -672,19 +800,16 @@ async function destroy(mailboxUid: string): Promise<void> {
     await removeLocalIndexDirectory(mailboxUid);
 }
 
-/** Destroys every local index on this origin, including ones this Worker never opened. */
+/** Destroys every local index on this origin, including ones this Worker never opened. Each mailbox's close
+ * and directory removal runs inside that mailbox's own queue, so an `init` already queued can't recreate a
+ * directory after it was removed (a stale build's queued `init` is rejected by its generation instead). */
 async function destroyAll(): Promise<{ failed: string[] }> {
-    const failed = new Set<string>();
+    const mailboxUids = new Set([...connections.keys(), ...(await listLocalIndexMailboxUids())]);
+    const failed: string[] = [];
     await Promise.all(
-        [...connections.keys()].map((mailboxUid) =>
-            runExclusive(mailboxUid, () => closeConnection(mailboxUid)).catch(() => failed.add(mailboxUid)),
-        ),
+        [...mailboxUids].map((mailboxUid) => runExclusive(mailboxUid, () => destroy(mailboxUid)).catch(() => failed.push(mailboxUid))),
     );
-    const result = await removeLocalIndexDirectories();
-    for (const mailboxUid of result.failed) {
-        failed.add(mailboxUid);
-    }
-    return { failed: [...failed] };
+    return { failed: failed.sort() };
 }
 
 /**
@@ -738,7 +863,7 @@ export async function handleRequest(method: LocalIndexRequest["method"], params:
         }
         case "indexEntities": {
             const p = params as IndexEntitiesParams;
-            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => indexEntities(c, p.entities)));
+            return runExclusive(p.mailboxUid, () => withCurrentConnection(p, (c) => indexEntities(c, p.entities)));
         }
         case "removeEntity": {
             const p = params as RemoveEntityParams;
@@ -754,7 +879,7 @@ export async function handleRequest(method: LocalIndexRequest["method"], params:
         }
         case "pruneEntities": {
             const p = params as PruneEntitiesParams;
-            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => pruneEntities(c, p.keepEntityUids, p.since)));
+            return runExclusive(p.mailboxUid, () => withCurrentConnection(p, (c) => pruneEntities(c, p)));
         }
         case "search": {
             const p = params as SearchParams;
@@ -766,18 +891,23 @@ export async function handleRequest(method: LocalIndexRequest["method"], params:
         }
         case "setWindow": {
             const p = params as SetWindowParams;
-            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => setWindow(c, p)));
+            return runExclusive(p.mailboxUid, () => withCurrentConnection(p, (c) => setWindow(c, p)));
         }
         case "setBuilding": {
             const p = params as SetBuildingParams;
-            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => setBuilding(c, p)));
+            return runExclusive(p.mailboxUid, () => withCurrentConnection(p, (c) => setBuilding(c, p)));
         }
         case "destroy": {
-            const mailboxUid = params as string;
-            return runExclusive(mailboxUid, () => destroy(mailboxUid));
+            const p = params as DestroyParams;
+            // Recorded synchronously, before queueing - any build call issued earlier but still queued behind
+            // this one is rejected once it runs.
+            recordDestroyGeneration(p.mailboxUid, p.generation);
+            return runExclusive(p.mailboxUid, () => destroy(p.mailboxUid));
         }
-        case "destroyAll":
+        case "destroyAll": {
+            recordDestroyGeneration(undefined, (params as GenerationParams | undefined)?.generation);
             return destroyAll();
+        }
         case "selfTest": {
             const p = params as InitParams;
             return runExclusive(p.mailboxUid, () => selfTest(p));

@@ -43,6 +43,24 @@ describe("MailboxProvisioning", () => {
         expect(screen.getByText("Ask an administrator to create one for you.")).toBeInTheDocument();
     });
 
+    it("offers a retry, not 'No mailbox available', when the server couldn't read its provisioning policy (503).", async () => {
+        let calls = 0;
+        mockFetch(() => {
+            calls += 1;
+            return calls === 1 ? jsonResponse(503, { message: "policy unavailable" }) : jsonResponse(404, { message: "not enabled" });
+        });
+        const user = userEvent.setup();
+        render(<MailboxProvisioning />);
+
+        expect(await screen.findByText("Couldn’t check right now")).toBeInTheDocument();
+        expect(screen.queryByText("No mailbox available")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Retry" }));
+
+        expect(await screen.findByText("No mailbox available")).toBeInTheDocument();
+        expect(calls).toBe(2);
+    });
+
     it("shows a picker with every alias x domain option when multiple are available, and creates the chosen one.", async () => {
         const fetchMock = mockFetch((url, init) => {
             if (url === "/api/mail/mailboxes/auto-provision" && init?.method === "POST") {

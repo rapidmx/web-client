@@ -79,7 +79,7 @@ describe("RetentionPolicyPage", () => {
         expect(JSON.parse(putCall[1]!.body as string)).toEqual({ messageRetentionDays: 30, auditLogRetentionDays: 2190 });
     });
 
-    it("omits a blank message-retention field from the patch, saving only the audit-log field", async () => {
+    it("sends a blank message-retention field as null, saving the audit-log field", async () => {
         const fetchMock = mockShell((url, init) => {
             if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
             if (url === "/api/system/retention-policy" && init?.method === "PUT") return jsonResponse(200, { auditLogRetentionDays: 2190 });
@@ -94,10 +94,10 @@ describe("RetentionPolicyPage", () => {
 
         await vi.waitFor(() => expect(screen.getByText("Saved.")).toBeInTheDocument());
         const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
-        expect(JSON.parse(putCall[1]!.body as string)).toEqual({ auditLogRetentionDays: 2190 });
+        expect(JSON.parse(putCall[1]!.body as string)).toEqual({ messageRetentionDays: null, auditLogRetentionDays: 2190 });
     });
 
-    it("omits a blank audit-log field from the patch, saving only the message-retention field", async () => {
+    it("sends a blank audit-log field as null, saving the message-retention field", async () => {
         const fetchMock = mockShell((url, init) => {
             if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
             if (url === "/api/system/retention-policy" && init?.method === "PUT") return jsonResponse(200, { messageRetentionDays: 30 });
@@ -112,7 +112,27 @@ describe("RetentionPolicyPage", () => {
 
         await vi.waitFor(() => expect(screen.getByText("Saved.")).toBeInTheDocument());
         const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
-        expect(JSON.parse(putCall[1]!.body as string)).toEqual({ messageRetentionDays: 30 });
+        expect(JSON.parse(putCall[1]!.body as string)).toEqual({ messageRetentionDays: 30, auditLogRetentionDays: null });
+    });
+
+    it("clears an already-configured period by sending null", async () => {
+        const fetchMock = mockShell((url, init) => {
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, { messageRetentionDays: 90, auditLogRetentionDays: 2555 });
+            }
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") return jsonResponse(200, { auditLogRetentionDays: 2555 });
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<RetentionPolicyPage userUid="admin-1" />);
+        const message = await screen.findByLabelText("Message retention (days)");
+
+        await user.clear(message);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
+        expect(JSON.parse(putCall[1]!.body as string)).toEqual({ messageRetentionDays: null, auditLogRetentionDays: 2555 });
     });
 
     it("shows the server's own message when saving fails with an ApiRequestError", async () => {

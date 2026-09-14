@@ -345,11 +345,42 @@ describe("localIndexWorker", () => {
         expect(Object.keys(survivors).sort()).toEqual(expected);
         expect(after.indexedFrom).toBe(entities[60 - after.indexedCount].dateForSort);
 
-        // Inserting past the budget again reports that it had to evict.
+        // Inserting past the budget again reports that it had to evict, and how far the watermark moved.
         const newer = Array.from({ length: 10 }, (_, i) =>
             entity(`new${i}`, { dateForSort: new Date(Date.UTC(2026, 6, 1 + i)).toISOString(), body, byteSize: body.length + 512 }),
         );
-        await expect(call("indexEntities", { mailboxUid: "mb1", entities: newer })).resolves.toEqual({ budgetReached: true });
+        const result = await call<{ budgetReached: boolean; evictedBefore: string }>("indexEntities", { mailboxUid: "mb1", entities: newer });
+        expect(result.budgetReached).toBe(true);
+        expect(result.evictedBefore > after.indexedFrom).toBe(true);
+    });
+
+    describe("eviction watermark", () => {
+        const body = "lorem ipsum dolor sit amet ".repeat(400);
+        const dated = (uid: string, day: number) => entity(uid, { dateForSort: new Date(Date.UTC(2026, 0, day)).toISOString(), body, byteSize: body.length + 512 });
+
+        it("records the newest evicted date, never moves it backwards while at budget, and clears it once the index is comfortably under budget", async () => {
+            await call("init", { mailboxUid: "mb1", indexKey: KEY });
+            await expect(call("setWindow", { mailboxUid: "mb1", timeFloorMonths: 12, byteBudgetBytes: 0 })).resolves.toEqual({});
+            await call("indexEntities", { mailboxUid: "mb1", entities: Array.from({ length: 40 }, (_, i) => dated(`m${String(i).padStart(2, "0")}`, 10 + i)) });
+
+            const lowered = await call<{ evictedBefore?: string }>("setWindow", { mailboxUid: "mb1", timeFloorMonths: 12, byteBudgetBytes: 250_000 });
+            expect(lowered.evictedBefore).toMatch(/^2026-0[12]-/);
+
+            // Older rows than the watermark get evicted again - the watermark stays where it was.
+            const older = await call<{ budgetReached: boolean; evictedBefore?: string }>("indexEntities", {
+                mailboxUid: "mb1",
+                entities: [dated("old1", 1), dated("old2", 2)],
+            });
+            expect(older).toEqual({ budgetReached: true, evictedBefore: lowered.evictedBefore });
+
+            // Still near the budget: the watermark is kept.
+            const { fileBytes } = await call<{ fileBytes: number }>("coverage", "mb1");
+            await expect(call("setWindow", { mailboxUid: "mb1", timeFloorMonths: 12, byteBudgetBytes: Math.ceil(fileBytes / 0.95) })).resolves.toEqual({
+                evictedBefore: lowered.evictedBefore,
+            });
+            // A raised budget leaves plenty of room: cleared, so older mail can come back in.
+            await expect(call("setWindow", { mailboxUid: "mb1", timeFloorMonths: 12, byteBudgetBytes: 100_000_000 })).resolves.toEqual({});
+        });
     });
 
     it("discards and rebuilds an index that fails to decrypt at open time (e.g. a different key)", async () => {
@@ -430,22 +461,110 @@ describe("localIndexWorker", () => {
         await expect(otherTab.handleRequest("init", { mailboxUid: "mb1", indexKey: KEY })).rejects.toThrow("already open in another tab");
         expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("already open in another tab"));
 
-        await call("destroy", "mb1");
+        await call("destroy", { mailboxUid: "mb1" });
         await vi.waitFor(() => expect(held.size).toBe(0));
         await expect(otherTab.handleRequest("init", { mailboxUid: "mb1", indexKey: KEY })).resolves.toBeUndefined();
     });
 
     it("destroy removes the mailbox's directory and surfaces a failure to remove it", async () => {
         await call("init", { mailboxUid: "mb1", indexKey: KEY });
-        await call("destroy", "mb1");
+        await call("destroy", { mailboxUid: "mb1" });
         expect(opfs.has("rapidmx-localsearch-mb1")).toBe(false);
         await expect(call("coverage", "mb1")).rejects.toThrow("init() was never called");
         // Already gone: not an error.
-        await expect(call("destroy", "mb1")).resolves.toBeUndefined();
+        await expect(call("destroy", { mailboxUid: "mb1" })).resolves.toBeUndefined();
 
         opfs.set("rapidmx-localsearch-mb2", new Map());
         busyDirectories.add("rapidmx-localsearch-mb2");
-        await expect(call("destroy", "mb2")).rejects.toThrow("in use");
+        await expect(call("destroy", { mailboxUid: "mb2" })).rejects.toThrow("in use");
+    });
+
+    describe("build generations", () => {
+        it("rejects a build's calls issued before its mailbox was destroyed - including one already queued - but not newer builds or ungenerationed calls", async () => {
+            await call("init", { mailboxUid: "mb1", indexKey: KEY, generation: 1 });
+            // Queued before the destroy arrives, so it runs first - and is still rejected.
+            const queued = call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1")], generation: 1 });
+            const destroyed = call("destroy", { mailboxUid: "mb1", generation: 2 });
+            await expect(queued).rejects.toThrow("destroyed after this build started");
+            await destroyed;
+
+            await expect(call("init", { mailboxUid: "mb1", indexKey: KEY, generation: 1 })).rejects.toThrow("destroyed after this build started");
+            expect(opfs.has("rapidmx-localsearch-mb1")).toBe(false);
+            // Another mailbox's build is unaffected.
+            await expect(call("init", { mailboxUid: "mb2", indexKey: KEY, generation: 1 })).resolves.toBeUndefined();
+
+            await call("init", { mailboxUid: "mb1", indexKey: KEY, generation: 3 });
+            await expect(call("setBuilding", { mailboxUid: "mb1", building: true, generation: 1 })).rejects.toThrow("destroyed after this build started");
+            await call("setBuilding", { mailboxUid: "mb1", building: true, generation: 3 });
+            await expect(call("coverage", "mb1")).resolves.toMatchObject({ building: true });
+        });
+
+        it("destroyAll invalidates every mailbox's older builds; a destroy without a generation invalidates nothing", async () => {
+            await call("init", { mailboxUid: "mb1", indexKey: KEY });
+            await call("destroy", { mailboxUid: "mb1" });
+            await expect(call("init", { mailboxUid: "mb1", indexKey: KEY, generation: 1 })).resolves.toBeUndefined();
+
+            await call("destroyAll", { generation: 5 });
+            await expect(call("init", { mailboxUid: "mb1", indexKey: KEY, generation: 4 })).rejects.toThrow("destroyed after this build started");
+            await call("init", { mailboxUid: "mb1", indexKey: KEY });
+            await expect(call("pruneEntities", { mailboxUid: "mb1", keepEntityUids: [], generation: 4 })).rejects.toThrow("destroyed after this build started");
+            await expect(call("setWindow", { mailboxUid: "mb1", timeFloorMonths: 12, byteBudgetBytes: 0, generation: 6 })).resolves.toEqual({});
+            await call("destroyAll");
+            await expect(call("setBuilding", { mailboxUid: "mb1", building: false, generation: 6 })).rejects.toThrow("init() was never called");
+        });
+    });
+
+    it("only trusts a completed pass from this session: reopening the index clears it, and a complete pass reports where its coverage ends", async () => {
+        await call("init", { mailboxUid: "mb1", indexKey: KEY });
+        await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1", { dateForSort: "2026-01-01T00:00:00.000Z" })] });
+        await call("setBuilding", { mailboxUid: "mb1", building: false, complete: true, coveredFrom: "2025-09-01T00:00:00.000Z", coveredUntil: "2026-09-01T00:00:00.000Z" });
+        await expect(call("coverage", "mb1")).resolves.toMatchObject({ complete: true, indexedUntil: "2026-09-01T00:00:00.000Z" });
+
+        await call("setBuilding", { mailboxUid: "mb1", building: true });
+        worker = await loadWorker(); // a reload mid-build
+        await call("init", { mailboxUid: "mb1", indexKey: KEY });
+        const coverage = await call<{ complete: boolean; building: boolean; indexedUntil?: string; indexedCount: number }>("coverage", "mb1");
+        expect(coverage).toMatchObject({ complete: false, building: false, indexedCount: 1 });
+        expect(coverage.indexedUntil).toBeUndefined();
+    });
+
+    it("fails init (closing the connection and releasing the lock) when clearing the previous session's build state fails", async () => {
+        const released: string[] = [];
+        vi.stubGlobal("navigator", {
+            storage: { getDirectory: async () => opfsRoot },
+            locks: {
+                request: async (name: string, _options: object, callback: (lock: object | null) => Promise<void> | undefined) => {
+                    await callback({ name });
+                    released.push(name);
+                },
+            },
+        });
+        await call("init", { mailboxUid: "mb1", indexKey: KEY });
+        await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1")] });
+
+        worker = await loadWorker();
+        sqliteHooks.onStatements = (sql) => {
+            if (sql.startsWith("INSERT OR REPLACE INTO meta")) throw new Error("meta write failed");
+        };
+        failNextClose();
+        await expect(call("init", { mailboxUid: "mb1", indexKey: KEY })).rejects.toThrow("meta write failed");
+        await vi.waitFor(() => expect(released).toContain("rapidmx-localsearch-mb1:lock"));
+        sqliteHooks.onStatements = undefined;
+        await expect(call("init", { mailboxUid: "mb1", indexKey: KEY })).resolves.toBeUndefined();
+        await expect(call("coverage", "mb1")).resolves.toMatchObject({ indexedCount: 1 });
+    });
+
+    it("prunes only within the given folders when a pass could only vouch for some of them", async () => {
+        await call("init", { mailboxUid: "mb1", indexKey: KEY });
+        await call("indexEntities", {
+            mailboxUid: "mb1",
+            entities: [entity("gone-inbox"), entity("gone-sent", { folderUid: "sent" }), entity("kept")],
+        });
+        await expect(call("pruneEntities", { mailboxUid: "mb1", keepEntityUids: ["kept"], folderUids: ["inbox"] })).resolves.toBe(1);
+        await expect(call("indexedVersions", { mailboxUid: "mb1", entityUids: ["gone-inbox", "gone-sent", "kept"] })).resolves.toEqual({
+            "gone-sent": "1:inbox",
+            kept: "1:inbox",
+        });
     });
 
     it("destroyAll closes open connections and removes every index directory, including ones never opened here", async () => {
@@ -593,6 +712,77 @@ describe("localIndexWorker", () => {
 
             sqliteHooks.onStatements = undefined;
             await expect(call("coverage", "mb1")).resolves.toMatchObject({ indexedCount: 1 });
+        });
+
+        /** Counts real opens/closes, to prove a failed rebuild doesn't leak its connection's handles. */
+        function countConnections() {
+            const counts = { opened: 0, closed: 0 };
+            sqliteHooks.onOpen = () => {
+                counts.opened += 1;
+            };
+            sqliteHooks.onClose = () => {
+                counts.closed += 1;
+            };
+            return counts;
+        }
+
+        function failSchemaCreation() {
+            sqliteHooks.onExec = (sql) => {
+                if (sql.includes("auto_vacuum=INCREMENTAL")) throw new Error("schema creation failed");
+            };
+        }
+
+        it("closes the fresh connection when recreating a discarded index's schema fails at open time", async () => {
+            await call("init", { mailboxUid: "mb1", indexKey: KEY });
+            await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1")] });
+
+            worker = await loadWorker();
+            const counts = countConnections();
+            // Closing it failing too still surfaces the original error.
+            sqliteHooks.onClose = () => {
+                counts.closed += 1;
+                throw new Error("close failed");
+            };
+            failSchemaCreation();
+            await expect(call("init", { mailboxUid: "mb1", indexKey: OTHER_KEY })).rejects.toThrow("schema creation failed");
+            // The wrong-key open fails inside open_v2 itself (nothing to close); the fresh one opened and must close.
+            expect(counts.opened).toBe(2);
+            expect(counts.closed).toBe(1);
+        });
+
+        it("closes the fresh connection when recreating a corrupted index's schema fails mid-session", async () => {
+            await call("init", { mailboxUid: "mb1", indexKey: KEY });
+            await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1")] });
+            new Uint8Array(opfs.get("rapidmx-localsearch-mb1")!.get("/index.db")!.data).fill(0xff, 20, 60);
+
+            const counts = countConnections();
+            failSchemaCreation();
+            await expect(call("search", { mailboxUid: "mb1", parsed: { text: "budget" }, limit: 10 })).rejects.toThrow();
+            expect(counts.opened).toBe(1);
+            // The corrupted connection and the fresh one.
+            expect(counts.closed).toBe(2);
+            await expect(call("coverage", "mb1")).rejects.toThrow("init() was never called");
+        });
+
+        it("doesn't mistake an FTS5 error echoing the query (e.g. 'no such column: malformed') for corruption, but still honours SQLite's exact corruption message", async () => {
+            const SQLite = await import("@journeyapps/wa-sqlite");
+            await call("init", { mailboxUid: "mb1", indexKey: KEY });
+            await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1")] });
+
+            sqliteHooks.onStatements = (sql) => {
+                if (sql.includes("MATCH")) throw Object.assign(new Error("no such column: malformed"), { code: SQLite.SQLITE_ERROR });
+            };
+            await expect(call("search", { mailboxUid: "mb1", parsed: { text: "malformed" }, limit: 10 })).resolves.toEqual({ hits: [], hasMore: false });
+            await expect(call("coverage", "mb1")).resolves.toMatchObject({ indexedCount: 1 });
+
+            sqliteHooks.onStatements = (sql) => {
+                if (sql.startsWith("DELETE FROM entities WHERE entity_uid")) {
+                    sqliteHooks.onStatements = undefined;
+                    throw new Error("database disk image is malformed");
+                }
+            };
+            await expect(call("removeEntity", { mailboxUid: "mb1", entityUid: "m1" })).rejects.toThrow("malformed");
+            await expect(call("coverage", "mb1")).resolves.toMatchObject({ indexedCount: 0 });
         });
 
         it("reports a mailbox whose connection fails to close in destroyAll", async () => {

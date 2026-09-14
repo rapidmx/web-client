@@ -24,7 +24,7 @@ import { useEffect, useRef } from "react";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import type { Folder } from "@rapidmx/react-shared/mail/mailApi.js";
-import { buildLocalIndex } from "./localIndexBuilder.js";
+import { buildLocalIndex, cancelLocalIndexBuild } from "./localIndexBuilder.js";
 import { destroyLocalIndex, pruneInaccessibleLocalIndexes } from "./localIndexRpcClient.js";
 
 export const POLL_INTERVAL_MS = 5_000;
@@ -71,6 +71,9 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
                 if (wasUnlocked && !getUnlockedKeys(trackedUid)) {
                     // A present-to-absent transition: something just destroyed this mailbox's keys.
                     trackedRef.current.set(trackedUid, false);
+                    // Stop the pass still running with the now-destroyed keys; the destroy itself also makes
+                    // the Worker reject anything that pass still sends.
+                    void cancelLocalIndexBuild(trackedUid);
                     void destroyLocalIndex(trackedUid);
                 }
             }

@@ -24,7 +24,7 @@
  * fully searchable via Tier 1; indexing it here too would spend this index's bounded byte budget on
  * content that didn't need it.
  */
-import { getMessageRawContent, listMessages, type Folder, type Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import { getMessageRawContent, listFolders, listMessages, type Folder, type Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import { evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
@@ -32,6 +32,7 @@ import {
     getIndexedVersions,
     indexLocalEntities,
     initLocalIndex,
+    nextLocalIndexGeneration,
     pruneLocalEntities,
     setLocalIndexBuilding,
     setLocalIndexWindow,
@@ -57,12 +58,23 @@ export interface LocalIndexWindowConfig {
     byteBudgetBytes: number;
 }
 
-/** Folder types that actually hold messages - excludes `calendar`/`contacts`/other non-mail folder types
- * `FolderType` also covers. Inbox and Sent first: the two folders a "did I find that email" search is
- * overwhelmingly likely to land in, so they're covered soonest if the build is interrupted (tab closed,
- * idle timeout) partway through. */
-const MESSAGE_FOLDER_TYPES = new Set(["inbox", "sent_items", "drafts", "deleted_items", "outbox", "junk", "archive"]);
+/** Folder types that actually hold messages, including `user` (custom folders). Inbox and Sent first: the two
+ * folders a "did I find that email" search is overwhelmingly likely to land in, so they're covered soonest if
+ * the build is interrupted (tab closed, idle timeout) partway through. */
+const MESSAGE_FOLDER_TYPES = new Set(["inbox", "sent_items", "drafts", "deleted_items", "outbox", "junk", "archive", "user"]);
+/** Folder types known not to hold mail. Any folder in neither set is skipped, and the pass is then not
+ * complete - a type this module doesn't know about may well hold messages. */
+const NON_MESSAGE_FOLDER_TYPES = new Set(["calendar", "contacts", "tasks", "notes"]);
 const FOLDER_PRIORITY: Record<string, number> = { inbox: 0, sent_items: 1 };
+
+/** How many times a pass walks a folder whose total count changed during the walk. `listMessages()` only
+ * pages by offset, so a message removed from an already-walked page shifts a later one onto it unseen;
+ * only a folder whose count held steady across a whole walk is trusted for completeness and pruning. */
+export const MAX_WALK_ATTEMPTS = 3;
+
+/** Subtracted from the pass's start time before it's recorded as the end of guaranteed coverage - a
+ * message's server-assigned `receivedDate` can be ahead of this device's clock. */
+export const CLOCK_SKEW_MARGIN_MS = 10 * 60 * 1000;
 
 const PAGE_SIZE = 100;
 const MAX_APPROX_BYTES_PER_MESSAGE_PADDING = 512; // subject/participants/flags overhead beyond raw text length
@@ -165,10 +177,14 @@ async function buildEntity(message: Message, unlocked: UnlockedKeys): Promise<Lo
  * (per this module's own doc comment on the folder-order simplification), decrypts and indexes only
  * `"[...]"`-subject messages until each folder's own coverage passes the time floor, then clears the
  * `building` flag. Messages already indexed at the same version are skipped, fetches run at most
- * `FETCH_CONCURRENCY` at a time, and a folder stops walking once the byte budget starts evicting. A failure
- * partway through leaves whatever was indexed so far in place and records the pass as incomplete (spec
- * §11's "incomplete-index UX... MUST indicate that coverage is partial" - see `Coverage.complete`). Only a
- * complete pass prunes rows the server no longer lists (deleted or moved elsewhere by any client).
+ * `FETCH_CONCURRENCY` at a time, and messages older than the eviction watermark (`WindowState.evictedBefore`)
+ * are neither fetched nor walked past. A failure partway through leaves whatever was indexed so far in place
+ * and records the pass as incomplete (spec §11's "incomplete-index UX... MUST indicate that coverage is
+ * partial" - see `Coverage.complete`). Rows the server no longer lists (deleted or moved elsewhere by any
+ * client) are pruned only within folders whose count held steady for a whole walk (see `MAX_WALK_ATTEMPTS`).
+ *
+ * Only one pass runs per mailbox (a newer call cancels the older), and every Worker call carries this pass's
+ * generation, so a pass outlived by a destroy can't write anything (see `cancelLocalIndexBuild()`).
  *
  * `windowConfig` defaults to this device's own configured byte budget (`getLocalIndexByteBudget()` -
  * 500 MB in a browser tab, 1 GB in Electron, or whatever the user has since set in Settings > Encryption)
@@ -182,77 +198,182 @@ export async function buildLocalIndex(
     folders: Folder[],
     windowConfig: LocalIndexWindowConfig = { timeFloorMonths: WEB_TIME_FLOOR_MONTHS, byteBudgetBytes: getLocalIndexByteBudget() },
 ): Promise<void> {
+    // At most one pass per mailbox: a newer one cancels the older and waits for it to wind down first.
+    const previous = activeBuilds.get(mailboxUid);
+    const controller = new AbortController();
+    const run = (async () => {
+        if (previous) {
+            previous.controller.abort();
+            await previous.settled;
+        }
+        await runBuildPass(mailboxUid, unlocked, folders, windowConfig, controller.signal);
+    })();
+    const entry: ActiveBuild = { controller, settled: run.catch(() => undefined) };
+    activeBuilds.set(mailboxUid, entry);
+    try {
+        await run;
+    } finally {
+        if (activeBuilds.get(mailboxUid) === entry) {
+            activeBuilds.delete(mailboxUid);
+        }
+    }
+}
+
+interface ActiveBuild {
+    controller: AbortController;
+    /** Resolves (never rejects) once the pass has fully stopped. */
+    settled: Promise<void>;
+}
+
+const activeBuilds = new Map<string, ActiveBuild>();
+
+/** Stops a mailbox's running build pass, if any (e.g. its keys were just destroyed), resolving once it has
+ * wound down. The Worker independently rejects the pass's later calls once the index is destroyed (see
+ * `GenerationParams`); this just stops the fetching and decrypting too. Never rejects. */
+export async function cancelLocalIndexBuild(mailboxUid: string): Promise<void> {
+    const active = activeBuilds.get(mailboxUid);
+    if (active) {
+        active.controller.abort();
+        await active.settled;
+    }
+}
+
+function isOlderThan(date: string, watermark: string | undefined): boolean {
+    return !!watermark && new Date(date).getTime() < new Date(watermark).getTime();
+}
+
+/** How one folder's walk ended. */
+type WalkOutcome =
+    /** Reached the time floor or the end of the folder. */
+    | "done"
+    /** Reached messages older than the eviction watermark, which is itself within the time floor. */
+    | "budget"
+    /** A listing failed - nothing can be concluded about the rest of the folder. */
+    | "failed";
+
+async function runBuildPass(mailboxUid: string, unlocked: UnlockedKeys, folders: Folder[], windowConfig: LocalIndexWindowConfig, signal: AbortSignal): Promise<void> {
+    const generation = nextLocalIndexGeneration();
     const indexKey = await deriveLocalIndexKey(unlocked.masterKey, mailboxUid);
-    await initLocalIndex({ mailboxUid, indexKey });
-    await setLocalIndexWindow(mailboxUid, windowConfig.timeFloorMonths, windowConfig.byteBudgetBytes);
-    await setLocalIndexBuilding(mailboxUid, true);
+    signal.throwIfAborted();
+    await initLocalIndex({ mailboxUid, indexKey, generation });
+    let { evictedBefore } = await setLocalIndexWindow(mailboxUid, windowConfig.timeFloorMonths, windowConfig.byteBudgetBytes, generation);
+    await setLocalIndexBuilding(mailboxUid, true, { complete: false, generation });
+    // Mail arriving after this moment isn't guaranteed to be picked up by this pass.
+    const coveredUntil = new Date(Date.now() - CLOCK_SKEW_MARGIN_MS).toISOString();
     let cutoff: Date | undefined;
     if (windowConfig.timeFloorMonths > 0) {
         cutoff = new Date();
         cutoff.setMonth(cutoff.getMonth() - windowConfig.timeFloorMonths);
     }
-    // A pass is "complete" only if every folder was walked back to the time floor (or its end) with no
-    // listing failure and no budget cut-off - the only case where coverage can be used to narrow Tier 3,
-    // and where rows not seen on the server can safely be pruned.
+    // A pass is "complete" only if every folder was walked back to the time floor (or its end) with a stable
+    // count, no listing/fetch failure and no budget cut-off - the only case where coverage can be used to
+    // narrow Tier 3.
     let complete = true;
     try {
+        if (folders.some((f) => !MESSAGE_FOLDER_TYPES.has(f.type) && !NON_MESSAGE_FOLDER_TYPES.has(f.type))) {
+            complete = false;
+        }
         const mailFolders = folders
             .filter((f) => MESSAGE_FOLDER_TYPES.has(f.type))
             .sort((a, b) => (FOLDER_PRIORITY[a.type] ?? 99) - (FOLDER_PRIORITY[b.type] ?? 99));
-        const seenEncryptedUids: string[] = [];
+        const seenEncryptedUids = new Set<string>();
 
-        for (const folder of mailFolders) {
-            let page = 0;
-            for (;;) {
+        async function walkFolder(folder: Folder): Promise<WalkOutcome> {
+            for (let page = 0; ; page++) {
+                signal.throwIfAborted();
                 let messages: Message[];
                 try {
                     messages = await listMessages(folder.uid, { page, limit: PAGE_SIZE });
                 } catch {
-                    complete = false;
-                    break;
+                    return "failed";
                 }
                 if (messages.length === 0) {
-                    break;
+                    return "done";
                 }
                 const encrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER);
-                seenEncryptedUids.push(...encrypted.map((m) => m.uid));
-                let budgetReached = false;
-                if (encrypted.length > 0) {
+                for (const m of encrypted) {
+                    seenEncryptedUids.add(m.uid);
+                }
+                // Anything older than the eviction watermark would only be inserted and evicted again.
+                const candidates = encrypted.filter((m) => !isOlderThan(m.receivedDate, evictedBefore));
+                if (candidates.length > 0) {
                     // Skip anything already indexed at the same version - a re-unlock used to re-fetch and
                     // re-decrypt the entire window every time.
                     const indexed = await getIndexedVersions(
                         mailboxUid,
-                        encrypted.map((m) => m.uid),
+                        candidates.map((m) => m.uid),
                     );
-                    const changed = encrypted.filter((m) => indexed[m.uid] !== versionOf(m));
+                    const changed = candidates.filter((m) => indexed[m.uid] !== versionOf(m));
                     const built = await mapWithConcurrency(changed, FETCH_CONCURRENCY, (m) => buildEntity(m, unlocked));
+                    signal.throwIfAborted();
                     if (built.includes(FETCH_FAILED)) {
                         complete = false;
                     }
                     const entities = built.filter((e): e is LocalIndexEntity => e !== undefined && e !== FETCH_FAILED);
                     if (entities.length > 0) {
-                        ({ budgetReached } = await indexLocalEntities(mailboxUid, entities));
+                        ({ evictedBefore } = await indexLocalEntities(mailboxUid, entities, generation));
                     }
                 }
-                if (budgetReached) {
-                    // Older pages of this folder would only be inserted and immediately evicted again.
-                    complete = false;
-                    break;
+                const oldestOnPage = messages[messages.length - 1].receivedDate;
+                if (evictedBefore && isOlderThan(oldestOnPage, evictedBefore) && isWithinTimeFloor(evictedBefore, cutoff)) {
+                    return "budget";
                 }
-                const oldestOnPage = messages[messages.length - 1];
-                if (!isWithinTimeFloor(oldestOnPage.receivedDate, cutoff) || messages.length < PAGE_SIZE) {
-                    break;
+                if (!isWithinTimeFloor(oldestOnPage, cutoff) || messages.length < PAGE_SIZE) {
+                    return "done";
                 }
-                page += 1;
             }
         }
-        if (complete) {
-            await pruneLocalEntities(mailboxUid, seenEncryptedUids, cutoff?.toISOString());
+
+        /** Each folder's current total, or `undefined` if the listing failed. */
+        async function folderTotals(): Promise<Map<string, number> | undefined> {
+            try {
+                return new Map((await listFolders(mailboxUid)).map((f) => [f.uid, f.totalCount]));
+            } catch {
+                return undefined;
+            }
+        }
+
+        // Folders walked with a steady count and no listing failure - the only ones whose unseen rows can be
+        // pruned (deleted, or moved elsewhere by any client).
+        const reliable: string[] = [];
+        let totalsBefore = await folderTotals();
+        let toWalk = mailFolders;
+        for (let attempt = 0; attempt < MAX_WALK_ATTEMPTS && toWalk.length > 0; attempt++) {
+            const outcomes = new Map<string, WalkOutcome>();
+            for (const folder of toWalk) {
+                outcomes.set(folder.uid, await walkFolder(folder));
+            }
+            const totalsAfter = await folderTotals();
+            const changed: Folder[] = [];
+            for (const folder of toWalk) {
+                const outcome = outcomes.get(folder.uid);
+                if (outcome === "failed" || !totalsBefore || !totalsAfter) {
+                    // A failed listing, or no counts to vouch for the walk with: indexed as far as it got, but
+                    // neither complete nor prunable (see the `reliable` check below).
+                } else if (totalsAfter.get(folder.uid) === totalsBefore.get(folder.uid)) {
+                    reliable.push(folder.uid);
+                    complete &&= outcome === "done";
+                } else {
+                    changed.push(folder);
+                }
+            }
+            totalsBefore = totalsAfter;
+            toWalk = changed;
+        }
+        // Failed, count-less, or still changing after every attempt.
+        if (reliable.length < mailFolders.length) {
+            complete = false;
+        }
+        if (reliable.length > 0) {
+            // Every reliable folder was walked back to at least the watermark (or the floor).
+            const since = evictedBefore && isWithinTimeFloor(evictedBefore, cutoff) ? evictedBefore : cutoff?.toISOString();
+            await pruneLocalEntities(mailboxUid, [...seenEncryptedUids], since, { folderUids: reliable, generation });
         }
     } catch (err) {
         complete = false;
         throw err;
     } finally {
-        await setLocalIndexBuilding(mailboxUid, false, { complete, coveredFrom: cutoff?.toISOString() });
+        // Rejected (harmlessly) when the index was destroyed mid-pass.
+        await setLocalIndexBuilding(mailboxUid, false, { complete, coveredFrom: cutoff?.toISOString(), coveredUntil, generation }).catch(() => undefined);
     }
 }

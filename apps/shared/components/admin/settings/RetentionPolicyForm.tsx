@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { MIN_AUDIT_LOG_RETENTION_DAYS, RetentionPolicy, updateRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
+import { MIN_AUDIT_LOG_RETENTION_DAYS, RetentionPolicy, RetentionPolicyUpdate, updateRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
@@ -40,13 +40,11 @@ export default function RetentionPolicyForm({
         setSaved(false);
         setSaving(true);
         try {
-            const patch: Partial<RetentionPolicy> = {};
-            if (messageRetentionDays.trim() !== "") {
-                patch.messageRetentionDays = Number(messageRetentionDays);
-            }
-            if (auditLogRetentionDays.trim() !== "") {
-                patch.auditLogRetentionDays = Number(auditLogRetentionDays);
-            }
+            // A blank field is sent as `null`, which clears a configured age back to no automatic purge.
+            const patch: RetentionPolicyUpdate = {
+                messageRetentionDays: messageRetentionDays.trim() === "" ? null : Number(messageRetentionDays),
+                auditLogRetentionDays: auditLogRetentionDays.trim() === "" ? null : Number(auditLogRetentionDays),
+            };
             const updated = await updateRetentionPolicy(patch);
             onChange(updated);
             setSavedSnapshot(snapshot);

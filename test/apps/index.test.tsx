@@ -1088,13 +1088,24 @@ describe("InboxPage", () => {
                 expect(screen.getAllByText("Encrypted message")).toHaveLength(1);
             });
 
-            it('"Search all mail" removes Tier 3\'s coverage-tightened bound and re-runs it', async () => {
+            const COMPLETE_COVERAGE = {
+                indexedFrom: "2025-06-01T00:00:00.000Z",
+                indexedUntil: "2026-01-01T00:00:00.000Z",
+                indexedCount: 5,
+                building: false,
+                complete: true,
+            };
+
+            function tier3Windows() {
+                return (searchEncryptedCandidates.mock.calls as [{ before?: Date; after?: Date }][]).map(([parsed]) => ({
+                    before: parsed.before?.toISOString(),
+                    after: parsed.after?.toISOString(),
+                }));
+            }
+
+            it('narrows Tier 3 to the mail before and after Tier 2\'s coverage, and "Search all mail" removes both bounds', async () => {
                 mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
-                searchLocalIndex.mockResolvedValue({
-                    results: [],
-                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 5, building: false, complete: true },
-                    hasMore: false,
-                });
+                searchLocalIndex.mockResolvedValue({ results: [], coverage: COMPLETE_COVERAGE, hasMore: false });
                 searchEncryptedCandidates.mockResolvedValue([]);
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
@@ -1103,28 +1114,39 @@ describe("InboxPage", () => {
                 await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
                 await screen.findByText("Search all mail");
 
-                expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
-                const [firstParsed] = searchEncryptedCandidates.mock.calls[0] as [{ before?: Date }];
-                expect(firstParsed.before).toEqual(new Date("2025-06-01T00:00:00.000Z"));
+                // Mail newer than the build pass isn't indexed yet, so it still goes through Tier 3.
+                expect(tier3Windows()).toEqual([
+                    { before: "2025-06-01T00:00:00.000Z", after: undefined },
+                    { before: undefined, after: "2026-01-01T00:00:00.000Z" },
+                ]);
 
                 await user.click(screen.getByText("Search all mail"));
 
-                await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(2));
-                const [secondParsed] = searchEncryptedCandidates.mock.calls[1] as [{ before?: Date }];
-                expect(secondParsed.before).toBeUndefined();
+                await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(3));
+                expect(tier3Windows()[2]).toEqual({ before: undefined, after: undefined });
                 expect(screen.queryByText("Search all mail")).not.toBeInTheDocument();
             });
 
             it.each([
-                ["keeps a query's own earlier before: bound", "before:2025-01-01 budget", "2025-01-01T00:00:00.000Z"],
-                ["tightens a query's later before: bound to the coverage window", "before:2025-12-01 budget", "2025-06-01T00:00:00.000Z"],
-            ])("%s when narrowing Tier 3", async (_label, query, expectedBefore) => {
+                ["keeps a query's own earlier before: bound", "before:2025-01-01 budget", [{ before: "2025-01-01T00:00:00.000Z", after: undefined }]],
+                [
+                    "tightens a query's later before: bound to the coverage window",
+                    "before:2025-12-01 budget",
+                    [{ before: "2025-06-01T00:00:00.000Z", after: undefined }],
+                ],
+                ["keeps a query's own later after: bound", "after:2026-03-01 budget", [{ before: undefined, after: "2026-03-01T00:00:00.000Z" }]],
+                [
+                    "raises a query's earlier after: bound to the coverage end",
+                    "after:2025-01-01 before:2026-02-01 budget",
+                    [
+                        { before: "2025-06-01T00:00:00.000Z", after: "2025-01-01T00:00:00.000Z" },
+                        { before: "2026-02-01T00:00:00.000Z", after: "2026-01-01T00:00:00.000Z" },
+                    ],
+                ],
+                ["skips Tier 3 entirely for a range the coverage fully contains", "after:2025-07-01 before:2025-12-01 budget", []],
+            ])("%s when narrowing Tier 3", async (_label, query, expectedWindows) => {
                 mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
-                searchLocalIndex.mockResolvedValue({
-                    results: [],
-                    coverage: { indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 5, building: false, complete: true },
-                    hasMore: false,
-                });
+                searchLocalIndex.mockResolvedValue({ results: [], coverage: COMPLETE_COVERAGE, hasMore: false });
                 searchEncryptedCandidates.mockResolvedValue([]);
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
@@ -1132,9 +1154,47 @@ describe("InboxPage", () => {
 
                 await user.type(screen.getByPlaceholderText("Search all mail…"), query);
 
-                await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1));
-                const [parsed] = searchEncryptedCandidates.mock.calls[0] as [{ before?: Date }];
-                expect(parsed.before).toEqual(new Date(expectedBefore));
+                // The settled count only appears once Tier 3 has run (or been skipped).
+                expect(await screen.findByText("0 results")).toBeInTheDocument();
+                expect(tier3Windows()).toEqual(expectedWindows);
+            });
+
+            it("shows a message found in both Tier 3 windows only once", async () => {
+                const hit = messageFixture({ uid: "m3", subject: "Boundary match", folderUid: "f2" });
+                mockSearch([hit], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchLocalIndex.mockResolvedValue({ results: [], coverage: COMPLETE_COVERAGE, hasMore: false });
+                searchEncryptedCandidates.mockResolvedValue([{ entityType: "message", entityUid: "m3", score: 5, source: "candidate", metadataOnly: false }]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+
+                expect(await screen.findByText("1 result")).toBeInTheDocument();
+                expect(screen.getAllByText("Boundary match")).toHaveLength(1);
+                expect(searchEncryptedCandidates).toHaveBeenCalledTimes(2);
+            });
+
+            it("doesn't reuse a Tier 3 result cached under different narrowing for the same query", async () => {
+                mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
+                searchLocalIndex.mockResolvedValue({ results: [], coverage: { ...COMPLETE_COVERAGE, building: true, complete: false }, hasMore: false });
+                searchEncryptedCandidates.mockResolvedValue([]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+                const searchBox = screen.getByPlaceholderText("Search all mail…");
+
+                await user.type(searchBox, "budget");
+                await screen.findByText("0 results");
+                expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
+                await user.clear(searchBox);
+                await waitFor(() => expect(screen.queryByText("0 results")).not.toBeInTheDocument());
+                // The build finished in the meantime.
+                searchLocalIndex.mockResolvedValue({ results: [], coverage: COMPLETE_COVERAGE, hasMore: false });
+                await user.type(searchBox, "budget");
+
+                await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(3));
+                expect(tier3Windows()[1]).toEqual({ before: "2025-06-01T00:00:00.000Z", after: undefined });
             });
 
             it("reuses Tier 3's cached candidates when the identical query is searched again", async () => {
@@ -1161,6 +1221,8 @@ describe("InboxPage", () => {
             it.each([
                 ["still building", { building: true, complete: false }],
                 ["finished but incomplete", { building: false, complete: false }],
+                // No coverage end means no pass completed in this session.
+                ["complete but with no coverage end", { building: false, complete: true }],
             ])("never narrows Tier 3 to Tier 2's coverage while the local index is %s", async (_label, state) => {
                 mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
                 searchLocalIndex.mockResolvedValue({
@@ -1840,7 +1902,7 @@ describe("InboxPage", () => {
             expect(screen.getByText("Folder row")).toBeInTheDocument();
         });
 
-        it("uses an empty Tier 3 page for a load-more whose unlock state no longer matches the cached pass", async () => {
+        it("keeps slicing the Tier 3 pass the first page ran (here an empty, locked one) even if the unlock state changed since", async () => {
             const io = mockIntersectionObserver();
             getUnlockedKeys.mockReturnValue(undefined);
             mockSearchShell(

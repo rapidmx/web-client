@@ -33,7 +33,7 @@ import {
     uploadAttachment,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
-import { filterWritableMailboxes } from "../writableMailboxes.js";
+import { peekMailboxWritability, useMailboxWritability } from "../writableMailboxes.js";
 import { decideMessageEncryption, resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
@@ -54,6 +54,8 @@ export interface ComposeWindowProps {
     /** The signed-in user - identifies their own ("primary") mailbox, the default From when the session
      * doesn't name a mailbox. */
     userUid?: string;
+    /** The caller holds a trusted (admin) role - every mailbox is writable, so no per-mailbox access checks. */
+    trusted?: boolean;
 }
 
 const FIELD_ROW = "flex items-center gap-2 px-3 py-1.5 border-b border-border";
@@ -112,7 +114,7 @@ function HeaderButton({ label, onClick, icon: Icon }: { label: string; onClick: 
  * see `ComposeContext.tsx`'s own doc comment for how that interacts with several sessions being open at
  * once.
  */
-export default function ComposeWindow({ session, onClose, onToggleMinimize, userUid }: ComposeWindowProps) {
+export default function ComposeWindow({ session, onClose, onToggleMinimize, userUid, trusted }: ComposeWindowProps) {
     const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, signatureContext, suppressSigning, minimized } = session;
     // The sending ("From") mailbox. A reply/forward session names the original message's mailbox; a fresh
     // compose leaves it unset and defaults to the caller's own mailbox once `listMailboxes()` resolves.
@@ -177,18 +179,15 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
     useEffect(() => {
         let cancelled = false;
         listMailboxes({ limit: 100 })
-            // Only mailboxes the caller can send from - a view-only share would just fail at draft creation.
-            // (The session's own mailbox, e.g. a reply's, always stays listed so the picker matches its value.)
-            .then(async (result) => {
-                const writable = new Set(await filterWritableMailboxes(result, userUid));
-                return result.filter((mb) => writable.has(mb) || mb.uid === session.mailboxUid);
-            })
             .then((result) => {
                 if (cancelled) {
                     return;
                 }
                 setMailboxes(result);
-                setFromMailboxUid((current) => current ?? (result.find((mb) => mb.ownerUserUid === userUid) ?? result[0])?.uid);
+                // Never default to a mailbox already known to be view-only (see the effect below for one
+                // that turns out to be).
+                const candidates = result.filter((mb) => peekMailboxWritability(mb, userUid, trusted) !== false);
+                setFromMailboxUid((current) => current ?? (candidates.find((mb) => mb.ownerUserUid === userUid) ?? candidates[0])?.uid);
             })
             .catch((err) => {
                 // Only fatal when there's no mailbox to fall back on - a session that already names one just
@@ -344,6 +343,36 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
             cancelled = true;
         };
     }, [mailboxUid, draftsFolderUid, draft]);
+
+    // Drafts a From switch superseded are otherwise only deleted once their replacement exists - closing the
+    // window (or sending, which closes it) first would orphan them.
+    useEffect(
+        () => () => {
+            for (const superseded of supersededDraftsRef.current.splice(0)) {
+                void deleteMessage(superseded.uid, superseded.version).catch(() => undefined);
+            }
+        },
+        [],
+    );
+
+    // The From picker lists every mailbox straight away and drops view-only ones as each check answers - only
+    // mailboxes the caller can create a draft in are worth offering.
+    const writability = useMailboxWritability(mailboxes, userUid, trusted);
+    const fromOptions = mailboxes.filter((mb) => mb.uid === mailboxUid || writability[mb.uid] !== false);
+
+    // The sender turned out to be view-only (e.g. a reply to a message in a mailbox shared read-only, or a
+    // first-listed shared mailbox): switch to one the caller can actually send from, preferring their own.
+    const fromIsViewOnly = !!mailboxUid && writability[mailboxUid] === false;
+    useEffect(() => {
+        if (!fromIsViewOnly || hasUploads) {
+            return;
+        }
+        const ordered = [...mailboxes.filter((mb) => mb.ownerUserUid === userUid), ...mailboxes.filter((mb) => mb.ownerUserUid !== userUid)];
+        const alternative = ordered.find((mb) => writability[mb.uid] === true) ?? ordered.find((mb) => writability[mb.uid] === undefined);
+        if (alternative) {
+            handleFromChange(alternative.uid);
+        }
+    }, [fromIsViewOnly, writability]);
 
     /** Switches the sending mailbox: supersedes the current (unsent, upload-free) draft and resets the
      * per-mailbox state, so the effects above start a fresh draft and crypto context in the new mailbox -
@@ -729,7 +758,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
                     </div>
                 )}
 
-                {mailboxes.length > 1 && (
+                {fromOptions.length > 1 && (
                     <div className={FIELD_ROW}>
                         <label htmlFor={`compose-from-${id}`} className="text-xs text-text-muted shrink-0">
                             From
@@ -742,7 +771,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize, user
                             title={hasUploads ? "The sender can't be changed after adding attachments or images." : undefined}
                             onChange={(e) => handleFromChange(e.target.value)}
                         >
-                            {mailboxes.map((mb) => (
+                            {fromOptions.map((mb) => (
                                 <option key={mb.uid} value={mb.uid}>
                                     {mb.displayName ? `${mb.displayName} <${mb.primarySmtpAddress}>` : mb.primarySmtpAddress}
                                     {mb.ownerUserUid ? "" : " (shared)"}

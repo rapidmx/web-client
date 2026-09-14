@@ -40,8 +40,21 @@ const PENDING_POLL_MS = 5000;
 /** How long status keeps being polled after a saved change, since servers may not have noticed it yet. */
 const AFTER_CHANGE_POLL_MS = 2 * 60 * 1000;
 
+/** The longest wait between retries while no status has ever been read. */
+const MAX_STATUS_RETRY_MS = 60 * 1000;
+
 function errorMessage(err: unknown, fallback: string): string {
     return err instanceof ApiRequestError ? err.message : fallback;
+}
+
+/** Runs `action`, resolving why it failed, or `null`. */
+async function attempt(action: () => Promise<void>, failure: string): Promise<string | null> {
+    try {
+        await action();
+        return null;
+    } catch (err) {
+        return errorMessage(err, failure);
+    }
 }
 
 /** A change waiting for the administrator to confirm the other plugins it also installs or enables. */
@@ -50,6 +63,8 @@ interface PendingChange {
     plan: PluginChangePlan;
     apply: (plan: PluginChangePlan) => Promise<void>;
     failure: string;
+    /** The installed plugin being changed, which stays busy while the change waits for confirmation. */
+    uid?: string;
 }
 
 /** Installed plugins with their rollout status, and every plugin action - shared by the Plugins page and the
@@ -69,16 +84,38 @@ export default function PluginsManager() {
     const [configuring, setConfiguring] = useState<Plugin | null>(null);
     const [removing, setRemoving] = useState<Plugin | null>(null);
     const [confirming, setConfirming] = useState<PendingChange | null>(null);
-    const [busyUid, setBusyUid] = useState<string | null>(null);
+    /** Installed plugins with an action under way. */
+    const [busyUids, setBusyUids] = useState<ReadonlySet<string>>(new Set());
+    /** Set when re-reading the list after a change failed, so rows may not show what that change also did. */
+    const [listStale, setListStale] = useState(false);
+    /** How many times status has been retried while none has ever been read. */
+    const [statusRetries, setStatusRetries] = useState(0);
+    const statusRequest = useRef<Promise<void> | null>(null);
+
+    const setBusy = (uid: string, busy: boolean) =>
+        setBusyUids((prev) => {
+            const next = new Set(prev);
+            if (busy) {
+                next.add(uid);
+            } else {
+                next.delete(uid);
+            }
+            return next;
+        });
 
     const refreshStatus = useCallback(() => {
-        // Status is advisory - a failure to read it shouldn't hide the plugin list, or lose the last status read.
-        return getPluginStatus()
+        // One read at a time: a poll that comes due while a slow read is still running shares it.
+        statusRequest.current ??= getPluginStatus()
             .then((next) => {
                 setStatus(next);
                 setStatusStale(false);
             })
-            .catch(() => setStatusStale(true));
+            // Status is advisory - a failure to read it shouldn't hide the plugin list, or lose the last status read.
+            .catch(() => setStatusStale(true))
+            .finally(() => {
+                statusRequest.current = null;
+            });
+        return statusRequest.current;
     }, []);
 
     const refreshUpdates = useCallback(() => {
@@ -91,8 +128,11 @@ export default function PluginsManager() {
     /** Re-reads the list, for changes that also installed or enabled other plugins. */
     const reload = useCallback(() => {
         return listPlugins()
-            .then(setPlugins)
-            .catch(() => undefined);
+            .then((list) => {
+                setPlugins(list);
+                setListStale(false);
+            })
+            .catch(() => setListStale(true));
     }, []);
 
     useEffect(() => {
@@ -119,6 +159,19 @@ export default function PluginsManager() {
         };
     }, [pending, pollUntil, refreshStatus]);
 
+    // With no status read at all there's nothing pending to poll for, so keep retrying - less often each time.
+    const neverRead: boolean = !status && statusStale;
+    useEffect(() => {
+        if (!neverRead) {
+            return;
+        }
+        const timer = setTimeout(
+            () => void refreshStatus().then(() => setStatusRetries((n) => n + 1)),
+            Math.min(PENDING_POLL_MS * 2 ** statusRetries, MAX_STATUS_RETRY_MS),
+        );
+        return () => clearTimeout(timer);
+    }, [neverRead, statusRetries, refreshStatus]);
+
     /** Re-reads status, and keeps doing so for a while, since saving starts a rollout servers pick up shortly. */
     function watchRollout() {
         setPollUntil(Date.now() + AFTER_CHANGE_POLL_MS);
@@ -139,50 +192,55 @@ export default function PluginsManager() {
         void refreshUpdates();
     }
 
-    async function run(plugin: Plugin, action: () => Promise<Plugin>, failure: string) {
-        setBusyUid(plugin.uid);
+    /** Runs an action on an installed plugin's row, which is busy meanwhile, and shows why it failed. */
+    async function onRow(plugin: Plugin, action: () => Promise<string | null>) {
+        setBusy(plugin.uid, true);
         setError(null);
-        try {
-            applied(await action());
-        } catch (err) {
-            setError(errorMessage(err, failure));
-        } finally {
-            setBusyUid(null);
-        }
-    }
-
-    async function toggle(plugin: Plugin) {
-        if (plugin.enabled) {
-            return run(
-                plugin,
-                () => updatePlugin(plugin.uid, { version: plugin.version, enabled: false }),
-                `Could not disable ${plugin.manifest.displayName}.`,
-            );
-        }
-        // Enabling a plugin also installs or enables the plugins it requires, so it's previewed like any other change.
-        setBusyUid(plugin.uid);
-        setError(null);
-        const problem = await planned(
-            plugin.name,
-            plugin.packageVersion,
-            plugin.manifest.displayName,
-            async (plan) => {
-                applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: true, expectedPlan: expectedPlanOf(plan) }));
-                if (plan.install.length > 0 || plan.enable.length > 0) {
-                    void reload();
-                }
-            },
-            `Could not enable ${plugin.manifest.displayName}.`,
-        );
+        const problem = await action();
         if (problem) {
             setError(problem);
         }
-        setBusyUid(null);
+        // A change waiting for confirmation keeps the row busy by itself, until the confirmation closes.
+        setBusy(plugin.uid, false);
+    }
+
+    function toggle(plugin: Plugin) {
+        const displayName: string = plugin.manifest.displayName;
+        if (plugin.enabled) {
+            return onRow(plugin, () =>
+                attempt(async () => applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: false })), `Could not disable ${displayName}.`),
+            );
+        }
+        // Enabling a plugin also installs or enables the plugins it requires, so it's previewed like any other change.
+        // The installed version is planned from its stored manifest, so this doesn't need the registry.
+        return onRow(plugin, () =>
+            planned(
+                plugin.name,
+                plugin.packageVersion,
+                displayName,
+                async (plan) => {
+                    applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: true, expectedPlan: expectedPlanOf(plan) }));
+                    if (plan.install.length > 0 || plan.enable.length > 0) {
+                        void reload();
+                    }
+                },
+                `Could not enable ${displayName}.`,
+                {
+                    uid: plugin.uid,
+                    // If it can't be previewed at all, the server still checks the change itself and says why it can't.
+                    unplanned: async () => {
+                        applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: true }));
+                        void reload();
+                    },
+                },
+            ),
+        );
     }
 
     /**
      * Checks what installing or changing a plugin also takes before doing it. Resolves why it can't be done, or `null`
      * once it's done - or, when it also installs or enables other plugins, once they're shown for confirmation.
+     * `unplanned`, when given, makes the change instead if the check itself fails.
      */
     async function planned(
         name: string,
@@ -190,21 +248,22 @@ export default function PluginsManager() {
         displayName: string,
         apply: (plan: PluginChangePlan) => Promise<void>,
         failure: string,
+        options: { uid?: string; unplanned?: () => Promise<void> } = {},
     ): Promise<string | null> {
+        let plan: PluginChangePlan;
         try {
-            const plan: PluginChangePlan = await planPluginChange(name, packageVersion);
-            if (plan.conflicts.length > 0) {
-                return `${displayName} ${plan.plugin.version} can't be installed. ${plan.conflicts.join(" ")}`;
-            }
-            if (plan.install.length > 0 || plan.enable.length > 0) {
-                setConfirming({ displayName, plan, apply, failure });
-                return null;
-            }
-            await apply(plan);
-            return null;
+            plan = await planPluginChange(name, packageVersion);
         } catch (err) {
-            return errorMessage(err, failure);
+            return options.unplanned ? attempt(options.unplanned, failure) : errorMessage(err, failure);
         }
+        if (plan.conflicts.length > 0) {
+            return `${displayName} ${plan.plugin.version} can't be installed. ${plan.conflicts.join(" ")}`;
+        }
+        if (plan.install.length > 0 || plan.enable.length > 0) {
+            setConfirming({ displayName, plan, apply, failure, uid: options.uid });
+            return null;
+        }
+        return attempt(() => apply(plan), failure);
     }
 
     function install(name: string, packageVersion: string, displayName: string) {
@@ -221,6 +280,11 @@ export default function PluginsManager() {
     }
 
     function changeVersion(plugin: Plugin, packageVersion: string) {
+        const failure = `Could not upgrade ${plugin.manifest.displayName}.`;
+        if (!plugin.enabled) {
+            // A disabled plugin stays disabled, so nothing it requires is installed or enabled - there's nothing to preview.
+            return attempt(async () => applied(await updatePlugin(plugin.uid, { version: plugin.version, packageVersion })), failure);
+        }
         return planned(
             plugin.name,
             packageVersion,
@@ -231,18 +295,13 @@ export default function PluginsManager() {
                     void reload();
                 }
             },
-            `Could not upgrade ${plugin.manifest.displayName}.`,
+            failure,
+            { uid: plugin.uid },
         );
     }
 
-    async function upgrade(plugin: Plugin, packageVersion: string) {
-        setBusyUid(plugin.uid);
-        setError(null);
-        const problem = await changeVersion(plugin, packageVersion);
-        if (problem) {
-            setError(problem);
-        }
-        setBusyUid(null);
+    function upgrade(plugin: Plugin, packageVersion: string) {
+        return onRow(plugin, () => changeVersion(plugin, packageVersion));
     }
 
     const displayNameOf = (name: string): string => plugins.find((plugin) => plugin.name === name)?.manifest.displayName ?? name;
@@ -265,6 +324,14 @@ export default function PluginsManager() {
             <RolloutBanner status={status} />
             {statusStale && status && (
                 <p className="mb-4 text-xs text-text-muted">Couldn&apos;t refresh server status. Showing the last status reported.</p>
+            )}
+            {listStale && (
+                <p className="mb-4 text-xs text-text-muted">
+                    Couldn&apos;t re-read the plugin list, so it may be out of date.{" "}
+                    <Button type="button" variant="text" className="!w-auto !p-0 !text-xs" onClick={() => void reload()}>
+                        Retry
+                    </Button>
+                </p>
             )}
 
             <h2 className="text-sm font-bold uppercase tracking-wide mb-2">Installed plugins</h2>
@@ -291,7 +358,7 @@ export default function PluginsManager() {
                             {plugins.map((plugin) => {
                                 const update: PluginUpdateInfo | undefined = updates.get(plugin.uid);
                                 const latest: string | undefined = update?.updateAvailable ? update.latestVersion : undefined;
-                                const busy: boolean = busyUid === plugin.uid;
+                                const busy: boolean = busyUids.has(plugin.uid) || confirming?.uid === plugin.uid;
                                 const requires: string[] = Object.keys(plugin.manifest.requires ?? {}).map(displayNameOf);
                                 const requiredBy: string[] = plugins
                                     .filter((other) => other.uid !== plugin.uid && other.manifest.requires?.[plugin.name] !== undefined)
@@ -670,6 +737,8 @@ function AddPluginModal({
     const [looking, setLooking] = useState(false);
     /** Identifies the latest lookup, so a slower earlier response can't replace what it found. */
     const lookupToken = useRef(0);
+    /** Identifies each time the dialog is opened, so an add that finishes after it was closed can't show its result. */
+    const openToken = useRef(0);
 
     /** Forgets any lookup still in flight. */
     function invalidateLookup() {
@@ -679,11 +748,13 @@ function AddPluginModal({
 
     useEffect(() => {
         if (!open) {
+            openToken.current++;
             invalidateLookup();
             setName("");
             setLookup(null);
             setSelectedVersion("");
             setError(null);
+            setBusy(false);
         }
     }, [open]);
 
@@ -735,12 +806,15 @@ function AddPluginModal({
     const manifest = lookup?.selected.manifest;
 
     async function add() {
+        const token: number = openToken.current;
         setBusy(true);
         setError(null);
         const name: string = lookup!.package.name;
         const problem = await onAdd(name, selectedVersion, typeof manifest === "object" ? manifest.displayName : name);
-        setError(problem);
-        setBusy(false);
+        if (token === openToken.current) {
+            setError(problem);
+            setBusy(false);
+        }
     }
 
     return (
@@ -974,26 +1048,23 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
 
     async function save(e: FormEvent) {
         e.preventDefault();
-        // Only what the administrator changed is sent, so a setting left alone keeps following the plugin's default.
-        // A required select with nothing to fall back on is always sent, since the form picked its value.
+        // The server replaces the whole settings object, so every setting is sent. One left alone is sent as it's saved
+        // - `null` when nothing is, so it keeps following the plugin's default rather than pinning the default shown.
+        // A required select with nothing to fall back on is sent as the form picked it.
         const settings: Record<string, PluginSettingValue | null> = {};
+        let changed = false;
         for (const definition of definitions) {
-            const value = values[definition.key];
-            if (value === initial.current[definition.key] && !needsSelection(definition, plugin.settings[definition.key])) {
+            const key: string = definition.key;
+            const value = values[key];
+            if (value === initial.current[key] && !needsSelection(definition, plugin.settings[key])) {
+                settings[key] = plugin.settings[key] ?? null;
                 continue;
             }
-            if (definition.type === "number") {
-                if (value === "") {
-                    settings[definition.key] = null;
-                    continue;
-                }
-                // A number input only ever reports a valid number or an empty string.
-                settings[definition.key] = Number(value);
-            } else {
-                settings[definition.key] = value === "" ? null : value;
-            }
+            changed = true;
+            // A number input only ever reports a valid number or an empty string.
+            settings[key] = value === "" ? null : definition.type === "number" ? Number(value) : value;
         }
-        if (Object.keys(settings).length === 0) {
+        if (!changed) {
             onClose();
             return;
         }

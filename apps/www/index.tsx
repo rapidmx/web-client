@@ -208,8 +208,12 @@ const TIER3_CANDIDATE_LIMIT = 200;
  * result is exactly as cacheable/reusable as a real one, just under a different key. */
 type Tier3Cache = Map<string, SearchResult[]>;
 
-function tier3CacheKey(mailboxUid: string, fingerprint: string, searchAllMail: boolean, unlocked: boolean): string {
-    return `${mailboxUid}|${fingerprint}|${String(searchAllMail)}|${String(unlocked)}`;
+/** Keyed by the exact query windows Tier 3 actually ran (`tier3Windows()` - which already reflect the query,
+ * the "Search all mail" toggle, and Tier 2's coverage at the time), not just the query: the same query
+ * narrowed differently (a build finished, new mail moved the coverage end) must not reuse a result that was
+ * computed over a different date range. */
+function tier3CacheKey(mailboxUid: string, windows: ParsedSearchQuery[], unlocked: boolean): string {
+    return `${mailboxUid}|${JSON.stringify(windows)}|${String(unlocked)}`;
 }
 
 /** A search query's cache/cursor identity - stable across re-parsing the identical raw text, and
@@ -221,23 +225,45 @@ function queryFingerprint(parsed: ParsedSearchQuery): string {
     return JSON.stringify(parsed);
 }
 
-/** Tier 3's own `before` bound, tightened to Tier 2's already-covered window (`coverage.indexedFrom`)
- * unless the reader explicitly asked to "Search all mail" - Tier 2 already holds fully-decrypted,
- * current content for everything at least that recent, so re-fetching and re-decrypting the same range
- * through Tier 3's slower candidate-narrowing path would be pure waste. Never *widens* an existing
- * `before:` the query already specified.
+/** The date windows Tier 3 still has to search: the query's own range minus Tier 2's guaranteed coverage
+ * `[coverage.indexedFrom, coverage.indexedUntil]`, unless the reader explicitly asked to "Search all mail".
+ * Tier 2 already holds fully-decrypted, current content for that range, so re-fetching and re-decrypting it
+ * through Tier 3's slower candidate-narrowing path would be pure waste. Yields up to two windows - older than
+ * the coverage (`before:` tightened to `indexedFrom`) and newer than it (`after:` raised to `indexedUntil`,
+ * since nothing indexes mail that arrived after the build pass started) - never *widening* a bound the query
+ * already specified, and none at all when the query lies entirely inside the coverage.
  *
- * Only applied once Tier 2 reports a finished, complete build pass: while it's still building (or a pass
- * stopped early - a failed folder listing, the byte budget) `indexedFrom` is just the oldest row that
- * happens to be present, not a guarantee every encrypted message since then is indexed, and narrowing
- * on it would silently drop encrypted results neither tier returns. */
-function tightenBeforeToCoverage(parsed: ParsedSearchQuery, coverage: Coverage | undefined, searchAllMail: boolean): ParsedSearchQuery {
-    if (searchAllMail || !coverage?.indexedFrom || coverage.building || !coverage.complete) {
-        return parsed;
+ * Only narrows once Tier 2 reports a finished, complete build pass from this session: while it's still
+ * building (or a pass stopped early - a failed folder listing, the byte budget) `indexedFrom` is just the
+ * oldest row that happens to be present, not a guarantee every encrypted message since then is indexed, and
+ * narrowing on it would silently drop encrypted results neither tier returns. */
+function tier3Windows(parsed: ParsedSearchQuery, coverage: Coverage | undefined, searchAllMail: boolean): ParsedSearchQuery[] {
+    if (searchAllMail || !coverage?.indexedFrom || !coverage.indexedUntil || coverage.building || !coverage.complete) {
+        return [parsed];
     }
-    const coverageBound = new Date(coverage.indexedFrom);
-    const effectiveBefore = parsed.before && parsed.before.getTime() < coverageBound.getTime() ? parsed.before : coverageBound;
-    return { ...parsed, before: effectiveBefore };
+    const coveredFrom = new Date(coverage.indexedFrom);
+    const coveredUntil = new Date(coverage.indexedUntil);
+    const windows: ParsedSearchQuery[] = [];
+    if (!parsed.after || parsed.after.getTime() < coveredFrom.getTime()) {
+        windows.push({ ...parsed, before: parsed.before && parsed.before.getTime() < coveredFrom.getTime() ? parsed.before : coveredFrom });
+    }
+    if (!parsed.before || parsed.before.getTime() > coveredUntil.getTime()) {
+        windows.push({ ...parsed, after: parsed.after && parsed.after.getTime() > coveredUntil.getTime() ? parsed.after : coveredUntil });
+    }
+    return windows;
+}
+
+/** Runs Tier 3 over each window and merges the candidates (a uid can't match in two disjoint windows, but a
+ * message whose date sits exactly on a boundary may come back from both). */
+async function searchTier3Windows(windows: ParsedSearchQuery[], unlocked: UnlockedKeys | undefined): Promise<SearchResult[]> {
+    const pages = await Promise.all(windows.map((window) => searchEncryptedCandidates(window, unlocked, TIER3_CANDIDATE_LIMIT)));
+    const merged = new Map<string, SearchResult>();
+    for (const result of pages.flat()) {
+        if (!merged.has(result.entityUid)) {
+            merged.set(result.entityUid, result);
+        }
+    }
+    return [...merged.values()];
 }
 
 /** The paging state for one search, composited across all three tiers (`specs/search.md` §8) - opaque to
@@ -249,6 +275,8 @@ interface CompositeCursor {
     tier1Cursor?: string;
     tier2Offset: number;
     tier3Offset: number;
+    /** The `Tier3Cache` entry the first page was sliced from - later pages keep slicing the same one. */
+    tier3Key: string;
     fingerprint: string;
 }
 
@@ -646,11 +674,11 @@ function InboxContent() {
                     setLoading(false);
                     await reveal(tier1Page.results, tier2Page.results, [], false);
 
-                    const tightened = tightenBeforeToCoverage(parsed, tier2Page.coverage, searchAllMail);
-                    const cacheKey = tier3CacheKey(mailboxUid!, fingerprint, searchAllMail, !!unlocked);
+                    const windows = tier3Windows(parsed, tier2Page.coverage, searchAllMail);
+                    const cacheKey = tier3CacheKey(mailboxUid!, windows, !!unlocked);
                     let tier3Full = tier3CacheRef.current.get(cacheKey);
                     if (!tier3Full) {
-                        tier3Full = await searchEncryptedCandidates(tightened, unlocked, TIER3_CANDIDATE_LIMIT);
+                        tier3Full = await searchTier3Windows(windows, unlocked);
                         if (searchRunIdRef.current !== myRunId) {
                             return;
                         }
@@ -662,6 +690,7 @@ function InboxContent() {
                         tier1Cursor: tier1Page.nextCursor,
                         tier2Offset: tier2Page.results.length,
                         tier3Offset: tier3Page.length,
+                        tier3Key: cacheKey,
                         fingerprint,
                     };
                     setHasMore(!!tier1Page.nextCursor || tier2Page.hasMore || tier3Page.length < tier3Full.length);
@@ -707,7 +736,13 @@ function InboxContent() {
     }
 
     const loadMore = useCallback(async () => {
-        if (loadingMore || !hasMore || loading || viewMode !== "date" || !folderUid) {
+        const parsed = parseSearchQuery(searchQuery);
+        const fingerprint = queryFingerprint(parsed);
+        // While searching, a load-more continues from this query's own cursor - absent until its first page
+        // has fully finished (the ref may still hold an earlier query's), in which case there's nowhere to
+        // continue from yet.
+        const searchCursor = decodeCursor(compositeCursorRef.current, fingerprint);
+        if (loadingMore || !hasMore || loading || viewMode !== "date" || !folderUid || (isSearching && !searchCursor)) {
             return;
         }
         setLoadingMore(true);
@@ -717,18 +752,16 @@ function InboxContent() {
         const isCurrentRun = () => searchRunIdRef.current === myRunId;
         try {
             if (isSearching) {
-                const parsed = parseSearchQuery(searchQuery);
                 const unlocked = getUnlockedKeys(mailboxUid!);
-                const fingerprint = queryFingerprint(parsed);
-                const cursor = decodeCursor(compositeCursorRef.current, fingerprint);
+                const cursor = searchCursor!;
 
                 const [tier1Page, tier2Page] = await Promise.all([
-                    searchMailbox(parsed.text, tier1SearchParams(parsed, cursor?.tier1Cursor)),
-                    searchLocalIndex(mailboxUid!, parsed, unlocked, MESSAGE_PAGE_SIZE, cursor?.tier2Offset ?? 0),
+                    searchMailbox(parsed.text, tier1SearchParams(parsed, cursor.tier1Cursor)),
+                    searchLocalIndex(mailboxUid!, parsed, unlocked, MESSAGE_PAGE_SIZE, cursor.tier2Offset),
                 ]);
-                const cacheKey = tier3CacheKey(mailboxUid!, fingerprint, searchAllMail, !!unlocked);
-                const tier3Full = tier3CacheRef.current.get(cacheKey) ?? [];
-                const tier3Offset = cursor?.tier3Offset ?? 0;
+                // The first page cached this pass under `tier3Key` before it created the cursor.
+                const tier3Full = tier3CacheRef.current.get(cursor.tier3Key)!;
+                const tier3Offset = cursor.tier3Offset;
                 const tier3Page = tier3Full.slice(tier3Offset, tier3Offset + MESSAGE_PAGE_SIZE);
 
                 // Unlike the fresh-search pass above, a load-more page is resolved and appended in one
@@ -748,8 +781,9 @@ function InboxContent() {
                 const nextTier3Offset = tier3Offset + tier3Page.length;
                 compositeCursorRef.current = {
                     tier1Cursor: tier1Page.nextCursor,
-                    tier2Offset: (cursor?.tier2Offset ?? 0) + tier2Page.results.length,
+                    tier2Offset: cursor.tier2Offset + tier2Page.results.length,
                     tier3Offset: nextTier3Offset,
+                    tier3Key: cursor.tier3Key,
                     fingerprint,
                 };
                 setHasMore(!!tier1Page.nextCursor || tier2Page.hasMore || nextTier3Offset < tier3Full.length);
@@ -770,7 +804,7 @@ function InboxContent() {
         } finally {
             setLoadingMore(false);
         }
-    }, [loadingMore, hasMore, loading, viewMode, folderUid, isSearching, searchQuery, searchAllMail, mailboxUid]);
+    }, [loadingMore, hasMore, loading, viewMode, folderUid, isSearching, searchQuery, mailboxUid]);
 
     // Always calls the latest `loadMore` closure so the effect below doesn't need `loadMore` itself in its
     // dependency array (it changes on every keystroke/page load, which would otherwise mean nothing here).

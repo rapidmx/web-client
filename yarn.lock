@@ -944,7 +944,7 @@ __metadata:
 
 "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch":
   version: 0.4.0
-  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch::version=0.4.0&hash=7452ee"
+  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch::version=0.4.0&hash=2042ce"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -959,7 +959,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/496ca78ddb2efb62c9eddb91daf10930cf6f844972fdd24d42733902b6fdcc8b68183d4b37e2cb18a536e2761598efa61ab7ed882957a4c18f00eac1730af93d
+  checksum: 10c0/4c97b41f2f2537aee5e490245fef703eb78203ef718e884fe7b2ea3a511af1ae31b15685dfbd71f36c5034d485fca3cac033cd6fb903df44c85ae0c8bf59b191
   languageName: node
   linkType: hard
 

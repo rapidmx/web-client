@@ -138,6 +138,10 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
 
     /** Goes to `next`, first asking whether to discard any unsaved server settings. */
     function requestGoTo(next: SetupStepId) {
+        // Going to the step already shown would clear the unsaved-edit tracking while the forms keep their edits.
+        if (next === step) {
+            return;
+        }
         if (step === "settings" && Object.values(unsaved).some(Boolean)) {
             setLeavingTo(next);
             return;

@@ -8,7 +8,7 @@ import { MailboxAutoProvisionAliasOption, autoProvisionMailbox } from "@rapidmx/
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
-type Status = "checking" | "needs_selection" | "creating" | "unavailable";
+type Status = "checking" | "needs_selection" | "creating" | "unavailable" | "retryable";
 
 /**
  * Rendered by each app's shell (Mail/Calendar/Contacts/Tasks) *instead of* the normal `AppShell`
@@ -27,7 +27,11 @@ export default function MailboxProvisioning() {
     const [selected, setSelected] = useState("");
     const [error, setError] = useState<string | null>(null);
 
+    // Bumped by "Retry" to re-run the check below.
+    const [attempt, setAttempt] = useState(0);
+
     useEffect(() => {
+        setStatus("checking");
         autoProvisionMailbox()
             .then((result) => {
                 if (result.status === "needs_selection") {
@@ -44,8 +48,10 @@ export default function MailboxProvisioning() {
                     window.location.reload();
                 }
             })
-            .catch(() => setStatus("unavailable"));
-    }, []);
+            // A 503 means the server couldn't read its own provisioning policy right now - not that there's no
+            // mailbox to be had - so it gets a retry instead of the permanent "ask an administrator" message.
+            .catch((err) => setStatus(err instanceof ApiRequestError && err.status === 503 ? "retryable" : "unavailable"));
+    }, [attempt]);
 
     async function handleConfirm() {
         // `selected` only ever takes a value from `options` itself (the initial default, or the
@@ -89,6 +95,16 @@ export default function MailboxProvisioning() {
                     Continue
                 </Button>
             </div>
+        );
+    } else if (status === "retryable") {
+        content = (
+            <>
+                <h1 className="text-lg font-bold uppercase tracking-wide">Couldn&rsquo;t check right now</h1>
+                <p className="text-sm text-text-muted">We couldn&rsquo;t check whether a mailbox can be set up for you. Please try again.</p>
+                <Button type="button" onClick={() => setAttempt((n) => n + 1)} className="!w-auto self-center">
+                    Retry
+                </Button>
+            </>
         );
     } else {
         content = (

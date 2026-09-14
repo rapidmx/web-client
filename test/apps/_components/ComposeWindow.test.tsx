@@ -10,6 +10,7 @@ import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import ComposeWindow from "../../../apps/shared/components/mail/compose/ComposeWindow.js";
 import type { ComposeSession } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
+import { clearMailboxWritabilityCache } from "../../../apps/shared/components/mail/writableMailboxes.js";
 
 const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
 vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
@@ -147,6 +148,7 @@ function signatureFixture(overrides: Record<string, unknown> = {}) {
 }
 
 afterEach(() => {
+    clearMailboxWritabilityCache();
     vi.unstubAllGlobals();
     getUnlockedKeys.mockReset();
     buildSignedOnlyMessage.mockReset();
@@ -244,19 +246,99 @@ describe("ComposeWindow", () => {
             expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/mail\/messages\/m-1/), expect.objectContaining({ method: "DELETE" }));
         });
 
-        it("doesn't offer From mailboxes the caller can only view", async () => {
-            const viewOnly = { uid: "mb-view", displayName: "Announcements", primarySmtpAddress: "news@example.com", aliasAddresses: [] };
-            mockTwoMailboxes((url) => {
+        const viewOnly = { uid: "mb-view", displayName: "Announcements", primarySmtpAddress: "news@example.com", aliasAddresses: [] };
+
+        function access(canCreate: boolean) {
+            return jsonResponse(200, { canRead: true, canCreate, canUpdate: canCreate, canDelete: canCreate, canManage: false });
+        }
+
+        function accessChecks(fetchMock: ReturnType<typeof mockFetch>) {
+            return fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.endsWith("/access/me"));
+        }
+
+        it("doesn't offer From mailboxes the caller can only view, dropping them as each check answers", async () => {
+            const fetchMock = mockTwoMailboxes((url) => {
                 if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, [sharedMailbox, ownMailbox, viewOnly]);
-                if (url === "/api/mail/mailboxes/mb-view/access") return jsonResponse(403, { message: "forbidden" });
-                if (url === "/api/mail/mailboxes/mb-shared/access") return jsonResponse(200, []);
+                if (url === "/api/mail/mailboxes/mb-view/access/me") return access(false);
+                if (url === "/api/mail/mailboxes/mb-shared/access/me") return access(true);
                 return undefined;
             });
             render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
 
-            await screen.findByLabelText("From");
+            expect(await screen.findByLabelText("From")).toHaveValue("mb-own");
+            await waitFor(() => expect(screen.queryByRole("option", { name: /Announcements/ })).not.toBeInTheDocument());
             expect(screen.getByRole("option", { name: "Support <support@example.com> (shared)" })).toBeInTheDocument();
+            // The caller's own mailbox is never checked.
+            expect(accessChecks(fetchMock).sort()).toEqual(["/api/mail/mailboxes/mb-shared/access/me", "/api/mail/mailboxes/mb-view/access/me"]);
+        });
+
+        it("makes no access checks for a trusted caller", async () => {
+            const fetchMock = mockTwoMailboxes((url) => (url.startsWith("/api/mail/mailboxes?") ? jsonResponse(200, [sharedMailbox, ownMailbox, viewOnly]) : undefined));
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" trusted onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            await screen.findByLabelText("From");
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(1));
+            expect(screen.getByRole("option", { name: /Announcements/ })).toBeInTheDocument();
+            expect(accessChecks(fetchMock)).toEqual([]);
+        });
+
+        it("switches a view-only sender (e.g. a reply in a read-only share) to the caller's own mailbox", async () => {
+            const fetchMock = mockTwoMailboxes((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, [viewOnly, sharedMailbox, ownMailbox]);
+                if (url === "/api/mail/mailboxes/mb-view/access/me") return access(false);
+                if (url === "/api/mail/mailboxes/mb-shared/access/me") return jsonResponse(500, { message: "boom" });
+                if (url === "/api/mail/messages" && init?.method === "POST" && String(init.body).includes("mb-view")) {
+                    return jsonResponse(403, { message: "forbidden" });
+                }
+                return undefined;
+            });
+            render(<ComposeWindow session={session({ mailboxUid: "mb-view" })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            await waitFor(() => expect(screen.getByLabelText("From")).toHaveValue("mb-own"));
+            await waitFor(() => expect(draftCreates(fetchMock).at(-1)).toEqual(expect.objectContaining({ mailboxUid: "mb-own" })));
             expect(screen.queryByRole("option", { name: /Announcements/ })).not.toBeInTheDocument();
+            expect(screen.queryByText("forbidden")).not.toBeInTheDocument();
+        });
+
+        it("falls back to a mailbox whose access couldn't be checked when nothing is known writable, and stays put when there's no alternative", async () => {
+            mockTwoMailboxes((url) => {
+                if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, [viewOnly, sharedMailbox]);
+                if (url === "/api/mail/mailboxes/mb-view/access/me") return access(false);
+                if (url === "/api/mail/mailboxes/mb-shared/access/me") return jsonResponse(404, { message: "no route" });
+                return undefined;
+            });
+            const first = render(<ComposeWindow session={session({ mailboxUid: "mb-view" })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.queryByLabelText("From")).not.toBeInTheDocument());
+            first.unmount();
+
+            // A later compose already knows mb-view is view-only, so never even defaults to it.
+            mockTwoMailboxes((url) => (url.startsWith("/api/mail/mailboxes?") ? jsonResponse(200, [viewOnly, sharedMailbox, ownMailbox]) : undefined));
+            const second = render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u2" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            expect(await screen.findByLabelText("From")).toHaveValue("mb-shared");
+            second.unmount();
+
+            mockTwoMailboxes((url) => (url.startsWith("/api/mail/mailboxes?") ? jsonResponse(200, [viewOnly]) : undefined));
+            render(<ComposeWindow session={session({ mailboxUid: "mb-view" })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(screen.queryByLabelText("From")).not.toBeInTheDocument();
+        });
+
+        it("deletes a superseded draft when the window closes before its replacement exists", async () => {
+            const replacement = deferred<Response>();
+            const fetchMock = mockTwoMailboxes((url, init) =>
+                url === "/api/mail/messages" && init?.method === "POST" && String(init.body).includes("mb-shared")
+                    ? (replacement.promise as unknown as Response)
+                    : undefined,
+            );
+            const { unmount } = render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            const from = await screen.findByLabelText("From");
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(1));
+            fireEvent.change(from, { target: { value: "mb-shared" } });
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(2));
+
+            unmount();
+
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m-1?version=0", expect.objectContaining({ method: "DELETE" })));
         });
 
         it("locks From once an attachment has been uploaded onto the draft", async () => {
