@@ -54,6 +54,10 @@ export interface EventModalProps {
      * one calendar exists" — no selector is shown and `folderUid` is used as-is, matching this
      * component's original single-calendar behavior exactly. */
     calendars?: { uid: string; name: string }[];
+    /** Every mailbox a new event could be created in, each with its own calendars. With more than one, a
+     * "Mailbox" selector (create mode only) chooses the mailbox, which in turn drives the Calendar selector
+     * and the organizer address; `mailboxUid`/`folderUid` are the initial selection. */
+    mailboxOptions?: { mailbox: Mailbox; calendars: { uid: string; name: string }[] }[];
     organizerAddress: string;
     /** `null` when creating a new event. */
     occurrence: CalendarOccurrence | null;
@@ -77,6 +81,7 @@ export default function EventModal({
     mailboxUid,
     folderUid,
     calendars,
+    mailboxOptions,
     organizerAddress,
     occurrence,
     initialStart,
@@ -85,6 +90,19 @@ export default function EventModal({
     onDeleted,
 }: EventModalProps) {
     const [targetFolderUid, setTargetFolderUid] = useState(folderUid);
+    const [targetMailboxUid, setTargetMailboxUid] = useState(mailboxUid);
+    const targetMailboxOption = mailboxOptions?.find((option) => option.mailbox.uid === targetMailboxUid);
+    // Create mode follows the chosen mailbox; editing an existing event always keeps the passed-in values.
+    const calendarChoices = !occurrence && targetMailboxOption ? targetMailboxOption.calendars : calendars;
+    const effectiveOrganizerAddress = !occurrence && targetMailboxOption ? targetMailboxOption.mailbox.primarySmtpAddress : organizerAddress;
+
+    function handleMailboxChange(nextMailboxUid: string) {
+        setTargetMailboxUid(nextMailboxUid);
+        const firstCalendar = mailboxOptions?.find((option) => option.mailbox.uid === nextMailboxUid)?.calendars[0];
+        if (firstCalendar) {
+            setTargetFolderUid(firstCalendar.uid);
+        }
+    }
     const [title, setTitle] = useState(occurrence?.title ?? "");
     const [location, setLocation] = useState(occurrence?.location ?? "");
     const [start, setStart] = useState(toDatetimeLocal(occurrence?.startDate ?? initialStart?.toISOString() ?? new Date().toISOString()));
@@ -150,7 +168,7 @@ export default function EventModal({
             endDate: new Date(end).toISOString(),
             allDay,
             timezone,
-            organizer: { address: organizerAddress, type: "to" },
+            organizer: { address: effectiveOrganizerAddress, type: "to" },
             attendees,
             recurrenceRule: recurrenceRule ?? undefined,
             reminderMinutesBeforeStart: reminderMinutes.trim() ? Number(reminderMinutes) : undefined,
@@ -162,7 +180,7 @@ export default function EventModal({
         setSaving(true);
         try {
             if (!occurrence) {
-                await createCalendarEvent({ mailboxUid, folderUid: targetFolderUid, ...fields } as CalendarEventInput);
+                await createCalendarEvent({ mailboxUid: targetMailboxUid, folderUid: targetFolderUid, ...fields } as CalendarEventInput);
             } else if (occurrence.isRecurringOccurrence && editScope === "occurrence") {
                 await detachOccurrence(occurrence, fields);
             } else if (occurrence.isRecurringOccurrence) {
@@ -222,7 +240,25 @@ export default function EventModal({
             <form onSubmit={handleSubmit} className="flex flex-col gap-1">
                 {error && <Alert>{error}</Alert>}
 
-                {!occurrence && calendars && calendars.length > 1 && (
+                {!occurrence && mailboxOptions && mailboxOptions.length > 1 && (
+                    <FormField label="Mailbox" htmlFor="event-mailbox">
+                        <select
+                            id="event-mailbox"
+                            className={INPUT_CLASS}
+                            value={targetMailboxUid}
+                            onChange={(e) => handleMailboxChange(e.target.value)}
+                        >
+                            {mailboxOptions.map(({ mailbox }) => (
+                                <option key={mailbox.uid} value={mailbox.uid}>
+                                    {mailbox.displayName}
+                                    {mailbox.ownerUserUid ? "" : " (shared)"}
+                                </option>
+                            ))}
+                        </select>
+                    </FormField>
+                )}
+
+                {!occurrence && calendarChoices && calendarChoices.length > 1 && (
                     <FormField label="Calendar" htmlFor="event-calendar">
                         <select
                             id="event-calendar"
@@ -230,7 +266,7 @@ export default function EventModal({
                             value={targetFolderUid}
                             onChange={(e) => setTargetFolderUid(e.target.value)}
                         >
-                            {calendars.map((cal) => (
+                            {calendarChoices.map((cal) => (
                                 <option key={cal.uid} value={cal.uid}>
                                     {cal.name}
                                 </option>

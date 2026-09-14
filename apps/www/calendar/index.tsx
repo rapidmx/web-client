@@ -275,6 +275,14 @@ function CalendarContent() {
     const modalFolderUid = modal ? (modal.targetFolderUid ?? modal.occurrence?.folderUid ?? folderUid) : undefined;
     const modalMailboxUid = calendarFolders.find((f) => f.uid === modalFolderUid)?.mailboxUid ?? mailboxUid;
     const modalMailbox = mailboxes.find((mb) => mb.uid === modalMailboxUid);
+    // Mailboxes a new event can be created in - only those with at least one calendar.
+    const mailboxOptions = useMemo(
+        () =>
+            mailboxCalendars
+                .filter((mc) => mc.calendarFolders.length > 0)
+                .map((mc) => ({ mailbox: mc.mailbox, calendars: mc.calendarFolders.map((f) => ({ uid: f.uid, name: f.name })) })),
+        [mailboxCalendars],
+    );
 
     const sidebarContent = (
         <>
@@ -394,6 +402,7 @@ function CalendarContent() {
                         mailboxUid={modalMailbox.uid}
                         folderUid={modalFolderUid!}
                         calendars={calendarFolders.filter((f) => f.mailboxUid === modalMailbox.uid).map((f) => ({ uid: f.uid, name: f.name }))}
+                        mailboxOptions={mailboxOptions}
                         organizerAddress={modalMailbox.primarySmtpAddress}
                         occurrence={modal.occurrence}
                         initialStart={modal.initialStart}

@@ -709,6 +709,92 @@ describe("EventModal", () => {
         expect(body.folderUid).toBe("f2");
     });
 
+    describe("Mailbox selector", () => {
+        const ownMailbox = { uid: "mb1", ownerUserUid: "u1", displayName: "Me", primarySmtpAddress: "jane@example.com" } as Mailbox;
+        const sharedMailbox = { uid: "mb-shared", displayName: "Support", primarySmtpAddress: "support@example.com" } as Mailbox;
+        const mailboxOptions = [
+            { mailbox: ownMailbox, calendars: [{ uid: "f1", name: "Work" }] },
+            {
+                mailbox: sharedMailbox,
+                calendars: [
+                    { uid: "f-s1", name: "Support Calendar" },
+                    { uid: "f-s2", name: "On-call" },
+                ],
+            },
+        ];
+
+        it("creates the event in the chosen mailbox, its first calendar, with that mailbox as organizer", async () => {
+            const fetchMock = mockFetch((url, init) =>
+                url === "/api/mail/calendar-events" && init?.method === "POST" ? jsonResponse(200, occurrence()) : undefined,
+            );
+            const user = userEvent.setup();
+            render(
+                <EventModal
+                    open
+                    onClose={vi.fn()}
+                    mailboxUid="mb1"
+                    folderUid="f1"
+                    calendars={[{ uid: "f1", name: "Work" }]}
+                    mailboxOptions={mailboxOptions}
+                    organizerAddress="jane@example.com"
+                    occurrence={null}
+                    onSaved={vi.fn()}
+                    onDeleted={vi.fn()}
+                />,
+            );
+
+            expect(screen.getByLabelText("Mailbox")).toHaveValue("mb1");
+            // The default mailbox has a single calendar - no Calendar selector yet.
+            expect(screen.queryByLabelText("Calendar")).not.toBeInTheDocument();
+            expect(screen.getByRole("option", { name: "Support (shared)" })).toBeInTheDocument();
+
+            await user.selectOptions(screen.getByLabelText("Mailbox"), "mb-shared");
+            expect(screen.getByLabelText("Calendar")).toHaveValue("f-s1");
+            await user.type(screen.getByLabelText("Title"), "Rotation");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+            const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+            expect(body.mailboxUid).toBe("mb-shared");
+            expect(body.folderUid).toBe("f-s1");
+            expect(body.organizer.address).toBe("support@example.com");
+        });
+
+        it("shows no Mailbox selector when editing an existing event", () => {
+            render(
+                <EventModal
+                    open
+                    onClose={vi.fn()}
+                    mailboxUid="mb1"
+                    folderUid="f1"
+                    mailboxOptions={mailboxOptions}
+                    organizerAddress="jane@example.com"
+                    occurrence={occurrence()}
+                    onSaved={vi.fn()}
+                    onDeleted={vi.fn()}
+                />,
+            );
+            expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
+        });
+
+        it("shows no Mailbox selector with only one mailbox option", () => {
+            render(
+                <EventModal
+                    open
+                    onClose={vi.fn()}
+                    mailboxUid="mb1"
+                    folderUid="f1"
+                    mailboxOptions={[mailboxOptions[0]]}
+                    organizerAddress="jane@example.com"
+                    occurrence={null}
+                    onSaved={vi.fn()}
+                    onDeleted={vi.fn()}
+                />,
+            );
+            expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
+        });
+    });
+
     it("calls onClose when Cancel is clicked", async () => {
         const onClose = vi.fn();
         const user = userEvent.setup();

@@ -446,5 +446,18 @@ describe("CalendarPage", () => {
             await waitFor(() => expect(screen.queryByText(/Support rotation/)).not.toBeInTheDocument());
             expect(screen.getByText(/Standup/)).toBeInTheDocument();
         });
+
+        it("'+ New event' offers a Mailbox selector defaulting to the caller's own mailbox", async () => {
+            mockTwoMailboxes();
+            const user = userEvent.setup();
+            render(<CalendarPage userUid="u1" />);
+            await screen.findByText(/Support rotation/);
+
+            await user.click(screen.getByRole("button", { name: "+ New event" }));
+
+            const mailboxSelect = screen.getByLabelText("Mailbox");
+            expect(mailboxSelect).toHaveValue("mb1");
+            expect(within(mailboxSelect).getByRole("option", { name: "Support (shared)" })).toBeInTheDocument();
+        });
     });
 });
