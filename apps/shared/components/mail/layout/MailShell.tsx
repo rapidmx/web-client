@@ -17,16 +17,46 @@ import LocalIndexLifecycle from "../../../search/LocalIndexLifecycle.js";
 
 export type MailShellProps = Omit<AppShellProps, "active">;
 
-export interface MailShellContextValue {
-    /** The mailbox currently selected (`?mailboxUid=`, or the caller's first accessible mailbox). */
-    mailboxUid?: string;
-    /** The folder currently selected (`?folderUid=`, or the selected mailbox's Inbox). */
-    folderUid?: string;
-    mailboxes: Mailbox[];
+/** One mailbox's own mail folders (already filtered to `MAIL_FOLDER_TYPES` and unsorted) - one entry per
+ * mailbox in `mailboxes`, fetched in parallel so every accessible mailbox's folder tree can render
+ * simultaneously (see `MailShell`'s own doc comment on why this replaced the old single-mailbox `folders`
+ * field). `error` is set (and `folders` left empty) for a mailbox whose own `listFolders()` call failed -
+ * one mailbox's fetch failure must never blank out every other mailbox's section. */
+export interface MailboxFolders {
+    mailbox: Mailbox;
     folders: Folder[];
+    error?: string;
 }
 
-const MailShellContext = createContext<MailShellContextValue>({ mailboxes: [], folders: [] });
+/** The well-known mail folder types an "aggregate" pseudo-folder can merge across every accessible
+ * mailbox - a fixed, small set: `outbox` is deliberately excluded (transient per-mailbox send-queue
+ * state, not a "merge across mailboxes" concept), and there's no aggregate concept for `calendar`/
+ * `contacts`/`tasks`/`notes`/`user` folders (Mail's own sidebar already excludes those - see
+ * `MAIL_FOLDER_TYPES`). */
+export const AGGREGATE_FOLDER_TYPES = ["inbox", "sent_items", "drafts", "deleted_items", "junk"] as const;
+export type AggregateFolderType = (typeof AGGREGATE_FOLDER_TYPES)[number];
+
+function isAggregateFolderType(value: string | null): value is AggregateFolderType {
+    return !!value && (AGGREGATE_FOLDER_TYPES as readonly string[]).includes(value);
+}
+
+export interface MailShellContextValue {
+    /** The mailbox currently selected (`?mailboxUid=`) - `undefined` while an aggregate pseudo-folder is
+     * active instead (`aggregateFolderType` set), since there's no single mailbox to speak of then. */
+    mailboxUid?: string;
+    /** The folder currently selected (`?folderUid=`, or the selected mailbox's Inbox) - `undefined` in
+     * aggregate mode, for the same reason. */
+    folderUid?: string;
+    /** Set only when an aggregate pseudo-folder (`?aggregate=inbox` etc.) is selected instead of a real,
+     * single mailbox+folder - mutually exclusive with `mailboxUid`/`folderUid` above. */
+    aggregateFolderType?: AggregateFolderType;
+    mailboxes: Mailbox[];
+    /** Every accessible mailbox's own mail folders - replaces the old single-mailbox `folders: Folder[]`
+     * now that every mailbox's tree renders at once (see `MailboxFolders`'s own doc comment). */
+    mailboxFolders: MailboxFolders[];
+}
+
+const MailShellContext = createContext<MailShellContextValue>({ mailboxes: [], mailboxFolders: [] });
 
 /** Reads the mailbox/folder a page is currently showing, as resolved by the enclosing `MailShell`. */
 export function useMailShell(): MailShellContextValue {
@@ -59,6 +89,14 @@ function folderSortKey(folder: Folder): number {
     return idx === -1 ? FOLDER_ORDER.length : idx;
 }
 
+function sortedFoldersOf(folders: Folder[]): Folder[] {
+    return [...folders].sort((a, b) => folderSortKey(a) - folderSortKey(b) || a.name.localeCompare(b.name));
+}
+
+function aggregateUnreadCount(mailboxFolders: MailboxFolders[], type: AggregateFolderType): number {
+    return mailboxFolders.reduce((total, mf) => total + (mf.folders.find((f) => f.type === type)?.unreadCount ?? 0), 0);
+}
+
 type Status = "checking" | "error" | "ready";
 
 /**
@@ -68,27 +106,70 @@ type Status = "checking" | "error" | "ready";
  * own function body would see only whatever context exists *above* `MailShell`, never a provider one of
  * its own descendants creates. This button, rendered as part of `AppShell`'s `children`, sits correctly
  * inside that subtree.
+ *
+ * `mailboxes.length > 1` adds a small "compose from" picker next to the button - there's no longer one
+ * ambient "selected mailbox" once every mailbox's folders render simultaneously, so Compose needs its own
+ * explicit choice, defaulting to `defaultMailboxUid` (the caller's own owned mailbox, if any).
  */
-function ComposeButton({ mailboxUid }: { mailboxUid: string }) {
+function ComposeButton({ mailboxes, defaultMailboxUid }: { mailboxes: Mailbox[]; defaultMailboxUid?: string }) {
     const { openCompose } = useCompose();
+    const [selected, setSelected] = useState(defaultMailboxUid);
+    const activeUid = selected && mailboxes.some((mb) => mb.uid === selected) ? selected : defaultMailboxUid;
+
+    if (mailboxes.length <= 1) {
+        return (
+            <button
+                type="button"
+                onClick={() => openCompose({ mailboxUid: defaultMailboxUid! })}
+                className="block text-center w-full py-2.5 px-4 rounded-sm font-semibold text-sm bg-primary text-white hover:bg-primary-dark"
+            >
+                Compose
+            </button>
+        );
+    }
+
     return (
-        <button
-            type="button"
-            onClick={() => openCompose({ mailboxUid })}
-            className="block text-center w-full py-2.5 px-4 rounded-sm font-semibold text-sm bg-primary text-white hover:bg-primary-dark"
-        >
-            Compose
-        </button>
+        <div className="flex flex-col gap-1.5">
+            <button
+                type="button"
+                onClick={() => openCompose({ mailboxUid: activeUid! })}
+                disabled={!activeUid}
+                className="block text-center w-full py-2.5 px-4 rounded-sm font-semibold text-sm bg-primary text-white hover:bg-primary-dark disabled:opacity-55"
+            >
+                Compose
+            </button>
+            <select
+                aria-label="Compose from"
+                className="w-full text-xs border border-border rounded-sm py-1 px-2 bg-surface"
+                value={activeUid ?? ""}
+                onChange={(e) => setSelected(e.target.value)}
+            >
+                {mailboxes.map((mb) => (
+                    <option key={mb.uid} value={mb.uid}>
+                        {mb.displayName}
+                        {mb.ownerUserUid ? "" : " (shared)"}
+                    </option>
+                ))}
+            </select>
+        </div>
     );
 }
 
 /**
- * Mail's own contextual sidebar (mailbox switcher + folder tree) + content area, rendered inside the shared
- * `AppShell` chrome (icon rail, header, impersonation banner — see that component). There is no client-side
- * router in this framework (see `ReactRoute`'s file-convention resolver) — the selected mailbox/folder live
- * in the URL's `?mailboxUid=`/`?folderUid=` query params, read once on mount (never during the initial
- * render itself, matching every other query-param reader in this codebase — e.g. `apps/admin/quarantine`'s
- * `readMailboxUid()` — so the server-rendered and just-hydrated client markup match).
+ * Mail's own contextual sidebar (every accessible mailbox's own folder tree, plus a merged "All Mailboxes"
+ * aggregate section) + content area, rendered inside the shared `AppShell` chrome (icon rail, header,
+ * impersonation banner — see that component). There is no client-side router in this framework (see
+ * `ReactRoute`'s file-convention resolver) — the selected mailbox/folder (or aggregate pseudo-folder) live
+ * in the URL's `?mailboxUid=`/`?folderUid=`/`?aggregate=` query params, read once on mount (never during
+ * the initial render itself, matching every other query-param reader in this codebase — e.g.
+ * `apps/admin/quarantine`'s `readMailboxUid()` — so the server-rendered and just-hydrated client markup
+ * match).
+ *
+ * Every accessible mailbox's folder tree renders at once - there is no "switch mailbox" affordance
+ * anymore (the mailbox `<select>` this shell used to have is gone) - so a single-mailbox user sees zero
+ * behavior change from before this, and a multi-mailbox user sees every mailbox's folders (and the new
+ * aggregate section) simultaneously, matching the shared-mailbox feature's own "display as a separate set
+ * of folders" requirement.
  */
 export default function MailShell({
     userUid,
@@ -101,17 +182,18 @@ export default function MailShell({
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
-    const [folders, setFolders] = useState<Folder[]>([]);
+    const [mailboxFolders, setMailboxFolders] = useState<MailboxFolders[]>([]);
     const [foldersLoading, setFoldersLoading] = useState(true);
-    const [folderError, setFolderError] = useState<string | null>(null);
     const [requestedMailboxUid, setRequestedMailboxUid] = useState<string | null>(null);
     const [requestedFolderUid, setRequestedFolderUid] = useState<string | null>(null);
+    const [requestedAggregateType, setRequestedAggregateType] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         setRequestedMailboxUid(params.get("mailboxUid"));
         setRequestedFolderUid(params.get("folderUid"));
+        setRequestedAggregateType(params.get("aggregate"));
     }, []);
 
     useEffect(() => {
@@ -129,40 +211,69 @@ export default function MailShell({
             });
     }, [userUid]);
 
-    const mailboxUid: string | undefined =
-        (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
-        mailboxes[0]?.uid;
+    const aggregateFolderType: AggregateFolderType | undefined = isAggregateFolderType(requestedAggregateType)
+        ? requestedAggregateType
+        : undefined;
 
+    const mailboxUid: string | undefined = aggregateFolderType
+        ? undefined
+        : (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
+          mailboxes[0]?.uid;
+
+    // Fans out one listFolders() call per accessible mailbox in parallel - each call catches its own
+    // failure into an MailboxFolders.error rather than letting Promise.all reject, so one mailbox's fetch
+    // failure renders that section's own inline Alert instead of blanking out every other mailbox's
+    // folder tree.
     useEffect(() => {
-        if (!mailboxUid) {
-            setFolders([]);
+        if (mailboxes.length === 0) {
+            // Deliberately leaves foldersLoading as-is: this also runs once before listMailboxes() has
+            // resolved, and clearing it here would briefly render an empty sidebar the moment mailboxes
+            // arrive, before their folders do. A genuinely mailbox-less caller gets MailboxProvisioning.
+            setMailboxFolders([]);
             return;
         }
-        setFolderError(null);
         setFoldersLoading(true);
-        listFolders(mailboxUid)
-            .then((result) => setFolders(result.filter((f) => MAIL_FOLDER_TYPES.has(f.type))))
-            .catch((err) => setFolderError(err instanceof ApiRequestError ? err.message : "Could not load folders."))
+        Promise.all(
+            mailboxes.map((mailbox) =>
+                listFolders(mailbox.uid)
+                    .then((result): MailboxFolders => ({ mailbox, folders: result.filter((f) => MAIL_FOLDER_TYPES.has(f.type)) }))
+                    .catch(
+                        (err): MailboxFolders => ({
+                            mailbox,
+                            folders: [],
+                            error: err instanceof ApiRequestError ? err.message : "Could not load folders.",
+                        }),
+                    ),
+            ),
+        )
+            .then(setMailboxFolders)
             .finally(() => setFoldersLoading(false));
-    }, [mailboxUid]);
+    }, [mailboxes]);
 
-    const folderUid: string | undefined =
-        (requestedFolderUid && folders.some((f) => f.uid === requestedFolderUid) ? requestedFolderUid : undefined) ??
-        folders.find((f) => f.type === "inbox")?.uid;
+    const selectedMailboxFolders = mailboxFolders.find((mf) => mf.mailbox.uid === mailboxUid)?.folders ?? [];
+    const folderUid: string | undefined = aggregateFolderType
+        ? undefined
+        : (requestedFolderUid && selectedMailboxFolders.some((f) => f.uid === requestedFolderUid) ? requestedFolderUid : undefined) ??
+          selectedMailboxFolders.find((f) => f.type === "inbox")?.uid;
+
+    // The mailbox `KeyEnrollmentGate`/`LocalIndexLifecycle`/`ComposeButton` treat as "the" mailbox when
+    // there's no single selected one to use (aggregate mode) - the caller's own owned mailbox if they
+    // have one, else whichever accessible mailbox happens to be first. See MailShell's own doc comment on
+    // this being an accepted limitation: an aggregate-view message from a *different*, not-yet-visited
+    // mailbox may still need that mailbox's own folder view opened directly to unlock/decrypt it.
+    const defaultMailboxUid = mailboxes.find((mb) => mb.ownerUserUid === userUid)?.uid ?? mailboxes[0]?.uid;
+    const activeMailboxUid = mailboxUid ?? defaultMailboxUid;
 
     const contextValue = useMemo<MailShellContextValue>(
-        () => ({ mailboxUid, folderUid, mailboxes, folders }),
-        [mailboxUid, folderUid, mailboxes, folders],
+        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders }),
+        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders],
     );
 
-    const sortedFolders = useMemo(
-        () => [...folders].sort((a, b) => folderSortKey(a) - folderSortKey(b) || a.name.localeCompare(b.name)),
-        [folders],
-    );
-
-    // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else
-    // for a mailbox-less caller to do here yet, so the icon rail/header/folder tree don't render at all.
-    if (userUid && status === "ready" && !mailboxUid) {
+    // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else for a
+    // mailbox-less caller to do here yet, so the icon rail/header/folder tree don't render at all. Checks
+    // `mailboxes.length` directly (not `!mailboxUid`) since `mailboxUid` is legitimately undefined in
+    // aggregate mode even with mailboxes present.
+    if (userUid && status === "ready" && mailboxes.length === 0) {
         return <MailboxProvisioning />;
     }
 
@@ -187,78 +298,93 @@ export default function MailShell({
     } else if (userUid && status === "ready") {
         // A function, not a plain JSX constant — it's rendered twice (desktop `<aside>` + mobile
         // `Drawer`), possibly *simultaneously* mounted (the aside is only CSS-hidden below `md`, not
-        // unmounted), so the mailbox-switcher `<select>`'s `id`/its `<label>`'s `htmlFor` need a distinct
-        // value per instance. Two elements sharing one id breaks label association (and is invalid HTML).
-        const sidebarContent = (idPrefix: string) => (
+        // unmounted).
+        const sidebarContent = () => (
             <>
                 <div className="p-3">
-                    <ComposeButton mailboxUid={mailboxUid} />
+                    <ComposeButton mailboxes={mailboxes} defaultMailboxUid={defaultMailboxUid} />
                 </div>
-                {mailboxes.length > 1 && (
-                    <div className="px-3 pb-2">
-                        <label
-                            className="block text-xs font-bold uppercase tracking-wide text-text-muted mb-1"
-                            htmlFor={`${idPrefix}-mailbox-switcher`}
-                        >
-                            Mailbox
-                        </label>
-                        <select
-                            id={`${idPrefix}-mailbox-switcher`}
-                            className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                            value={mailboxUid}
-                            onChange={(e) => {
-                                window.location.href = `/?mailboxUid=${encodeURIComponent(e.target.value)}`;
-                            }}
-                        >
-                            {mailboxes.map((mb) => (
-                                <option key={mb.uid} value={mb.uid}>
-                                    {mb.displayName}
-                                    {mb.ownerUserUid ? "" : " (shared)"}
-                                </option>
-                            ))}
-                        </select>
+                {foldersLoading ? (
+                    <div className="flex-1 overflow-y-auto px-3 pb-3">
+                        <SkeletonList count={6} className="pt-1" />
                     </div>
-                )}
-                {folderError && (
-                    <div className="px-3 pb-2">
-                        <Alert>{folderError}</Alert>
-                    </div>
-                )}
-                <nav className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col gap-0.5">
-                    {foldersLoading ? (
-                        <SkeletonList count={5} className="pt-1" />
-                    ) : (
-                        sortedFolders.map((folder) => (
-                            <a
-                                key={folder.uid}
-                                href={`/?mailboxUid=${encodeURIComponent(mailboxUid)}&folderUid=${encodeURIComponent(folder.uid)}`}
-                                className={[
-                                    "flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5",
-                                    folder.uid === folderUid
-                                        ? "bg-primary/10 text-primary-dark font-semibold"
-                                        : "text-text hover:bg-surface-alt",
-                                ].join(" ")}
-                            >
-                                <span>{FOLDER_LABELS[folder.type] ?? folder.name}</span>
-                                {folder.unreadCount > 0 && (
-                                    <span className="text-xs font-bold rounded-pill py-0.5 px-1.5 bg-surface-alt text-text-muted">
-                                        {folder.unreadCount}
-                                    </span>
+                ) : (
+                    <nav className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col gap-3">
+                        {mailboxes.length > 1 && (
+                            <div>
+                                <div className="text-xs font-bold uppercase tracking-wide text-text-muted mb-1 px-2.5">
+                                    All Mailboxes
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                    {AGGREGATE_FOLDER_TYPES.map((type) => {
+                                        const unread = aggregateUnreadCount(mailboxFolders, type);
+                                        return (
+                                            <a
+                                                key={type}
+                                                href={`/?aggregate=${encodeURIComponent(type)}`}
+                                                className={[
+                                                    "flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5",
+                                                    aggregateFolderType === type
+                                                        ? "bg-primary/10 text-primary-dark font-semibold"
+                                                        : "text-text hover:bg-surface-alt",
+                                                ].join(" ")}
+                                            >
+                                                <span>{FOLDER_LABELS[type]}</span>
+                                                {unread > 0 && (
+                                                    <span className="text-xs font-bold rounded-pill py-0.5 px-1.5 bg-surface-alt text-text-muted">
+                                                        {unread}
+                                                    </span>
+                                                )}
+                                            </a>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                        {mailboxFolders.map(({ mailbox, folders, error: mailboxError }) => (
+                            <div key={mailbox.uid}>
+                                <div className="text-xs font-bold uppercase tracking-wide text-text-muted mb-1 px-2.5 truncate">
+                                    {mailbox.displayName}
+                                    {mailbox.ownerUserUid ? "" : " (shared)"}
+                                </div>
+                                {mailboxError && (
+                                    <div className="px-2.5 pb-1">
+                                        <Alert>{mailboxError}</Alert>
+                                    </div>
                                 )}
-                            </a>
-                        ))
-                    )}
-                </nav>
+                                <div className="flex flex-col gap-0.5">
+                                    {sortedFoldersOf(folders).map((folder) => (
+                                        <a
+                                            key={folder.uid}
+                                            href={`/?mailboxUid=${encodeURIComponent(mailbox.uid)}&folderUid=${encodeURIComponent(folder.uid)}`}
+                                            className={[
+                                                "flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5",
+                                                folder.uid === folderUid
+                                                    ? "bg-primary/10 text-primary-dark font-semibold"
+                                                    : "text-text hover:bg-surface-alt",
+                                            ].join(" ")}
+                                        >
+                                            <span>{FOLDER_LABELS[folder.type] ?? folder.name}</span>
+                                            {folder.unreadCount > 0 && (
+                                                <span className="text-xs font-bold rounded-pill py-0.5 px-1.5 bg-surface-alt text-text-muted">
+                                                    {folder.unreadCount}
+                                                </span>
+                                            )}
+                                        </a>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </nav>
+                )}
             </>
         );
 
         inner = (
             <>
-                <aside className="hidden md:flex w-64 shrink-0 bg-surface border-r border-border flex-col">
-                    {sidebarContent("desktop")}
-                </aside>
+                <aside className="hidden md:flex w-64 shrink-0 bg-surface border-r border-border flex-col">{sidebarContent()}</aside>
                 <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Folders">
-                    <div className="flex flex-col">{sidebarContent("mobile")}</div>
+                    <div className="flex flex-col">{sidebarContent()}</div>
                 </Drawer>
                 <main className="flex-1 min-w-0 overflow-y-auto">
                     <button
@@ -281,12 +407,12 @@ export default function MailShell({
     // position) would make AppShell itself remount the moment mailboxUid resolves, tearing down
     // whatever state/effects it had already started (confirmed by direct reproduction: the
     // impersonation banner's own internal state was lost exactly at that transition).
-    const selectedMailbox = mailboxes.find((mb) => mb.uid === mailboxUid);
+    const activeMailbox = mailboxes.find((mb) => mb.uid === activeMailboxUid);
     return (
         <KeyEnrollmentGate
-            mailboxUid={mailboxUid}
-            mailboxAddress={selectedMailbox?.primarySmtpAddress}
-            mailboxKeys={selectedMailbox?.keys}
+            mailboxUid={activeMailboxUid}
+            mailboxAddress={activeMailbox?.primarySmtpAddress}
+            mailboxKeys={activeMailbox?.keys}
             // Unlocking is only actually required to sign/encrypt a compose, read an already-encrypted
             // message, or change encryption settings - not merely to open Mail. Those specific call sites
             // (ComposeWindow, MessageDetailPane) request an unlock on demand via useUnlockPrompt() instead.
@@ -294,7 +420,11 @@ export default function MailShell({
             // prop's own doc comment on KeyEnrollmentGateProps.
             blocking={false}
         >
-            <LocalIndexLifecycle mailboxUid={mailboxUid} mailboxKeys={selectedMailbox?.keys} folders={folders} />
+            <LocalIndexLifecycle
+                mailboxUid={activeMailboxUid}
+                mailboxKeys={activeMailbox?.keys}
+                folders={mailboxFolders.find((mf) => mf.mailbox.uid === activeMailboxUid)?.folders ?? []}
+            />
             <AppShell
                 active="mail"
                 userUid={userUid}

@@ -24,7 +24,7 @@ export default function MessageDetailPage(props: MailShellProps & { params: { ui
 }
 
 function MessageDetailContent({ uid }: { uid: string }) {
-    const { folders, mailboxUid } = useMailShell();
+    const { mailboxFolders, mailboxUid } = useMailShell();
     const [message, setMessage] = useState<Message | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -58,6 +58,10 @@ function MessageDetailContent({ uid }: { uid: string }) {
         return <Alert>{error ?? "Message not found."}</Alert>;
     }
 
+    // Looked up by the message's own mailboxUid, not the shell's ambient `mailboxUid` - the mobile detail
+    // route reaches here from an aggregate ("All Inboxes" etc.) list row too, where there's no single
+    // selected mailbox to fall back to.
+    const folders = mailboxFolders.find((mf) => mf.mailbox.uid === message.mailboxUid)?.folders ?? [];
     const backHref = `/?mailboxUid=${encodeURIComponent(message.mailboxUid)}&folderUid=${encodeURIComponent(message.folderUid)}`;
     const isSentItems = folders.find((f) => f.uid === message.folderUid)?.type === "sent_items";
     const isOutbox = folders.find((f) => f.uid === message.folderUid)?.type === "outbox";

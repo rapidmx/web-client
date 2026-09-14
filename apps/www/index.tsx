@@ -5,7 +5,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { HiOutlineLockClosed } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Message, MessageClassification, getMessage, getMessageRawContent, listMessages } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Mailbox, Message, MessageClassification, getMessage, getMessageRawContent, listMessages } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
 import { ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
@@ -18,7 +18,12 @@ import { getUnlockedKeys, UnlockedKeys } from "@rapidmx/react-shared/crypto/keyS
 import { evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
-import MailShell, { MailShellProps, useMailShell } from "../shared/components/mail/layout/MailShell.js";
+import MailShell, {
+    AggregateFolderType,
+    MailboxFolders,
+    MailShellProps,
+    useMailShell,
+} from "../shared/components/mail/layout/MailShell.js";
 import MessageDetailPane from "../shared/components/mail/MessageDetailPane.js";
 import ConversationList from "../shared/components/mail/ConversationList.js";
 import ConversationThreadPane from "../shared/components/mail/ConversationThreadPane.js";
@@ -281,6 +286,41 @@ async function resolveHitsToMessages(
     return { messages, snippets };
 }
 
+/** Flattens and sorts a per-mailbox fetch into one merged, newest-first list - the aggregate ("All
+ * Inboxes" etc.) equivalent of `mergeSearchResults()` above, but simpler: an aggregated message has no
+ * natural relevance score to normalize, so this only ever sorts by `receivedDate`. */
+function mergeInboxMessages(perMailbox: { mailbox: Mailbox; messages: Message[] }[]): Message[] {
+    return perMailbox
+        .flatMap((entry) => entry.messages)
+        .sort((a, b) => new Date(b.receivedDate).getTime() - new Date(a.receivedDate).getTime());
+}
+
+/**
+ * Fans out one `listMessages()` call per accessible mailbox that has a folder of `type`, merges the
+ * results newest-first. A mailbox with no matching folder, or whose fetch fails, simply contributes
+ * nothing - one mailbox's absence/failure must not blank out every other mailbox's messages.
+ *
+ * **Pagination scope trim (deliberate, matching this file's own documented Tier 2/3 tradeoffs)**: there is
+ * no composite cursor across an arbitrary number of independently-paginated mailboxes in this pass - this
+ * always fetches exactly each mailbox's own first page (`MESSAGE_PAGE_SIZE`) and the caller never offers a
+ * "load more" for the result (see `InboxContent`'s own `hasMore` handling in aggregate mode) - a real
+ * composite-cursor "load more" per mailbox is a natural v2 if usage shows people scrolling past the first
+ * page in aggregate view often.
+ */
+async function fetchAggregateMessages(mailboxFolders: MailboxFolders[], type: AggregateFolderType): Promise<Message[]> {
+    const perMailbox = await Promise.all(
+        mailboxFolders.map(async ({ mailbox, folders }) => {
+            const folder = folders.find((f) => f.type === type);
+            if (!folder) {
+                return { mailbox, messages: [] as Message[] };
+            }
+            const messages = await listMessages(folder.uid, { limit: MESSAGE_PAGE_SIZE }).catch(() => [] as Message[]);
+            return { mailbox, messages };
+        }),
+    );
+    return mergeInboxMessages(perMailbox);
+}
+
 export default function InboxPage(props: MailShellProps) {
     return (
         <MailShell {...props}>
@@ -290,7 +330,7 @@ export default function InboxPage(props: MailShellProps) {
 }
 
 function InboxContent() {
-    const { folderUid, mailboxUid, mailboxes, folders } = useMailShell();
+    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType } = useMailShell();
     const isMobile = useIsMobile();
     const { requestUnlock } = useUnlockPrompt();
     const [viewMode, setViewMode] = useState<ViewMode>("date");
@@ -333,11 +373,20 @@ function InboxContent() {
     // bound (tightened to Tier 2's coverage window otherwise - see tightenBeforeToCoverage()) for one
     // re-run. Reset to false whenever the query itself changes (see the search effect's own dependency).
     const [searchAllMail, setSearchAllMail] = useState(false);
-    const isSearching = viewMode === "date" && searchQuery.length > 0;
+    // Search stays real-folder-only - Tier 1/2/3 are all deeply mailbox/folder-scoped, and extending them
+    // to span an arbitrary number of mailboxes is out of scope for this pass (see the aggregate-fetch
+    // branch below, which the search effect never reaches while `folderUid` is unset).
+    const isSearching = viewMode === "date" && searchQuery.length > 0 && !aggregateFolderType;
     const pageRef = useRef(0);
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
     const sentinelRef = useRef<HTMLDivElement | null>(null);
-    const mailboxKeys = mailboxes.find((mb) => mb.uid === mailboxUid)?.keys ?? [];
+    // The mailbox unlock/decrypt call sites below treat as "the" mailbox when there's no single selected
+    // one (aggregate mode) - mirrors `MailShell`'s own identical `defaultMailboxUid` fallback. An
+    // aggregate-view row from a *different*, not-yet-unlocked mailbox stays locked until that mailbox's
+    // own folder view is opened directly - an accepted limitation, not a bug (see `MailShell`'s own doc
+    // comment on the same tradeoff for its `LocalIndexLifecycle`/`KeyEnrollmentGate` wiring).
+    const activeMailboxUid = mailboxUid ?? mailboxes.find((mb) => mb.ownerUserUid)?.uid ?? mailboxes[0]?.uid;
+    const mailboxKeys = mailboxes.find((mb) => mb.uid === activeMailboxUid)?.keys ?? [];
     // Reset to a fresh Map at the start of every new search pass (see the search effect below) - see
     // resolveHitsToMessages()'s own doc comment on why this needs to persist *within* one pass but not
     // across passes (a stale `null` for a uid that's since become resolvable elsewhere must not stick).
@@ -358,17 +407,24 @@ function InboxContent() {
     // never re-decrypted just because the list re-renders with the same rows (e.g. a folder-unrelated
     // state update elsewhere). New rows (a fresh page load, load-more, or a completed search) each
     // re-trigger this the normal way, by changing `messages` itself.
-    const undecryptedEncryptedUids = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && !decryptedRows[m.uid]).map((m) => m.uid);
+    //
+    // Scoped to `activeMailboxUid`'s own rows only - in aggregate mode `messages` can span several
+    // mailboxes, but only one mailbox's keys are ever being unlocked/tracked here (see `activeMailboxUid`'s
+    // own doc comment above); an encrypted row from any other mailbox simply isn't a candidate for this
+    // auto-decrypt or the manual unlock banner below.
+    const undecryptedEncryptedUids = messages
+        .filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && !decryptedRows[m.uid] && m.mailboxUid === activeMailboxUid)
+        .map((m) => m.uid);
 
     // Once unlocked, silently decrypt this page's own encrypted rows to show their real subject/preview -
     // no prompt needed here, the same way searchEncryptedCandidates() already auto-includes decrypted
     // matches once unlocked without asking again. Only the *first* unlock (or a fresh page of messages
     // arriving) needs this; `handleUnlockList()` below covers the not-yet-unlocked case explicitly.
     useEffect(() => {
-        if (undecryptedEncryptedUids.length === 0) {
+        if (undecryptedEncryptedUids.length === 0 || !activeMailboxUid) {
             return;
         }
-        const unlocked = getUnlockedKeys(mailboxUid!);
+        const unlocked = getUnlockedKeys(activeMailboxUid);
         if (!unlocked) {
             return;
         }
@@ -389,9 +445,9 @@ function InboxContent() {
 
     async function handleUnlockList() {
         try {
-            const unlocked = await requestUnlock(mailboxUid!, mailboxKeys);
+            const unlocked = await requestUnlock(activeMailboxUid!, mailboxKeys);
             const decrypted = await decryptEncryptedRows(
-                messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER),
+                messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && m.mailboxUid === activeMailboxUid),
                 unlocked,
             );
             setDecryptedRows((prev) => ({ ...prev, ...decrypted }));
@@ -402,7 +458,7 @@ function InboxContent() {
 
     async function handleUnlockSearch() {
         try {
-            await requestUnlock(mailboxUid!, mailboxKeys);
+            await requestUnlock(activeMailboxUid!, mailboxKeys);
             setUnlockRefresh((n) => n + 1);
         } catch {
             // User dismissed the unlock dialog - the search results stay exactly as they were.
@@ -412,14 +468,17 @@ function InboxContent() {
     // Labels are mailbox-wide, not folder-scoped - fetched once per mailbox rather than per message, and
     // handed to every `MessageDetailPane` instance below. A failure here just means the Labels control
     // stays hidden (an empty `labels` array) rather than blocking the rest of the inbox - it's a small
-    // enhancement, not critical path the way the message list itself is. No `mailboxUid` guard needed -
-    // `MailShell` never renders this component at all until `mailboxUid` has resolved (same invariant
-    // the search effect below already relies on via its own `mailboxUid!` uses).
+    // enhancement, not critical path the way the message list itself is. Keyed on `activeMailboxUid`, which
+    // `MailShell` guarantees resolves (it never renders this component without at least one mailbox) even
+    // in aggregate mode, where there's no single selected `mailboxUid`.
     useEffect(() => {
-        listLabels(mailboxUid!, { limit: 200 })
+        if (!activeMailboxUid) {
+            return;
+        }
+        listLabels(activeMailboxUid, { limit: 200 })
             .then(setLabels)
             .catch(() => setLabels([]));
-    }, [mailboxUid]);
+    }, [activeMailboxUid]);
 
     // Debounce the raw input into the query actually searched, so every keystroke doesn't fire a request.
     useEffect(() => {
@@ -439,16 +498,39 @@ function InboxContent() {
         setHasMore(false);
 
         if (viewMode === "conversation") {
-            // `mailboxUid` is always set by this point — `MailShell` only ever resolves `folderUid`
-            // (this component's own guard just below, gating everything before this effect can even
-            // run with `viewMode === "conversation"`) after `mailboxUid` is already known.
+            // Conversations stay single-mailbox (not aggregated across mailboxes in this pass) - in
+            // aggregate mode this falls back to `activeMailboxUid`, the same mailbox unlock/labels use.
+            if (!activeMailboxUid) {
+                return;
+            }
             setLoading(true);
             setError(null);
-            listConversations(mailboxUid!)
+            listConversations(activeMailboxUid)
                 .then(setConversations)
                 .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load conversations."))
                 .finally(() => setLoading(false));
             return;
+        }
+
+        if (aggregateFolderType) {
+            setLoading(true);
+            setError(null);
+            let cancelled = false;
+            // hasMore stays false (set above) - see fetchAggregateMessages()'s own pagination scope trim.
+            fetchAggregateMessages(mailboxFolders, aggregateFolderType)
+                .then((results) => {
+                    if (!cancelled) {
+                        setMessages(results);
+                    }
+                })
+                .finally(() => {
+                    if (!cancelled) {
+                        setLoading(false);
+                    }
+                });
+            return () => {
+                cancelled = true;
+            };
         }
 
         if (!folderUid) {
@@ -562,7 +644,7 @@ function InboxContent() {
         // user unlocks, and what makes "Search all mail" actually remove Tier 3's coverage bound. Neither
         // has any effect on the non-search branch below; re-running it with identical inputs just
         // re-fetches the same page.
-    }, [viewMode, folderUid, mailboxUid, isSearching, searchQuery, unlockRefresh, searchAllMail]);
+    }, [viewMode, folderUid, mailboxUid, isSearching, searchQuery, unlockRefresh, searchAllMail, aggregateFolderType, mailboxFolders, activeMailboxUid]);
 
     function handleSearchAllMail() {
         setSearchAllMail(true);
@@ -655,8 +737,12 @@ function InboxContent() {
     // Search results can span every folder in the mailbox, not just the one selected in the sidebar - a
     // selected message's own folderUid is the only reliable source for its actual folder type once
     // searching (outside search, every message in `messages` already comes from `folderUid` itself, so
-    // this falls back to the sidebar selection unchanged).
-    const selectedFolderUid = isSearching ? (selected?.folderUid ?? folderUid) : folderUid;
+    // this falls back to the sidebar selection unchanged). Aggregate views span every *mailbox* too, so
+    // the folder list consulted is the selected message's own mailbox's, not the shell's ambient one.
+    const spansFolders = isSearching || !!aggregateFolderType;
+    const selectedFolderUid = spansFolders ? (selected?.folderUid ?? folderUid) : folderUid;
+    const selectedMailboxUid = spansFolders ? (selected?.mailboxUid ?? activeMailboxUid) : mailboxUid;
+    const folders = mailboxFolders.find((mf) => mf.mailbox.uid === selectedMailboxUid)?.folders ?? [];
     const isSentItems = folders.find((f) => f.uid === selectedFolderUid)?.type === "sent_items";
     const isOutbox = folders.find((f) => f.uid === selectedFolderUid)?.type === "outbox";
     const isInbox = folders.find((f) => f.uid === selectedFolderUid)?.type === "inbox";
@@ -664,9 +750,10 @@ function InboxContent() {
 
     // Focused/Other is an Inbox-only concept (see `MessageDetailPane`'s own `isInbox` doc comment) — the
     // sub-tabs only ever render there, so a message with no `inferenceClassification` (the common case:
-    // absent means Focused) or an explicit `"focused"` counts as Focused, everything else as Other.
+    // absent means Focused) or an explicit `"focused"` counts as Focused, everything else as Other. Not
+    // offered for an aggregate view (each mailbox classifies independently; merging that is out of scope).
     const visibleMessages =
-        !isSearching && isInbox && classificationFilter !== "all"
+        !isSearching && !aggregateFolderType && isInbox && classificationFilter !== "all"
             ? messages.filter((m) =>
                   classificationFilter === "other"
                       ? m.inferenceClassification === "other"
@@ -696,7 +783,7 @@ function InboxContent() {
         setSelectedConversationId(conversation.conversationId);
     }
 
-    if (!folderUid) {
+    if (!folderUid && !aggregateFolderType) {
         // `MailShell` never renders this component at all until a mailbox is resolved (see its own
         // full-screen `MailboxProvisioning` takeover otherwise) — this is purely the brief gap before
         // that mailbox's own folder list has finished loading, not a "no mailbox" state. Distinct text
@@ -741,13 +828,14 @@ function InboxContent() {
                             type="search"
                             value={searchInput}
                             onChange={(e) => setSearchInput(e.target.value)}
-                            placeholder="Search all mail…"
+                            placeholder={aggregateFolderType ? "Open a mailbox's own folder to search" : "Search all mail…"}
                             aria-label="Search all mail"
-                            className="w-full text-sm px-3 py-1.5 rounded-md border border-border bg-surface"
+                            disabled={!!aggregateFolderType}
+                            className="w-full text-sm px-3 py-1.5 rounded-md border border-border bg-surface disabled:opacity-55"
                         />
                     </div>
                 )}
-                {viewMode === "date" && isInbox && !isSearching && (
+                {viewMode === "date" && isInbox && !isSearching && !aggregateFolderType && (
                     <div className="flex border-b border-border text-xs">
                         {(["all", "focused", "other"] as const).map((value) => (
                             <button
@@ -809,7 +897,7 @@ function InboxContent() {
                         </button>
                     </div>
                 )}
-                {!isSearching && viewMode === "date" && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(mailboxUid!) && (
+                {!isSearching && viewMode === "date" && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(activeMailboxUid!) && (
                     <div className="px-4 py-2 border-b border-border bg-surface-alt">
                         <button
                             type="button"
@@ -864,6 +952,12 @@ function InboxContent() {
                                                 {new Date(message.receivedDate).toLocaleDateString()}
                                             </span>
                                         </div>
+                                        {aggregateFolderType && (
+                                            // The one view where a row needs to say which mailbox it came from.
+                                            <div className="text-xs text-text-muted truncate font-normal">
+                                                {mailboxes.find((mb) => mb.uid === message.mailboxUid)?.displayName}
+                                            </div>
+                                        )}
                                         {isSearching && pendingUids.has(message.uid) ? (
                                             // §_Progressive Results_: "Unresolved encrypted results MUST
                                             // be rendered as skeleton entries in place, not appended on
@@ -896,12 +990,22 @@ function InboxContent() {
                                 {loadingMore ? "Loading more…" : ""}
                             </div>
                         )}
+                        {aggregateFolderType && (
+                            <p className="p-4 text-center text-xs text-text-muted">
+                                Showing the most recent mail from each mailbox. Open a specific mailbox&rsquo;s folder to
+                                see older mail.
+                            </p>
+                        )}
                     </>
                 )}
             </div>
             <div className="hidden md:flex flex-1 min-w-0">
                 {viewMode === "conversation" ? (
-                    <ConversationThreadPane conversation={selectedConversation} folders={folders} labels={labels} />
+                    <ConversationThreadPane
+                        conversation={selectedConversation}
+                        folders={mailboxFolders.find((mf) => mf.mailbox.uid === activeMailboxUid)?.folders ?? []}
+                        labels={labels}
+                    />
                 ) : (
                     <MessageDetailPane
                         message={selected}

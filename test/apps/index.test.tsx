@@ -1166,6 +1166,70 @@ describe("InboxPage", () => {
         });
     });
 
+    describe("aggregate folders (All Mailboxes)", () => {
+        const sharedMailbox = { ...mailbox, uid: "mb2", ownerUserUid: undefined, displayName: "Support", primarySmtpAddress: "support@example.com" };
+        const sharedInbox = { ...inboxFolder, uid: "f-shared-inbox", mailboxUid: "mb2" };
+
+        // mockLocation() doesn't restore window.location on its own - without this, the `?aggregate=`
+        // search string set below leaks into every later test in this file.
+        afterEach(() => {
+            mockLocation();
+        });
+
+        function mockAggregate(extraMessages: Record<string, unknown[]>) {
+            return mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages?") || url === "/api/mail/messages") {
+                    const folderUid = new URLSearchParams(url.split("?")[1]).get("folderUid") ?? "";
+                    return jsonResponse(200, extraMessages[folderUid] ?? []);
+                }
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+        }
+
+        it("merges every mailbox's Inbox newest-first, labels each row with its mailbox, and disables search", async () => {
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            mockAggregate({
+                f1: [messageFixture({ uid: "m-own", subject: "Own older", receivedDate: "2026-01-01T00:00:00.000Z" })],
+                "f-shared-inbox": [
+                    messageFixture({ uid: "m-shared", subject: "Shared newer", mailboxUid: "mb2", folderUid: "f-shared-inbox", receivedDate: "2026-01-02T00:00:00.000Z" }),
+                ],
+            });
+            render(<InboxPage userUid="u1" />);
+
+            await screen.findByText("Shared newer");
+            const subjects = screen.getAllByText(/Own older|Shared newer/).map((el) => el.textContent);
+            expect(subjects).toEqual(["Shared newer", "Own older"]);
+            // The sidebar header/compose picker say "Support (shared)"; the bare name is the row's own label.
+            expect(screen.getByText("Support")).toBeInTheDocument();
+            expect(screen.getByPlaceholderText("Open a mailbox's own folder to search")).toBeDisabled();
+            expect(screen.getByText(/Showing the most recent mail from each mailbox/)).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Focused" })).not.toBeInTheDocument();
+        });
+
+        it("still shows the other mailboxes' messages when one mailbox's fetch fails", async () => {
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.includes("folderUid=f-shared-inbox")) return jsonResponse(500, { message: "boom" });
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [messageFixture({ uid: "m-own", subject: "Own survives" })]);
+                throw new Error(`unexpected ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Own survives")).toBeInTheDocument();
+        });
+    });
+
     describe("infinite scroll", () => {
         it("loads the next page of the folder listing when the sentinel intersects, appending to the list", async () => {
             const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Message ${i}` }));

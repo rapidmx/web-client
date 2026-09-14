@@ -91,6 +91,20 @@ function mockMailboxesAndFolders(mailboxes: unknown[], folders: unknown[]) {
     });
 }
 
+/** Gives each mailbox its own distinct Inbox (uid `f-inbox-<mailboxUid>`, 3 unread), keyed off the
+ * `mailboxUid` query param `listFolders()` sends - for tests that need per-mailbox folder trees to differ. */
+function mockPerMailboxFolders(mailboxes: { uid: string }[]) {
+    return mockFetch((url) => {
+        if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+        if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, mailboxes);
+        if (url.startsWith("/api/mail/folders")) {
+            const mailbox = mailboxes.find((mb) => url.includes(`mailboxUid=${mb.uid}`));
+            return jsonResponse(200, mailbox ? [{ ...inboxFolder, uid: `f-inbox-${mailbox.uid}`, mailboxUid: mailbox.uid }] : []);
+        }
+        throw new Error(`unexpected ${url}`);
+    });
+}
+
 afterEach(() => {
     vi.unstubAllGlobals();
 });
@@ -257,25 +271,92 @@ describe("MailShell", () => {
         expect(draftsLink.className).not.toContain("bg-primary/10");
     });
 
-    it("shows the mailbox switcher when more than one mailbox is accessible, marking a shared one", async () => {
-        mockMailboxesAndFolders([mailboxA, mailboxB], [inboxFolder]);
+    it("renders every accessible mailbox's own folder tree at once, marking a shared one, with no mailbox switcher", async () => {
+        mockPerMailboxFolders([mailboxA, mailboxB]);
         render(<MailShell userUid="u1">content</MailShell>);
 
-        await screen.findByLabelText("Mailbox");
-        expect(screen.getByRole("option", { name: "Mailbox A" })).toBeInTheDocument();
-        expect(screen.getByRole("option", { name: "Mailbox B (shared)" })).toBeInTheDocument();
+        // "All Mailboxes" only renders once every mailbox's folders have loaded - the mailbox names alone
+        // also appear in the Compose-from picker's options, hence the tagName filters below.
+        await screen.findByText("All Mailboxes");
+        expect(screen.getAllByText("Mailbox A").some((el) => el.tagName !== "OPTION")).toBe(true);
+        expect(screen.getAllByText("Mailbox B (shared)").some((el) => el.tagName !== "OPTION")).toBe(true);
+        expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
+        const folderLinks = screen.getAllByRole("link").filter((el) => el.getAttribute("href")?.includes("folderUid="));
+        expect(folderLinks.map((el) => el.getAttribute("href"))).toEqual([
+            "/?mailboxUid=mb-a&folderUid=f-inbox-mb-a",
+            "/?mailboxUid=mb-b&folderUid=f-inbox-mb-b",
+        ]);
     });
 
-    it("navigates to the chosen mailbox when the switcher's selection changes", async () => {
-        mockMailboxesAndFolders([mailboxA, mailboxB], [inboxFolder]);
-        const location = mockLocation();
-        const user = userEvent.setup();
+    it("shows an All Mailboxes aggregate section, summing unread counts across mailboxes, only when there's more than one mailbox", async () => {
+        mockPerMailboxFolders([mailboxA, mailboxB]);
         render(<MailShell userUid="u1">content</MailShell>);
 
-        const select = await screen.findByLabelText("Mailbox");
-        await user.selectOptions(select, "mb-b");
+        await screen.findByText("All Mailboxes");
+        const aggregateInbox = screen.getAllByRole("link").find((el) => el.getAttribute("href") === "/?aggregate=inbox")!;
+        // 3 unread in each mailbox's own Inbox.
+        expect(aggregateInbox.textContent).toBe("Inbox6");
+        expect(screen.getAllByRole("link").some((el) => el.getAttribute("href") === "/?aggregate=junk")).toBe(true);
+        expect(screen.getAllByRole("link").some((el) => el.getAttribute("href") === "/?aggregate=outbox")).toBe(false);
+    });
 
-        expect(location.href).toBe("/?mailboxUid=mb-b");
+    it("omits the All Mailboxes section for a single-mailbox user", async () => {
+        mockMailboxesAndFolders([mailboxA], [inboxFolder]);
+        render(<MailShell userUid="u1">content</MailShell>);
+
+        await screen.findByText("content");
+        expect(screen.queryByText("All Mailboxes")).not.toBeInTheDocument();
+    });
+
+    it("shows one mailbox's folder-load failure inline in its own section without blanking the others", async () => {
+        mockFetch((url) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA, mailboxB]);
+            if (url.startsWith("/api/mail/folders") && url.includes("mb-b")) return jsonResponse(500, { message: "b boom" });
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+            throw new Error(`unexpected ${url}`);
+        });
+        render(<MailShell userUid="u1">content</MailShell>);
+
+        expect(await screen.findByText("b boom")).toBeInTheDocument();
+        expect(screen.getAllByRole("link").some((el) => el.getAttribute("href") === "/?mailboxUid=mb-a&folderUid=f-inbox")).toBe(true);
+    });
+
+    it("resolves ?aggregate= to an aggregate pseudo-folder, with no single mailbox/folder, and highlights it", async () => {
+        const location = mockLocation();
+        (location as any).search = "?aggregate=inbox";
+        function Probe() {
+            const { mailboxUid, folderUid, aggregateFolderType } = useMailShell();
+            return <span>{`${mailboxUid}/${folderUid}/${aggregateFolderType}`}</span>;
+        }
+        mockPerMailboxFolders([mailboxA, mailboxB]);
+        render(
+            <MailShell userUid="u1">
+                <Probe />
+            </MailShell>,
+        );
+
+        expect(await screen.findByText("undefined/undefined/inbox")).toBeInTheDocument();
+        await screen.findByText("All Mailboxes");
+        const aggregateInbox = screen.getAllByRole("link").find((el) => el.getAttribute("href") === "/?aggregate=inbox")!;
+        expect(aggregateInbox.className).toContain("bg-primary/10");
+    });
+
+    it("ignores an unrecognized ?aggregate= value, falling back to the normal Inbox selection", async () => {
+        const location = mockLocation();
+        (location as any).search = "?aggregate=outbox";
+        mockMailboxesAndFolders([mailboxA], [draftsFolder, inboxFolder]);
+        render(<MailShell userUid="u1">content</MailShell>);
+
+        const inboxLink = await screen.findByRole("link", { name: /Inbox/ });
+        expect(inboxLink.className).toContain("bg-primary/10");
+    });
+
+    it("offers a compose-from mailbox picker with more than one mailbox, defaulting to the caller's own", async () => {
+        mockPerMailboxFolders([mailboxB, mailboxA]);
+        render(<MailShell userUid="u1">content</MailShell>);
+
+        const picker = await screen.findByLabelText("Compose from");
+        expect(picker).toHaveValue("mb-a");
     });
 
     it("shows an error message when loading folders fails", async () => {
@@ -348,24 +429,27 @@ describe("MailShell", () => {
         expect(folderLinks.map((el) => el.textContent)).toEqual(["Inbox3"]);
     });
 
-    it("honors a ?mailboxUid= query param that names an accessible mailbox", async () => {
+    it("honors a ?mailboxUid= query param that names an accessible mailbox, highlighting that mailbox's Inbox", async () => {
         const location = mockLocation();
         (location as any).search = "?mailboxUid=mb-b";
-        mockMailboxesAndFolders([mailboxA, mailboxB], [inboxFolder]);
+        mockPerMailboxFolders([mailboxA, mailboxB]);
         render(<MailShell userUid="u1">content</MailShell>);
 
-        const select = await screen.findByLabelText("Mailbox");
-        expect(select).toHaveValue("mb-b");
+        await screen.findByText("All Mailboxes");
+        const linkFor = (href: string) => screen.getAllByRole("link").find((el) => el.getAttribute("href") === href)!;
+        expect(linkFor("/?mailboxUid=mb-b&folderUid=f-inbox-mb-b").className).toContain("bg-primary/10");
+        expect(linkFor("/?mailboxUid=mb-a&folderUid=f-inbox-mb-a").className).not.toContain("bg-primary/10");
     });
 
     it("ignores a ?mailboxUid= query param that isn't one of the caller's accessible mailboxes", async () => {
         const location = mockLocation();
         (location as any).search = "?mailboxUid=not-mine";
-        mockMailboxesAndFolders([mailboxA, mailboxB], [inboxFolder]);
+        mockPerMailboxFolders([mailboxA, mailboxB]);
         render(<MailShell userUid="u1">content</MailShell>);
 
-        const select = await screen.findByLabelText("Mailbox");
-        expect(select).toHaveValue("mb-a");
+        await screen.findByText("All Mailboxes");
+        const linkFor = (href: string) => screen.getAllByRole("link").find((el) => el.getAttribute("href") === href)!;
+        expect(linkFor("/?mailboxUid=mb-a&folderUid=f-inbox-mb-a").className).toContain("bg-primary/10");
     });
 
     it("honors a ?folderUid= query param that names one of the mailbox's folders", async () => {
@@ -482,9 +566,9 @@ describe("MailShell", () => {
 
     it("provides the resolved mailbox/folder/lists to children via useMailShell()", async () => {
         function Probe() {
-            const { mailboxUid, folderUid, mailboxes, folders } = useMailShell();
+            const { mailboxUid, folderUid, mailboxes, mailboxFolders } = useMailShell();
             return (
-                <span>{`${mailboxUid}/${folderUid}/${mailboxes.length}/${folders.length}`}</span>
+                <span>{`${mailboxUid}/${folderUid}/${mailboxes.length}/${mailboxFolders[0]?.folders.length}`}</span>
             );
         }
         mockMailboxesAndFolders([mailboxA], [draftsFolder, inboxFolder]);
