@@ -4,7 +4,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { PropsWithChildren } from "react";
 import { Branding } from "@rapidmx/react-shared/branding/brandingApi.js";
-import { CUSTOM_STYLESHEET_LINK_ID } from "@rapidmx/react-shared/branding/useBranding.js";
 
 export interface LayoutProps {
     /** See `apps/www/_layout.tsx`'s `LayoutProps` doc comment — identical mechanism, supplied by
@@ -12,12 +11,13 @@ export interface LayoutProps {
     branding?: Branding;
 }
 
+/** Unlike the other apps, never links the admin-configured custom stylesheet: the escrow console handles escrow
+ * key material, so no admin-supplied CSS is loaded on it. */
 export default function Layout({ children, branding }: PropsWithChildren<LayoutProps>) {
     const title = branding?.title || branding?.companyName
         ? `${branding?.title || branding?.companyName}: Escrow Console`
         : "RapidMX: Escrow Console";
     const iconHref = branding?.iconUrl || branding?.logoUrl || "/images/logo.svg";
-    const stylesheetHref = branding?.stylesheetUrl;
 
     return (
         <html lang="en">
@@ -33,7 +33,6 @@ export default function Layout({ children, branding }: PropsWithChildren<LayoutP
                     rel="stylesheet"
                     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
                 />
-                {stylesheetHref && <link rel="stylesheet" href={stylesheetHref} id={CUSTOM_STYLESHEET_LINK_ID} />}
             </head>
             <body>{children}</body>
         </html>

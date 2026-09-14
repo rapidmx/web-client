@@ -45,13 +45,20 @@ export type SettingsPrivacyPageProps = Omit<SettingsShellProps, "active">;
 export default function SettingsPrivacyPage(props: SettingsPrivacyPageProps) {
     return (
         <SettingsShell {...props} active="privacy">
-            <PrivacyContent />
+            <PrivacyContent userUid={props.userUid} />
         </SettingsShell>
     );
 }
 
-function PrivacyContent() {
-    const { mailboxUid } = useSettingsShell();
+function PrivacyContent({ userUid }: { userUid?: string }) {
+    const { mailboxUid, mailboxes } = useSettingsShell();
+    // Data export and account erasure always act on the *caller's own* mailbox server-side (neither
+    // request carries a mailbox), whatever the switcher shows - so both are only offered while the
+    // switcher is on that mailbox, and name it explicitly. Import targets the selected mailbox's own
+    // folders, so it stays available for any selected mailbox.
+    const selected = mailboxes.find((mb) => mb.uid === mailboxUid)!;
+    const ownMailbox = mailboxes.find((mb) => mb.ownerUserUid !== undefined && mb.ownerUserUid === userUid);
+    const selectedIsOwn = selected.uid === ownMailbox?.uid;
 
     return (
         <div className="flex-1 min-w-0 overflow-y-auto p-6">
@@ -61,15 +68,34 @@ function PrivacyContent() {
                     <p className="text-sm text-text-muted">Export or manage the data associated with this mailbox.</p>
                 </div>
 
-                <ExportSection mailboxUid={mailboxUid} />
+                {selectedIsOwn ? (
+                    <ExportSection mailboxUid={mailboxUid} mailboxLabel={`${selected.displayName} (${selected.primarySmtpAddress})`} />
+                ) : (
+                    <OwnMailboxOnlyNotice ownMailboxLabel={ownMailbox && `${ownMailbox.displayName} (${ownMailbox.primarySmtpAddress})`} />
+                )}
                 <ImportSection mailboxUid={mailboxUid} />
-                <ErasureSection />
+                {selectedIsOwn && <ErasureSection mailboxLabel={`${selected.displayName} (${selected.primarySmtpAddress})`} />}
             </div>
         </div>
     );
 }
 
-function ExportSection({ mailboxUid }: { mailboxUid?: string }) {
+function OwnMailboxOnlyNotice({ ownMailboxLabel }: { ownMailboxLabel?: string }) {
+    return (
+        <div>
+            <h2 className="text-sm font-semibold mb-2">Export or delete my data</h2>
+            <p className="text-xs text-text-muted">
+                Exporting your data and deleting your account only apply to your own mailbox, not one shared with
+                you.{" "}
+                {ownMailboxLabel
+                    ? `Switch to ${ownMailboxLabel} to manage them.`
+                    : "You don't have a mailbox of your own to manage here."}
+            </p>
+        </div>
+    );
+}
+
+function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mailboxLabel: string }) {
     const [requests, setRequests] = useState<DataExportRequest[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -85,17 +111,19 @@ function ExportSection({ mailboxUid }: { mailboxUid?: string }) {
         const seq = ++loadSeq.current;
         return listExportRequests()
             .then((data) => {
-                if (seq === loadSeq.current) setRequests(data);
+                if (seq === loadSeq.current) {
+                    setRequests(data);
+                }
             })
             .catch((err) => {
-                if (seq === loadSeq.current)
+                if (seq === loadSeq.current) {
                     setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your export requests.");
+                }
             });
     }
 
     useEffect(() => {
-        loadRequests().finally(() => setLoading(false));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        void loadRequests().finally(() => setLoading(false));
     }, [mailboxUid]);
 
     async function handleCreate(e: FormEvent) {
@@ -116,7 +144,7 @@ function ExportSection({ mailboxUid }: { mailboxUid?: string }) {
         <div>
             <h2 className="text-sm font-semibold mb-2">Export my data</h2>
             <p className="text-xs text-text-muted mb-3">
-                Requests a copy of this mailbox&rsquo;s messages, contacts, calendar, tasks, and notes. This runs
+                Requests a copy of <strong>{mailboxLabel}</strong>&rsquo;s messages, contacts, calendar, tasks, and notes. This runs
                 in the background and can take a few minutes — check back here for a download link once it&rsquo;s
                 ready.
             </p>
@@ -185,6 +213,7 @@ function ExportSection({ mailboxUid }: { mailboxUid?: string }) {
 function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
     const [folders, setFolders] = useState<Folder[]>([]);
     const [targetFolderUid, setTargetFolderUid] = useState("");
+    const [foldersError, setFoldersError] = useState<string | null>(null);
     const [requests, setRequests] = useState<MailboxImportRequest[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -200,26 +229,32 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
         const seq = ++loadSeq.current;
         return listImportRequests()
             .then((data) => {
-                if (seq === loadSeq.current) setRequests(data);
+                if (seq === loadSeq.current) {
+                    setRequests(data);
+                }
             })
             .catch((err) => {
-                if (seq === loadSeq.current)
+                if (seq === loadSeq.current) {
                     setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your import requests.");
+                }
             });
     }
 
     useEffect(() => {
         // Only reachable once mailboxUid is resolved - SettingsShell never renders this page's children
         // until then, the same invariant every other settings page in this codebase already relies on.
-        Promise.all([
-            listFolders(mailboxUid!).then((all) => {
-                const mailFolders = all.filter((f) => !NON_MAIL_FOLDER_TYPES.has(f.type));
-                setFolders(mailFolders);
-                setTargetFolderUid(mailFolders[0]?.uid ?? "");
-            }),
+        void Promise.all([
+            listFolders(mailboxUid!)
+                .then((all) => {
+                    const mailFolders = all.filter((f) => !NON_MAIL_FOLDER_TYPES.has(f.type));
+                    setFolders(mailFolders);
+                    setTargetFolderUid(mailFolders[0]?.uid ?? "");
+                })
+                .catch((err) =>
+                    setFoldersError(err instanceof ApiRequestError ? err.message : "Could not load this mailbox's folders."),
+                ),
             loadRequests(),
         ]).finally(() => setLoading(false));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mailboxUid]);
 
     function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
@@ -281,6 +316,7 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
                 onChange={handleFileChange}
             />
 
+            {foldersError && <Alert>{foldersError}</Alert>}
             {uploadError && <Alert>{uploadError}</Alert>}
             {loadError && <Alert>{loadError}</Alert>}
 
@@ -321,7 +357,7 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
     );
 }
 
-function ErasureSection() {
+function ErasureSection({ mailboxLabel }: { mailboxLabel: string }) {
     const [requests, setRequests] = useState<DataSubjectErasureRequest[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -336,8 +372,7 @@ function ErasureSection() {
     }
 
     useEffect(() => {
-        loadRequests().finally(() => setLoading(false));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        void loadRequests().finally(() => setLoading(false));
     }, []);
 
     const hasPending = requests.some((request) => request.status === "pending");
@@ -364,7 +399,7 @@ function ErasureSection() {
         <div>
             <h2 className="text-sm font-semibold mb-2">Delete my account</h2>
             <p className="text-xs text-text-muted mb-3">
-                Permanently and irreversibly deletes this mailbox and everything in it, once a compliance
+                Permanently and irreversibly deletes <strong>{mailboxLabel}</strong> and everything in it, once a compliance
                 administrator reviews and approves the request. There is no way to cancel a request or undo
                 the deletion once it runs.
             </p>
@@ -411,7 +446,7 @@ function ErasureSection() {
 
             <Modal open={confirming} onClose={closeConfirm} title="Delete my account">
                 <p className="text-sm mb-5">
-                    This permanently deletes this mailbox and everything in it — messages, contacts,
+                    This permanently deletes {mailboxLabel} and everything in it — messages, contacts,
                     calendar, tasks, and notes — once approved. This cannot be undone and cannot be
                     cancelled once submitted.
                 </p>

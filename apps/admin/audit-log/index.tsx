@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { AuditLogEntry, AuditLogFilters, listAuditLog } from "@rapidmx/react-shared/admin/auditLogApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
@@ -10,6 +10,8 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 const PAGE_SIZE = 25;
+/** How long typing in a filter box has to pause before the log is re-fetched. */
+export const FILTER_DEBOUNCE_MS = 300;
 const FILTER_KEYS: (keyof AuditLogFilters)[] = ["mailboxUid", "actorUserUid", "action", "targetType"];
 
 /** Seeds the filter form from the query string on first render — lets a link (e.g. a future "View audit
@@ -39,29 +41,54 @@ export default function AuditLogPage(props: Omit<AdminShellProps, "active">) {
 }
 
 function AuditLogContent() {
+    // `filters` is what the boxes show; `queryFilters` is what was last fetched - it follows `filters` once typing
+    // pauses, and stays `null` until the URL's filters are read so no unfiltered fetch goes out first.
     const [filters, setFilters] = useState<AuditLogFilters>({});
+    const [queryFilters, setQueryFilters] = useState<AuditLogFilters | null>(null);
     const [page, setPage] = useState(0);
     const [entries, setEntries] = useState<AuditLogEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const debounceTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
     useEffect(() => {
-        setFilters(readFiltersFromUrl());
+        const initial = readFiltersFromUrl();
+        setFilters(initial);
+        setQueryFilters(initial);
+        return () => clearTimeout(debounceTimer.current);
     }, []);
 
     useEffect(() => {
+        if (!queryFilters) {
+            return;
+        }
+        // Only the latest filters/page's response is applied, so a slow earlier fetch can't overwrite it.
+        let cancelled = false;
         setLoading(true);
         setError(null);
-        listAuditLog(filters, { page, limit: PAGE_SIZE })
-            .then(setEntries)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load the audit log."))
-            .finally(() => setLoading(false));
-    }, [filters, page]);
+        listAuditLog(queryFilters, { page, limit: PAGE_SIZE })
+            .then((data) => {
+                if (!cancelled) setEntries(data);
+            })
+            .catch((err) => {
+                if (!cancelled) setError(err instanceof ApiRequestError ? err.message : "Could not load the audit log.");
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [queryFilters, page]);
 
     function updateFilter(key: keyof AuditLogFilters, value: string) {
         const next: AuditLogFilters = { ...filters, [key]: value || undefined };
         setFilters(next);
-        setPage(0);
+        clearTimeout(debounceTimer.current);
+        debounceTimer.current = setTimeout(() => {
+            setQueryFilters(next);
+            setPage(0);
+        }, FILTER_DEBOUNCE_MS);
 
         const params = new URLSearchParams();
         for (const k of FILTER_KEYS) {

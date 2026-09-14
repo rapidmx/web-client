@@ -630,4 +630,56 @@ describe("SettingsPrivacyPage", () => {
 
         expect(await screen.findByText("Could not submit this request.")).toBeInTheDocument();
     });
+    describe("mailbox scoping", () => {
+        const sharedMailbox = { ...mailbox, uid: "mb2", ownerUserUid: undefined, displayName: "Team Mail", primarySmtpAddress: "team@example.com" };
+
+        afterEach(() => {
+            window.history.pushState(null, "", "/");
+        });
+
+        it("names the caller's own mailbox as the export/erasure target", async () => {
+            mockShell((url) => (url === "/api/mail/data-export-requests" ? jsonResponse(200, []) : undefined));
+            render(<SettingsPrivacyPage userUid="u1" />);
+
+            expect(await screen.findByText("No export requests yet.")).toBeInTheDocument();
+            expect(screen.getAllByText("My Mail (u1@example.com)").length).toBeGreaterThanOrEqual(2);
+        });
+
+        it("hides export and erasure while a shared mailbox is selected, pointing at the caller's own mailbox", async () => {
+            window.history.pushState(null, "", "/settings/privacy?mailboxUid=mb2");
+            const fetchMock = mockShell((url) => (url.startsWith("/api/mail/mailboxes?") || url === "/api/mail/mailboxes" ? jsonResponse(200, [mailbox, sharedMailbox]) : undefined));
+            render(<SettingsPrivacyPage userUid="u1" />);
+
+            expect(await screen.findByText(/Switch to My Mail \(u1@example.com\) to manage them\./)).toBeInTheDocument();
+            expect(await screen.findByText("No import requests yet.")).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Request export" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Request account erasure" })).not.toBeInTheDocument();
+            expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/mail/data-export-requests"))).toBe(false);
+        });
+
+        it("explains there's nothing to manage when the caller has no mailbox of their own", async () => {
+            mockShell((url) => (url.startsWith("/api/mail/mailboxes?") || url === "/api/mail/mailboxes" ? jsonResponse(200, [sharedMailbox]) : undefined));
+            render(<SettingsPrivacyPage userUid="u1" />);
+
+            expect(await screen.findByText(/You don't have a mailbox of your own to manage here\./)).toBeInTheDocument();
+        });
+    });
+
+    it("shows the server's own message when loading the import destination folders fails", async () => {
+        mockShell((url) => (url.startsWith("/api/mail/folders") ? jsonResponse(503, { message: "folders unavailable" }) : undefined));
+        render(<SettingsPrivacyPage userUid="u1" />);
+
+        expect(await screen.findByText("folders unavailable")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Upload Mbox or PST file" })).toBeDisabled();
+    });
+
+    it("shows a generic message when loading the import destination folders fails with a non-API error", async () => {
+        mockShell((url) => {
+            if (url.startsWith("/api/mail/folders")) throw new TypeError("network down");
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+
+        expect(await screen.findByText("Could not load this mailbox's folders.")).toBeInTheDocument();
+    });
 });

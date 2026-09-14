@@ -143,6 +143,23 @@ describe("PluginsPage", () => {
         expect(fetchMock.mock.calls.filter((c) => c[0] === "/api/system/plugins/status").length).toBeGreaterThanOrEqual(3);
     }, 20000);
 
+    it("shows server-wide plugin errors, reported under the name \"*\", in the banner", async () => {
+        mockPlugins({
+            status: {
+                hash: "current",
+                instances: [
+                    instance({ errors: [{ name: "*", message: "plugin set failed to install" }, { name: "@rapidmx/activesync", message: "row error" }] }),
+                    instance({ instance: "pod-b", hash: "old", errors: [{ name: "*", message: "registry unreachable" }] }),
+                ],
+            },
+        });
+        renderPage();
+        expect(await screen.findByText("pod-a: plugin set failed to install")).toBeInTheDocument();
+        expect(screen.getByText("pod-b: registry unreachable")).toBeInTheDocument();
+        expect(screen.getByText(/Plugins couldn.t be loaded/)).toBeInTheDocument();
+        expect(screen.queryByText("pod-a: row error", { selector: "li" })).not.toBeInTheDocument();
+    });
+
     it("keeps the last status when a refresh fails, and keeps polling the rollout", async () => {
         let polls = 0;
         mockPlugins({

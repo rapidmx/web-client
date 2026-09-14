@@ -105,7 +105,7 @@ describe("ResourceSettingsCard", () => {
         );
     });
 
-    it("sends undefined for capacity/booking window/max duration when cleared", async () => {
+    it("sends null for capacity/booking window/max duration when cleared, so the server clears them", async () => {
         let requestBody: any;
         mockFetch((url, init) => {
             requestBody = JSON.parse(init.body as string);
@@ -120,9 +120,9 @@ describe("ResourceSettingsCard", () => {
         await user.click(screen.getByRole("button", { name: "Save resource settings" }));
 
         await vi.waitFor(() => expect(requestBody).toBeDefined());
-        expect(requestBody.resourceCapacity).toBeUndefined();
-        expect(requestBody.bookingWindowDays).toBeUndefined();
-        expect(requestBody.maxDurationMinutes).toBeUndefined();
+        expect(requestBody.resourceCapacity).toBeNull();
+        expect(requestBody.bookingWindowDays).toBeNull();
+        expect(requestBody.maxDurationMinutes).toBeNull();
     });
 
     it("shows an error message when saving fails", async () => {

@@ -82,6 +82,86 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+describe("DataRequestsPage — paging", () => {
+    it("requests newest-first pages of 50 and appends the next page with Load more, skipping repeats", async () => {
+        const firstPage = Array.from({ length: 50 }, (_, i) => exportRequest({ uid: `der${i}`, mailboxUid: `mb-${i}` }));
+        const fetchMock = mockShell((url) => {
+            if (url === "/api/mail/data-export-requests?limit=50&page=0") return jsonResponse(200, firstPage);
+            if (url === "/api/mail/data-export-requests?limit=50&page=1") {
+                return jsonResponse(200, [exportRequest({ uid: "der49", mailboxUid: "mb-49" }), exportRequest({ uid: "der50", mailboxUid: "mb-50" })]);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        expect(await screen.findByText(/^mb-49/)).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Load more export requests" }));
+
+        expect(await screen.findByText(/^mb-50/)).toBeInTheDocument();
+        expect(screen.getAllByText(/^mb-49/)).toHaveLength(1);
+        expect(screen.queryByRole("button", { name: "Load more export requests" })).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.map(([url]) => url)).toContain("/api/mail/erasure-requests?limit=50&page=0");
+        expect(fetchMock.mock.calls.map(([url]) => url)).toContain("/api/mail/mailbox-import-requests?limit=50&page=0");
+    });
+
+    it("shows a Load more failure and drops a Load more response that lands after a newer reload", async () => {
+        const firstPage = Array.from({ length: 50 }, (_, i) => erasureRequest({ uid: `eer${i}`, mailboxUid: `mb-${i}`, status: "completed" }));
+        let moreCalls = 0;
+        mockShell((url) => {
+            if (url === "/api/mail/erasure-requests?limit=50&page=0") return jsonResponse(200, firstPage);
+            if (url === "/api/mail/erasure-requests?limit=50&page=1") {
+                moreCalls++;
+                if (moreCalls === 1) return jsonResponse(500, { message: "page failed" });
+                if (moreCalls === 2) throw new TypeError("network down");
+                return new Promise<Response>(() => undefined) as unknown as Response;
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        await user.click(await screen.findByRole("button", { name: "Load more erasure requests" }));
+        expect(await screen.findByText("page failed")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Load more erasure requests" }));
+        expect(await screen.findByText("Could not load erasure requests.")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Load more erasure requests" }));
+        expect(screen.getByRole("button", { name: "Load more erasure requests" })).toBeDisabled();
+    });
+
+    it("drops a Load more response (or failure) that lands after a newer reload", async () => {
+        const firstPage = Array.from({ length: 50 }, (_, i) => exportRequest({ uid: `der${i}`, mailboxUid: `mb-${i}` }));
+        const pendingMore: ((response: Response) => void)[] = [];
+        mockShell((url, init) => {
+            if (url === "/api/mail/data-export-requests" && init?.method === "POST") return jsonResponse(200, exportRequest());
+            if (url === "/api/mail/data-export-requests?limit=50&page=0") return jsonResponse(200, firstPage);
+            if (url === "/api/mail/data-export-requests?limit=50&page=1") {
+                return new Promise<Response>((resolve) => pendingMore.push(resolve)) as unknown as Response;
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        await user.click(await screen.findByRole("button", { name: "Load more export requests" }));
+        await user.type(screen.getByLabelText("Export mailbox UID"), "mb-new");
+        await user.click(screen.getByRole("button", { name: "Create export" }));
+        await vi.waitFor(() => expect(screen.getByLabelText("Export mailbox UID")).toHaveValue(""));
+
+        pendingMore[0](jsonResponse(200, [exportRequest({ uid: "der-stale", mailboxUid: "mb-stale" })]));
+        await vi.waitFor(() => expect(screen.getByRole("button", { name: "Load more export requests" })).not.toBeDisabled());
+        expect(screen.queryByText(/^mb-stale/)).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Load more export requests" }));
+        await user.type(screen.getByLabelText("Export mailbox UID"), "mb-new");
+        await user.click(screen.getByRole("button", { name: "Create export" }));
+        await vi.waitFor(() => expect(screen.getByLabelText("Export mailbox UID")).toHaveValue(""));
+        pendingMore[1](jsonResponse(500, { message: "stale failure" }));
+        await vi.waitFor(() => expect(screen.getByRole("button", { name: "Load more export requests" })).not.toBeDisabled());
+        expect(screen.queryByText("stale failure")).not.toBeInTheDocument();
+    });
+});
+
 describe("DataRequestsPage — export requests", () => {
     it("shows an empty state and disables Create export until a mailbox UID is entered", async () => {
         mockShell();
@@ -92,7 +172,7 @@ describe("DataRequestsPage — export requests", () => {
 
     it("lists existing export requests, with a Download link only once ready", async () => {
         mockShell((url) =>
-            url === "/api/mail/data-export-requests" ? jsonResponse(200, [exportRequest({ status: "ready" })]) : undefined,
+            url === "/api/mail/data-export-requests?limit=50&page=0" ? jsonResponse(200, [exportRequest({ status: "ready" })]) : undefined,
         );
         render(<DataRequestsPage userUid="admin-1" />);
         expect(await screen.findByRole("link", { name: "Download" })).toHaveAttribute(
@@ -103,7 +183,7 @@ describe("DataRequestsPage — export requests", () => {
 
     it("shows the failure reason for a failed export request", async () => {
         mockShell((url) =>
-            url === "/api/mail/data-export-requests"
+            url === "/api/mail/data-export-requests?limit=50&page=0"
                 ? jsonResponse(200, [exportRequest({ status: "failed", errorMessage: "The requested mailbox no longer exists." })])
                 : undefined,
         );
@@ -112,14 +192,14 @@ describe("DataRequestsPage — export requests", () => {
     });
 
     it("shows the server's own message when loading export requests fails", async () => {
-        mockShell((url) => (url === "/api/mail/data-export-requests" ? jsonResponse(500, { message: "server unavailable" }) : undefined));
+        mockShell((url) => (url === "/api/mail/data-export-requests?limit=50&page=0" ? jsonResponse(500, { message: "server unavailable" }) : undefined));
         render(<DataRequestsPage userUid="admin-1" />);
         expect(await screen.findByText("server unavailable")).toBeInTheDocument();
     });
 
     it("shows a generic message when loading export requests fails with a non-API error", async () => {
         mockShell((url) => {
-            if (url === "/api/mail/data-export-requests") throw new TypeError("network down");
+            if (url === "/api/mail/data-export-requests?limit=50&page=0") throw new TypeError("network down");
             return undefined;
         });
         render(<DataRequestsPage userUid="admin-1" />);
@@ -188,7 +268,7 @@ describe("DataRequestsPage — export requests", () => {
         let resolveInitialLoad!: (response: Response) => void;
         let getCallCount = 0;
         mockShell((url, init) => {
-            if (url === "/api/mail/data-export-requests" && (init?.method ?? "GET") === "GET") {
+            if (url === "/api/mail/data-export-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") {
                 getCallCount++;
                 if (getCallCount === 1) {
                     return new Promise<Response>((resolve) => {
@@ -230,7 +310,7 @@ describe("DataRequestsPage — export requests", () => {
         let resolveInitialLoad!: (response: Response) => void;
         let getCallCount = 0;
         mockShell((url, init) => {
-            if (url === "/api/mail/data-export-requests" && (init?.method ?? "GET") === "GET") {
+            if (url === "/api/mail/data-export-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") {
                 getCallCount++;
                 if (getCallCount === 1) {
                     return new Promise<Response>((resolve) => {
@@ -265,7 +345,7 @@ describe("DataRequestsPage — import requests", () => {
 
     it("lists existing import requests, showing counts once completed", async () => {
         mockShell((url) =>
-            url === "/api/mail/mailbox-import-requests"
+            url === "/api/mail/mailbox-import-requests?limit=50&page=0"
                 ? jsonResponse(200, [importRequest({ status: "completed", importedCount: 10, failedCount: 1 })])
                 : undefined,
         );
@@ -275,7 +355,7 @@ describe("DataRequestsPage — import requests", () => {
 
     it("defaults imported count to 0 and omits the failed-count clause when both are unset", async () => {
         mockShell((url) =>
-            url === "/api/mail/mailbox-import-requests"
+            url === "/api/mail/mailbox-import-requests?limit=50&page=0"
                 ? jsonResponse(200, [importRequest({ status: "completed", importedCount: undefined, failedCount: undefined })])
                 : undefined,
         );
@@ -298,7 +378,7 @@ describe("DataRequestsPage — import requests", () => {
 
     it("shows the failure reason for a failed import request", async () => {
         mockShell((url) =>
-            url === "/api/mail/mailbox-import-requests"
+            url === "/api/mail/mailbox-import-requests?limit=50&page=0"
                 ? jsonResponse(200, [importRequest({ status: "failed", errorMessage: "boom" })])
                 : undefined,
         );
@@ -307,14 +387,14 @@ describe("DataRequestsPage — import requests", () => {
     });
 
     it("shows the server's own message when loading import requests fails", async () => {
-        mockShell((url) => (url === "/api/mail/mailbox-import-requests" ? jsonResponse(500, { message: "server unavailable" }) : undefined));
+        mockShell((url) => (url === "/api/mail/mailbox-import-requests?limit=50&page=0" ? jsonResponse(500, { message: "server unavailable" }) : undefined));
         render(<DataRequestsPage userUid="admin-1" />);
         expect(await screen.findByText("server unavailable")).toBeInTheDocument();
     });
 
     it("shows a generic message when loading import requests fails with a non-API error", async () => {
         mockShell((url) => {
-            if (url === "/api/mail/mailbox-import-requests") throw new TypeError("network down");
+            if (url === "/api/mail/mailbox-import-requests?limit=50&page=0") throw new TypeError("network down");
             return undefined;
         });
         render(<DataRequestsPage userUid="admin-1" />);
@@ -570,7 +650,7 @@ describe("DataRequestsPage — erasure requests", () => {
 
     it("shows Approve/Deny only for a pending request, and the denial reason for a denied one", async () => {
         mockShell((url) =>
-            url === "/api/mail/erasure-requests"
+            url === "/api/mail/erasure-requests?limit=50&page=0"
                 ? jsonResponse(200, [erasureRequest({ uid: "e1", status: "pending" }), erasureRequest({ uid: "e2", status: "denied", reason: "not verified" })])
                 : undefined,
         );
@@ -582,21 +662,21 @@ describe("DataRequestsPage — erasure requests", () => {
 
     it("shows the purged-record count for a completed request", async () => {
         mockShell((url) =>
-            url === "/api/mail/erasure-requests" ? jsonResponse(200, [erasureRequest({ status: "completed", purgedCount: 128 })]) : undefined,
+            url === "/api/mail/erasure-requests?limit=50&page=0" ? jsonResponse(200, [erasureRequest({ status: "completed", purgedCount: 128 })]) : undefined,
         );
         render(<DataRequestsPage userUid="admin-1" />);
         expect(await screen.findByText(/128 records purged/)).toBeInTheDocument();
     });
 
     it("shows the server's own message when loading erasure requests fails", async () => {
-        mockShell((url) => (url === "/api/mail/erasure-requests" ? jsonResponse(500, { message: "server unavailable" }) : undefined));
+        mockShell((url) => (url === "/api/mail/erasure-requests?limit=50&page=0" ? jsonResponse(500, { message: "server unavailable" }) : undefined));
         render(<DataRequestsPage userUid="admin-1" />);
         expect(await screen.findByText("server unavailable")).toBeInTheDocument();
     });
 
     it("shows a generic message when loading erasure requests fails with a non-API error", async () => {
         mockShell((url) => {
-            if (url === "/api/mail/erasure-requests") throw new TypeError("network down");
+            if (url === "/api/mail/erasure-requests?limit=50&page=0") throw new TypeError("network down");
             return undefined;
         });
         render(<DataRequestsPage userUid="admin-1" />);
@@ -610,7 +690,7 @@ describe("DataRequestsPage — erasure requests", () => {
                 approved = true;
                 return jsonResponse(200, erasureRequest({ status: "approved" }));
             }
-            if (url === "/api/mail/erasure-requests" && (init?.method ?? "GET") === "GET") {
+            if (url === "/api/mail/erasure-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") {
                 return jsonResponse(200, [erasureRequest({ status: approved ? "approved" : "pending" })]);
             }
             return undefined;
@@ -619,8 +699,29 @@ describe("DataRequestsPage — erasure requests", () => {
         render(<DataRequestsPage userUid="admin-1" />);
 
         await user.click(await screen.findByRole("button", { name: "Approve" }));
+        // Nothing is approved until the irreversible-erasure confirmation, naming the mailbox, is accepted.
+        const dialog = await screen.findByRole("dialog");
+        expect(within(dialog).getByText("mb1")).toBeInTheDocument();
+        expect(within(dialog).getByText("This is irreversible and cannot be undone.")).toBeInTheDocument();
+        expect(approved).toBe(false);
+        await user.click(within(dialog).getByRole("button", { name: "Erase mailbox" }));
 
         expect(await screen.findByText("approved")).toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("cancels the approve confirmation without approving", async () => {
+        const fetchMock = mockShell((url) =>
+            url === "/api/mail/erasure-requests?limit=50&page=0" ? jsonResponse(200, [erasureRequest()]) : undefined,
+        );
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        await user.click(await screen.findByRole("button", { name: "Approve" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url]) => (url as string).endsWith("/approve"))).toBe(false);
     });
 
     it("shows the server's own message when approval fails, e.g. an active legal hold", async () => {
@@ -628,13 +729,14 @@ describe("DataRequestsPage — erasure requests", () => {
             if (url === "/api/mail/erasure-requests/eer1/approve" && init?.method === "POST") {
                 return jsonResponse(409, { message: "This action is blocked by an active legal hold: matter-1." });
             }
-            if (url === "/api/mail/erasure-requests" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
+            if (url === "/api/mail/erasure-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
             return undefined;
         });
         const user = userEvent.setup();
         render(<DataRequestsPage userUid="admin-1" />);
 
         await user.click(await screen.findByRole("button", { name: "Approve" }));
+        await user.click(await screen.findByRole("button", { name: "Erase mailbox" }));
 
         expect(await screen.findByText("This action is blocked by an active legal hold: matter-1.")).toBeInTheDocument();
     });
@@ -642,13 +744,14 @@ describe("DataRequestsPage — erasure requests", () => {
     it("shows a generic message when approval fails with a non-API error", async () => {
         mockShell((url, init) => {
             if (url === "/api/mail/erasure-requests/eer1/approve" && init?.method === "POST") throw new TypeError("network down");
-            if (url === "/api/mail/erasure-requests" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
+            if (url === "/api/mail/erasure-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
             return undefined;
         });
         const user = userEvent.setup();
         render(<DataRequestsPage userUid="admin-1" />);
 
         await user.click(await screen.findByRole("button", { name: "Approve" }));
+        await user.click(await screen.findByRole("button", { name: "Erase mailbox" }));
 
         expect(await screen.findByText("Could not approve this request.")).toBeInTheDocument();
     });
@@ -661,7 +764,7 @@ describe("DataRequestsPage — erasure requests", () => {
                 expect(JSON.parse(init.body as string)).toEqual({ reason: "not verified" });
                 return jsonResponse(200, erasureRequest({ status: "denied", reason: "not verified" }));
             }
-            if (url === "/api/mail/erasure-requests" && (init?.method ?? "GET") === "GET") {
+            if (url === "/api/mail/erasure-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") {
                 return jsonResponse(200, [erasureRequest(denied ? { status: "denied", reason: "not verified" } : {})]);
             }
             return undefined;
@@ -679,7 +782,7 @@ describe("DataRequestsPage — erasure requests", () => {
     });
 
     it("closes the deny modal via Cancel without submitting", async () => {
-        const fetchMock = mockShell((url) => (url === "/api/mail/erasure-requests" ? jsonResponse(200, [erasureRequest()]) : undefined));
+        const fetchMock = mockShell((url) => (url === "/api/mail/erasure-requests?limit=50&page=0" ? jsonResponse(200, [erasureRequest()]) : undefined));
         const user = userEvent.setup();
         render(<DataRequestsPage userUid="admin-1" />);
 
@@ -692,7 +795,7 @@ describe("DataRequestsPage — erasure requests", () => {
     });
 
     it("closes the deny modal via its own close button", async () => {
-        mockShell((url) => (url === "/api/mail/erasure-requests" ? jsonResponse(200, [erasureRequest()]) : undefined));
+        mockShell((url) => (url === "/api/mail/erasure-requests?limit=50&page=0" ? jsonResponse(200, [erasureRequest()]) : undefined));
         const user = userEvent.setup();
         render(<DataRequestsPage userUid="admin-1" />);
 
@@ -708,7 +811,7 @@ describe("DataRequestsPage — erasure requests", () => {
             if (url === "/api/mail/erasure-requests/eer1/deny" && init?.method === "POST") {
                 return jsonResponse(409, { message: "This request is not pending review." });
             }
-            if (url === "/api/mail/erasure-requests" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
+            if (url === "/api/mail/erasure-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
             return undefined;
         });
         const user = userEvent.setup();
@@ -725,7 +828,7 @@ describe("DataRequestsPage — erasure requests", () => {
     it("shows a generic message when denial fails with a non-API error", async () => {
         mockShell((url, init) => {
             if (url === "/api/mail/erasure-requests/eer1/deny" && init?.method === "POST") throw new TypeError("network down");
-            if (url === "/api/mail/erasure-requests" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
+            if (url === "/api/mail/erasure-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
             return undefined;
         });
         const user = userEvent.setup();

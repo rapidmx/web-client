@@ -13,7 +13,7 @@ import {
     updateMailFilterRule,
 } from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import RuleBuilder, { RuleBuilderValue } from "../../../shared/components/rules/RuleBuilder.js";
+import RuleBuilder, { hasConditions, RuleBuilderValue } from "../../../shared/components/rules/RuleBuilder.js";
 import { MAIL_FILTER_CONDITION_FIELDS, buildMailFilterActionTypes } from "./_mailFilterRuleConfig.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -42,12 +42,18 @@ function MailFilterDetailContent({ uid }: { uid: string }) {
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [showValidation, setShowValidation] = useState(false);
 
+    // The folder picker lists the *rule's own* mailbox's folders, not the switcher's - a rule opened by
+    // direct link (or after switching mailboxes) can belong to a different mailbox than `mailboxUid`,
+    // and a move-to-folder action must only ever offer folders the rule can actually target.
+    const ruleMailboxUid = original?.mailboxUid;
     useEffect(() => {
-        // `SettingsShell` only ever renders its children once `mailboxUid` has resolved — same
-        // established non-null pattern as `apps/www/settings/auto-reply/index.tsx`.
-        listFolders(mailboxUid!).then(setFolders).catch(() => setFolders([]));
-    }, [mailboxUid]);
+        if (!ruleMailboxUid) {
+            return;
+        }
+        listFolders(ruleMailboxUid).then(setFolders).catch(() => setFolders([]));
+    }, [ruleMailboxUid]);
 
     useEffect(() => {
         setLoading(true);
@@ -81,6 +87,11 @@ function MailFilterDetailContent({ uid }: { uid: string }) {
             setError("A name is required.");
             return;
         }
+        if (!hasConditions(rule!.conditions)) {
+            setShowValidation(true);
+            setError("Add at least one condition. A filter without conditions would apply to every message.");
+            return;
+        }
 
         setSaving(true);
         setSaved(false);
@@ -100,7 +111,7 @@ function MailFilterDetailContent({ uid }: { uid: string }) {
         }
     }
 
-    if (loading || folders === null) {
+    if (loading) {
         return <p className="p-6 text-sm text-text-muted">Loading&hellip;</p>;
     }
     if (error && !original) {
@@ -116,6 +127,10 @@ function MailFilterDetailContent({ uid }: { uid: string }) {
                 <Alert>Mail filter not found.</Alert>
             </div>
         );
+    }
+    // The folder list is fetched for the rule's own mailbox, so it can only start once the rule has loaded.
+    if (folders === null) {
+        return <p className="p-6 text-sm text-text-muted">Loading&hellip;</p>;
     }
 
     return (
@@ -141,6 +156,7 @@ function MailFilterDetailContent({ uid }: { uid: string }) {
                         onChange={setRule}
                         conditionFields={MAIL_FILTER_CONDITION_FIELDS}
                         actionTypes={buildMailFilterActionTypes(folders)}
+                        showValidation={showValidation}
                     />
 
                     <div>

@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -73,6 +73,7 @@ describe("RetentionPolicyPage", () => {
         await user.type(screen.getByLabelText("Message retention (days)"), "30");
         await user.type(screen.getByLabelText("Audit log retention (days)"), "2190");
         await user.click(screen.getByRole("button", { name: "Save" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older mail?" })).getByRole("button", { name: "Save and delete older mail" }));
 
         expect(await screen.findByText("Saved.")).toBeInTheDocument();
         const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
@@ -109,6 +110,7 @@ describe("RetentionPolicyPage", () => {
 
         await user.type(screen.getByLabelText("Message retention (days)"), "30");
         await user.click(screen.getByRole("button", { name: "Save" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older mail?" })).getByRole("button", { name: "Save and delete older mail" }));
 
         await vi.waitFor(() => expect(screen.getByText("Saved.")).toBeInTheDocument());
         const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
@@ -149,6 +151,7 @@ describe("RetentionPolicyPage", () => {
 
         await user.type(screen.getByLabelText("Message retention (days)"), "30");
         await user.click(screen.getByRole("button", { name: "Save" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older mail?" })).getByRole("button", { name: "Save and delete older mail" }));
 
         expect(await screen.findByText("'messageRetentionDays' must be a positive integer number of days.")).toBeInTheDocument();
     });
@@ -165,7 +168,54 @@ describe("RetentionPolicyPage", () => {
 
         await user.type(screen.getByLabelText("Message retention (days)"), "30");
         await user.click(screen.getByRole("button", { name: "Save" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older mail?" })).getByRole("button", { name: "Save and delete older mail" }));
 
         expect(await screen.findByText("Could not save the retention policy.")).toBeInTheDocument();
+    });
+
+    it("confirms starting message retention, stating the effect, and Cancel saves nothing", async () => {
+        const fetchMock = mockShell((url, init) => (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET" ? jsonResponse(200, {}) : undefined));
+        const user = userEvent.setup();
+        render(<RetentionPolicyPage userUid="admin-1" />);
+
+        await user.type(await screen.findByLabelText("Message retention (days)"), "30");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        const dialog = await screen.findByRole("dialog", { name: "Delete older mail?" });
+        expect(within(dialog).getByText(/Mail isn.t deleted automatically today/)).toBeInTheDocument();
+        expect(within(dialog).getByText("30 days")).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+    });
+
+    it("confirms lowering retention but not raising it, comparing against the last saved value", async () => {
+        const puts: any[] = [];
+        mockShell((url, init) => {
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, { messageRetentionDays: 90 });
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") {
+                const body = JSON.parse(init.body as string);
+                puts.push(body);
+                return jsonResponse(200, { messageRetentionDays: body.messageRetentionDays });
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<RetentionPolicyPage userUid="admin-1" />);
+        const message = await screen.findByLabelText("Message retention (days)");
+
+        await user.clear(message);
+        await user.type(message, "120");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await vi.waitFor(() => expect(puts).toHaveLength(1));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        await user.clear(message);
+        await user.type(message, "100");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        const dialog = await screen.findByRole("dialog", { name: "Delete older mail?" });
+        expect(within(dialog).getByText(/Mail is currently kept for 120 days/)).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(puts).toHaveLength(1);
     });
 });

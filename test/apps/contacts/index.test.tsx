@@ -862,6 +862,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await screen.findByText("Jane Doe");
         await user.click(screen.getByLabelText("Select all contacts"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
 
         await waitFor(() => expect(deletedCalls.length).toBe(2));
         expect(fetchMock).toHaveBeenCalled();
@@ -879,6 +880,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await screen.findByText("Jane Doe");
         await user.click(screen.getByLabelText("Select Jane Doe"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
 
         expect(await screen.findByText("cannot delete")).toBeInTheDocument();
     });
@@ -894,8 +896,94 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await screen.findByText("Jane Doe");
         await user.click(screen.getByLabelText("Select Jane Doe"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
 
         expect(await screen.findByText("Could not delete one or more contacts.")).toBeInTheDocument();
+    });
+
+    it("toolbar Delete asks first, naming how many contacts, and deletes nothing when cancelled or dismissed.", async () => {
+        const fetchMock = mockShellAndContactsWithLists([jane, bob]);
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        await user.click(screen.getByLabelText("Select Jane Doe"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        expect(within(await screen.findByRole("dialog")).getByText(/Delete 1 selected contact\?/)).toBeInTheDocument();
+        await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+        await user.click(screen.getByLabelText("Select Bob Smith"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        expect(within(await screen.findByRole("dialog")).getByText(/Delete 2 selected contacts\?/)).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
+    });
+
+    it("toolbar Add category sends only uid, version, and the new categories.", async () => {
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(" Work ");
+        const categorized = { ...jane, categories: ["VIP"] };
+        const fetchMock = mockShellAndContactsWithLists([categorized], [list], (url, init) =>
+            init?.method === "PUT" ? jsonResponse(200, categorized) : undefined,
+        );
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        await user.click(screen.getByLabelText("Select Jane Doe"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Add category"));
+
+        await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "PUT")).toBe(true));
+        const put = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT")!;
+        expect(JSON.parse((put[1] as RequestInit).body as string)).toEqual({ uid: "c1", version: 0, categories: ["VIP", "Work"] });
+        promptSpy.mockRestore();
+    });
+
+    it("toolbar Export keeps the download URL alive for a while instead of revoking it immediately.", async () => {
+        mockShellAndContactsWithLists([jane]);
+        const user = userEvent.setup();
+        const revokeObjectURL = vi.fn();
+        vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:fake"), revokeObjectURL });
+        const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+        const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        await user.click(screen.getByLabelText("Select Jane Doe"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Export"));
+
+        expect(clickSpy).toHaveBeenCalledTimes(1);
+        expect(revokeObjectURL).not.toHaveBeenCalled();
+        const revokeTimer = timeoutSpy.mock.calls.find(([, delay]) => delay === 60_000)!;
+        (revokeTimer[0] as () => void)();
+        expect(revokeObjectURL).toHaveBeenCalledWith("blob:fake");
+        expect(document.querySelector('a[download]')).toBeNull();
+        timeoutSpy.mockRestore();
+        clickSpy.mockRestore();
+    });
+
+    it("pages through a folder with more contacts than one page holds, in both the main and Deleted views.", async () => {
+        const firstPage = Array.from({ length: 500 }, (_, i) => ({ ...bob, uid: `bulk-${i}`, displayName: `Bulk ${String(i).padStart(3, "0")}` }));
+        const fetchMock = mockShellAndContactsWithLists([], [list], (url, init) => {
+            if (url.startsWith("/api/mail/contacts?") && (init?.method ?? "GET") === "GET") {
+                const deleted = url.includes("deleted=true");
+                if (url.includes("page=1")) {
+                    return jsonResponse(200, [{ ...bob, uid: deleted ? "d-last" : "c-last", displayName: deleted ? "Zed Deleted" : "Zed Last", deleted }]);
+                }
+                return jsonResponse(200, deleted ? firstPage.map((c) => ({ ...c, deleted: true })) : firstPage);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        expect(await screen.findByText("Zed Last")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: /Deleted/ }));
+        expect(await screen.findByText("Zed Deleted")).toBeInTheDocument();
+        const pageOneCalls = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith("/api/mail/contacts?") && url.includes("page=1"));
+        expect(pageOneCalls).toHaveLength(2);
     });
 
     it("toolbar Email opens the floating Compose window with the checked contacts' addresses joined.", async () => {

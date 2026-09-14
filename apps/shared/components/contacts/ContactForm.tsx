@@ -8,6 +8,7 @@ import {
     Contact,
     ContactAddressKind,
     ContactEmail,
+    ContactPatch,
     ContactPhone,
     ContactPostalAddress,
     createContact,
@@ -55,7 +56,9 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
     const [categoriesText, setCategoriesText] = useState((contact?.categories ?? []).join(", "));
     const [emails, setEmails] = useState<ContactEmail[]>(contact?.emails ?? []);
     const [phones, setPhones] = useState<ContactPhone[]>(contact?.phones ?? []);
-    const [address, setAddress] = useState<ContactPostalAddress | null>(contact?.addresses[0] ?? null);
+    // Every stored address is kept and editable - editing a contact must never silently drop addresses
+    // beyond the first.
+    const [addresses, setAddresses] = useState<ContactPostalAddress[]>(contact?.addresses ?? []);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
 
@@ -70,6 +73,12 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
     }
     function removePhone(index: number) {
         setPhones((prev) => prev.filter((_, i) => i !== index));
+    }
+    function updateAddress(index: number, patch: Partial<ContactPostalAddress>) {
+        setAddresses((prev) => prev.map((a, i) => (i === index ? { ...a, ...patch } : a)));
+    }
+    function removeAddress(index: number) {
+        setAddresses((prev) => prev.filter((_, i) => i !== index));
     }
 
     async function handleSubmit(e: FormEvent) {
@@ -87,22 +96,29 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 .split(",")
                 .map((c) => c.trim())
                 .filter(Boolean);
+            // An update merges only the fields in its body, so a field the user cleared is sent as an
+            // explicit `null` (an omitted/undefined one would keep its stored value); a create just omits it.
+            const cleared = contact ? null : undefined;
             const input = {
                 displayName: displayName.trim(),
-                givenName: givenName.trim() || undefined,
-                surname: surname.trim() || undefined,
-                company: company.trim() || undefined,
-                jobTitle: jobTitle.trim() || undefined,
-                notes: notes.trim() || undefined,
+                givenName: givenName.trim() || cleared,
+                surname: surname.trim() || cleared,
+                company: company.trim() || cleared,
+                jobTitle: jobTitle.trim() || cleared,
+                notes: notes.trim() || cleared,
                 favorite,
                 categories,
                 emails,
                 phones,
-                addresses: address ? [address] : [],
+                addresses,
             };
             let saved: Contact;
             if (contact) {
-                saved = await updateContact({ uid: contact.uid, version: contact.version, mailboxUid: contact.mailboxUid, folderUid: contact.folderUid, ...input });
+                saved = await updateContact({
+                    uid: contact.uid,
+                    version: contact.version,
+                    ...(input as Omit<ContactPatch, "uid" | "version">),
+                });
             } else {
                 const targetFolderUid =
                     targetMailboxUid === mailboxUid ? folderUid : await findWellKnownFolderUid(targetMailboxUid as string, "contacts");
@@ -110,7 +126,11 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                     setError("That mailbox has no Contacts folder.");
                     return;
                 }
-                saved = await createContact({ mailboxUid: targetMailboxUid as string, folderUid: targetFolderUid, ...input });
+                saved = await createContact({
+                    mailboxUid: targetMailboxUid as string,
+                    folderUid: targetFolderUid,
+                    ...(input as Omit<Parameters<typeof createContact>[0], "mailboxUid" | "folderUid">),
+                });
             }
             onSaved(saved);
         } catch (err) {
@@ -265,70 +285,76 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
             </FormField>
 
             <FormField label="Address" htmlFor="contact-address">
-                {address ? (
-                    <div className="flex flex-col gap-2">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <input
-                                type="text"
-                                placeholder="Street"
-                                className={INPUT_CLASS}
-                                value={address.street ?? ""}
-                                onChange={(e) => setAddress({ ...address, street: e.target.value })}
-                            />
-                            <input
-                                type="text"
-                                placeholder="City"
-                                className={INPUT_CLASS}
-                                value={address.city ?? ""}
-                                onChange={(e) => setAddress({ ...address, city: e.target.value })}
-                            />
-                            <input
-                                type="text"
-                                placeholder="State/Province"
-                                className={INPUT_CLASS}
-                                value={address.state ?? ""}
-                                onChange={(e) => setAddress({ ...address, state: e.target.value })}
-                            />
-                            <input
-                                type="text"
-                                placeholder="Postal code"
-                                className={INPUT_CLASS}
-                                value={address.postalCode ?? ""}
-                                onChange={(e) => setAddress({ ...address, postalCode: e.target.value })}
-                            />
-                            <input
-                                type="text"
-                                placeholder="Country"
-                                className={INPUT_CLASS}
-                                value={address.country ?? ""}
-                                onChange={(e) => setAddress({ ...address, country: e.target.value })}
-                            />
-                            <select
-                                className={SELECT_CLASS}
-                                value={address.type}
-                                onChange={(e) => setAddress({ ...address, type: e.target.value as ContactAddressKind })}
-                                aria-label="Address type"
+                <div className="flex flex-col gap-3">
+                    {addresses.map((address, i) => (
+                        <div key={i} className="flex flex-col gap-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <input
+                                    type="text"
+                                    placeholder="Street"
+                                    className={INPUT_CLASS}
+                                    value={address.street ?? ""}
+                                    onChange={(e) => updateAddress(i, { street: e.target.value })}
+                                />
+                                <input
+                                    type="text"
+                                    placeholder="City"
+                                    className={INPUT_CLASS}
+                                    value={address.city ?? ""}
+                                    onChange={(e) => updateAddress(i, { city: e.target.value })}
+                                />
+                                <input
+                                    type="text"
+                                    placeholder="State/Province"
+                                    className={INPUT_CLASS}
+                                    value={address.state ?? ""}
+                                    onChange={(e) => updateAddress(i, { state: e.target.value })}
+                                />
+                                <input
+                                    type="text"
+                                    placeholder="Postal code"
+                                    className={INPUT_CLASS}
+                                    value={address.postalCode ?? ""}
+                                    onChange={(e) => updateAddress(i, { postalCode: e.target.value })}
+                                />
+                                <input
+                                    type="text"
+                                    placeholder="Country"
+                                    className={INPUT_CLASS}
+                                    value={address.country ?? ""}
+                                    onChange={(e) => updateAddress(i, { country: e.target.value })}
+                                />
+                                <select
+                                    className={SELECT_CLASS}
+                                    value={address.type}
+                                    onChange={(e) => updateAddress(i, { type: e.target.value as ContactAddressKind })}
+                                    aria-label={i === 0 ? "Address type" : `Address type ${i + 1}`}
+                                >
+                                    {ADDRESS_KINDS.map((kind) => (
+                                        <option key={kind} value={kind}>
+                                            {kind}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => removeAddress(i)}
+                                className="self-start text-xs font-medium text-danger hover:underline"
+                                aria-label={i === 0 ? "Remove address" : `Remove address ${i + 1}`}
                             >
-                                {ADDRESS_KINDS.map((kind) => (
-                                    <option key={kind} value={kind}>
-                                        {kind}
-                                    </option>
-                                ))}
-                            </select>
+                                Remove address
+                            </button>
                         </div>
-                        <button type="button" onClick={() => setAddress(null)} className="self-start text-xs font-medium text-danger hover:underline">
-                            Remove address
-                        </button>
-                    </div>
-                ) : (
+                    ))}
                     <button
                         type="button"
-                        onClick={() => setAddress({ type: "home" })}
+                        onClick={() => setAddresses((prev) => [...prev, { type: "home" }])}
                         className="self-start text-xs font-medium text-primary-dark hover:underline"
                     >
                         + Add address
                     </button>
-                )}
+                </div>
             </FormField>
 
             <FormField label="Notes" htmlFor="contact-notes">

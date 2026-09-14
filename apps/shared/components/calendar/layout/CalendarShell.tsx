@@ -108,7 +108,7 @@ export default function CalendarShell({
             return;
         }
         let cancelled = false;
-        Promise.all(
+        void Promise.all(
             mailboxes.map((mailbox) =>
                 listFolders(mailbox.uid)
                     .then((folders): MailboxCalendars => ({ mailbox, calendarFolders: folders.filter((f) => f.type === "calendar") }))

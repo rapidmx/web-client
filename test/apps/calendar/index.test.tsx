@@ -107,6 +107,20 @@ describe("CalendarPage", () => {
         expect(screen.getByRole("heading", { name: "June 2026" })).toBeInTheDocument();
     });
 
+    it("reads a date-only ?date= as the local day, even west of UTC", async () => {
+        const originalTz = process.env.TZ;
+        process.env.TZ = "America/Los_Angeles";
+        try {
+            window.history.pushState(null, "", "/calendar?date=2026-06-01&view=month");
+            mockShellAndEvents([]);
+            render(<CalendarPage userUid="u1" />);
+
+            expect(await screen.findByRole("heading", { name: "June 2026" })).toBeInTheDocument();
+        } finally {
+            process.env.TZ = originalTz;
+        }
+    });
+
     it("defaults to Month view on the real current date when the URL has no ?view=/?date=", async () => {
         window.history.pushState(null, "", "/calendar");
         mockShellAndEvents([]);

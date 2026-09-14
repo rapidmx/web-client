@@ -49,7 +49,9 @@ function FocusedInboxContent() {
 
     async function handleAdd(e: FormEvent) {
         e.preventDefault();
-        const senderAddress = newSender.trim();
+        // Lowercased to match restapi's own `normalizeAddress()` - what gets sent is exactly what gets
+        // stored and matched against, rather than relying on the server to silently rewrite it.
+        const senderAddress = newSender.trim().toLowerCase();
         if (!senderAddress) {
             return;
         }

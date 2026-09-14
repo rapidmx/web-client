@@ -151,8 +151,29 @@ describe("BookingTypeDetailPage", () => {
         render(<BookingTypeDetailPage userUid="u1" params={{ uid: "bt1" }} />);
         await screen.findByLabelText("Name");
 
+        await user.clear(screen.getByLabelText("Name"));
+        await user.type(screen.getByLabelText("Name"), "My unsaved edit");
         await user.click(screen.getByRole("button", { name: "Save" }));
         expect(await screen.findByText("boom")).toBeInTheDocument();
+        // The form (and the edit) stays on screen after a failed save.
+        expect(screen.getByLabelText("Name")).toHaveValue("My unsaved edit");
+        expect(screen.queryByText("Saved.")).not.toBeInTheDocument();
+    });
+
+    it("sends null to clear a previously saved description", async () => {
+        const fetchMock = mockShell((url, init) => {
+            if (url === "/api/mail/booking-types/bt1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, { ...bookingType(), description: "Old" });
+            if (url === "/api/mail/booking-types/bt1" && init?.method === "PUT") return jsonResponse(200, bookingType());
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<BookingTypeDetailPage userUid="u1" params={{ uid: "bt1" }} />);
+        await user.clear(await screen.findByLabelText("Description (optional)"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        const put = fetchMock.mock.calls.find(([url, init]: any) => url === "/api/mail/booking-types/bt1" && init?.method === "PUT")!;
+        expect(JSON.parse((put[1] as RequestInit).body as string).description).toBeNull();
     });
 
     it("shows a generic error message when saving fails with a non-API error", async () => {

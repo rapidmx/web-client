@@ -13,7 +13,13 @@ import {
 } from "@rapidmx/react-shared/admin/transportRulesApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import RuleBuilder, { RuleBuilderValue } from "../../shared/components/rules/RuleBuilder.js";
-import { TRANSPORT_RULE_ACTION_TYPES, TRANSPORT_RULE_CONDITION_FIELDS } from "./_transportRuleConfig.js";
+import {
+    checkRuleConditions,
+    NO_CONDITIONS_BLOCKED_MESSAGE,
+    NoConditionsConfirmModal,
+    TRANSPORT_RULE_ACTION_TYPES,
+    TRANSPORT_RULE_CONDITION_FIELDS,
+} from "./_transportRuleConfig.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
@@ -37,6 +43,8 @@ function TransportRuleDetailContent({ uid }: { uid: string }) {
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [showValidation, setShowValidation] = useState(false);
+    const [confirmingNoConditions, setConfirmingNoConditions] = useState(false);
 
     useEffect(() => {
         setLoading(true);
@@ -71,7 +79,21 @@ function TransportRuleDetailContent({ uid }: { uid: string }) {
             setError("A name is required.");
             return;
         }
+        const check = checkRuleConditions(rule!);
+        if (check === "blocked") {
+            setShowValidation(true);
+            setError(NO_CONDITIONS_BLOCKED_MESSAGE);
+            return;
+        }
+        if (check === "confirm") {
+            setConfirmingNoConditions(true);
+            return;
+        }
+        await save();
+    }
 
+    async function save() {
+        setConfirmingNoConditions(false);
         setSaving(true);
         setSaved(false);
         try {
@@ -130,6 +152,7 @@ function TransportRuleDetailContent({ uid }: { uid: string }) {
                     onChange={setRule}
                     conditionFields={TRANSPORT_RULE_CONDITION_FIELDS}
                     actionTypes={TRANSPORT_RULE_ACTION_TYPES}
+                    showValidation={showValidation}
                 />
 
                 <div>
@@ -138,6 +161,12 @@ function TransportRuleDetailContent({ uid }: { uid: string }) {
                     </Button>
                 </div>
             </form>
+
+            <NoConditionsConfirmModal
+                open={confirmingNoConditions}
+                onCancel={() => setConfirmingNoConditions(false)}
+                onConfirm={() => void save()}
+            />
         </div>
     );
 }

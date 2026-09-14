@@ -164,4 +164,34 @@ describe("MonthView", () => {
         // a real regression, not vacuously pass because every day happened to be in-month).
         expect(EXPECTED_GRID_DAYS.some((day) => !isSameMonth(day, VIEW_DATE))).toBe(true);
     });
+
+    it("shows a multi-day event on every day it covers, with a draggable chip only on its first day", async () => {
+        const onSelectEvent = vi.fn();
+        const occ = occurrence({ title: "Trip", allDay: true, startDate: "2026-06-10T00:00:00.000Z", endDate: "2026-06-13T00:00:00.000Z" });
+        const user = userEvent.setup();
+        renderMonth({ occurrences: [occ], onSelectEvent });
+
+        const chips = screen.getAllByRole("button", { name: "Trip" });
+        expect(chips).toHaveLength(3);
+        expect(chips[0].getAttribute("aria-roledescription")).toBe("draggable");
+        expect(chips[1].getAttribute("aria-roledescription")).toBeNull();
+
+        await user.click(chips[2]);
+        expect(onSelectEvent).toHaveBeenCalledWith(occ);
+    });
+
+    it("styles 'free' continuation chips with the muted style, and busy ones with the calendar color", () => {
+        renderMonth({
+            occurrences: [
+                occurrence({ uid: "e1", occurrenceKey: "e1", title: "Busy Trip", startDate: "2026-06-10T20:00:00.000Z", endDate: "2026-06-11T10:00:00.000Z" }),
+                occurrence({ uid: "e2", occurrenceKey: "e2", title: "Free Trip", busyStatus: "free", startDate: "2026-06-10T20:00:00.000Z", endDate: "2026-06-11T10:00:00.000Z" }),
+            ],
+        });
+        const busy = screen.getAllByRole("button", { name: /Busy Trip/ });
+        const free = screen.getAllByRole("button", { name: /Free Trip/ });
+        expect(busy[1].textContent).toBe("Busy Trip");
+        expect(busy[1].style.backgroundColor).toBe("rgb(37, 99, 235)");
+        expect(free[1].className).toContain("bg-surface-alt");
+        expect(free[1].style.backgroundColor).toBe("");
+    });
 });

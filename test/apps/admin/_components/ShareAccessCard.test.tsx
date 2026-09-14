@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -129,6 +129,7 @@ describe("ShareAccessCard", () => {
         await screen.findByText("delegate-1");
 
         await user.click(screen.getByRole("button", { name: "Revoke" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Revoke access" })).getByRole("button", { name: "Revoke" }));
 
         await waitFor(() => expect(screen.getByText("No grants on this mailbox yet.")).toBeInTheDocument());
     });
@@ -145,6 +146,7 @@ describe("ShareAccessCard", () => {
         await screen.findByText("delegate-1");
 
         await user.click(screen.getByRole("button", { name: "Revoke" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Revoke access" })).getByRole("button", { name: "Revoke" }));
 
         expect(await screen.findByText("revoke failed")).toBeInTheDocument();
     });
@@ -161,7 +163,80 @@ describe("ShareAccessCard", () => {
         await screen.findByText("delegate-1");
 
         await user.click(screen.getByRole("button", { name: "Revoke" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Revoke access" })).getByRole("button", { name: "Revoke" }));
 
         expect(await screen.findByText("Could not revoke access.")).toBeInTheDocument();
+    });
+
+    it("shows the owner without a Revoke action", async () => {
+        mockFetch(() =>
+            jsonResponse(200, {
+                uid: "mb1",
+                version: 0,
+                records: [
+                    { userOrRoleId: "owner-1", actions: ["create", "read", "update", "delete"] },
+                    { userOrRoleId: "delegate-1", actions: ["read"] },
+                ],
+            }),
+        );
+        render(<ShareAccessCard mailboxUid="mb1" ownerUserUid="owner-1" />);
+        expect(await screen.findByText("owner-1")).toBeInTheDocument();
+        expect(screen.getByText("Owner")).toBeInTheDocument();
+        expect(screen.getAllByRole("button", { name: "Revoke" })).toHaveLength(1);
+    });
+
+    it("asks before revoking, and Cancel or closing the dialog keeps the grant", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { uid: "mb1", version: 0, records: [{ userOrRoleId: "delegate-1", actions: ["read"] }] }));
+        const user = userEvent.setup();
+        render(<ShareAccessCard mailboxUid="mb1" />);
+        await screen.findByText("delegate-1");
+
+        await user.click(screen.getByRole("button", { name: "Revoke" }));
+        const dialog = await screen.findByRole("dialog", { name: "Revoke access" });
+        expect(within(dialog).getByText("delegate-1")).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Revoke" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Revoke access" })).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PUT")).toBe(false);
+    });
+
+    it("merges a grant into an existing record instead of downgrading it", async () => {
+        let records = [{ userOrRoleId: "owner-1", actions: ["create", "read", "update"] }];
+        const puts: any[] = [];
+        mockFetch((url, init) => {
+            if ((init?.method ?? "GET") === "GET") return jsonResponse(200, { uid: "mb1", version: puts.length, records });
+            const body = JSON.parse(init.body as string);
+            puts.push(body);
+            records = body.records;
+            return jsonResponse(200, { uid: "mb1", version: puts.length, records });
+        });
+        const user = userEvent.setup();
+        render(<ShareAccessCard mailboxUid="mb1" ownerUserUid="owner-1" />);
+        await screen.findByText("owner-1");
+
+        await user.type(screen.getByPlaceholderText("User uid to grant access to"), "owner-1");
+        await user.click(screen.getByRole("button", { name: "Grant" }));
+
+        await vi.waitFor(() => expect(puts).toHaveLength(1));
+        expect(puts[0].records).toEqual([{ userOrRoleId: "owner-1", actions: ["create", "read", "update", "list", "count", "exists"] }]);
+    });
+
+    it("doesn't re-save a grant the user already fully has", async () => {
+        const fetchMock = mockFetch(() =>
+            jsonResponse(200, { uid: "mb1", version: 0, records: [{ userOrRoleId: "delegate-1", actions: ["read", "list", "count", "exists", "update"] }] }),
+        );
+        const user = userEvent.setup();
+        render(<ShareAccessCard mailboxUid="mb1" />);
+        await screen.findByText("delegate-1");
+
+        await user.type(screen.getByPlaceholderText("User uid to grant access to"), " delegate-1 ");
+        await user.click(screen.getByRole("button", { name: "Grant" }));
+
+        expect(await screen.findByText("delegate-1 already has this access.")).toBeInTheDocument();
+        expect(screen.getByPlaceholderText("User uid to grant access to")).toHaveValue("");
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PUT")).toBe(false);
     });
 });

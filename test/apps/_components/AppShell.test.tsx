@@ -7,7 +7,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import AppShell from "../../../apps/shared/components/layout/AppShell.js";
+import AppShell, { LOGOUT_TIMEOUT_MS } from "../../../apps/shared/components/layout/AppShell.js";
 
 // The hook's own behavior (activity resets the clock, disabled at 0, cleans up on unmount, ...) is
 // already exercised end to end in react-shared's own test suite - this file only needs to confirm
@@ -17,7 +17,13 @@ vi.mock("@rapidmx/react-shared/crypto/useIdleKeyTimeout.js", () => ({ useIdleKey
 
 // The destroy mechanics themselves are covered in test/apps/_search/localIndexRpcClient.test.ts.
 const { destroyAllLocalIndexes } = vi.hoisted(() => ({ destroyAllLocalIndexes: vi.fn() }));
-vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ destroyAllLocalIndexes }));
+vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ destroyAllLocalIndexes, SIGN_OUT_CHANNEL: "test-sign-out" }));
+
+const { destroyUnlockedKeys } = vi.hoisted(() => ({ destroyUnlockedKeys: vi.fn() }));
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keySession.js")>()),
+    destroyUnlockedKeys,
+}));
 
 const AUTH_SERVER_URL = "https://auth.example.com";
 
@@ -187,6 +193,7 @@ describe("AppShell", () => {
 
     it("signs out to auth-server", async () => {
         const location = mockLocation();
+        const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
         const user = userEvent.setup();
         render(
             <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
@@ -198,6 +205,108 @@ describe("AppShell", () => {
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
         await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
         expect(destroyAllLocalIndexes).toHaveBeenCalled();
+        expect(destroyUnlockedKeys).toHaveBeenCalledWith();
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${AUTH_SERVER_URL}/api/auth/logout`,
+            expect.objectContaining({ method: "POST", credentials: "include" }),
+        );
+    });
+
+    it("still navigates when auth-server's logout fails, or times out", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/";
+        mockFetch(() => jsonResponse(500, { message: "down" }));
+        const user = userEvent.setup();
+        const { unmount } = render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
+        unmount();
+
+        location.href = "https://mail.example.com/";
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+            let signal: AbortSignal | undefined;
+            mockFetch(
+                (_url, init) =>
+                    new Promise<Response>((_resolve, reject) => {
+                        signal = init.signal as AbortSignal;
+                        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+                    }),
+            );
+            const user2 = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AppShell>,
+            );
+            await user2.click(screen.getByRole("button", { name: "Account menu" }));
+            await user2.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+            expect(location.href).toBe("https://mail.example.com/");
+            await vi.advanceTimersByTimeAsync(LOGOUT_TIMEOUT_MS);
+            await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
+            expect(signal!.aborted).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("destroys keys and leaves when another tab signs out, but ignores its own sign-out announcement", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/";
+        const other = new BroadcastChannel("test-sign-out");
+        const { unmount } = render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+
+        other.postMessage({ type: "something-else" });
+        other.postMessage(null);
+        await new Promise((r) => setTimeout(r, 20));
+        expect(destroyUnlockedKeys).not.toHaveBeenCalled();
+
+        other.postMessage({ type: "sign-out" });
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
+        expect(destroyUnlockedKeys).toHaveBeenCalledWith();
+        unmount();
+
+        // The signing-out tab itself: its announcement doesn't re-trigger the other-tab path.
+        destroyUnlockedKeys.mockClear();
+        location.href = "https://mail.example.com/";
+        let finishDestroy!: (ok: boolean) => void;
+        destroyAllLocalIndexes.mockReturnValueOnce(new Promise<boolean>((resolve) => (finishDestroy = resolve)));
+        const user = userEvent.setup();
+        render(<AppShell active="mail" userUid="u1">content</AppShell>);
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+        other.postMessage({ type: "sign-out" });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(destroyUnlockedKeys).toHaveBeenCalledTimes(1);
+        expect(location.href).toBe("https://mail.example.com/");
+        finishDestroy(true);
+        await waitFor(() => expect(location.href).toBe("/"));
+        other.close();
+    });
+
+    it("leaves to '/' when another tab signs out and authServerUrl is not configured", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/";
+        const other = new BroadcastChannel("test-sign-out");
+        render(<AppShell active="mail" userUid="u1">content</AppShell>);
+        other.postMessage({ type: "sign-out" });
+        await waitFor(() => expect(location.href).toBe("/"));
+        other.close();
+    });
+
+    it("doesn't listen for other tabs' sign-out where BroadcastChannel is unavailable", () => {
+        vi.stubGlobal("BroadcastChannel", undefined);
+        render(<AppShell active="mail" userUid="u1">content</AppShell>);
+        expect(screen.getByText("content")).toBeInTheDocument();
     });
 
     it("waits for every local search index to be destroyed before navigating away on sign-out", async () => {
@@ -205,6 +314,7 @@ describe("AppShell", () => {
         location.href = "https://mail.example.com/";
         let finishDestroy!: (ok: boolean) => void;
         destroyAllLocalIndexes.mockReturnValueOnce(new Promise<boolean>((resolve) => (finishDestroy = resolve)));
+        mockFetch(() => new Response(null, { status: 204 }));
         const user = userEvent.setup();
         render(
             <AppShell active="calendar" userUid="u1" authServerUrl={AUTH_SERVER_URL}>

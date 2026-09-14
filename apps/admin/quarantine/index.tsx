@@ -8,6 +8,7 @@ import { listQuarantine, QuarantineEntry, releaseQuarantineEntry } from "@rapidm
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const PAGE_SIZE = 25;
 
@@ -30,7 +31,9 @@ function QuarantineContent({ userUid }: { userUid?: string }) {
     const [entries, setEntries] = useState<QuarantineEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [releasing, setReleasing] = useState<string | null>(null);
+    const [releaseTarget, setReleaseTarget] = useState<QuarantineEntry | null>(null);
+    const [releasing, setReleasing] = useState(false);
+    const [releaseError, setReleaseError] = useState<string | null>(null);
 
     useEffect(() => {
         setMailboxUid(readMailboxUid());
@@ -53,19 +56,26 @@ function QuarantineContent({ userUid }: { userUid?: string }) {
 
     const hasNextPage = entries.length === PAGE_SIZE;
 
-    // Only ever invoked from the "Release" button below, which itself only renders once `mailboxUid` is
-    // known and `AdminShell` has already confirmed `userUid` (children only render once authorized) — both
-    // non-null assertions reflect that real invariant, not an unchecked assumption.
-    async function handleRelease(entry: QuarantineEntry) {
-        setReleasing(entry.uid);
-        setError(null);
+    function closeReleaseModal() {
+        setReleaseTarget(null);
+        setReleaseError(null);
+    }
+
+    // Only ever invoked from the confirmation modal below, which only renders once `releaseTarget` is set, once
+    // `mailboxUid` is known, and once `AdminShell` has confirmed `userUid` (children only render once authorized).
+    // `releaseQuarantineEntry()` still sends its own `releasedAt`/`releasedByUserUid`; the server now stamps both
+    // itself and ignores the client's values, so what's displayed afterwards comes from the reloaded list.
+    async function handleRelease() {
+        setReleasing(true);
+        setReleaseError(null);
         try {
-            await releaseQuarantineEntry(entry.uid, entry.version, userUid!);
+            await releaseQuarantineEntry(releaseTarget!.uid, releaseTarget!.version, userUid!);
+            closeReleaseModal();
             reload(mailboxUid!);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not release this message.");
+            setReleaseError(err instanceof ApiRequestError ? err.message : "Could not mark this message released.");
         } finally {
-            setReleasing(null);
+            setReleasing(false);
         }
     }
 
@@ -130,11 +140,9 @@ function QuarantineContent({ userUid }: { userUid?: string }) {
                                                 type="button"
                                                 variant="secondary"
                                                 className="!w-auto"
-                                                loading={releasing === entry.uid}
-                                                disabled={releasing === entry.uid}
-                                                onClick={() => handleRelease(entry)}
+                                                onClick={() => setReleaseTarget(entry)}
                                             >
-                                                Release
+                                                Mark released
                                             </Button>
                                         )}
                                     </td>
@@ -166,6 +174,30 @@ function QuarantineContent({ userUid }: { userUid?: string }) {
                     Next
                 </Button>
             </div>
+
+            <Modal open={releaseTarget !== null} onClose={closeReleaseModal} title="Mark message released">
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm mb-4">
+                    <dt className="text-text-muted">Reason</dt>
+                    <dd>{releaseTarget?.reason}</dd>
+                    <dt className="text-text-muted">Quarantined</dt>
+                    <dd>{releaseTarget && new Date(releaseTarget.dateCreated).toLocaleString()}</dd>
+                    <dt className="text-text-muted">Message</dt>
+                    <dd className="break-all">{releaseTarget?.originalMessageUid ?? "Not delivered to the mailbox"}</dd>
+                </dl>
+                <p className="text-sm mb-4">
+                    This only records the entry as released (with you as the releaser). It does not deliver the
+                    message - if it&rsquo;s infected or unwanted, leave it held.
+                </p>
+                {releaseError && <Alert>{releaseError}</Alert>}
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={releasing} onClick={closeReleaseModal}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto" loading={releasing} disabled={releasing} onClick={handleRelease}>
+                        Mark released
+                    </Button>
+                </div>
+            </Modal>
         </div>
     );
 }

@@ -99,13 +99,12 @@ describe("SettingsFocusedInboxPage", () => {
         render(<SettingsFocusedInboxPage userUid="u1" />);
         await screen.findByText("No rules yet.");
 
-        await user.type(screen.getByLabelText("Sender address"), "sender1@example.com");
+        await user.type(screen.getByLabelText("Sender address"), "  Sender1@Example.COM ");
         await user.click(screen.getByRole("button", { name: "Add" }));
 
         expect(await screen.findByText("sender1@example.com")).toBeInTheDocument();
-        expect(fetchMock.mock.calls.some(([url, init]: any) => url === "/api/mail/focused-inbox-overrides" && init?.method === "POST")).toBe(
-            true,
-        );
+        const post = fetchMock.mock.calls.find(([url, init]: any) => url === "/api/mail/focused-inbox-overrides" && init?.method === "POST")!;
+        expect(JSON.parse((post[1] as RequestInit).body as string).senderAddress).toBe("sender1@example.com");
     });
 
     it("does not submit when the sender address is blank", async () => {

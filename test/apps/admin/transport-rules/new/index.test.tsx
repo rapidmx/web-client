@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
@@ -67,6 +67,7 @@ describe("NewTransportRulePage", () => {
         await screen.findByText("New transport rule");
 
         await user.type(screen.getByLabelText("Name"), "Every action type");
+        await user.click(screen.getByRole("checkbox", { name: "Has an attachment" }));
 
         // "reject" is the default selection — Add action alone is enough.
         await user.click(screen.getByRole("button", { name: "Add action" }));
@@ -104,6 +105,7 @@ describe("NewTransportRulePage", () => {
         await screen.findByText("New transport rule");
 
         await user.type(screen.getByLabelText("Name"), "Flag external senders");
+        await user.click(screen.getByRole("checkbox", { name: "Any recipient is external" }));
         await user.click(screen.getByRole("button", { name: "Create transport rule" }));
 
         expect(await screen.findByText("boom")).toBeInTheDocument();
@@ -119,9 +121,56 @@ describe("NewTransportRulePage", () => {
         await screen.findByText("New transport rule");
 
         await user.type(screen.getByLabelText("Name"), "Flag external senders");
+        await user.click(screen.getByRole("checkbox", { name: "Any recipient is external" }));
         await user.click(screen.getByRole("button", { name: "Create transport rule" }));
 
         expect(await screen.findByText("Could not create the transport rule.")).toBeInTheDocument();
+    });
+
+    it("refuses to save a reject or quarantine rule with no conditions", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        const user = userEvent.setup();
+        render(<NewTransportRulePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New transport rule");
+
+        await user.type(screen.getByLabelText("Name"), "Block everything");
+        await user.selectOptions(screen.getByLabelText("New action type"), "quarantine");
+        await user.click(screen.getByRole("button", { name: "Add action" }));
+        await user.click(screen.getByRole("button", { name: "Create transport rule" }));
+
+        expect(await screen.findByText(/rejects or quarantines mail would do so for every message/)).toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "POST")).toBe(false);
+    });
+
+    it("asks before saving a rule with no conditions and non-blocking actions", async () => {
+        let posted = 0;
+        mockFetch((url, init) => {
+            if (url === "/api/mail/transport-rules" && init?.method === "POST") {
+                posted++;
+                return jsonResponse(200, { uid: "tr2" });
+            }
+            return jsonResponse(200, {});
+        });
+        const location = mockLocation();
+        const user = userEvent.setup();
+        render(<NewTransportRulePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New transport rule");
+
+        await user.type(screen.getByLabelText("Name"), "Tag everything");
+        await user.selectOptions(screen.getByLabelText("New action type"), "add_header");
+        await user.click(screen.getByRole("button", { name: "Add action" }));
+        await user.click(screen.getByRole("button", { name: "Create transport rule" }));
+
+        const dialog = await screen.findByRole("dialog", { name: "Apply to every message?" });
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(posted).toBe(0);
+
+        await user.click(screen.getByRole("button", { name: "Create transport rule" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Apply to every message?" })).getByRole("button", { name: "Save anyway" }));
+        await vi.waitFor(() => expect(location.href).toBe("/admin/transport-rules/tr2"));
+        expect(posted).toBe(1);
     });
 
     it("the Cancel link returns to the transport rules list", async () => {

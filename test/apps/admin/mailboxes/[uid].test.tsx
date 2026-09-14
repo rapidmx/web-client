@@ -33,6 +33,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
@@ -63,6 +64,7 @@ describe("MailboxDetailPage", () => {
                 return jsonResponse(200, { ...mailbox, ownerUserUid: undefined, isResource: true, resourceType: "equipment" });
             }
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
@@ -80,6 +82,7 @@ describe("MailboxDetailPage", () => {
                 return jsonResponse(200, { ...mailbox, ownerUserUid: undefined, isResource: true, resourceType: undefined });
             }
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
@@ -95,6 +98,7 @@ describe("MailboxDetailPage", () => {
                 return jsonResponse(200, { ...mailbox, usedBytes: 500, quotaBytes: 2_500_000 });
             }
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
@@ -108,6 +112,7 @@ describe("MailboxDetailPage", () => {
                 return jsonResponse(200, { ...mailbox, usedBytes: 2_000, quotaBytes: 900_000 });
             }
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
@@ -119,6 +124,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, { ...mailbox, ownerUserUid: undefined });
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
@@ -130,6 +136,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, { ...mailbox, aliasAddresses: [] });
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
@@ -169,6 +176,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, { ...mailbox, ownerUserUid: undefined });
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
@@ -181,6 +189,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "https://auth.example.com/api/admin/impersonate" && init?.method === "POST") {
                 return jsonResponse(403, { message: "caller lacks the trusted role" });
             }
@@ -190,7 +199,15 @@ describe("MailboxDetailPage", () => {
         render(<MailboxDetailPage userUid="admin-1" impersonationBaseUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
 
         await user.click(await screen.findByRole("button", { name: "Access this mailbox" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Access mailbox" }));
         expect(await screen.findByText("caller lacks the trusted role")).toBeInTheDocument();
+        // The failure stays in the confirmation; the mailbox page itself is still there behind it.
+        expect(within(screen.getByRole("dialog", { name: "Access this mailbox" })).getByText("caller lacks the trusted role")).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "u1@example.com" })).toBeInTheDocument();
+        await user.click(within(screen.getByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog", { name: "Access this mailbox" })).not.toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Access this mailbox" }));
+        expect(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).queryByText("caller lacks the trusted role")).not.toBeInTheDocument();
     });
 
     it("shows a generic error message when impersonation fails with a non-API error", async () => {
@@ -198,6 +215,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "https://auth.example.com/api/admin/impersonate" && init?.method === "POST") {
                 throw new TypeError("network down");
             }
@@ -207,6 +225,7 @@ describe("MailboxDetailPage", () => {
         render(<MailboxDetailPage userUid="admin-1" impersonationBaseUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
 
         await user.click(await screen.findByRole("button", { name: "Access this mailbox" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Access mailbox" }));
         expect(await screen.findByText("Could not access this mailbox.")).toBeInTheDocument();
     });
 
@@ -215,6 +234,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") return jsonResponse(200, {});
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
@@ -234,6 +254,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         const user = userEvent.setup();
@@ -250,6 +271,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         const user = userEvent.setup();
@@ -267,6 +289,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") {
                 return jsonResponse(409, { message: "This action is blocked by an active legal hold: matter-1." });
             }
@@ -286,6 +309,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") throw new TypeError("network down");
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
@@ -305,6 +329,7 @@ describe("MailboxDetailPage", () => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
             if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "/api/admin/impersonate" && init?.method === "POST") {
                 expect(JSON.parse(init.body as string)).toEqual({ userUid: "u1" });
                 return jsonResponse(200, { token: "tok", user: { uid: "u1", roles: [], scopes: [] } });
@@ -317,6 +342,7 @@ describe("MailboxDetailPage", () => {
         const button = await screen.findByRole("button", { name: "Access this mailbox" });
         const location = mockLocation();
         await user.click(button);
+        await user.click(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Access mailbox" }));
         await vi.waitFor(() => expect(location.href).toBe("/"));
     });
 });

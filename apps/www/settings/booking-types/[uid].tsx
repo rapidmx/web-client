@@ -45,7 +45,10 @@ function BookingTypeDetailContent({ uid }: { uid: string }) {
     const [requiresApproval, setRequiresApproval] = useState(false);
     const [enabled, setEnabled] = useState(true);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    // Split so a failed save keeps the form (and the user's edits) on screen - only a failed *load* has
+    // nothing to show but the error.
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [saveError, setSaveError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [copied, setCopied] = useState(false);
@@ -55,7 +58,7 @@ function BookingTypeDetailContent({ uid }: { uid: string }) {
 
     useEffect(() => {
         setLoading(true);
-        setError(null);
+        setLoadError(null);
         getBookingType(uid)
             .then((bt) => {
                 setBookingType(bt);
@@ -70,13 +73,13 @@ function BookingTypeDetailContent({ uid }: { uid: string }) {
                 setRequiresApproval(bt.requiresApproval);
                 setEnabled(bt.enabled);
             })
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this booking link."))
+            .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load this booking link."))
             .finally(() => setLoading(false));
     }, [uid]);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
-        setError(null);
+        setSaveError(null);
         setSaved(false);
         setSaving(true);
         try {
@@ -84,7 +87,9 @@ function BookingTypeDetailContent({ uid }: { uid: string }) {
                 uid: bookingType!.uid,
                 version: bookingType!.version,
                 name,
-                description: description.trim() || undefined,
+                // `null` (not omitted) clears a saved description - an omitted field is left unchanged by the
+                // server's partial update. `UpdateBookingTypeInput` doesn't declare `null` yet, hence the cast.
+                description: description.trim() || (null as unknown as undefined),
                 hostDisplayName,
                 durationMinutes,
                 timezone,
@@ -97,7 +102,7 @@ function BookingTypeDetailContent({ uid }: { uid: string }) {
             setBookingType(updated);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save this booking link.");
+            setSaveError(err instanceof ApiRequestError ? err.message : "Could not save this booking link.");
         } finally {
             setSaving(false);
         }
@@ -128,16 +133,16 @@ function BookingTypeDetailContent({ uid }: { uid: string }) {
     if (loading) {
         return <p className="p-6 text-sm text-text-muted">Loading&hellip;</p>;
     }
-    if (error || !bookingType) {
-        // `error` is always set whenever `bookingType` is falsy here: the load effect above destructures
+    if (loadError || !bookingType) {
+        // `loadError` is always set whenever `bookingType` is falsy here: the load effect above destructures
         // every field off the resolved value directly (`bt.name`, `bt.hostDisplayName`, ...), so a
-        // successful-but-empty response throws into `.catch()` — which sets `error` — before this
-        // component ever renders past the `loading` guard above. `!bookingType` alone (with `error` still
+        // successful-but-empty response throws into `.catch()` — which sets `loadError` — before this
+        // component ever renders past the `loading` guard above. `!bookingType` alone (with `loadError` still
         // `null`) is therefore unreachable, unlike e.g. `messages/[uid].tsx`'s identical-looking check,
         // which stores its fetched value whole rather than destructuring it.
         return (
             <div className="p-6">
-                <Alert>{error!}</Alert>
+                <Alert>{loadError!}</Alert>
             </div>
         );
     }
@@ -179,7 +184,8 @@ function BookingTypeDetailContent({ uid }: { uid: string }) {
                     </Button>
                 </div>
 
-                {saved && !error && <div className="mb-4 text-sm text-success font-medium">Saved.</div>}
+                {saveError && <Alert>{saveError}</Alert>}
+                {saved && !saveError && <div className="mb-4 text-sm text-success font-medium">Saved.</div>}
 
                 <form onSubmit={handleSubmit} className="flex flex-col gap-1">
                     <label className="flex items-center gap-2 text-sm mb-3">

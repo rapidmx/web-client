@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -377,6 +377,202 @@ describe("ConversationThreadPane", () => {
 
         rerender(<ConversationThreadPane conversation={null} folders={[inboxFolder]} />);
         expect(screen.getByText("Select a conversation to read it.")).toBeInTheDocument();
+    });
+
+    describe("stale loads", () => {
+        const readFlags = { read: true, flagged: false, answered: false, forwarded: false };
+        const unreadFlags = { read: false, flagged: false, answered: false, forwarded: false };
+
+        it("ignores a superseded conversation's load that resolves after switching, and its settling doesn't end the new load", async () => {
+            const pending: Record<string, (response: Response) => void> = {};
+            mockFetch((url) => {
+                const uid = url.split("/").pop()!;
+                return new Promise<Response>((resolve) => (pending[uid] = resolve));
+            });
+            const { rerender } = render(
+                <ConversationThreadPane conversation={conversationFixture({ messageUids: ["m1"], messageCount: 1 })} folders={[inboxFolder]} />,
+            );
+            await vi.waitFor(() => expect(pending.m1).toBeDefined());
+
+            rerender(
+                <ConversationThreadPane
+                    conversation={conversationFixture({ conversationId: "c2", subject: "Second thread", messageUids: ["m5"], messageCount: 1 })}
+                    folders={[inboxFolder]}
+                />,
+            );
+            await vi.waitFor(() => expect(pending.m5).toBeDefined());
+
+            pending.m1(jsonResponse(200, messageFixture({ uid: "m1", flags: readFlags })));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            // c1's load settling neither shows c1's message nor ends c2's still-pending load.
+            expect(screen.getByText("Loading…")).toBeInTheDocument();
+            expect(screen.queryByTestId("detail-m1")).not.toBeInTheDocument();
+
+            pending.m5(jsonResponse(200, messageFixture({ uid: "m5", flags: readFlags })));
+            expect(await screen.findByTestId("detail-m5")).toBeInTheDocument();
+            expect(screen.getByText("Second thread")).toBeInTheDocument();
+            expect(screen.queryByTestId("detail-m1")).not.toBeInTheDocument();
+        });
+
+        it("ignores a superseded conversation's load failure", async () => {
+            let rejectFirst: ((err: Error) => void) | undefined;
+            mockFetch((url) => {
+                if (url === "/api/mail/messages/m1") {
+                    return new Promise<Response>((_resolve, reject) => (rejectFirst = reject));
+                }
+                return jsonResponse(200, messageFixture({ uid: "m5", flags: readFlags }));
+            });
+            const { rerender } = render(
+                <ConversationThreadPane conversation={conversationFixture({ messageUids: ["m1"], messageCount: 1 })} folders={[inboxFolder]} />,
+            );
+            await vi.waitFor(() => expect(rejectFirst).toBeDefined());
+
+            rerender(
+                <ConversationThreadPane
+                    conversation={conversationFixture({ conversationId: "c2", messageUids: ["m5"], messageCount: 1 })}
+                    folders={[inboxFolder]}
+                />,
+            );
+            expect(await screen.findByTestId("detail-m5")).toBeInTheDocument();
+
+            rejectFirst!(new TypeError("network down"));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(screen.queryByText("Could not load this conversation.")).not.toBeInTheDocument();
+            expect(screen.getByTestId("detail-m5")).toBeInTheDocument();
+        });
+
+        it("marks an expanded message read only once, even when the effect re-runs while the request is in flight", async () => {
+            let resolvePut: ((response: Response) => void) | undefined;
+            const fetchMock = mockFetch((url, init) => {
+                if (init?.method === "PUT") {
+                    return new Promise<Response>((resolve) => (resolvePut = resolve));
+                }
+                const uid = url.split("/").pop();
+                return jsonResponse(200, messageFixture({ uid, flags: uid === "m2" ? unreadFlags : readFlags }));
+            });
+            const user = userEvent.setup();
+            render(<ConversationThreadPane conversation={conversationFixture()} folders={[inboxFolder]} />);
+
+            await screen.findByTestId("detail-m2");
+            await vi.waitFor(() => expect(resolvePut).toBeDefined());
+            // Expanding m1 changes `expandedUids`, re-running the mark-read effect while m2's PUT is pending.
+            await user.click(screen.getByText("Sender One"));
+            await screen.findByTestId("detail-m1");
+
+            const puts = () => fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === "PUT");
+            expect(puts()).toHaveLength(1);
+            await act(async () => {
+                resolvePut!(jsonResponse(200, messageFixture({ uid: "m2", version: 1, flags: readFlags })));
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            });
+            expect(puts()).toHaveLength(1);
+        });
+
+        it("retries marking read on a later effect run after a failed attempt, using the latest copy", async () => {
+            const putBodies: { version: number }[] = [];
+            mockFetch((url, init) => {
+                if (init?.method === "PUT") {
+                    putBodies.push(JSON.parse(init.body as string));
+                    return putBodies.length === 1
+                        ? jsonResponse(500, { message: "boom" })
+                        : jsonResponse(200, messageFixture({ uid: "m2", version: 2, flags: readFlags }));
+                }
+                const uid = url.split("/").pop();
+                return jsonResponse(200, messageFixture({ uid, flags: uid === "m2" ? unreadFlags : readFlags }));
+            });
+            const user = userEvent.setup();
+            render(<ConversationThreadPane conversation={conversationFixture()} folders={[inboxFolder]} />);
+
+            await screen.findByTestId("detail-m2");
+            await vi.waitFor(() => expect(putBodies).toHaveLength(1));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            await user.click(screen.getByText("Sender One")); // re-runs the effect
+            await vi.waitFor(() => expect(putBodies).toHaveLength(2));
+        });
+
+        it("ignores a mark-read response that arrives after switching conversations", async () => {
+            let resolvePut: ((response: Response) => void) | undefined;
+            mockFetch((url, init) => {
+                if (init?.method === "PUT") {
+                    return new Promise<Response>((resolve) => (resolvePut = resolve));
+                }
+                const uid = url.split("/").pop();
+                return jsonResponse(200, messageFixture({ uid, flags: uid === "m1" ? unreadFlags : readFlags }));
+            });
+            const { rerender } = render(
+                <ConversationThreadPane conversation={conversationFixture({ messageUids: ["m1"], messageCount: 1 })} folders={[inboxFolder]} />,
+            );
+            await screen.findByTestId("detail-m1");
+            await vi.waitFor(() => expect(resolvePut).toBeDefined());
+
+            rerender(
+                <ConversationThreadPane
+                    conversation={conversationFixture({ conversationId: "c2", messageUids: ["m5"], messageCount: 1 })}
+                    folders={[inboxFolder]}
+                />,
+            );
+            await screen.findByTestId("detail-m5");
+
+            resolvePut!(jsonResponse(200, messageFixture({ uid: "m1", version: 1, flags: readFlags })));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(screen.queryByTestId("detail-m1")).not.toBeInTheDocument();
+        });
+
+        it("ignores an attachments response that arrives after switching conversations", async () => {
+            let resolveAttachments: ((response: Response) => void) | undefined;
+            mockFetch((url) => {
+                if (url.startsWith("/api/mail/attachments")) {
+                    return new Promise<Response>((resolve) => (resolveAttachments = resolve));
+                }
+                const uid = url.split("/").pop();
+                return jsonResponse(200, messageFixture({ uid, flags: readFlags, hasAttachments: uid === "m1" }));
+            });
+            const { rerender } = render(
+                <ConversationThreadPane conversation={conversationFixture({ messageUids: ["m1"], messageCount: 1 })} folders={[inboxFolder]} />,
+            );
+            await screen.findByTestId("detail-m1");
+            await vi.waitFor(() => expect(resolveAttachments).toBeDefined());
+
+            // Switch away and back to a conversation containing the same message uid.
+            rerender(<ConversationThreadPane conversation={null} folders={[inboxFolder]} />);
+            rerender(
+                <ConversationThreadPane
+                    conversation={conversationFixture({ conversationId: "c2", messageUids: ["m5"], messageCount: 1 })}
+                    folders={[inboxFolder]}
+                />,
+            );
+            await screen.findByTestId("detail-m5");
+
+            resolveAttachments!(jsonResponse(200, [{ uid: "a1", filename: "stale.pdf" }]));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(screen.getByTestId("detail-m5")).not.toHaveTextContent("stale.pdf");
+        });
+
+        it("keeps a newer copy already patched into state over an older mark-read response", async () => {
+            let resolvePut: ((response: Response) => void) | undefined;
+            mockFetch((url, init) => {
+                if (init?.method === "PUT") {
+                    return new Promise<Response>((resolve) => (resolvePut = resolve));
+                }
+                const uid = url.split("/").pop();
+                return jsonResponse(200, messageFixture({ uid, version: 5, flags: uid === "m2" ? unreadFlags : readFlags }));
+            });
+            render(<ConversationThreadPane conversation={conversationFixture()} folders={[inboxFolder]} />);
+
+            await screen.findByTestId("detail-m2");
+            await vi.waitFor(() => expect(resolvePut).toBeDefined());
+            const user = userEvent.setup();
+            await user.click(screen.getByRole("button", { name: "Collapse" }));
+
+            await act(async () => {
+                resolvePut!(jsonResponse(200, messageFixture({ uid: "m2", version: 3, flags: readFlags })));
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            });
+            // The loaded copy (version 5) wins, so m2's collapsed row is still rendered as unread.
+            const rows = screen.getAllByRole("button").filter((b) => b.textContent?.includes("Sender One"));
+            expect(rows.some((row) => row.className.includes("font-semibold"))).toBe(true);
+        });
     });
 
     describe("recall", () => {

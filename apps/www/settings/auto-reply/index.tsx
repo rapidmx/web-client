@@ -34,6 +34,9 @@ function AutoReplyContent() {
     const [oofMessage, setOofMessage] = useState(mailbox.oofMessage ?? "");
     const [oofStartTime, setOofStartTime] = useState(mailbox.oofStartTime ? toDatetimeLocal(mailbox.oofStartTime) : "");
     const [oofEndTime, setOofEndTime] = useState(mailbox.oofEndTime ? toDatetimeLocal(mailbox.oofEndTime) : "");
+    // `SettingsShell`'s `mailboxes` is fetched once - every save bumps the server's version, so a second
+    // save without a reload must send the version the previous save returned, not the stale original.
+    const [version, setVersion] = useState(mailbox.version);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -44,14 +47,16 @@ function AutoReplyContent() {
         setSaved(false);
         setSaving(true);
         try {
-            await updateMailbox({
+            const updated = await updateMailbox({
                 uid: mailbox.uid,
-                version: mailbox.version,
+                version,
                 oofEnabled,
                 oofMessage,
-                oofStartTime: oofStartTime ? new Date(oofStartTime).toISOString() : undefined,
-                oofEndTime: oofEndTime ? new Date(oofEndTime).toISOString() : undefined,
+                // `null` (not omitted) clears a previously saved window - an omitted field is left as-is.
+                oofStartTime: oofStartTime ? new Date(oofStartTime).toISOString() : null,
+                oofEndTime: oofEndTime ? new Date(oofEndTime).toISOString() : null,
             });
+            setVersion(updated.version);
             setSaved(true);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save automatic reply settings.");

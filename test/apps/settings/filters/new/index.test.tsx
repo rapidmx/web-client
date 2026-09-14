@@ -135,6 +135,7 @@ describe("NewMailFilterPage", () => {
         render(<NewMailFilterPage userUid="u1" />);
         await screen.findByLabelText("Name");
         await user.type(screen.getByLabelText("Name"), "Every action type");
+        await user.click(screen.getByRole("checkbox", { name: "Has an attachment" }));
 
         // "move_to_folder" is the default selection.
         await user.click(screen.getByRole("button", { name: "Add action" }));
@@ -211,6 +212,7 @@ describe("NewMailFilterPage", () => {
         await screen.findByLabelText("Name");
 
         await user.type(screen.getByLabelText("Name"), "File newsletters");
+        await user.click(screen.getByRole("checkbox", { name: "Has an attachment" }));
         await user.click(screen.getByRole("button", { name: "Create filter" }));
 
         expect(await screen.findByText("boom")).toBeInTheDocument();
@@ -226,9 +228,32 @@ describe("NewMailFilterPage", () => {
         await screen.findByLabelText("Name");
 
         await user.type(screen.getByLabelText("Name"), "File newsletters");
+        await user.click(screen.getByRole("checkbox", { name: "Has an attachment" }));
         await user.click(screen.getByRole("button", { name: "Create filter" }));
 
         expect(await screen.findByText("Could not create the mail filter.")).toBeInTheDocument();
+    });
+
+    it("refuses to create a filter without any condition, since it would apply to every message", async () => {
+        let posted = false;
+        mockShell((url, init) => {
+            if (url === "/api/mail/mail-filter-rules" && init?.method === "POST") {
+                posted = true;
+                return jsonResponse(200, { uid: "mfr1" });
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<NewMailFilterPage userUid="u1" />);
+        await screen.findByLabelText("Name");
+
+        await user.type(screen.getByLabelText("Name"), "Delete everything");
+        await user.selectOptions(screen.getByLabelText("New action type"), "delete");
+        await user.click(screen.getByRole("button", { name: "Add action" }));
+        await user.click(screen.getByRole("button", { name: "Create filter" }));
+
+        expect(await screen.findByText("Add at least one condition. A filter without conditions would apply to every message.")).toBeInTheDocument();
+        expect(posted).toBe(false);
     });
 
     it("the Cancel link returns to the mail filters list", async () => {

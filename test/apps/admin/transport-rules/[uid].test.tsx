@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -166,5 +166,46 @@ describe("TransportRuleDetailPage", () => {
         });
         render(<TransportRuleDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "tr1" }} />);
         expect(await screen.findByText("Transport rule not found.")).toBeInTheDocument();
+    });
+
+    it("refuses to save once a reject rule's last condition is removed", async () => {
+        const fetchMock = mockFetch((url) => {
+            if (url === "/api/mail/transport-rules/tr1") return jsonResponse(200, { ...rule, actions: [{ type: "reject" }] });
+            return jsonResponse(200, {});
+        });
+        const user = userEvent.setup();
+        render(<TransportRuleDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "tr1" }} />);
+        await screen.findByLabelText("Name");
+
+        await user.click(screen.getByRole("checkbox", { name: "Any recipient is external" }));
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+        expect(await screen.findByText(/rejects or quarantines mail would do so for every message/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PUT")).toBe(false);
+    });
+
+    it("asks before saving a rule with no conditions whose actions don't block mail", async () => {
+        let puts = 0;
+        mockFetch((url, init) => {
+            if (url === "/api/mail/transport-rules/tr1" && init?.method === "PUT") {
+                puts++;
+                return jsonResponse(200, { ...rule, version: 1, conditions: {} });
+            }
+            if (url === "/api/mail/transport-rules/tr1") return jsonResponse(200, rule);
+            return jsonResponse(200, {});
+        });
+        const user = userEvent.setup();
+        render(<TransportRuleDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "tr1" }} />);
+        await screen.findByLabelText("Name");
+
+        await user.click(screen.getByRole("checkbox", { name: "Any recipient is external" }));
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Apply to every message?" })).getByRole("button", { name: "Close" }));
+        expect(puts).toBe(0);
+
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Apply to every message?" })).getByRole("button", { name: "Save anyway" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(puts).toBe(1);
     });
 });

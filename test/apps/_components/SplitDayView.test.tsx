@@ -107,4 +107,19 @@ describe("SplitDayView", () => {
         expect(screen.getByText("1AM")).toBeInTheDocument();
         expect(screen.getByText("11PM")).toBeInTheDocument();
     });
+
+    it("clips a multi-day timed event to the visible day, and fills the whole day for an all-day event", () => {
+        renderSplit({
+            occurrences: [
+                occurrence({ title: "Overnight", startDate: "2026-06-09T20:00:00.000Z", endDate: "2026-06-10T02:00:00.000Z" }),
+                occurrence({ occurrenceKey: "e2", uid: "e2", folderUid: "f2", title: "Holiday", allDay: true, startDate: "2026-06-10T00:00:00.000Z", endDate: "2026-06-11T00:00:00.000Z" }),
+            ],
+        });
+        const overnight = screen.getByText("Overnight").closest("div[style]") as HTMLElement;
+        expect(overnight.style.top).toBe("0px");
+        expect(overnight.style.height).toBe("96px");
+        const holiday = screen.getByText("Holiday").closest("div[style]") as HTMLElement;
+        expect(holiday.style.top).toBe("0px");
+        expect(holiday.style.height).toBe("1152px");
+    });
 });

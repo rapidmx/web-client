@@ -178,7 +178,28 @@ describe("RecurrenceEditor", () => {
         // picker input, not free text) — `fireEvent.change` mirrors that; `user.type()`'s keystroke-by-
         // keystroke simulation fires intermediate incomplete values a real date input never would.
         fireEvent.change(dateInput, { target: { value: "2026-12-25" } });
-        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ until: new Date("2026-12-25").toISOString() }));
+        // Stored as the end of that *local* day (inclusive), not UTC midnight.
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ until: new Date(2026, 11, 25, 23, 59, 59, 999).toISOString() }));
+        expect(dateInput).toHaveValue("2026-12-25");
+
+        // Clearing the date input keeps the previous end date instead of throwing on an invalid date.
+        onChange.mockClear();
+        fireEvent.change(dateInput, { target: { value: "" } });
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("keeps the previous interval/count while the field is empty, and clamps invalid values to 1", () => {
+        const onChange = vi.fn();
+        render(<RecurrenceEditor value={{ freq: "daily", interval: 2, count: 10, exceptions: [] }} onChange={onChange} />);
+
+        fireEvent.change(screen.getByLabelText("Recurrence interval"), { target: { value: "" } });
+        fireEvent.change(screen.getByLabelText("Number of occurrences"), { target: { value: "" } });
+        expect(onChange).not.toHaveBeenCalled();
+
+        fireEvent.change(screen.getByLabelText("Recurrence interval"), { target: { value: "0" } });
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ interval: 1 }));
+        fireEvent.change(screen.getByLabelText("Number of occurrences"), { target: { value: "-3" } });
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ count: 1 }));
     });
 
     it("shows a pluralized unit label when the interval is greater than 1", () => {

@@ -8,6 +8,7 @@ import { deleteMailbox, getMailbox, impersonateUser, Mailbox } from "@rapidmx/re
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import ShareAccessCard from "../../shared/components/admin/mailboxes/ShareAccessCard.js";
 import ResourceSettingsCard from "../../shared/components/admin/mailboxes/ResourceSettingsCard.js";
+import EscrowScopeCard from "../../shared/components/admin/mailboxes/EscrowScopeCard.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
@@ -31,18 +32,28 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
     const [mailbox, setMailbox] = useState<Mailbox | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [confirmingAccess, setConfirmingAccess] = useState(false);
     const [impersonating, setImpersonating] = useState(false);
+    const [accessError, setAccessError] = useState<string | null>(null);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
 
-    async function handleAccessMailbox(ownerUserUid: string) {
+    function closeAccessModal() {
+        setConfirmingAccess(false);
+        setAccessError(null);
+    }
+
+    // Only ever invoked from the access-confirmation modal below, which only renders for a loaded mailbox that has
+    // an owner. A failure stays in the modal rather than replacing the whole page.
+    async function handleAccessMailbox() {
         setImpersonating(true);
+        setAccessError(null);
         try {
-            await impersonateUser(impersonationBaseUrl ?? "", ownerUserUid);
+            await impersonateUser(impersonationBaseUrl ?? "", mailbox!.ownerUserUid!);
             window.location.href = "/";
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not access this mailbox.");
+            setAccessError(err instanceof ApiRequestError ? err.message : "Could not access this mailbox.");
             setImpersonating(false);
         }
     }
@@ -98,14 +109,7 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
                 </div>
                 <div className="flex gap-3 shrink-0">
                     {mailbox.ownerUserUid && (
-                        <Button
-                            type="button"
-                            variant="secondary"
-                            className="!w-auto"
-                            loading={impersonating}
-                            disabled={impersonating}
-                            onClick={() => handleAccessMailbox(mailbox.ownerUserUid as string)}
-                        >
+                        <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingAccess(true)}>
                             Access this mailbox
                         </Button>
                     )}
@@ -153,9 +157,28 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
                 </div>
             </div>
 
-            <ShareAccessCard mailboxUid={mailbox.uid} />
+            <ShareAccessCard mailboxUid={mailbox.uid} ownerUserUid={mailbox.ownerUserUid} />
+
+            <EscrowScopeCard mailbox={mailbox} onUpdate={setMailbox} />
 
             {mailbox.isResource && <ResourceSettingsCard mailbox={mailbox} onUpdate={setMailbox} />}
+
+            <Modal open={confirmingAccess} onClose={closeAccessModal} title="Access this mailbox">
+                <p className="text-sm mb-3">
+                    You&rsquo;ll be signed in as <strong className="break-all">{mailbox.ownerUserUid}</strong>, the owner
+                    of <strong className="break-all">{mailbox.primarySmtpAddress}</strong>, and see everything they can -
+                    and act as them, until you stop impersonating.
+                </p>
+                {accessError && <Alert>{accessError}</Alert>}
+                <div className="flex gap-3 justify-end mt-5">
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={impersonating} onClick={closeAccessModal}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto" loading={impersonating} disabled={impersonating} onClick={handleAccessMailbox}>
+                        Access mailbox
+                    </Button>
+                </div>
+            </Modal>
 
             <Modal open={confirmingDelete} onClose={closeDeleteModal} title="Delete mailbox">
                 <p className="text-sm mb-5">

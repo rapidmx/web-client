@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Attachment, Folder, Message, getMessage, listAttachments, setMessageRead } from "@rapidmx/react-shared/mail/mailApi.js";
 import { ConversationSummary } from "@rapidmx/react-shared/mail/conversationsApi.js";
@@ -36,16 +36,31 @@ export default function ConversationThreadPane({ conversation, folders, labels }
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
+    // Bumped on every conversation switch - any in-flight load/attachments/mark-read response carrying an
+    // older generation belongs to a superseded conversation and is dropped rather than applied.
+    const generationRef = useRef(0);
+    // Message uids a mark-read / attachments request has already been issued for in the current
+    // generation, so re-running the effect below (every `messages`/`expandedUids` change) while one is
+    // still in flight never fires a duplicate - which for mark-read would also carry a stale `version`.
+    const markReadRequestedRef = useRef<Set<string>>(new Set());
+    const attachmentsRequestedRef = useRef<Set<string>>(new Set());
+
     useEffect(() => {
+        const generation = ++generationRef.current;
+        markReadRequestedRef.current = new Set();
+        attachmentsRequestedRef.current = new Set();
+        setMessages({});
+        setAttachmentsByUid({});
+        setExpandedUids(new Set());
         if (!conversation) {
-            setMessages({});
-            setExpandedUids(new Set());
+            setLoading(false);
             return;
         }
         setLoading(true);
         setError(null);
         Promise.all(conversation.messageUids.map((uid) => getMessage(uid)))
             .then((loaded) => {
+                if (generation !== generationRef.current) return;
                 setMessages(Object.fromEntries(loaded.map((m) => [m.uid, m])));
                 // `messageUids` always has at least one entry — a `ConversationSummary` only ever
                 // exists because it was grouped from real messages (see
@@ -53,8 +68,13 @@ export default function ConversationThreadPane({ conversation, folders, labels }
                 const latestUid = conversation.messageUids[conversation.messageUids.length - 1];
                 setExpandedUids(new Set([latestUid]));
             })
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this conversation."))
-            .finally(() => setLoading(false));
+            .catch((err) => {
+                if (generation !== generationRef.current) return;
+                setError(err instanceof ApiRequestError ? err.message : "Could not load this conversation.");
+            })
+            .finally(() => {
+                if (generation === generationRef.current) setLoading(false);
+            });
     }, [conversation?.conversationId]);
 
     // Lazily loads attachments and marks-as-read only for messages the reader has actually expanded —
@@ -62,23 +82,38 @@ export default function ConversationThreadPane({ conversation, folders, labels }
     // (rather than called in a loop, which the rules of hooks don't allow) since a thread can expand
     // more than one message at once, unlike the single-selected-message case those hooks were built for.
     useEffect(() => {
+        const generation = generationRef.current;
         for (const uid of expandedUids) {
             const message = messages[uid];
             if (!message) continue;
-            if (message.hasAttachments && !attachmentsByUid[uid]) {
+            if (message.hasAttachments && !attachmentsRequestedRef.current.has(uid)) {
+                attachmentsRequestedRef.current.add(uid);
                 listAttachments(message.folderUid, uid)
-                    .then((loaded) => setAttachmentsByUid((prev) => ({ ...prev, [uid]: loaded })))
+                    .then((loaded) => {
+                        if (generation === generationRef.current) {
+                            setAttachmentsByUid((prev) => ({ ...prev, [uid]: loaded }));
+                        }
+                    })
                     .catch(() => {
                         // Best-effort, same as the mark-as-read catch below — `attachmentsByUid[uid] ??
-                        // []` already renders no attachments while this stays unset, so there is nothing
-                        // further to do on failure.
+                        // []` already renders no attachments while this stays unset; forgetting the
+                        // request just lets a later re-expand retry it.
+                        attachmentsRequestedRef.current.delete(uid);
                     });
             }
-            if (!message.flags.read) {
+            // `message` is this render's latest copy, so the request carries its current `version`.
+            if (!message.flags.read && !markReadRequestedRef.current.has(uid)) {
+                markReadRequestedRef.current.add(uid);
                 setMessageRead(message, true)
-                    .then((updated) => setMessages((prev) => ({ ...prev, [uid]: updated })))
+                    .then((updated) => {
+                        if (generation !== generationRef.current) return;
+                        // Never clobber a newer copy another action (label/classify/...) already patched in.
+                        setMessages((prev) => (prev[uid].version > updated.version ? prev : { ...prev, [uid]: updated }));
+                    })
                     .catch(() => {
-                        // Best-effort — matches `useMarkMessageRead`'s own doc comment.
+                        // Best-effort — matches `useMarkMessageRead`'s own doc comment. Forgetting the
+                        // request lets a later effect run (e.g. a re-expand) retry with a fresh copy.
+                        markReadRequestedRef.current.delete(uid);
                     });
             }
         }

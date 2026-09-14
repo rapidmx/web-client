@@ -89,6 +89,10 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
+async function confirmDelete(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
+}
+
 // A fixed Monday, used only by the two bucket-precision tests below via local fake timers (never
 // combined with userEvent — see the note above on why fake timers + userEvent deadlock here). Real
 // "now" can legitimately fall on the last day of the Mon-start week (Sunday), where "This Week" (a
@@ -409,6 +413,7 @@ describe("TasksPage", () => {
         render(<TasksPage userUid="u1" />);
 
         await user.click(await screen.findByRole("button", { name: 'Delete "Today task"' }));
+        await confirmDelete(user);
 
         await waitFor(() =>
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/tasks/t-today?version=0", expect.objectContaining({ method: "DELETE" })),
@@ -424,6 +429,7 @@ describe("TasksPage", () => {
         render(<TasksPage userUid="u1" />);
 
         await user.click(await screen.findByRole("button", { name: 'Delete "Today task"' }));
+        await confirmDelete(user);
 
         expect(await screen.findByText("delete failed")).toBeInTheDocument();
     });
@@ -441,8 +447,91 @@ describe("TasksPage", () => {
         render(<TasksPage userUid="u1" />);
 
         await user.click(await screen.findByRole("button", { name: 'Delete "Today task"' }));
+        await confirmDelete(user);
 
         expect(await screen.findByText("Could not delete this task.")).toBeInTheDocument();
+    });
+});
+
+describe("TasksPage (round 3)", () => {
+    it("asks before deleting a single task, and deletes nothing when cancelled or dismissed", async () => {
+        const fetchMock = mockShellAndTasks([todayTask]);
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("button", { name: 'Delete "Today task"' }));
+        const dialog = await screen.findByRole("dialog");
+        expect(within(dialog).getByText('Delete "Today task"?')).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+        await user.click(screen.getByRole("button", { name: 'Delete "Today task"' }));
+        await screen.findByRole("dialog");
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
+        expect(screen.getByText("Today task")).toBeInTheDocument();
+    });
+
+    it("names how many checked tasks a bulk delete will remove", async () => {
+        mockShellAndTasks([todayTask, noDueDateTask]);
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+
+        await screen.findByText("Today task");
+        await user.click(screen.getByLabelText("Select Today task"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        expect(within(await screen.findByRole("dialog")).getByText("Delete 1 selected task?")).toBeInTheDocument();
+        await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+
+        await user.click(screen.getByLabelText("Select No due date task"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        expect(within(await screen.findByRole("dialog")).getByText("Delete 2 selected tasks?")).toBeInTheDocument();
+    });
+
+    it("pages through a folder with more tasks than one page holds", async () => {
+        const firstPage = Array.from({ length: 500 }, (_, i) => task({ uid: `t-${i}`, title: `Bulk ${i}`, completed: true }));
+        const fetchMock = mockShellAndTasks([], (url, init) => {
+            if (url.startsWith("/api/mail/tasks?") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, url.includes("page=1") ? [task({ uid: "t-last", title: "Second page task" })] : firstPage);
+            }
+            return undefined;
+        });
+        render(<TasksPage userUid="u1" />);
+
+        expect(await screen.findByText("Second page task")).toBeInTheDocument();
+        const taskCalls = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith("/api/mail/tasks?"));
+        expect(taskCalls).toHaveLength(2);
+        expect(taskCalls[0]).toContain("limit=500");
+        expect(taskCalls[1]).toContain("page=1");
+    });
+
+    describe("west of UTC", () => {
+        const originalTz = process.env.TZ;
+        afterEach(() => {
+            process.env.TZ = originalTz;
+        });
+
+        it("treats the due date input and a date-only dueDate as the user's local day", async () => {
+            process.env.TZ = "America/Los_Angeles";
+            const created = task({ uid: "t-new", title: "Ship the report", dueDate: "2026-06-16T07:00:00.000Z" });
+            const fetchMock = mockShellAndTasks([task({ uid: "t-dateonly", title: "Date-only task", dueDate: "2026-06-20" })], (url, init) =>
+                url === "/api/mail/tasks" && init?.method === "POST" ? jsonResponse(200, created) : undefined,
+            );
+            const user = userEvent.setup();
+            render(<TasksPage userUid="u1" />);
+
+            await screen.findByText("Date-only task");
+            expect(screen.getByText(new Date(2026, 5, 20).toLocaleDateString())).toBeInTheDocument();
+            await user.type(screen.getByLabelText("Add a task"), "Ship the report");
+            await user.type(screen.getByLabelText("Due date"), "2026-06-16");
+            await user.click(screen.getByRole("button", { name: "Add" }));
+
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/tasks", expect.objectContaining({ method: "POST" })));
+            const post = fetchMock.mock.calls.find((c) => c[0] === "/api/mail/tasks" && (c[1] as RequestInit).method === "POST")!;
+            expect(JSON.parse((post[1] as RequestInit).body as string).dueDate).toBe("2026-06-16T07:00:00.000Z");
+        });
     });
 });
 
@@ -667,6 +756,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
         expect(screen.getByLabelText("Select Today task")).not.toBeChecked();
 
         await user.click(screen.getByRole("button", { name: 'Delete "Today task"' }));
+        await confirmDelete(user);
         await waitFor(() =>
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/tasks/t-today?version=0", expect.objectContaining({ method: "DELETE" })),
         );
@@ -831,6 +921,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
         await user.click(within(screen.getByRole("toolbar")).getByText("Grid"));
         await user.click(screen.getByLabelText("Select all tasks"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        await confirmDelete(user);
 
         await waitFor(() => expect(deletedCalls.length).toBe(2));
         expect(fetchMock).toHaveBeenCalled();
@@ -848,6 +939,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
         await screen.findByText("Today task");
         await user.click(screen.getByLabelText("Select Today task"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        await confirmDelete(user);
 
         expect(await screen.findByText("cannot delete")).toBeInTheDocument();
     });
@@ -863,6 +955,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
         await screen.findByText("Today task");
         await user.click(screen.getByLabelText("Select Today task"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
+        await confirmDelete(user);
 
         expect(await screen.findByText("Could not delete one or more tasks.")).toBeInTheDocument();
     });

@@ -1,17 +1,139 @@
+diff --git a/dist/admin/escrowAccessRequestsApi.d.ts b/dist/admin/escrowAccessRequestsApi.d.ts
+index 105f38a9446a2151513cf65b2b8b861f6ce7c32b..c2af550970c296927ea3cf30183b34f39d4c0396 100644
+--- a/dist/admin/escrowAccessRequestsApi.d.ts
++++ b/dist/admin/escrowAccessRequestsApi.d.ts
+@@ -7,8 +7,8 @@
+  * request is `approved`/`fulfilled`, and returns still-encrypted `MasterKeyWraps` this server can't
+  * decrypt either — see `EscrowAccessMaterial`'s own doc comment.
+  */
+-import { ListParams } from "../util/apiQuery.js";
+-export type { ListParams };
++import { ListParams, RequestListParams } from "../util/apiQuery.js";
++export type { ListParams, RequestListParams };
+ export interface EscrowAccessRequestApproval {
+     holderUserUid: string;
+     /** ISO 8601 timestamp. */
+@@ -54,7 +54,9 @@ export interface MasterKeyWrap {
+ export interface EscrowAccessMaterial {
+     masterKeyWraps: MasterKeyWrap[];
+ }
+-export declare function listAccessRequests(params?: ListParams): Promise<EscrowAccessRequest[]>;
++/** Newest first. Every request belongs to one Matter, so `params.matterId` narrows the list to that
++ * Matter's requests (still only ever within scopes the caller holds). */
++export declare function listAccessRequests(params?: RequestListParams): Promise<EscrowAccessRequest[]>;
+ export declare function getAccessRequest(uid: string): Promise<EscrowAccessRequest>;
+ export interface CreateAccessRequestInput {
+     matterId: string;
+diff --git a/dist/admin/escrowAccessRequestsApi.js b/dist/admin/escrowAccessRequestsApi.js
+index e14d909f101f6d7651c4d3d4e7a19e4ead8e2d10..028a5fde7773c9cc359bbbcfacb7edf7c8cdd962 100644
+--- a/dist/admin/escrowAccessRequestsApi.js
++++ b/dist/admin/escrowAccessRequestsApi.js
+@@ -13,8 +13,11 @@
+  */
+ import { apiFetch } from "../util/api.js";
+ import { buildQuery } from "../util/apiQuery.js";
++/** Newest first. Every request belongs to one Matter, so `params.matterId` narrows the list to that
++ * Matter's requests (still only ever within scopes the caller holds). */
+ export function listAccessRequests(params = {}) {
+-    return apiFetch(`/escrow/access-requests?${buildQuery(params)}`);
++    const { matterId, ...paging } = params;
++    return apiFetch(`/escrow/access-requests?${buildQuery(paging, matterId ? { matterId } : {})}`);
+ }
+ export function getAccessRequest(uid) {
+     return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}`);
+diff --git a/dist/admin/escrowAuditLogApi.d.ts b/dist/admin/escrowAuditLogApi.d.ts
+index b5687b04c25e7a3ac5f987d7301a65e66f13c131..a6afbc4d8414ecddecf6c359fe9af2fe76e06c85 100644
+--- a/dist/admin/escrowAuditLogApi.d.ts
++++ b/dist/admin/escrowAuditLogApi.d.ts
+@@ -9,10 +9,11 @@
+  */
+ import { ListParams } from "../util/apiQuery.js";
+ export type { ListParams };
+-/** The lifecycle event an `EscrowAuditLogEntry` records — deliberately excludes a denied request (nothing
+- * was ever granted or used there); that goes through the ordinary `AuditLogEntry` (`auditLogApi.ts`)
+- * instead. */
+-export type EscrowAuditAction = "escrow_access_request.created" | "escrow_access_request.approved" | "escrow_access_request.material_read";
++/** The lifecycle event an `EscrowAuditLogEntry` records — mirrors `@rapidmx/restapi`'s `EscrowAuditAction`
++ * enum values exactly, including a Matter-scoped eDiscovery export's lifecycle (`matter_export.*`, whose
++ * `requestId` is the `MatterExportRequest` uid). Deliberately excludes a denied access request (nothing was
++ * ever granted or used there); that goes through the ordinary `AuditLogEntry` (`auditLogApi.ts`) instead. */
++export type EscrowAuditAction = "escrow_access_request.created" | "escrow_access_request.approved" | "matter_export.requested" | "matter_export.ready" | "matter_export.failed" | "escrow_access_request.material_read";
+ export interface EscrowAuditLogEntry {
+     uid: string;
+     version: number;
+diff --git a/dist/admin/matterExportApi.d.ts b/dist/admin/matterExportApi.d.ts
+index 1f75c92aaf8f7fe49621ec34651c92f800bd65db..5d9783ac11732def1ab0e6b7456469290ef71f97 100644
+--- a/dist/admin/matterExportApi.d.ts
++++ b/dist/admin/matterExportApi.d.ts
+@@ -1,3 +1,5 @@
++import { RequestListParams } from "../util/apiQuery.js";
++export type { RequestListParams };
+ export type MatterExportStatus = "pending" | "ready" | "failed";
+ export interface MatterExportRequest {
+     uid: string;
+@@ -12,8 +14,9 @@ export interface MatterExportRequest {
+ }
+ export declare function createMatterExportRequest(matterId: string): Promise<MatterExportRequest>;
+ /** Scoped server-side to matters under scopes the caller holds — never all requests, even for a trusted
+- * admin who isn't also a holder. */
+-export declare function listMatterExportRequests(): Promise<MatterExportRequest[]>;
++ * admin who isn't also a holder. Newest first; `params` pages through them (`limit` capped at 500
++ * server-side) and/or narrows to one `matterId`. */
++export declare function listMatterExportRequests(params?: RequestListParams): Promise<MatterExportRequest[]>;
+ export declare function getMatterExportRequest(uid: string): Promise<MatterExportRequest>;
+ /** A plain URL, not a fetch wrapper — same "let the browser download it natively" pattern
+  * `dataExportApi.ts`'s `exportRequestDownloadUrl()` already establishes. 404s until `status === "ready"`. */
+diff --git a/dist/admin/matterExportApi.js b/dist/admin/matterExportApi.js
+index 195f82f61322b0be33fa3d843374106aa422730d..117d2711b1020a0e4fa993bc7f1f34567cf176e6 100644
+--- a/dist/admin/matterExportApi.js
++++ b/dist/admin/matterExportApi.js
+@@ -11,7 +11,8 @@
+  * `MatterExportJob`, not this client) — `createMatterExportRequest()` only stages a `pending` request;
+  * poll `listMatterExportRequests()` for `status` to become `"ready"` (or `"failed"`).
+  */
+-import { apiFetch } from "../util/api.js";
++import { apiFetch, apiUrl } from "../util/api.js";
++import { buildRequestListQuery } from "../util/apiQuery.js";
+ export function createMatterExportRequest(matterId) {
+     return apiFetch(`/escrow/matter-export-requests`, {
+         method: "POST",
+@@ -19,9 +20,10 @@ export function createMatterExportRequest(matterId) {
+     });
+ }
+ /** Scoped server-side to matters under scopes the caller holds — never all requests, even for a trusted
+- * admin who isn't also a holder. */
+-export function listMatterExportRequests() {
+-    return apiFetch(`/escrow/matter-export-requests`);
++ * admin who isn't also a holder. Newest first; `params` pages through them (`limit` capped at 500
++ * server-side) and/or narrows to one `matterId`. */
++export function listMatterExportRequests(params = {}) {
++    return apiFetch(`/escrow/matter-export-requests${buildRequestListQuery(params)}`);
+ }
+ export function getMatterExportRequest(uid) {
+     return apiFetch(`/escrow/matter-export-requests/${encodeURIComponent(uid)}`);
+@@ -29,5 +31,5 @@ export function getMatterExportRequest(uid) {
+ /** A plain URL, not a fetch wrapper — same "let the browser download it natively" pattern
+  * `dataExportApi.ts`'s `exportRequestDownloadUrl()` already establishes. 404s until `status === "ready"`. */
+ export function matterExportRequestDownloadUrl(uid) {
+-    return `/api/escrow/matter-export-requests/${encodeURIComponent(uid)}/download`;
++    return apiUrl(`/escrow/matter-export-requests/${encodeURIComponent(uid)}/download`);
+ }
 diff --git a/dist/admin/pluginsApi.d.ts b/dist/admin/pluginsApi.d.ts
-index 66882725c0b6e48a76ce4e3aa5b062194d954298..523c613736c0e84fb8606c894887ce9d748e4ab4 100644
+index 66882725c0b6e48a76ce4e3aa5b062194d954298..f7999197f7112d0263b5d02ee65f290fb23fc994 100644
 --- a/dist/admin/pluginsApi.d.ts
 +++ b/dist/admin/pluginsApi.d.ts
-@@ -19,6 +19,8 @@ export interface PluginManifest {
+@@ -19,6 +19,10 @@ export interface PluginManifest {
      displayName: string;
      description?: string;
      settings?: PluginSettingDefinition[];
 +    /** Other plugins this one needs, as package name to npm version range. */
 +    requires?: Record<string, string>;
++    /** Whether the plugin stores per-mailbox data that data-subject erasure must reach. */
++    mailboxScopedData?: boolean;
  }
  export type PluginSettingValue = string | number | boolean;
  /** Mirrors `@rapidmx/restapi`'s `Plugin`. `version` is the row's optimistic-lock counter; the npm version is
-@@ -72,6 +74,77 @@ export interface PluginStatus {
+@@ -72,6 +76,77 @@ export interface PluginStatus {
      hash: string;
      instances: PluginInstanceStatus[];
  }
@@ -89,7 +211,7 @@ index 66882725c0b6e48a76ce4e3aa5b062194d954298..523c613736c0e84fb8606c894887ce9d
  export interface UpdatePluginInput {
      /** The row's optimistic-lock counter. */
      version?: number;
-@@ -79,13 +152,27 @@ export interface UpdatePluginInput {
+@@ -79,13 +154,27 @@ export interface UpdatePluginInput {
      enabled?: boolean;
      /** A `null` value clears a setting back to the plugin's own default. */
      settings?: Record<string, PluginSettingValue | null>;
@@ -221,6 +343,2701 @@ index 8b04e4b0d0cb7547322949db1862d2a7ca8fab7a..73ca0f585cb88efc023e81941f4b4ed3
  export function updateRetentionPolicy(patch) {
      return apiFetch(`/system/retention-policy`, {
          method: "PUT",
+diff --git a/dist/branding/brandingApi.js b/dist/branding/brandingApi.js
+index 02a2f61803e5ea5512db3f8c25537095fb5a6bf9..434ef2ab0daf236daa2553f292ff2f8c4854862a 100644
+--- a/dist/branding/brandingApi.js
++++ b/dist/branding/brandingApi.js
+@@ -8,7 +8,7 @@
+  * `GET /system/branding` needs no auth (every viewer, including an anonymous booking-page visitor, can read
+  * it); every write is `@RequiresTrustedRole()` on the backend.
+  */
+-import { apiFetch, ApiRequestError } from "../util/api.js";
++import { apiFetch, ApiRequestError, apiUrl } from "../util/api.js";
+ export function getBranding() {
+     return apiFetch("/system/branding");
+ }
+@@ -19,8 +19,9 @@ export function updateBranding(input) {
+     });
+ }
+ async function uploadBrandingAsset(path, file) {
+-    const res = await fetch(`/api${path}`, {
++    const res = await fetch(apiUrl(path), {
+         method: "POST",
++        credentials: "include",
+         headers: { "Content-Type": file.type || "application/octet-stream" },
+         body: file,
+     });
+diff --git a/dist/calendar/calendarApi.d.ts b/dist/calendar/calendarApi.d.ts
+index 4150c9d3f6498ffd0dfe7e47a4a1a0dfa3949035..9c8dc52a8856493d5877ec9aeb99e978b4083000 100644
+--- a/dist/calendar/calendarApi.d.ts
++++ b/dist/calendar/calendarApi.d.ts
+@@ -88,6 +88,11 @@ export interface CalendarEvent {
+  * `Date`, so a Mongo `$lte`/`$gte` comparison against them (a real `Date` operand) matches nothing at
+  * all, silently returning zero events for *any* date-bounded query. Client-side filtering sidesteps
+  * that entirely and needs no fix to land here.
++ *
++ * Pages through the whole folder (`limit=500`, the server's own page-size cap) until a short page comes
++ * back, so a calendar with more than one page of events isn't silently truncated. A hard cap of
++ * `LIST_CALENDAR_EVENTS_MAX_PAGES` pages guards against looping forever should a server ever ignore
++ * `page` and keep returning full pages.
+  */
+ export declare function listCalendarEvents(folderUid: string): Promise<CalendarEvent[]>;
+ export declare function getCalendarEvent(uid: string): Promise<CalendarEvent>;
+diff --git a/dist/calendar/calendarApi.js b/dist/calendar/calendarApi.js
+index dfabcb771edeff0d072c6215b36b99cf7f8de9bf..b38f5b9690419be7ec08fdb569cb5e3bc9ebbc30 100644
+--- a/dist/calendar/calendarApi.js
++++ b/dist/calendar/calendarApi.js
+@@ -8,6 +8,8 @@
+  * `RecurrenceRule` as-is and does no RFC5545 expansion of its own. */
+ import { apiFetch } from "../util/api.js";
+ import { buildQuery } from "../util/apiQuery.js";
++const LIST_PAGE_SIZE = 500;
++const LIST_CALENDAR_EVENTS_MAX_PAGES = 100;
+ /**
+  * Lists every event in a folder (same "fetch the flat list, filter client-side" contract as
+  * `contactsApi.ts`'s `listContacts`/`tasksApi.ts`'s `listTasks`), for the caller to expand and filter
+@@ -18,9 +20,22 @@ import { buildQuery } from "../util/apiQuery.js";
+  * `Date`, so a Mongo `$lte`/`$gte` comparison against them (a real `Date` operand) matches nothing at
+  * all, silently returning zero events for *any* date-bounded query. Client-side filtering sidesteps
+  * that entirely and needs no fix to land here.
++ *
++ * Pages through the whole folder (`limit=500`, the server's own page-size cap) until a short page comes
++ * back, so a calendar with more than one page of events isn't silently truncated. A hard cap of
++ * `LIST_CALENDAR_EVENTS_MAX_PAGES` pages guards against looping forever should a server ever ignore
++ * `page` and keep returning full pages.
+  */
+-export function listCalendarEvents(folderUid) {
+-    return apiFetch(`/mail/calendar-events?${buildQuery({ limit: 500 }, { folderUid })}`);
++export async function listCalendarEvents(folderUid) {
++    const events = [];
++    for (let page = 0; page < LIST_CALENDAR_EVENTS_MAX_PAGES; page++) {
++        const batch = await apiFetch(`/mail/calendar-events?${buildQuery({ limit: LIST_PAGE_SIZE, page }, { folderUid })}`);
++        events.push(...batch);
++        if (batch.length < LIST_PAGE_SIZE) {
++            break;
++        }
++    }
++    return events;
+ }
+ export function getCalendarEvent(uid) {
+     return apiFetch(`/mail/calendar-events/${encodeURIComponent(uid)}`);
+diff --git a/dist/calendar/calendarDragIds.d.ts b/dist/calendar/calendarDragIds.d.ts
+index 63b6ed40cd1af35fa93c6a679cb4653affcee187..fb208e7c676c522fe09e06a1eadfacf68e97e46f 100644
+--- a/dist/calendar/calendarDragIds.d.ts
++++ b/dist/calendar/calendarDragIds.d.ts
+@@ -12,7 +12,11 @@
+  * `calendarMutations.ts`'s `moveOccurrence`/`resizeOccurrenceEnd`.
+  */
+ import { CalendarOccurrence } from "./recurrence.js";
+-/** A month-view day cell's droppable id, for the given day (any time-of-day on that calendar date). */
++/**
++ * A month-view day cell's droppable id, for the given day (any time-of-day on that calendar date) —
++ * encoded as the runtime's *local* `yyyy-MM-dd`, matching the local-midnight day dates the grid views
++ * build via `date-fns`.
++ */
+ export declare function dayDropId(date: Date): string;
+ /** A week/day-view time slot's droppable id, rounded to the given date-time instant. */
+ export declare function slotDropId(date: Date): string;
+diff --git a/dist/calendar/calendarDragIds.js b/dist/calendar/calendarDragIds.js
+index 9f96fb9213aa3347a8f541a0b946e0e6eef999de..451f365910dad8bc0b06332bc026a410d796bf98 100644
+--- a/dist/calendar/calendarDragIds.js
++++ b/dist/calendar/calendarDragIds.js
+@@ -18,9 +18,16 @@
+ const DAY_ID_PREFIX = "day:";
+ const SLOT_ID_PREFIX = "slot:";
+ const RESIZE_ID_PREFIX = "resize:";
+-/** A month-view day cell's droppable id, for the given day (any time-of-day on that calendar date). */
++/**
++ * A month-view day cell's droppable id, for the given day (any time-of-day on that calendar date) —
++ * encoded as the runtime's *local* `yyyy-MM-dd`, matching the local-midnight day dates the grid views
++ * build via `date-fns`.
++ */
+ export function dayDropId(date) {
+-    return `${DAY_ID_PREFIX}${date.toISOString().slice(0, 10)}`;
++    const yyyy = String(date.getFullYear()).padStart(4, "0");
++    const mm = String(date.getMonth() + 1).padStart(2, "0");
++    const dd = String(date.getDate()).padStart(2, "0");
++    return `${DAY_ID_PREFIX}${yyyy}-${mm}-${dd}`;
+ }
+ /** A week/day-view time slot's droppable id, rounded to the given date-time instant. */
+ export function slotDropId(date) {
+@@ -57,9 +64,17 @@ export function resolveDragAction(activeId, overId, occurrences) {
+         return { type: "resize", occurrence, newEnd: new Date(overId.slice(SLOT_ID_PREFIX.length)) };
+     }
+     if (overId.startsWith(DAY_ID_PREFIX)) {
+-        const targetDay = new Date(`${overId.slice(DAY_ID_PREFIX.length)}T00:00:00.000Z`);
+-        const sourceDay = new Date(`${occurrence.startDate.slice(0, 10)}T00:00:00.000Z`);
+-        return { type: "move", occurrence, deltaMs: targetDay.getTime() - sourceDay.getTime() };
++        // Moving to another day keeps the occurrence's local wall-clock start time, so the delta is
++        // "same local time on the target day" minus the original start — a whole number of calendar
++        // days, which is not always a multiple of 24h when the move crosses a DST change.
++        const [year, month, day] = overId.slice(DAY_ID_PREFIX.length).split("-").map(Number);
++        const source = new Date(occurrence.startDate);
++        const target = new Date(source.getTime());
++        target.setFullYear(year, month - 1, day);
++        if (Number.isNaN(target.getTime())) {
++            return null;
++        }
++        return { type: "move", occurrence, deltaMs: target.getTime() - source.getTime() };
+     }
+     if (overId.startsWith(SLOT_ID_PREFIX)) {
+         const targetSlot = new Date(overId.slice(SLOT_ID_PREFIX.length));
+diff --git a/dist/calendar/calendarMutations.d.ts b/dist/calendar/calendarMutations.d.ts
+index 320c77759192486fb87a96f2ccf3c7c15c0880db..c3522b30803f5005359d929c734299286f512727 100644
+--- a/dist/calendar/calendarMutations.d.ts
++++ b/dist/calendar/calendarMutations.d.ts
+@@ -18,6 +18,14 @@ export declare function saveEventSeries(occurrence: CalendarOccurrence, fields:
+ /**
+  * Applies edited `fields` to just this one occurrence of a recurring event, detaching it into its own
+  * standalone (non-recurring) event and excluding the original occurrence from the series.
++ *
++ * The detached event is created *first*, and only then is the original occurrence excluded from the
++ * master — so a failure part-way never makes the occurrence silently disappear. If adding the
++ * exception fails, the just-created detached event is deleted again (best-effort) and the original
++ * error is rethrown. The detached event keeps the master's `icalUid` and records the occurrence's
++ * original start as its `recurrenceId` (the RFC5545 way of identifying a modified instance), and never
++ * carries the series' `recurrenceRule` — even if `fields` includes one (e.g. the event modal's full
++ * field set).
+  */
+ export declare function detachOccurrence(occurrence: CalendarOccurrence, fields: Partial<CalendarEventInput>): Promise<CalendarEvent>;
+ /** Deletes an entire recurring series (or a genuinely non-recurring event) outright. */
+diff --git a/dist/calendar/calendarMutations.js b/dist/calendar/calendarMutations.js
+index ac8af38e7c7874c972a749401c92c1c396c612a2..98fe16adb6615f380584322510a86a85c70dff37 100644
+--- a/dist/calendar/calendarMutations.js
++++ b/dist/calendar/calendarMutations.js
+@@ -31,10 +31,20 @@ export function saveEventSeries(occurrence, fields) {
+ /**
+  * Applies edited `fields` to just this one occurrence of a recurring event, detaching it into its own
+  * standalone (non-recurring) event and excluding the original occurrence from the series.
++ *
++ * The detached event is created *first*, and only then is the original occurrence excluded from the
++ * master — so a failure part-way never makes the occurrence silently disappear. If adding the
++ * exception fails, the just-created detached event is deleted again (best-effort) and the original
++ * error is rethrown. The detached event keeps the master's `icalUid` and records the occurrence's
++ * original start as its `recurrenceId` (the RFC5545 way of identifying a modified instance), and never
++ * carries the series' `recurrenceRule` — even if `fields` includes one (e.g. the event modal's full
++ * field set).
+  */
+ export async function detachOccurrence(occurrence, fields) {
+-    await addException(occurrence, occurrence.recurrenceId);
+-    return createCalendarEvent({
++    const originalStart = occurrence.recurrenceId;
++    // `icalUid`/`recurrenceId` aren't part of `CalendarEventInput`, but `@rapidmx/restapi`'s
++    // `CalendarEvent` model accepts both on create (and `createCalendarEvent` already sends `icalUid`).
++    const input = {
+         mailboxUid: occurrence.mailboxUid,
+         folderUid: occurrence.folderUid,
+         title: occurrence.title,
+@@ -48,8 +58,22 @@ export async function detachOccurrence(occurrence, fields) {
+         status: occurrence.status,
+         busyStatus: occurrence.busyStatus,
+         reminderMinutesBeforeStart: occurrence.reminderMinutesBeforeStart,
++        autoReplyEnabled: occurrence.autoReplyEnabled,
++        autoReplyMessage: occurrence.autoReplyMessage,
+         ...fields,
+-    });
++        recurrenceRule: undefined,
++        icalUid: occurrence.icalUid,
++        recurrenceId: originalStart,
++    };
++    const created = await createCalendarEvent(input);
++    try {
++        await addException(occurrence, originalStart);
++    }
++    catch (err) {
++        await deleteCalendarEvent(created.uid, created.version).catch(() => undefined);
++        throw err;
++    }
++    return created;
+ }
+ /** Deletes an entire recurring series (or a genuinely non-recurring event) outright. */
+ export function deleteEventSeries(occurrence) {
+diff --git a/dist/calendar/recurrence.d.ts b/dist/calendar/recurrence.d.ts
+index afda184637dfce21c264c72b28bf23e5910c3be8..69442cb3af3c9bf0b68d21a9571aa58c116c4a68 100644
+--- a/dist/calendar/recurrence.d.ts
++++ b/dist/calendar/recurrence.d.ts
+@@ -8,8 +8,15 @@ import { CalendarEvent, RecurrenceRule, WeekdayCode } from "./calendarApi.js";
+ /** Extracted so the CJS-interop fallback branch can be exercised directly with a plain object,
+  * without needing to fight a module mock into reproducing Node's exact interop shape. */
+ export declare function resolveRRuleExport(ns: typeof RRuleNS): typeof RRuleNS.RRule;
+-/** Builds an `RRule` instance from this app's `RecurrenceRule` shape, anchored at `dtstart`. */
+-export declare function buildRRule(rule: RecurrenceRule, dtstart: Date): RRuleNS.RRule;
++/**
++ * Builds an `RRule` instance from this app's `RecurrenceRule` shape, anchored at `dtstart`. Pass the
++ * event's IANA `tzid` so the rule carries it (e.g. `DTSTART;TZID=America/New_York:...` from
++ * `.toString()`) — note that, per `rrule`'s own convention, a rule with a non-UTC `tzid` expects
++ * `dtstart` to be a "floating" wall-clock time expressed as a UTC `Date` and rezones its generated
++ * dates using the *runtime's* local zone, which is why `expandOccurrences()` below does its own
++ * timezone conversion instead of relying on this.
++ */
++export declare function buildRRule(rule: RecurrenceRule, dtstart: Date, tzid?: string): RRuleNS.RRule;
+ /** A single expanded occurrence of a (possibly recurring) `CalendarEvent`, ready to render on a grid. */
+ export interface CalendarOccurrence extends CalendarEvent {
+     /** A key unique per occurrence (`${event.uid}::${occurrence start}`) — use this for React `key`s and
+@@ -24,6 +31,12 @@ export interface CalendarOccurrence extends CalendarEvent {
+  * Expands `event` into every occurrence whose interval overlaps `[rangeStart, rangeEnd]`. A
+  * non-recurring event yields itself (in a one-element array) if it overlaps, or `[]` otherwise —
+  * callers don't need to special-case recurring vs. not.
++ *
++ * Recurrence is expanded in the event's own `timezone` (an IANA zone id; an empty or unrecognized
++ * value falls back to the runtime's local zone, i.e. floating time), so every occurrence keeps the
++ * master's local wall-clock start/end time and local weekday — a weekly Monday 23:00
++ * America/New_York event stays on Monday 23:00 New York time across DST changes, rather than being
++ * expanded on the UTC weekday/time of its first instance.
+  */
+ export declare function expandOccurrences(event: CalendarEvent, rangeStart: Date, rangeEnd: Date): CalendarOccurrence[];
+ /** Expands every event in `events` and flattens the result — the usual entry point for a grid view. */
+diff --git a/dist/calendar/recurrence.js b/dist/calendar/recurrence.js
+index 4611a9a592a29f41ca9f07b477ae1cf2f247ae68..30d39432a4b02be79a81bd262d92cd03c2e91d38 100644
+--- a/dist/calendar/recurrence.js
++++ b/dist/calendar/recurrence.js
+@@ -42,42 +42,131 @@ const WEEKDAY_OBJECT = {
+     SA: RRule.SA,
+     SU: RRule.SU,
+ };
+-/** Builds an `RRule` instance from this app's `RecurrenceRule` shape, anchored at `dtstart`. */
+-export function buildRRule(rule, dtstart) {
++function createRRule(rule, dtstart, until, tzid) {
+     return new RRule({
+         freq: FREQ_MAP[rule.freq],
+         interval: rule.interval,
+         dtstart,
++        tzid,
+         byweekday: rule.byDay?.map((code) => WEEKDAY_OBJECT[code]),
+         bymonthday: rule.byMonthDay,
+         bymonth: rule.byMonth,
+         count: rule.count,
+-        until: rule.until ? new Date(rule.until) : null,
++        until,
+     });
+ }
++/**
++ * Builds an `RRule` instance from this app's `RecurrenceRule` shape, anchored at `dtstart`. Pass the
++ * event's IANA `tzid` so the rule carries it (e.g. `DTSTART;TZID=America/New_York:...` from
++ * `.toString()`) — note that, per `rrule`'s own convention, a rule with a non-UTC `tzid` expects
++ * `dtstart` to be a "floating" wall-clock time expressed as a UTC `Date` and rezones its generated
++ * dates using the *runtime's* local zone, which is why `expandOccurrences()` below does its own
++ * timezone conversion instead of relying on this.
++ */
++export function buildRRule(rule, dtstart, tzid) {
++    return createRRule(rule, dtstart, rule.until ? new Date(rule.until) : null, tzid ?? null);
++}
++const MS_PER_DAY = 24 * 60 * 60 * 1000;
++function positiveMs(ms) {
++    return ((ms % 1000) + 1000) % 1000;
++}
++/** The runtime's own local zone — used for a "floating" event with no (or an unrecognized) timezone. */
++const LOCAL_ZONE = {
++    toWall(instantMs) {
++        const d = new Date(instantMs);
++        return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
++    },
++    fromWall(wallMs) {
++        const w = new Date(wallMs);
++        return new Date(w.getUTCFullYear(), w.getUTCMonth(), w.getUTCDate(), w.getUTCHours(), w.getUTCMinutes(), w.getUTCSeconds(), w.getUTCMilliseconds()).getTime();
++    },
++};
++function ianaZone(formatter) {
++    const toWall = (instantMs) => {
++        const fields = {};
++        for (const part of formatter.formatToParts(new Date(instantMs))) {
++            fields[part.type] = Number(part.value);
++        }
++        // `% 24`: some engines render midnight as hour "24" even with `hourCycle: "h23"`.
++        return Date.UTC(fields.year, fields.month - 1, fields.day, fields.hour % 24, fields.minute, fields.second, positiveMs(instantMs));
++    };
++    return {
++        toWall,
++        // Two-pass offset resolution: the offset at the naive guess, then re-evaluated at the first
++        // candidate, which settles on the correct side of a DST transition. An ambiguous (fall-back)
++        // wall time resolves to its first (daylight) instance; a nonexistent (spring-forward) one lands
++        // one hour earlier in standard time.
++        fromWall(wallMs) {
++            const firstGuess = wallMs - (toWall(wallMs) - wallMs);
++            return wallMs - (toWall(firstGuess) - firstGuess);
++        },
++    };
++}
++const zoneCache = new Map();
++/** Resolves `timezone` (an IANA zone id) to a converter, falling back to the runtime's local zone when
++ * it's empty or not a zone `Intl` recognizes. */
++function resolveZone(timezone) {
++    const key = timezone ?? "";
++    let zone = zoneCache.get(key);
++    if (!zone) {
++        try {
++            zone = key
++                ? ianaZone(new Intl.DateTimeFormat("en-US", {
++                    timeZone: key,
++                    hourCycle: "h23",
++                    year: "numeric",
++                    month: "2-digit",
++                    day: "2-digit",
++                    hour: "2-digit",
++                    minute: "2-digit",
++                    second: "2-digit",
++                }))
++                : LOCAL_ZONE;
++        }
++        catch {
++            zone = LOCAL_ZONE;
++        }
++        zoneCache.set(key, zone);
++    }
++    return zone;
++}
+ /**
+  * Expands `event` into every occurrence whose interval overlaps `[rangeStart, rangeEnd]`. A
+  * non-recurring event yields itself (in a one-element array) if it overlaps, or `[]` otherwise —
+  * callers don't need to special-case recurring vs. not.
++ *
++ * Recurrence is expanded in the event's own `timezone` (an IANA zone id; an empty or unrecognized
++ * value falls back to the runtime's local zone, i.e. floating time), so every occurrence keeps the
++ * master's local wall-clock start/end time and local weekday — a weekly Monday 23:00
++ * America/New_York event stays on Monday 23:00 New York time across DST changes, rather than being
++ * expanded on the UTC weekday/time of its first instance.
+  */
+ export function expandOccurrences(event, rangeStart, rangeEnd) {
+     const start = new Date(event.startDate);
+     const end = new Date(event.endDate);
+-    const durationMs = end.getTime() - start.getTime();
+     if (!event.recurrenceRule) {
+         const overlaps = start < rangeEnd && end > rangeStart;
+         return overlaps ? [{ ...event, occurrenceKey: event.uid, isRecurringOccurrence: false }] : [];
+     }
+-    const rule = buildRRule(event.recurrenceRule, start);
+-    // Widen the query window by one occurrence's duration so an occurrence that started before
+-    // `rangeStart` but is still in progress (still overlaps the visible window) isn't missed.
+-    const queryStart = new Date(rangeStart.getTime() - durationMs);
+-    const occurrenceStarts = rule.between(queryStart, rangeEnd, true);
++    const zone = resolveZone(event.timezone);
++    const startWall = zone.toWall(start.getTime());
++    // The duration in wall-clock terms, so an occurrence also keeps its local end time across DST.
++    const wallDurationMs = zone.toWall(end.getTime()) - startWall;
++    const { until } = event.recurrenceRule;
++    const rule = createRRule(event.recurrenceRule, new Date(startWall), until ? new Date(zone.toWall(new Date(until).getTime())) : null, null);
++    // Query in the wall-clock frame, widened by one occurrence's duration (so an occurrence that started
++    // before `rangeStart` but is still in progress isn't missed) plus a day on each side to absorb the
++    // zone's offset; the exact instant-based overlap filter at the end trims the excess.
++    const queryStart = new Date(zone.toWall(rangeStart.getTime()) - wallDurationMs - MS_PER_DAY);
++    const queryEnd = new Date(zone.toWall(rangeEnd.getTime()) + MS_PER_DAY);
++    const occurrenceStarts = rule
++        .between(queryStart, queryEnd, true)
++        .map((occWall) => ({ start: new Date(zone.fromWall(occWall.getTime())), wall: occWall.getTime() }));
+     const exceptions = new Set(event.recurrenceRule.exceptions.map((d) => new Date(d).getTime()));
+     return occurrenceStarts
+-        .filter((occStart) => !exceptions.has(occStart.getTime()))
+-        .map((occStart) => {
+-        const occEnd = new Date(occStart.getTime() + durationMs);
++        .filter((occ) => !exceptions.has(occ.start.getTime()))
++        .map(({ start: occStart, wall }) => {
++        const occEnd = new Date(zone.fromWall(wall + wallDurationMs));
+         return {
+             ...event,
+             startDate: occStart.toISOString(),
+diff --git a/dist/components/overlays/Drawer.d.ts b/dist/components/overlays/Drawer.d.ts
+index fccfc1dff8895077c2a61318c813d9d71811e5c6..1debfa8dfa152c4d8cf154851df0e05363faa69c 100644
+--- a/dist/components/overlays/Drawer.d.ts
++++ b/dist/components/overlays/Drawer.d.ts
+@@ -10,7 +10,7 @@ export interface DrawerProps {
+ }
+ /**
+  * An off-canvas panel for mobile, portal-rendered to `document.body` like `Modal.tsx` — same
+- * backdrop/focus-trap/Escape-key contract, copied verbatim, just styled as a slide-in edge panel
++ * backdrop/focus-trap/Escape-key contract (shared via `overlayStack.ts`), just styled as a slide-in edge panel
+  * instead of a centered card. Used to hold a secondary sidebar's content below the `md` breakpoint,
+  * where it doesn't fit alongside the primary content.
+  */
+diff --git a/dist/components/overlays/Drawer.js b/dist/components/overlays/Drawer.js
+index 50e7f36bcfd396831f7e83a5978cf4662b29295f..c5823898ebf089385cfcef6e2d35981d2a2cfc8c 100644
+--- a/dist/components/overlays/Drawer.js
++++ b/dist/components/overlays/Drawer.js
+@@ -3,45 +3,23 @@ import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+ // Copyright (C) 2026 Jean-Philippe Steinmetz
+ // SPDX-License-Identifier: MPL-2.0
+ ///////////////////////////////////////////////////////////////////////////////
+-import { useEffect, useRef } from "react";
++import { useRef } from "react";
+ import { createPortal } from "react-dom";
++import { OverlayDepthContext, useOverlayDialog } from "./overlayStack.js";
+ /**
+  * An off-canvas panel for mobile, portal-rendered to `document.body` like `Modal.tsx` — same
+- * backdrop/focus-trap/Escape-key contract, copied verbatim, just styled as a slide-in edge panel
++ * backdrop/focus-trap/Escape-key contract (shared via `overlayStack.ts`), just styled as a slide-in edge panel
+  * instead of a centered card. Used to hold a secondary sidebar's content below the `md` breakpoint,
+  * where it doesn't fit alongside the primary content.
+  */
+ export default function Drawer({ open, onClose, title, side = "left", children }) {
+     const dialogRef = useRef(null);
+-    const triggerRef = useRef(null);
+-    // Callers routinely pass `onClose` as a fresh inline function every render — reading it through a ref
+-    // (rather than depending on it directly) keeps the effect below from re-running, and re-stealing focus
+-    // into the drawer, on every parent re-render.
+-    const onCloseRef = useRef(onClose);
+-    onCloseRef.current = onClose;
+-    useEffect(() => {
+-        if (!open)
+-            return;
+-        triggerRef.current = document.activeElement;
+-        dialogRef.current?.focus();
+-        function handleKeyDown(e) {
+-            if (e.key === "Escape") {
+-                onCloseRef.current();
+-            }
+-        }
+-        document.addEventListener("keydown", handleKeyDown);
+-        return () => {
+-            document.removeEventListener("keydown", handleKeyDown);
+-            if (triggerRef.current instanceof HTMLElement) {
+-                triggerRef.current.focus();
+-            }
+-        };
+-    }, [open]);
++    const childDepth = useOverlayDialog(open, dialogRef, onClose);
+     if (!open) {
+         return null;
+     }
+     return createPortal(_jsx("div", { className: "fixed inset-0 bg-black/50 z-[1000]", onMouseDown: (e) => e.target === e.currentTarget && onClose(), children: _jsxs("div", { className: [
+                 "fixed inset-y-0 w-72 max-w-[85vw] overflow-y-auto bg-surface border-border shadow-modal p-5 focus:outline-none",
+                 side === "left" ? "left-0 border-r" : "right-0 border-l",
+-            ].join(" "), role: "dialog", "aria-modal": "true", "aria-label": title, tabIndex: -1, ref: dialogRef, children: [_jsxs("div", { className: "flex items-start justify-between gap-4 mb-5", children: [_jsx("div", { className: "text-xl font-bold tracking-tight", children: title }), _jsx("button", { type: "button", className: "bg-transparent border-none text-text-muted text-2xl leading-none cursor-pointer p-0 hover:text-text", "aria-label": "Close", onClick: onClose, children: "\u00D7" })] }), _jsx("div", { children: children })] }) }), document.body);
++            ].join(" "), role: "dialog", "aria-modal": "true", "aria-label": title, tabIndex: -1, ref: dialogRef, children: [_jsxs("div", { className: "flex items-start justify-between gap-4 mb-5", children: [_jsx("div", { className: "text-xl font-bold tracking-tight", children: title }), _jsx("button", { type: "button", className: "bg-transparent border-none text-text-muted text-2xl leading-none cursor-pointer p-0 hover:text-text", "aria-label": "Close", onClick: onClose, children: "\u00D7" })] }), _jsx("div", { children: _jsx(OverlayDepthContext.Provider, { value: childDepth, children: children }) })] }) }), document.body);
+ }
+diff --git a/dist/components/overlays/Modal.d.ts b/dist/components/overlays/Modal.d.ts
+index a829f07d0710adbedea3dc685bc757332a638336..14d75662a16ed970db5e627e0b863bfa4618e24a 100644
+--- a/dist/components/overlays/Modal.d.ts
++++ b/dist/components/overlays/Modal.d.ts
+@@ -9,5 +9,9 @@ export interface ModalProps {
+  * A small, dependency-free modal dialog rendered via a portal to `document.body`. Controlled by the
+  * caller (`open` state lives in the parent, not here) so multiple call sites can share the same simple
+  * contract without each needing its own open/close plumbing.
++ *
++ * Focus moves into the dialog on open, Tab/Shift+Tab stay trapped inside it, and focus returns to the
++ * previously focused element on close. When overlays are stacked (Modal/Drawer), only the topmost one
++ * handles Escape and the focus trap - see `overlayStack.ts`.
+  */
+ export default function Modal({ open, onClose, title, children }: ModalProps): React.ReactPortal | null;
+diff --git a/dist/components/overlays/Modal.js b/dist/components/overlays/Modal.js
+index d4d8b704c437ac08c6b7b8a773dc022b45c1b590..2e03f3b7733224254e2a0376039aaf08ed337aaf 100644
+--- a/dist/components/overlays/Modal.js
++++ b/dist/components/overlays/Modal.js
+@@ -3,43 +3,23 @@ import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+ // Copyright (C) 2026 Jean-Philippe Steinmetz
+ // SPDX-License-Identifier: MPL-2.0
+ ///////////////////////////////////////////////////////////////////////////////
+-import { useEffect, useRef } from "react";
++import { useRef } from "react";
+ import { createPortal } from "react-dom";
++import { OverlayDepthContext, useOverlayDialog } from "./overlayStack.js";
+ /**
+  * A small, dependency-free modal dialog rendered via a portal to `document.body`. Controlled by the
+  * caller (`open` state lives in the parent, not here) so multiple call sites can share the same simple
+  * contract without each needing its own open/close plumbing.
++ *
++ * Focus moves into the dialog on open, Tab/Shift+Tab stay trapped inside it, and focus returns to the
++ * previously focused element on close. When overlays are stacked (Modal/Drawer), only the topmost one
++ * handles Escape and the focus trap - see `overlayStack.ts`.
+  */
+ export default function Modal({ open, onClose, title, children }) {
+     const dialogRef = useRef(null);
+-    const triggerRef = useRef(null);
+-    // Callers routinely pass `onClose` as a fresh inline function every render — reading it through a ref
+-    // (rather than depending on it directly) keeps the effect below from re-running, and re-stealing focus
+-    // into the dialog, on every parent re-render (e.g. every keystroke in a field inside the modal).
+-    const onCloseRef = useRef(onClose);
+-    onCloseRef.current = onClose;
+-    useEffect(() => {
+-        if (!open)
+-            return;
+-        // Remember what had focus before the modal opened so it can be restored on close (e.g. the "+
+-        // Add" button that triggered this modal), then move focus into the dialog itself.
+-        triggerRef.current = document.activeElement;
+-        dialogRef.current?.focus();
+-        function handleKeyDown(e) {
+-            if (e.key === "Escape") {
+-                onCloseRef.current();
+-            }
+-        }
+-        document.addEventListener("keydown", handleKeyDown);
+-        return () => {
+-            document.removeEventListener("keydown", handleKeyDown);
+-            if (triggerRef.current instanceof HTMLElement) {
+-                triggerRef.current.focus();
+-            }
+-        };
+-    }, [open]);
++    const childDepth = useOverlayDialog(open, dialogRef, onClose);
+     if (!open) {
+         return null;
+     }
+-    return createPortal(_jsx("div", { className: "fixed inset-0 bg-black/50 flex items-center justify-center p-5 z-[1000]", onMouseDown: (e) => e.target === e.currentTarget && onClose(), children: _jsxs("div", { className: "w-full max-w-[440px] max-h-[calc(100vh-2.5rem)] overflow-y-auto bg-surface border border-border rounded-md shadow-modal p-7 focus:outline-none", role: "dialog", "aria-modal": "true", "aria-label": title, tabIndex: -1, ref: dialogRef, children: [_jsxs("div", { className: "flex items-start justify-between gap-4 mb-5", children: [_jsx("div", { className: "text-xl font-bold tracking-tight", children: title }), _jsx("button", { type: "button", className: "bg-transparent border-none text-text-muted text-2xl leading-none cursor-pointer p-0 hover:text-text", "aria-label": "Close", onClick: onClose, children: "\u00D7" })] }), _jsx("div", { children: children })] }) }), document.body);
++    return createPortal(_jsx("div", { className: "fixed inset-0 bg-black/50 flex items-center justify-center p-5 z-[1000]", onMouseDown: (e) => e.target === e.currentTarget && onClose(), children: _jsxs("div", { className: "w-full max-w-[440px] max-h-[calc(100vh-2.5rem)] overflow-y-auto bg-surface border border-border rounded-md shadow-modal p-7 focus:outline-none", role: "dialog", "aria-modal": "true", "aria-label": title, tabIndex: -1, ref: dialogRef, children: [_jsxs("div", { className: "flex items-start justify-between gap-4 mb-5", children: [_jsx("div", { className: "text-xl font-bold tracking-tight", children: title }), _jsx("button", { type: "button", className: "bg-transparent border-none text-text-muted text-2xl leading-none cursor-pointer p-0 hover:text-text", "aria-label": "Close", onClick: onClose, children: "\u00D7" })] }), _jsx("div", { children: _jsx(OverlayDepthContext.Provider, { value: childDepth, children: children }) })] }) }), document.body);
+ }
+diff --git a/dist/components/overlays/overlayStack.d.ts b/dist/components/overlays/overlayStack.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f3ef61778460551e9ce7ec43155d1c3047ecd40
+--- /dev/null
++++ b/dist/components/overlays/overlayStack.d.ts
+@@ -0,0 +1,31 @@
++/**
++ * The shared dialog behavior behind `Modal.tsx` and `Drawer.tsx`: a module-level stack of every open
++ * overlay, so that when overlays nest (a Modal opened from inside a Drawer, a confirm Modal on top of an
++ * edit Modal) only the *topmost* one reacts to Escape and traps Tab — pressing Escape once closes one
++ * layer, not every layer at once.
++ *
++ * One `keydown` listener on `document` is installed while the stack is non-empty and dispatches to the
++ * top entry only. A per-overlay listener that checked "am I on top?" wouldn't be enough: the top
++ * overlay's `onClose` only *schedules* a React state update, so a lower overlay's listener running later
++ * in the same dispatch would still see itself as not-on-top only by luck of ordering.
++ */
++import { RefObject } from "react";
++/**
++ * The nesting depth of the overlay rendering a subtree. Overlays wrap their children in a provider with
++ * the value `useOverlayDialog()` returns, so an overlay rendered inside another's children knows it
++ * belongs above it regardless of effect ordering - see `push()`.
++ */
++export declare const OverlayDepthContext: import("react").Context<number>;
++/**
++ * Wires one open overlay into the stack: on open, remembers the previously focused element and moves
++ * focus into `dialogRef`'s element; while open *and topmost*, Escape calls `onClose` and Tab/Shift+Tab
++ * cycle focus within the dialog; on close/unmount, leaves the stack and restores focus to whatever had it
++ * before opening (when that's still an `HTMLElement`).
++ *
++ * `onClose` is read through a ref: callers routinely pass it as a fresh inline function every render, and
++ * depending on it directly would re-run the effect - re-stealing focus into the dialog - on every parent
++ * re-render (e.g. every keystroke in a field inside the dialog).
++ *
++ * Returns the depth to provide to the overlay's children via `OverlayDepthContext`.
++ */
++export declare function useOverlayDialog(open: boolean, dialogRef: RefObject<HTMLElement | null>, onClose: () => void): number;
+diff --git a/dist/components/overlays/overlayStack.js b/dist/components/overlays/overlayStack.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1987d9086189a12d68747784f35dda34f08aa26
+--- /dev/null
++++ b/dist/components/overlays/overlayStack.js
+@@ -0,0 +1,129 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * The shared dialog behavior behind `Modal.tsx` and `Drawer.tsx`: a module-level stack of every open
++ * overlay, so that when overlays nest (a Modal opened from inside a Drawer, a confirm Modal on top of an
++ * edit Modal) only the *topmost* one reacts to Escape and traps Tab — pressing Escape once closes one
++ * layer, not every layer at once.
++ *
++ * One `keydown` listener on `document` is installed while the stack is non-empty and dispatches to the
++ * top entry only. A per-overlay listener that checked "am I on top?" wouldn't be enough: the top
++ * overlay's `onClose` only *schedules* a React state update, so a lower overlay's listener running later
++ * in the same dispatch would still see itself as not-on-top only by luck of ordering.
++ */
++import { createContext, useContext, useEffect, useRef } from "react";
++/**
++ * The nesting depth of the overlay rendering a subtree. Overlays wrap their children in a provider with
++ * the value `useOverlayDialog()` returns, so an overlay rendered inside another's children knows it
++ * belongs above it regardless of effect ordering - see `push()`.
++ */
++export const OverlayDepthContext = createContext(0);
++const stack = [];
++/** Everything natively tabbable - disabled controls, `tabindex="-1"`, and hidden inputs excluded. */
++const TABBABLE_SELECTOR = [
++    "a[href]",
++    "area[href]",
++    "button:not([disabled])",
++    "input:not([disabled]):not([type='hidden'])",
++    "select:not([disabled])",
++    "textarea:not([disabled])",
++    "iframe",
++    "audio[controls]",
++    "video[controls]",
++    "[contenteditable]:not([contenteditable='false'])",
++    "[tabindex]",
++].join(",");
++function tabbableElements(container) {
++    return Array.from(container.querySelectorAll(TABBABLE_SELECTOR)).filter((el) => el.tabIndex >= 0 && !el.hasAttribute("inert") && !el.closest("[hidden]"));
++}
++function handleKeyDown(e) {
++    const top = stack[stack.length - 1];
++    const dialog = top.dialogRef.current;
++    if (e.key === "Escape") {
++        top.onEscape();
++        return;
++    }
++    if (e.key !== "Tab" || !dialog) {
++        return;
++    }
++    const tabbable = tabbableElements(dialog);
++    const active = document.activeElement;
++    if (tabbable.length === 0) {
++        e.preventDefault();
++        dialog.focus();
++        return;
++    }
++    const first = tabbable[0];
++    const last = tabbable[tabbable.length - 1];
++    const outside = !dialog.contains(active);
++    if (e.shiftKey) {
++        if (outside || active === first || active === dialog) {
++            e.preventDefault();
++            last.focus();
++        }
++    }
++    else if (outside || active === last) {
++        e.preventDefault();
++        first.focus();
++    }
++}
++function push(entry) {
++    if (stack.length === 0) {
++        document.addEventListener("keydown", handleKeyDown);
++    }
++    // Normally just an append (the most recently opened overlay is on top). But React runs a child's
++    // effects before its parent's, so when a nested overlay mounts already-open in the same commit as the
++    // overlay containing it, the child would be pushed first and end up *under* its own container - so an
++    // entry is placed above every entry at its nesting depth or shallower, never below one of those.
++    let index = stack.length;
++    while (index > 0 && stack[index - 1].depth > entry.depth) {
++        index--;
++    }
++    stack.splice(index, 0, entry);
++}
++function remove(entry) {
++    stack.splice(stack.indexOf(entry), 1);
++    if (stack.length === 0) {
++        document.removeEventListener("keydown", handleKeyDown);
++    }
++}
++/**
++ * Wires one open overlay into the stack: on open, remembers the previously focused element and moves
++ * focus into `dialogRef`'s element; while open *and topmost*, Escape calls `onClose` and Tab/Shift+Tab
++ * cycle focus within the dialog; on close/unmount, leaves the stack and restores focus to whatever had it
++ * before opening (when that's still an `HTMLElement`).
++ *
++ * `onClose` is read through a ref: callers routinely pass it as a fresh inline function every render, and
++ * depending on it directly would re-run the effect - re-stealing focus into the dialog - on every parent
++ * re-render (e.g. every keystroke in a field inside the dialog).
++ *
++ * Returns the depth to provide to the overlay's children via `OverlayDepthContext`.
++ */
++export function useOverlayDialog(open, dialogRef, onClose) {
++    const depth = useContext(OverlayDepthContext);
++    const onCloseRef = useRef(onClose);
++    onCloseRef.current = onClose;
++    useEffect(() => {
++        if (!open)
++            return;
++        // Remember what had focus before the overlay opened so it can be restored on close (e.g. the
++        // "+ Add" button that triggered it), then move focus into the dialog itself.
++        const trigger = document.activeElement;
++        const entry = { dialogRef, onEscape: () => onCloseRef.current(), depth };
++        push(entry);
++        // An overlay that mounted open underneath an already-open nested one (see `push()`) must not
++        // steal focus from the overlay above it.
++        if (stack[stack.length - 1] === entry) {
++            dialogRef.current?.focus();
++        }
++        return () => {
++            remove(entry);
++            if (trigger instanceof HTMLElement) {
++                trigger.focus();
++            }
++        };
++    }, [open]);
++    return depth + 1;
++}
+diff --git a/dist/contacts/contactsApi.d.ts b/dist/contacts/contactsApi.d.ts
+index 535b446cce3b3cf086dc849d521c8c856bebae7f..b2b2c47864b614d21aa6a46a461a469ee5f89608 100644
+--- a/dist/contacts/contactsApi.d.ts
++++ b/dist/contacts/contactsApi.d.ts
+@@ -100,9 +100,15 @@ export interface UpdateContactInput extends ContactInput {
+     uid: string;
+     version: number;
+ }
+-export declare function updateContact(input: UpdateContactInput): Promise<Contact>;
++/** A minimal contact update: only `uid`/`version` are required, every other field is sent only if
++ * present. The server merges just the fields in the body and rejects server-managed ones
++ * (`dateCreated`/`dateModified`/etc.), so prefer sending only what actually changed over a whole
++ * fetched `Contact`. An `UpdateContactInput` is also a valid `ContactPatch`. */
++export type ContactPatch = Partial<Contact> & Pick<Contact, "uid" | "version">;
++export declare function updateContact(patch: ContactPatch): Promise<Contact>;
+ /** Thin `updateContact()` wrapper for toggling favorite/star status — same pattern as `mailApi.ts`'s
+- * `setMessageRead()`/`tasksApi.ts`'s `setTaskCompleted()`. */
++ * `setMessageRead()`/`tasksApi.ts`'s `setTaskCompleted()`. Sends only `uid`/`version`/`favorite`, never
++ * the rest of `contact` (the server rejects its managed fields). */
+ export declare function setContactFavorite(contact: Contact, favorite: boolean): Promise<Contact>;
+ export declare function deleteContact(uid: string, version: number): Promise<void>;
+ export interface ContactList {
+diff --git a/dist/contacts/contactsApi.js b/dist/contacts/contactsApi.js
+index 9ff7edbc15133e01784f58fc74c416417a72487f..ddb1eb3fbc9b9f9c126e11d1bcc27c3e2cc8c854 100644
+--- a/dist/contacts/contactsApi.js
++++ b/dist/contacts/contactsApi.js
+@@ -35,16 +35,17 @@ export function createContact(input) {
+         body: JSON.stringify({ emails: [], phones: [], addresses: [], ...input }),
+     });
+ }
+-export function updateContact(input) {
+-    return apiFetch(`/mail/contacts/${encodeURIComponent(input.uid)}`, {
++export function updateContact(patch) {
++    return apiFetch(`/mail/contacts/${encodeURIComponent(patch.uid)}`, {
+         method: "PUT",
+-        body: JSON.stringify(input),
++        body: JSON.stringify(patch),
+     });
+ }
+ /** Thin `updateContact()` wrapper for toggling favorite/star status — same pattern as `mailApi.ts`'s
+- * `setMessageRead()`/`tasksApi.ts`'s `setTaskCompleted()`. */
++ * `setMessageRead()`/`tasksApi.ts`'s `setTaskCompleted()`. Sends only `uid`/`version`/`favorite`, never
++ * the rest of `contact` (the server rejects its managed fields). */
+ export function setContactFavorite(contact, favorite) {
+-    return updateContact({ ...contact, favorite });
++    return updateContact({ uid: contact.uid, version: contact.version, favorite });
+ }
+ export function deleteContact(uid, version) {
+     return apiFetch(`/mail/contacts/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+diff --git a/dist/crypto/keySession.d.ts b/dist/crypto/keySession.d.ts
+index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..98d61e5680174c0e457f16460b9250cb81678b37 100644
+--- a/dist/crypto/keySession.d.ts
++++ b/dist/crypto/keySession.d.ts
+@@ -16,7 +16,7 @@
+  * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
+  * passkey has no way to unlock through this module today.
+  */
+-import type { PublicKey } from "./keyvaultApi.js";
++import { type PublicKey } from "./keyvaultApi.js";
+ /** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
+  * sealed each of these values, or `openWithKey()` fails (GCM authenticates the AAD, not just the
+  * ciphertext). Centralized here as the one place both wrapping and unwrapping refer to. */
+@@ -32,11 +32,33 @@ export interface UnlockedKeys {
+     encryptionCertDer?: Uint8Array;
+     encryptionFingerprint?: string;
+ }
++/** What changed in the session store — passed to every `subscribeKeySession()` listener. */
++export interface KeySessionEvent {
++    mailboxUid: string;
++    /** `"unlocked"` when keys were stored (a first unlock, or a re-unlock replacing existing keys, e.g.
++     * after a key rotation); `"locked"` when they were destroyed. */
++    state: "unlocked" | "locked";
++}
++export type KeySessionListener = (event: KeySessionEvent) => void;
++/**
++ * Subscribes to session store changes: fires once per mailbox whenever its keys are unlocked (stored)
++ * or destroyed, so a UI can e.g. clear already-decrypted content the moment keys go away instead of
++ * polling `getUnlockedKeys()`. A `destroyUnlockedKeys()` call that finds nothing to destroy fires
++ * nothing. Returns an unsubscribe function.
++ */
++export declare function subscribeKeySession(listener: KeySessionListener): () => void;
+ /** Reads back a mailbox's already-unlocked keys this session, or `undefined` if it hasn't been
+  * unlocked yet (or was destroyed). Never triggers an unlock itself. */
+ export declare function getUnlockedKeys(mailboxUid: string): UnlockedKeys | undefined;
+-/** Destroys one mailbox's unlocked keys, or every mailbox's if called with no argument — the spec's
+- * "destroyed on explicit logout" / "session revocation" / "configurable idle period" triggers. */
++/**
++ * Destroys one mailbox's unlocked keys, or every mailbox's if called with no argument — the spec's
++ * "destroyed on explicit logout" / "session revocation" / "configurable idle period" triggers.
++ *
++ * The master key's bytes are overwritten with zeros in place before the entry is dropped, so any
++ * `UnlockedKeys` object a caller is still holding no longer carries usable key material either (and the
++ * bytes don't linger until garbage collection). The private keys themselves are `CryptoKey` handles
++ * whose material WebCrypto never exposes to JS, so there is nothing to zero there.
++ */
+ export declare function destroyUnlockedKeys(mailboxUid?: string): void;
+ /**
+  * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
+diff --git a/dist/crypto/keySession.js b/dist/crypto/keySession.js
+index 763759b94580beb99c25cdf780ab1cad7a6f8e60..1bcc7e93f8d94f2b7560808eb7c6d15a3cd123ca 100644
+--- a/dist/crypto/keySession.js
++++ b/dist/crypto/keySession.js
+@@ -1,9 +1,30 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * The in-memory session key store `specs/end-to-end_encryption.md`'s "Keypair Generation & Storage"
++ * requires: "When a user logs in ... the private keys MUST be downloaded from the server, decrypted,
++ * and stored locally on the device in a secure location. When the user explicitly logs out ..., the
++ * private keys MUST be destroyed." This module is that store — a plain module-level `Map`, deliberately
++ * never `localStorage`/IndexedDB (a page reload or new tab correctly starts with no unlocked keys,
++ * requiring the unlock credential again, matching "destroyed on explicit logout" while never
++ * persisting unwrapped key material anywhere durable).
++ *
++ * `KeyEnrollmentGate` (in `web-client`) is what actually prompts for the unlock credential and calls
++ * `unlockWithPassword()` below, once per mailbox per session, before rendering the mailbox's real
++ * content — see that component's own doc comment.
++ *
++ * **Password is the only unlock method implemented so far.** Passkey (`passkeyUnlock.ts`) and recovery
++ * code (`recoveryCode.ts`) derivation already exist and could unwrap the same `MasterKeyWrap` shape,
++ * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
++ * passkey has no way to unlock through this module today.
++ */
+ import { findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
+ import { fromBase64 } from "./encoding.js";
+ import { importPrivateKeyPkcs8 } from "./keys.js";
+ import { buildAad, openWithKey } from "./masterKey.js";
+-import { parseArgon2idKdfLabel } from "./passwordUnlock.js";
+-import { deriveFromPassword } from "./passwordUnlock.js";
++import { deriveFromPassword, parseArgon2idKdfLabel } from "./passwordUnlock.js";
+ /** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
+  * sealed each of these values, or `openWithKey()` fails (GCM authenticates the AAD, not just the
+  * ciphertext). Centralized here as the one place both wrapping and unwrapping refer to. */
+@@ -11,19 +32,59 @@ export const MASTER_KEY_AAD_PURPOSE = "master-key";
+ export const SIGNING_PRIVATE_KEY_AAD_PURPOSE = "sign-private-key";
+ export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
+ const sessions = new Map();
++const listeners = new Set();
++function notify(event) {
++    // Iterate a snapshot so a listener that unsubscribes (or subscribes another) mid-dispatch can't skip
++    // or double-deliver. A throwing listener must never stop the rest - especially on "locked", where a
++    // later listener may be the one clearing decrypted content from the screen - so its error is
++    // rethrown asynchronously instead, still surfacing as an uncaught error without aborting delivery.
++    for (const listener of [...listeners]) {
++        try {
++            listener(event);
++        }
++        catch (err) {
++            queueMicrotask(() => {
++                throw err;
++            });
++        }
++    }
++}
++/**
++ * Subscribes to session store changes: fires once per mailbox whenever its keys are unlocked (stored)
++ * or destroyed, so a UI can e.g. clear already-decrypted content the moment keys go away instead of
++ * polling `getUnlockedKeys()`. A `destroyUnlockedKeys()` call that finds nothing to destroy fires
++ * nothing. Returns an unsubscribe function.
++ */
++export function subscribeKeySession(listener) {
++    listeners.add(listener);
++    return () => {
++        listeners.delete(listener);
++    };
++}
+ /** Reads back a mailbox's already-unlocked keys this session, or `undefined` if it hasn't been
+  * unlocked yet (or was destroyed). Never triggers an unlock itself. */
+ export function getUnlockedKeys(mailboxUid) {
+     return sessions.get(mailboxUid);
+ }
+-/** Destroys one mailbox's unlocked keys, or every mailbox's if called with no argument — the spec's
+- * "destroyed on explicit logout" / "session revocation" / "configurable idle period" triggers. */
++/**
++ * Destroys one mailbox's unlocked keys, or every mailbox's if called with no argument — the spec's
++ * "destroyed on explicit logout" / "session revocation" / "configurable idle period" triggers.
++ *
++ * The master key's bytes are overwritten with zeros in place before the entry is dropped, so any
++ * `UnlockedKeys` object a caller is still holding no longer carries usable key material either (and the
++ * bytes don't linger until garbage collection). The private keys themselves are `CryptoKey` handles
++ * whose material WebCrypto never exposes to JS, so there is nothing to zero there.
++ */
+ export function destroyUnlockedKeys(mailboxUid) {
+-    if (mailboxUid) {
+-        sessions.delete(mailboxUid);
+-    }
+-    else {
+-        sessions.clear();
++    const uids = mailboxUid ? [mailboxUid] : [...sessions.keys()];
++    for (const uid of uids) {
++        const unlocked = sessions.get(uid);
++        if (!unlocked) {
++            continue;
++        }
++        unlocked.masterKey.fill(0);
++        sessions.delete(uid);
++        notify({ mailboxUid: uid, state: "locked" });
+     }
+ }
+ /** Finds the wrapped private key whose fingerprint matches a given published public key. */
+@@ -54,21 +115,41 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
+     const { wrappingKey } = await deriveFromPassword(password, salt, kdfParams);
+     const masterKey = await openWithKey(wrappingKey, { ciphertext: passwordWrap.ciphertext, nonce: passwordWrap.nonce }, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
+     const unlocked = { masterKey };
+-    const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
+-    const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);
+-    if (signingPublicKey && wrappedSigningKey) {
+-        const raw = await openWithKey(masterKey, wrappedSigningKey, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
+-        unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"]);
+-        unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
+-        unlocked.signingFingerprint = signingPublicKey.fingerprint;
++    // The unwrapped private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default)
++    // for exactly one consumer: `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, which re-seals
++    // these session keys' PKCS#8 bytes under a new master key via `crypto.subtle.exportKey()` (web-client's
++    // Settings > Encryption "rotate keys"). Nothing else exports them. Making them non-extractable would
++    // first require that function to re-open the vault's wraps with `masterKey` instead. The transient
++    // PKCS#8 plaintext buffers are zeroed as soon as WebCrypto has copied them into a `CryptoKey`.
++    try {
++        const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
++        const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);
++        if (signingPublicKey && wrappedSigningKey) {
++            const raw = await openWithKey(masterKey, wrappedSigningKey, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
++            unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"], true);
++            raw.fill(0);
++            unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
++            unlocked.signingFingerprint = signingPublicKey.fingerprint;
++        }
++        const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
++        const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
++        if (encryptionPublicKey && wrappedEncryptionKey) {
++            const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
++            unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], true);
++            raw.fill(0);
++            unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
++            unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
++        }
+     }
+-    const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
+-    const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
+-    if (encryptionPublicKey && wrappedEncryptionKey) {
+-        const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
+-        unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
+-        unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
+-        unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
++    catch (err) {
++        // A failed unlock never reaches the session store, so nothing else would ever zero this.
++        masterKey.fill(0);
++        throw err;
+     }
++    // A re-unlock replacing existing keys (e.g. `settings/encryption`'s post-rotation refresh) deliberately
++    // does NOT zero the previous entry's master key: an in-flight consumer that captured the old
++    // `UnlockedKeys` object (e.g. a local-index build pass) is still legitimately using it, and nothing
++    // "destroyed" the session - only `destroyUnlockedKeys()` does that.
+     sessions.set(mailboxUid, unlocked);
++    notify({ mailboxUid, state: "unlocked" });
+ }
+diff --git a/dist/crypto/keys.d.ts b/dist/crypto/keys.d.ts
+index 37fae09b31b59d842afd9a0feba0be54cd2bb77e..09f75c9c775a3a1b9d00bb9a710b88bfaedb5c43 100644
+--- a/dist/crypto/keys.d.ts
++++ b/dist/crypto/keys.d.ts
+@@ -41,5 +41,11 @@ export declare function exportPrivateKeyPkcs8(privateKey: CryptoKey): Promise<Ui
+  * after unwrapping it (`algorithm: "ECDSA"`, `usages: ["sign"]`) and, by `crypto/smime.ts`, to reinterpret
+  * the same P-256 encryption key material for actual key-agreement operations (`algorithm: "ECDH"`,
+  * `usages: ["deriveBits"]`) — see this module's own doc comment for why one physical key supports both.
++ *
++ * Imported **non-extractable by default**: signing/ECDH (including pkijs's own `SignedData.sign()`/
++ * `EnvelopedData.decrypt()`, which use a `CryptoKey` recipient key directly) never need to read the key
++ * material back out, so a script that obtains the `CryptoKey` object can use it but not exfiltrate it.
++ * Pass `extractable: true` only for a path that genuinely has to re-export the PKCS#8 bytes (see
++ * `keySession.ts`'s `unlockWithPassword()` for the one current case, and why).
+  */
+-export declare function importPrivateKeyPkcs8(raw: Uint8Array, algorithm: EcKeyImportParams, usages: KeyUsage[]): Promise<CryptoKey>;
++export declare function importPrivateKeyPkcs8(raw: Uint8Array, algorithm: EcKeyImportParams, usages: KeyUsage[], extractable?: boolean): Promise<CryptoKey>;
+diff --git a/dist/crypto/keys.js b/dist/crypto/keys.js
+index 509f0888cb0a588e1a404f15baacb2dad03fc613..eddf7c9f701060061d52b3d7c9bfcf87da8c5900 100644
+--- a/dist/crypto/keys.js
++++ b/dist/crypto/keys.js
+@@ -39,7 +39,7 @@ const CSR_SIGNING_ALGORITHM = { name: "ECDSA", hash: "SHA-256" };
+  * server-side at issuance, not here; this function only proves possession of the generated key.
+  */
+ export async function generateKeyPairWithCsr(mailboxAddress, useType) {
+-    const keyPair = (await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"]));
++    const keyPair = await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"]);
+     const csr = await x509.Pkcs10CertificateRequestGenerator.create({
+         // Structural (array-of-object) subject name, matching @rapidmx/restapi's own CA-side convention -
+         // never string-interpolated, so a mailbox address containing RDN-special characters (`,`, `+`,
+@@ -64,7 +64,13 @@ export async function exportPrivateKeyPkcs8(privateKey) {
+  * after unwrapping it (`algorithm: "ECDSA"`, `usages: ["sign"]`) and, by `crypto/smime.ts`, to reinterpret
+  * the same P-256 encryption key material for actual key-agreement operations (`algorithm: "ECDH"`,
+  * `usages: ["deriveBits"]`) — see this module's own doc comment for why one physical key supports both.
++ *
++ * Imported **non-extractable by default**: signing/ECDH (including pkijs's own `SignedData.sign()`/
++ * `EnvelopedData.decrypt()`, which use a `CryptoKey` recipient key directly) never need to read the key
++ * material back out, so a script that obtains the `CryptoKey` object can use it but not exfiltrate it.
++ * Pass `extractable: true` only for a path that genuinely has to re-export the PKCS#8 bytes (see
++ * `keySession.ts`'s `unlockWithPassword()` for the one current case, and why).
+  */
+-export async function importPrivateKeyPkcs8(raw, algorithm, usages) {
+-    return crypto.subtle.importKey("pkcs8", raw, algorithm, true, usages);
++export async function importPrivateKeyPkcs8(raw, algorithm, usages, extractable = false) {
++    return crypto.subtle.importKey("pkcs8", raw, algorithm, extractable, usages);
+ }
+diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
+index 39c737137ae875767f859affc408f254493a87b5..bc0ed5bd17314f29f08b50ec2f53ddaa301c1191 100644
+--- a/dist/crypto/messageSecurity.d.ts
++++ b/dist/crypto/messageSecurity.d.ts
+@@ -1,37 +1,55 @@
++import { ProtectedHeaders } from "./smimeMessage.js";
+ export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
++/** Why a message is `"signature_failed"`. `invalid_signature`: the CMS signature itself is malformed or
++ * doesn't verify over the content. `untrusted_signer`: a pinned fingerprint was supplied and the signer
++ * certificate doesn't match it (or no signer certificate could be resolved at all).
++ * `signer_identity_mismatch`: the signer certificate doesn't name the message's `From` address (or `From`
++ * doesn't hold exactly one address). `header_mismatch`: the signed/protected `From`/`To` disagree with
++ * the outer envelope's. */
++export type SignatureFailureReason = "invalid_signature" | "untrusted_signer" | "signer_identity_mismatch" | "header_mismatch";
+ export interface MessageSecurityResult {
+     state: MessageSecurityState;
+-    /** The verified/decrypted plaintext HTML this module recovered - still needs client-side
+-     * sanitization before touching the DOM (this module does none itself; see `MessageDetailPane.tsx`).
+-     * Absent for `"unprotected"` (the caller should keep using the server's own sanitized `/content`
+-     * body) and for an encrypted message this device couldn't open (see `decryptError`). */
++    /** The verified/decrypted content as HTML - still needs client-side sanitization before touching the
++     * DOM (this module does none itself; see `MessageDetailPane.tsx`). For a `text/html` body this is that
++     * HTML; for a `text/plain` body it is the text HTML-escaped inside a whitespace-preserving `<pre>`
++     * (never plain text passed through as markup), with the raw text in `text`. Absent for
++     * `"unprotected"` (the caller should keep using the server's own sanitized `/content` body) and for an
++     * encrypted message this device couldn't open (see `decryptError`). */
+     html?: string;
++    /** The raw plain text, present only when the recovered body was `text/plain` (not `text/html`). */
++    text?: string;
++    /** Present only for `"signature_failed"`: which verification step failed. */
++    signatureFailureReason?: SignatureFailureReason;
+     /** Present only when the message was encrypted but this device couldn't decrypt it (a wrong or
+-     * since-rotated key, or corrupt/foreign data) - the caller should keep showing whatever
+-     * `GET /:id/content` already produced (empty, per `BaseMailComposeRoute.assembleRaw()`'s design)
+-     * alongside this explanation, rather than a blank pane with no context. */
++     * since-rotated key, non-AEAD content encryption, or corrupt/foreign data) - the caller should keep
++     * showing whatever `GET /:id/content` already produced alongside this explanation. */
+     decryptError?: string;
+     /** See `ParsedEncryptedMessage.headerTamperDetected`'s own doc comment - a deliberately separate,
+      * orthogonal signal from `state`, since RFC 9788's `HP-Outer` is written on every encrypted message
+-     * regardless of whether it's also signed, and folding a header-mismatch into `"signature_failed"`
+-     * would misrepresent an unsigned-but-tampered message as a signature problem it doesn't have.
+-     * `undefined` for anything that isn't an encrypted message this device could decrypt (unprotected,
+-     * signed-only, or an encrypted message that failed to decrypt at all - nothing to compare). */
++     * regardless of whether it's also signed. `undefined` for anything that isn't an encrypted message
++     * this device could decrypt. */
+     headerTamperDetected?: boolean;
+     /** The real subject recovered from the message's protected headers - RFC 9788 header protection
+-     * obscures the outer envelope's own `Subject` to `"[...]"` under the required `hcp_baseline` default
+-     * (`smimeMessage.ts`'s `applyBaselineOuterHeaders()`), so `Message.subject` from the server is not
+-     * usable for content search/display of an encrypted message's real subject. Populated only when
+-     * content was actually recovered (`signed_verified`/`encrypted`/`encrypted_verified`) - absent for
+-     * `"unprotected"` or a failed decrypt, where the caller already has the real, non-obscured
+-     * `Message.subject` directly and needs no override. */
++     * obscures the outer envelope's own `Subject` to `"[...]"`. Populated only when content was actually
++     * recovered (`signed_verified`/`encrypted`/`encrypted_verified`/`signature_failed` after decrypt). */
+     subject?: string;
+ }
++export interface SignerBindingInput {
++    /** The certificate matched to the verified SignerInfo; `undefined` fails closed. */
++    signerCertificateDer: Uint8Array | undefined;
++    /** Headers recovered from inside the signed content (RFC 9788), if any. */
++    protectedHeaders: Pick<ProtectedHeaders, "from" | "to"> | undefined;
++    /** The received message's outer header map (lowercased names), as `parseMimeEntity()` returns it. */
++    outerHeaders: Record<string, string>;
++    pinnedSignerFingerprint?: string;
++}
++/** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
++ * Returns `undefined` when the signer is accepted, otherwise the failure reason. */
++export declare function checkSignerBinding(input: SignerBindingInput): Promise<SignatureFailureReason | undefined>;
+ /**
+  * Evaluates one received message's raw MIME source (see `mailApi.ts`'s `getMessageRawContent()`) into
+  * a security state + recovered plaintext. Never throws — a parse failure, wrong key, or unrecognized
+- * content type all degrade to a result the caller can render directly, matching `smime.ts`'s own
+- * "malformed input is the signature-failed case, not an exception" contract.
++ * content type all degrade to a result the caller can render directly.
+  */
+ export declare function evaluateMessageSecurity(rawMime: string, unlocked: {
+     encryptionPrivateKey?: CryptoKey;
+diff --git a/dist/crypto/messageSecurity.js b/dist/crypto/messageSecurity.js
+index d15171a423be5b13034b038a2a19c9edf19cc2cc..e4931498cf9960e4ab3e62e57f6514fdf00f6ee4 100644
+--- a/dist/crypto/messageSecurity.js
++++ b/dist/crypto/messageSecurity.js
+@@ -5,54 +5,98 @@
+ /**
+  * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
+  * "Message Security Indicators" five states, and recovers the plaintext body when applicable. Reads the
+- * outer envelope's own `Content-Type` (via `smimeMessage.ts`'s `splitHeadersAndBody()`) to decide
+- * whether the message is one this system's own `buildSignedOnlyMessage()`/`buildEncryptedMessage()`
+- * shape (`multipart/signed`, `application/pkcs7-mime; smime-type="enveloped-data"`) or neither.
++ * outer envelope's own `Content-Type` (via `mime.ts`'s `parseMimeEntity()`) to decide whether the message
++ * is `multipart/signed`, `application/pkcs7-mime; smime-type="enveloped-data"`, or neither.
++ *
++ * **What a verified state means.** `"signed_verified"`/`"encrypted_verified"` require ALL of: (1) a
++ * cryptographically valid CMS signature (`smime.ts` - detached signatures carrying their own eContent are
++ * rejected, and the signer certificate is the one matched to the SignerInfo, never simply the first
++ * embedded certificate); (2) when `pinnedSignerFingerprint` is supplied, that signer certificate's
++ * fingerprint matches it - and a supplied pin with no resolvable certificate fails closed; (3) the signer
++ * certificate names the sender: one of its email addresses (SAN rfc822Name, else subject emailAddress /
++ * email-shaped CN) equals the single address in the protected `From` (or the outer `From` when the signed
++ * content carries no protected headers, as with non-RFC 9788 senders); (4) the protected `From`/`To`
++ * address sets (when present) equal the outer envelope's - the outer envelope is what the mail list and
++ * reading pane display as the sender. Any failure downgrades to `"signature_failed"`, with `signatureFailureReason` saying which check failed.
++ * The state union itself is unchanged (a distinct identity-mismatch state would break existing
++ * exhaustive consumers); the reason is an additive, optional field.
+  *
+  * **Trust Model gap, disclosed not silent**: the spec's own Trust Model requires validating a signature
+- * "against the known public key in the Contact's record" (TOFU pinning), not merely checking that the
+- * embedded certificate's signature is mathematically self-consistent. `evaluateMessageSecurity()` takes
+- * an optional `pinnedSignerFingerprint` for exactly this - when supplied, a cryptographically valid
+- * signature whose embedded certificate doesn't match it is downgraded to `"signature_failed"` rather
+- * than trusted. No caller passes it yet (Contact key-pinning UI is Phase 4's "Discovery & contacts UI"
+- * work, not this pass) - every signature this module verifies today is checked for mathematical
+- * validity only, not against a pinned identity.
++ * "against the known public key in the Contact's record" (TOFU pinning). Without a
++ * `pinnedSignerFingerprint`, check 2 is skipped and a self-issued certificate naming the sender's address
++ * passes checks 1, 3 and 4 - callers that have a pinned Contact key MUST pass it.
+  */
+-import { computeCertFingerprint } from "./smime.js";
+-import { parseEncryptedMessage, parseSignedOnlyMessage, splitHeadersAndBody } from "./smimeMessage.js";
+-function isSignedOnlyContentType(contentType) {
+-    return contentType.toLowerCase().trimStart().startsWith("multipart/signed");
++import { extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
++import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
++import { parseEncryptedMessage, parseSignedOnlyMessage } from "./smimeMessage.js";
++function isSignedOnlyContentType(contentTypeValue) {
++    return contentTypeValue === "multipart/signed";
+ }
+ /** Matches `buildEncryptedMessage()`'s own output shape, and leniently accepts the equivalent legacy/
+  * AEAD `smime-type` values a foreign S/MIME sender could produce (mirrors `@rapidmx/restapi`'s own
+  * server-side `SmimeUtils.isEncryptedBody()` classification, so the two systems agree on what counts as
+- * encrypted). */
++ * encrypted). Parameters are matched case-insensitively, quoted or not. */
+ function isEncryptedContentType(contentType) {
+-    const value = contentType.toLowerCase();
+-    if (value.trimStart().startsWith("multipart/encrypted")) {
++    if (contentType.value === "multipart/encrypted") {
+         return true;
+     }
+-    if (!value.includes("pkcs7-mime")) {
++    if (!contentType.value.endsWith("pkcs7-mime")) {
+         return false;
+     }
+-    return /smime-type\s*=\s*"?(enveloped-data|authenveloped-data)"?/.test(value);
++    const smimeType = contentType.params["smime-type"]?.toLowerCase();
++    return smimeType === "enveloped-data" || smimeType === "authenveloped-data";
+ }
+ const NO_KEY_ERROR = "This device doesn't have the key needed to decrypt this message.";
++const UNSUPPORTED_ENCRYPTION_ERROR = "This message uses an older, unauthenticated encryption algorithm that RapidMX doesn't accept, so it can't be opened safely.";
++function renderDisplayBody(display) {
++    if (display?.html !== undefined) {
++        return { html: display.html };
++    }
++    if (display?.text !== undefined) {
++        return { html: plainTextToHtml(display.text), text: display.text };
++    }
++    return {};
++}
++function sameAddressSet(a, b) {
++    const left = new Set(a);
++    const right = new Set(b);
++    return left.size === right.size && [...left].every((address) => right.has(address));
++}
++/** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
++ * Returns `undefined` when the signer is accepted, otherwise the failure reason. */
++export async function checkSignerBinding(input) {
++    const { protectedHeaders, outerHeaders, pinnedSignerFingerprint } = input;
++    // Fail closed: an absent certificate hashes/extracts as empty, which can never match a pin or From.
++    const certDer = input.signerCertificateDer ?? new Uint8Array();
++    if (pinnedSignerFingerprint !== undefined && (await computeCertFingerprint(certDer)) !== pinnedSignerFingerprint.toLowerCase()) {
++        return "untrusted_signer";
++    }
++    const outerFrom = extractAddresses(outerHeaders["from"]);
++    const protectedFrom = extractAddresses(protectedHeaders?.from);
++    const senderAddresses = protectedFrom.length > 0 ? protectedFrom : outerFrom;
++    if (senderAddresses.length !== 1 || !extractCertificateEmails(certDer).includes(senderAddresses[0])) {
++        return "signer_identity_mismatch";
++    }
++    const protectedTo = extractAddresses(protectedHeaders?.to);
++    if (!sameAddressSet(senderAddresses, outerFrom) || (protectedTo.length > 0 && !sameAddressSet(protectedTo, extractAddresses(outerHeaders["to"])))) {
++        return "header_mismatch";
++    }
++    return undefined;
++}
+ /**
+  * Evaluates one received message's raw MIME source (see `mailApi.ts`'s `getMessageRawContent()`) into
+  * a security state + recovered plaintext. Never throws — a parse failure, wrong key, or unrecognized
+- * content type all degrade to a result the caller can render directly, matching `smime.ts`'s own
+- * "malformed input is the signature-failed case, not an exception" contract.
++ * content type all degrade to a result the caller can render directly.
+  */
+ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprint) {
+-    const { contentType, body, headers } = splitHeadersAndBody(rawMime);
+-    if (!contentType) {
++    const { headers, body } = parseMimeEntity(rawMime);
++    const rawContentType = headers["content-type"];
++    if (!rawContentType) {
+         return { state: "unprotected" };
+     }
++    const contentType = parseParameterizedHeader(rawContentType);
+     // The received message's own *real* outer envelope - what `HP-Outer`'s field copies (written at
+-    // send time, inside the encrypted content) are compared against to detect post-send tampering with
+-    // the unprotected envelope. Built from whichever of these five headers this outer envelope actually
+-    // has; a missing one is simply absent from the comparison (see `outerHeadersMatch()`).
++    // send time, inside the encrypted content) are compared against to detect post-send tampering.
+     const actualOuterHeaders = {
+         from: headers["from"],
+         to: headers["to"],
+@@ -60,18 +104,17 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+         date: headers["date"],
+         subject: headers["subject"],
+     };
+-    async function checkPinning(signerCertificateDer) {
+-        if (!pinnedSignerFingerprint || !signerCertificateDer) {
+-            return true;
++    const checkSigner = (signerCertificateDer, protectedHeaders) => checkSignerBinding({ signerCertificateDer, protectedHeaders, outerHeaders: headers, pinnedSignerFingerprint });
++    if (isSignedOnlyContentType(contentType.value)) {
++        const parsed = await parseSignedOnlyMessage(rawContentType, body);
++        if (!parsed.verified) {
++            return { state: "signature_failed", signatureFailureReason: "invalid_signature" };
+         }
+-        return (await computeCertFingerprint(signerCertificateDer)) === pinnedSignerFingerprint;
+-    }
+-    if (isSignedOnlyContentType(contentType)) {
+-        const parsed = await parseSignedOnlyMessage(contentType, body);
+-        if (!parsed.verified || !(await checkPinning(parsed.signerCertificateDer))) {
+-            return { state: "signature_failed" };
++        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders);
++        if (failure) {
++            return { state: "signature_failed", signatureFailureReason: failure };
+         }
+-        return { state: "signed_verified", html: parsed.bodyText, subject: parsed.protectedHeaders?.subject };
++        return { state: "signed_verified", ...renderDisplayBody(parsed.displayBody), subject: parsed.protectedHeaders?.subject || undefined };
+     }
+     if (isEncryptedContentType(contentType)) {
+         if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
+@@ -79,16 +122,24 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+         }
+         const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
+         if (!parsed.decrypted) {
+-            return { state: "encrypted", decryptError: NO_KEY_ERROR };
++            return { state: "encrypted", decryptError: parsed.unsupportedContentEncryption ? UNSUPPORTED_ENCRYPTION_ERROR : NO_KEY_ERROR };
+         }
+-        const subject = parsed.protectedHeaders?.subject;
++        const content = {
++            ...renderDisplayBody(parsed.displayBody),
++            headerTamperDetected: parsed.headerTamperDetected,
++            subject: parsed.protectedHeaders?.subject || undefined,
++        };
+         if (parsed.signatureVerified === undefined) {
+-            return { state: "encrypted", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
++            return { state: "encrypted", ...content };
++        }
++        if (!parsed.signatureVerified) {
++            return { state: "signature_failed", signatureFailureReason: "invalid_signature", ...content };
+         }
+-        if (parsed.signatureVerified && (await checkPinning(parsed.signerCertificateDer))) {
+-            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
++        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders);
++        if (failure) {
++            return { state: "signature_failed", signatureFailureReason: failure, ...content };
+         }
+-        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
++        return { state: "encrypted_verified", ...content };
+     }
+     return { state: "unprotected" };
+ }
+diff --git a/dist/crypto/mime.d.ts b/dist/crypto/mime.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..561ed0a1c4dbfbc68e8b896dd21722eba48b2942
+--- /dev/null
++++ b/dist/crypto/mime.d.ts
+@@ -0,0 +1,76 @@
++/**
++ * A small, dependency-free MIME (RFC 5322 / RFC 2045-2047) parser used by `smimeMessage.ts` and
++ * `messageSecurity.ts` to read *received* messages - which, unlike this package's own output, can come
++ * from any foreign MUA/MTA. It deliberately covers exactly what S/MIME evaluation needs and nothing more:
++ *
++ * header unfolding (RFC 5322 §2.2.3) and CRLF-or-bare-LF line endings; case-insensitive RFC 2045
++ * `type/subtype; name=value` parameters, quoted or unquoted; RFC 2046 multipart splitting with
++ * preamble/epilogue, transport padding after the delimiter, and delimiters only recognized at the start
++ * of a line; `Content-Transfer-Encoding` decoding (base64, quoted-printable; 7bit/8bit/binary pass
++ * through) plus `charset` decoding via `TextDecoder`; and picking the displayable body (text/html
++ * preferred, text/plain otherwise) out of a nested multipart.
++ *
++ * Not supported (documented, not silently wrong): RFC 2231 parameter continuations/charset-encoded
++ * parameters and RFC 2047 encoded-words in header values - neither is needed to classify, decrypt, or
++ * verify a message, and both are left verbatim.
++ */
++/** One header field, unfolded, with its name exactly as written and its value trimmed. */
++export interface MimeHeaderField {
++    name: string;
++    value: string;
++}
++export interface MimeEntity {
++    /** Every header field in order - including repeated names (e.g. RFC 9788 `HP-Outer`). */
++    fields: MimeHeaderField[];
++    /** Lowercased name -> value of that name's FIRST occurrence. */
++    headers: Record<string, string>;
++    /** The raw, still-folded header block text (everything before the blank separator line). */
++    rawHeaderBlock: string;
++    /** The raw, undecoded body (everything after the blank separator line). */
++    body: string;
++}
++export interface ParameterizedHeader {
++    /** The lowercased main value (e.g. `multipart/signed`). */
++    value: string;
++    /** Lowercased parameter name -> unquoted value. */
++    params: Record<string, string>;
++}
++/** Splits a MIME entity into its header fields and body. Never throws. */
++export declare function parseMimeEntity(entity: string): MimeEntity;
++/** Parses an RFC 2045 parameterized header value (`Content-Type`, `Content-Disposition`). */
++export declare function parseParameterizedHeader(headerValue: string | undefined): ParameterizedHeader;
++/**
++ * Splits a multipart body on `boundary` per RFC 2046 §5.1.1: a delimiter is `--boundary` at the start of
++ * a line (optionally followed by transport-padding whitespace), the CRLF preceding it belongs to the
++ * delimiter (not the previous part), text before the first delimiter is preamble and text after the close
++ * delimiter (`--boundary--`) is epilogue - both discarded. Each returned part is the exact text between
++ * delimiter lines, which is what a `multipart/signed` signature covers.
++ */
++export declare function splitMultipart(body: string, boundary: string): string[];
++/** Decodes a base64 body into bytes, ignoring whitespace/line breaks. Returns `undefined` for invalid
++ * base64 rather than throwing. */
++export declare function decodeBase64Text(text: string): Uint8Array | undefined;
++/** Decodes a quoted-printable body (RFC 2045 §6.7) into bytes. Literal non-ASCII characters (which
++ * can't legally appear in QP, but do after an 8-bit-unsafe gateway) are kept as their UTF-8 bytes. */
++export declare function decodeQuotedPrintable(text: string): Uint8Array;
++/** Decodes an entity's body into bytes per its `Content-Transfer-Encoding`. 7bit/8bit/binary (or no
++ * header) return the body's own UTF-8 bytes. Returns `undefined` only for invalid base64. */
++export declare function decodeBodyBytes(entity: MimeEntity): Uint8Array | undefined;
++/** Decodes an entity's body to text: transfer encoding first, then its `charset` parameter. */
++export declare function decodeBodyText(entity: MimeEntity): string;
++/** A message's displayable content: `html` only for a real `text/html` part, `text` only for a
++ * `text/plain` part - never plain text mislabeled as HTML. */
++export interface DisplayBody {
++    html?: string;
++    text?: string;
++}
++/** Picks the displayable body out of an entity: a `text/html` part is preferred over `text/plain`, and a
++ * multipart entity is searched (non-attachment children only, bounded depth). Entities with no
++ * Content-Type default to text/plain per RFC 2045 §5.2. */
++export declare function extractDisplayBody(entity: MimeEntity, depth?: number): DisplayBody;
++/** HTML-escapes plain text and wraps it in a whitespace-preserving `<pre>`, so a `text/plain` body can be
++ * rendered through the same HTML path without ever being interpreted as markup. */
++export declare function plainTextToHtml(text: string): string;
++/** Extracts the bare, lowercased addr-specs from an address-list header value (`"Name" <a@b>, c@d`).
++ * Handles quoted display names containing commas/angle brackets and RFC 5322 comments. */
++export declare function extractAddresses(headerValue: string | undefined): string[];
+diff --git a/dist/crypto/mime.js b/dist/crypto/mime.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..d2f00d9077e16ce15e264d941184bee50c88c602
+--- /dev/null
++++ b/dist/crypto/mime.js
+@@ -0,0 +1,247 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * A small, dependency-free MIME (RFC 5322 / RFC 2045-2047) parser used by `smimeMessage.ts` and
++ * `messageSecurity.ts` to read *received* messages - which, unlike this package's own output, can come
++ * from any foreign MUA/MTA. It deliberately covers exactly what S/MIME evaluation needs and nothing more:
++ *
++ * header unfolding (RFC 5322 §2.2.3) and CRLF-or-bare-LF line endings; case-insensitive RFC 2045
++ * `type/subtype; name=value` parameters, quoted or unquoted; RFC 2046 multipart splitting with
++ * preamble/epilogue, transport padding after the delimiter, and delimiters only recognized at the start
++ * of a line; `Content-Transfer-Encoding` decoding (base64, quoted-printable; 7bit/8bit/binary pass
++ * through) plus `charset` decoding via `TextDecoder`; and picking the displayable body (text/html
++ * preferred, text/plain otherwise) out of a nested multipart.
++ *
++ * Not supported (documented, not silently wrong): RFC 2231 parameter continuations/charset-encoded
++ * parameters and RFC 2047 encoded-words in header values - neither is needed to classify, decrypt, or
++ * verify a message, and both are left verbatim.
++ */
++/** Maximum multipart nesting `extractDisplayBody()` descends into - a hostile message can nest
++ * arbitrarily deep, and nothing legitimate needs more than a handful of levels. */
++const MAX_MULTIPART_DEPTH = 8;
++/** Splits a MIME entity into its header fields and body. Never throws. */
++export function parseMimeEntity(entity) {
++    let rawHeaderBlock;
++    let body;
++    const leading = /^\r?\n/.exec(entity);
++    if (leading) {
++        // An entity whose very first line is blank has no headers at all (RFC 2046 §5.1.1 - a body part
++        // with no header fields defaults to text/plain; charset=us-ascii).
++        rawHeaderBlock = "";
++        body = entity.slice(leading[0].length);
++    }
++    else {
++        const separator = /\r?\n\r?\n/.exec(entity);
++        rawHeaderBlock = separator ? entity.slice(0, separator.index) : entity;
++        body = separator ? entity.slice(separator.index + separator[0].length) : "";
++    }
++    const fields = [];
++    const headers = {};
++    const unfolded = rawHeaderBlock.replace(/\r?\n(?=[ \t])/g, "");
++    for (const line of unfolded.split(/\r?\n/)) {
++        const colonIndex = line.indexOf(":");
++        if (colonIndex <= 0) {
++            continue;
++        }
++        const name = line.slice(0, colonIndex).trim();
++        const value = line.slice(colonIndex + 1).trim();
++        fields.push({ name, value });
++        const key = name.toLowerCase();
++        if (!(key in headers)) {
++            headers[key] = value;
++        }
++    }
++    return { fields, headers, rawHeaderBlock, body };
++}
++/** Parses an RFC 2045 parameterized header value (`Content-Type`, `Content-Disposition`). */
++export function parseParameterizedHeader(headerValue) {
++    const segments = [];
++    let current = "";
++    let inQuotes = false;
++    const input = headerValue ?? "";
++    for (let i = 0; i < input.length; i++) {
++        const ch = input[i];
++        if (inQuotes && ch === "\\" && i + 1 < input.length) {
++            current += input[++i];
++        }
++        else if (ch === '"') {
++            inQuotes = !inQuotes;
++        }
++        else if (ch === ";" && !inQuotes) {
++            segments.push(current);
++            current = "";
++        }
++        else {
++            current += ch;
++        }
++    }
++    segments.push(current);
++    const [main, ...rest] = segments;
++    const params = {};
++    for (const segment of rest) {
++        const eq = segment.indexOf("=");
++        const name = segment.slice(0, Math.max(eq, 0)).trim().toLowerCase();
++        if (name && !(name in params)) {
++            params[name] = segment.slice(eq + 1).trim();
++        }
++    }
++    return { value: main.trim().toLowerCase(), params };
++}
++function escapeRegExp(value) {
++    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++}
++/**
++ * Splits a multipart body on `boundary` per RFC 2046 §5.1.1: a delimiter is `--boundary` at the start of
++ * a line (optionally followed by transport-padding whitespace), the CRLF preceding it belongs to the
++ * delimiter (not the previous part), text before the first delimiter is preamble and text after the close
++ * delimiter (`--boundary--`) is epilogue - both discarded. Each returned part is the exact text between
++ * delimiter lines, which is what a `multipart/signed` signature covers.
++ */
++export function splitMultipart(body, boundary) {
++    const delimiter = new RegExp(`(?:^|\\r?\\n)--${escapeRegExp(boundary)}(--)?[ \\t]*(?=\\r?\\n|$)`, "g");
++    const parts = [];
++    let partStart = -1;
++    let match;
++    while ((match = delimiter.exec(body)) !== null) {
++        if (partStart !== -1) {
++            parts.push(body.slice(partStart, Math.max(partStart, match.index)));
++        }
++        if (match[1]) {
++            return parts;
++        }
++        const end = match.index + match[0].length;
++        partStart = end + (body.startsWith("\r\n", end) ? 2 : body.startsWith("\n", end) ? 1 : 0);
++    }
++    // No close delimiter (a truncated message): whatever follows the last delimiter is still a part.
++    if (partStart !== -1) {
++        parts.push(body.slice(partStart));
++    }
++    return parts;
++}
++/** Returns the lowercased, trimmed `Content-Transfer-Encoding` mechanism, or `undefined`. */
++function transferEncodingOf(entity) {
++    return entity.headers["content-transfer-encoding"]?.trim().toLowerCase();
++}
++/** Decodes a base64 body into bytes, ignoring whitespace/line breaks. Returns `undefined` for invalid
++ * base64 rather than throwing. */
++export function decodeBase64Text(text) {
++    try {
++        const binary = atob(text.replace(/\s+/g, ""));
++        const bytes = new Uint8Array(binary.length);
++        for (let i = 0; i < binary.length; i++) {
++            bytes[i] = binary.charCodeAt(i);
++        }
++        return bytes;
++    }
++    catch {
++        return undefined;
++    }
++}
++/** Decodes a quoted-printable body (RFC 2045 §6.7) into bytes. Literal non-ASCII characters (which
++ * can't legally appear in QP, but do after an 8-bit-unsafe gateway) are kept as their UTF-8 bytes. */
++export function decodeQuotedPrintable(text) {
++    const withoutSoftBreaks = text.replace(/=[ \t]*\r?\n/g, "");
++    const bytes = [];
++    const encoder = new TextEncoder();
++    for (let i = 0; i < withoutSoftBreaks.length; i++) {
++        const ch = withoutSoftBreaks[i];
++        const hex = withoutSoftBreaks.slice(i + 1, i + 3);
++        if (ch === "=" && /^[0-9A-Fa-f]{2}$/.test(hex)) {
++            bytes.push(parseInt(hex, 16));
++            i += 2;
++        }
++        else {
++            bytes.push(...encoder.encode(ch));
++        }
++    }
++    return new Uint8Array(bytes);
++}
++function decodeCharset(bytes, charset) {
++    try {
++        return new TextDecoder(charset || "utf-8").decode(bytes);
++    }
++    catch {
++        // An unknown/unsupported charset label - UTF-8 is the least-bad fallback (a superset of ASCII).
++        return new TextDecoder("utf-8").decode(bytes);
++    }
++}
++/** Decodes an entity's body into bytes per its `Content-Transfer-Encoding`. 7bit/8bit/binary (or no
++ * header) return the body's own UTF-8 bytes. Returns `undefined` only for invalid base64. */
++export function decodeBodyBytes(entity) {
++    const cte = transferEncodingOf(entity);
++    if (cte === "base64") {
++        return decodeBase64Text(entity.body);
++    }
++    if (cte === "quoted-printable") {
++        return decodeQuotedPrintable(entity.body);
++    }
++    return new TextEncoder().encode(entity.body);
++}
++/** Decodes an entity's body to text: transfer encoding first, then its `charset` parameter. */
++export function decodeBodyText(entity) {
++    const cte = transferEncodingOf(entity);
++    if (cte !== "base64" && cte !== "quoted-printable") {
++        // Already text - the raw message was read as a string, so an 8bit body is already decoded.
++        return entity.body;
++    }
++    const charset = parseParameterizedHeader(entity.headers["content-type"]).params["charset"];
++    return decodeCharset(decodeBodyBytes(entity) ?? new Uint8Array(), charset);
++}
++function isAttachment(entity) {
++    return parseParameterizedHeader(entity.headers["content-disposition"]).value === "attachment";
++}
++/** Picks the displayable body out of an entity: a `text/html` part is preferred over `text/plain`, and a
++ * multipart entity is searched (non-attachment children only, bounded depth). Entities with no
++ * Content-Type default to text/plain per RFC 2045 §5.2. */
++export function extractDisplayBody(entity, depth = 0) {
++    const contentType = parseParameterizedHeader(entity.headers["content-type"] ?? "text/plain");
++    if (contentType.value === "text/html") {
++        return { html: decodeBodyText(entity) };
++    }
++    if (contentType.value === "text/plain") {
++        return { text: decodeBodyText(entity) };
++    }
++    const boundary = contentType.params["boundary"];
++    if (!contentType.value.startsWith("multipart/") || !boundary || depth >= MAX_MULTIPART_DEPTH) {
++        return {};
++    }
++    let text;
++    for (const part of splitMultipart(entity.body, boundary)) {
++        const child = parseMimeEntity(part);
++        if (isAttachment(child)) {
++            continue;
++        }
++        const found = extractDisplayBody(child, depth + 1);
++        if (found.html !== undefined) {
++            return { html: found.html };
++        }
++        text ?? (text = found.text);
++    }
++    return text === undefined ? {} : { text };
++}
++/** HTML-escapes plain text and wraps it in a whitespace-preserving `<pre>`, so a `text/plain` body can be
++ * rendered through the same HTML path without ever being interpreted as markup. */
++export function plainTextToHtml(text) {
++    const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
++    return `<pre style="white-space: pre-wrap; word-wrap: break-word; font-family: inherit">${escaped}</pre>`;
++}
++/** Extracts the bare, lowercased addr-specs from an address-list header value (`"Name" <a@b>, c@d`).
++ * Handles quoted display names containing commas/angle brackets and RFC 5322 comments. */
++export function extractAddresses(headerValue) {
++    if (!headerValue) {
++        return [];
++    }
++    const withoutQuoted = headerValue.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/\((?:[^()\\]|\\.)*\)/g, "");
++    const addresses = [];
++    for (const item of withoutQuoted.split(",")) {
++        const angle = /<([^>]*)>/.exec(item);
++        // A bare addr-spec may carry RFC 5322 group syntax around it (`Team: a@b, c@d;`).
++        const address = (angle ? angle[1] : item.replace(/^[^:]*:/, "").replace(/;\s*$/, "")).trim().toLowerCase();
++        if (address.includes("@")) {
++            addresses.push(address);
++        }
++    }
++    return addresses;
++}
+diff --git a/dist/crypto/recoveryCode.d.ts b/dist/crypto/recoveryCode.d.ts
+index 14e55fa9b2c6c11d45f3a8442ac36627a10f19f2..7d61c68a6b8184c90e49321b2d15f3d34cd40575 100644
+--- a/dist/crypto/recoveryCode.d.ts
++++ b/dist/crypto/recoveryCode.d.ts
+@@ -7,6 +7,18 @@ export declare function base32Encode(bytes: Uint8Array): string;
+  * they've been saved — losing every unlock method makes the mailbox's encrypted content permanently
+  * unreadable (see the spec's "Recovery" section). */
+ export declare function generateRecoveryCode(): string;
++/**
++ * Canonicalizes user-typed recovery code input into the exact form `generateRecoveryCode()` emits (and
++ * therefore the exact string `buildRecoveryWraps()` hashed at enrolment): every whitespace character and
++ * dash is stripped, letters are uppercased, Crockford's own decode aliases are applied (`O` → `0`, `I`/`L`
++ * → `1` — none of which the generation alphabet ever emits, so a generated code is unchanged by this
++ * mapping), and the result is re-grouped into dash-separated `GROUP_SIZE` blocks. The re-grouping is
++ * load-bearing, not cosmetic: the dashes were always part of the HKDF input, so stripping them without
++ * re-inserting them in the canonical grouping would derive a different key than every existing wrap.
++ */
++export declare function normalizeRecoveryCode(code: string): string;
+ /** Derives the wrapping key for one recovery code. `salt` is per-wrap, generated at enrolment and stored
+- * alongside the resulting `MasterKeyWrap` (never secret — HKDF's salt need not be). */
++ * alongside the resulting `MasterKeyWrap` (never secret — HKDF's salt need not be). `code` is normalized
++ * first (see `normalizeRecoveryCode()`), so lowercase, spacing/dash variations, and O/I/L transcription
++ * slips all derive the same key as the code exactly as displayed. */
+ export declare function deriveFromRecoveryCode(code: string, salt: Uint8Array): Promise<Uint8Array>;
+diff --git a/dist/crypto/recoveryCode.js b/dist/crypto/recoveryCode.js
+index ac7f897fd95d6c05874a8e5856e98c7b88806bec..c60f40d5fed57b8592cef542b731e892569b03fd 100644
+--- a/dist/crypto/recoveryCode.js
++++ b/dist/crypto/recoveryCode.js
+@@ -51,9 +51,32 @@ export function generateRecoveryCode() {
+     }
+     return groups.join("-");
+ }
++/**
++ * Canonicalizes user-typed recovery code input into the exact form `generateRecoveryCode()` emits (and
++ * therefore the exact string `buildRecoveryWraps()` hashed at enrolment): every whitespace character and
++ * dash is stripped, letters are uppercased, Crockford's own decode aliases are applied (`O` → `0`, `I`/`L`
++ * → `1` — none of which the generation alphabet ever emits, so a generated code is unchanged by this
++ * mapping), and the result is re-grouped into dash-separated `GROUP_SIZE` blocks. The re-grouping is
++ * load-bearing, not cosmetic: the dashes were always part of the HKDF input, so stripping them without
++ * re-inserting them in the canonical grouping would derive a different key than every existing wrap.
++ */
++export function normalizeRecoveryCode(code) {
++    const compact = code
++        .replace(/[\s-]+/g, "")
++        .toUpperCase()
++        .replace(/O/g, "0")
++        .replace(/[IL]/g, "1");
++    const groups = [];
++    for (let i = 0; i < compact.length; i += GROUP_SIZE) {
++        groups.push(compact.slice(i, i + GROUP_SIZE));
++    }
++    return groups.join("-");
++}
+ /** Derives the wrapping key for one recovery code. `salt` is per-wrap, generated at enrolment and stored
+- * alongside the resulting `MasterKeyWrap` (never secret — HKDF's salt need not be). */
++ * alongside the resulting `MasterKeyWrap` (never secret — HKDF's salt need not be). `code` is normalized
++ * first (see `normalizeRecoveryCode()`), so lowercase, spacing/dash variations, and O/I/L transcription
++ * slips all derive the same key as the code exactly as displayed. */
+ export async function deriveFromRecoveryCode(code, salt) {
+-    const ikm = new TextEncoder().encode(code.trim().toUpperCase());
++    const ikm = new TextEncoder().encode(normalizeRecoveryCode(code));
+     return hkdfDerive(ikm, salt, "wrap");
+ }
+diff --git a/dist/crypto/smime.d.ts b/dist/crypto/smime.d.ts
+index d064b7e9ba1dcb45cbe921f0177ae7ae6fd67450..e3e2090ed584c618b7cbda3c27bc777ab33c59b5 100644
+--- a/dist/crypto/smime.d.ts
++++ b/dist/crypto/smime.d.ts
+@@ -11,6 +11,19 @@
+  * directly with values read from a `Mailbox`/`Contact`'s `keys` array with no reformatting.
+  */
+ import "reflect-metadata";
++/**
++ * Thrown by `decryptEnvelopedData()` for content encrypted with a non-AEAD algorithm (e.g. AES-CBC, 3DES).
++ * Unauthenticated CBC content is malleable - an attacker who can't read the message can still flip
++ * plaintext bits or mount EFAIL-style exfiltration gadgets against the decrypted HTML - so it is rejected
++ * outright rather than rendered with a weaker indicator.
++ *
++ * Interop note: many legacy S/MIME clients still send AES-CBC `EnvelopedData`; those messages are
++ * undecryptable in RapidMX clients by design. Everything RapidMX itself sends uses AES-256-GCM.
++ */
++export declare class UnsupportedContentEncryptionError extends Error {
++    readonly algorithmOid: string;
++    constructor(algorithmOid: string);
++}
+ /**
+  * Builds a detached CMS `SignedData` structure over `content`, per the spec's "Digital Signatures"
+  * section — detached, never opaque, so clients that don't understand S/MIME still render the
+@@ -20,7 +33,8 @@ import "reflect-metadata";
+ export declare function signDetached(content: Uint8Array, signingCertDer: Uint8Array, signingPrivateKey: CryptoKey): Promise<Uint8Array>;
+ export interface VerifyResult {
+     valid: boolean;
+-    /** The signer's certificate as embedded in the SignedData structure, if present - callers
++    /** The certificate pkijs matched to the verified SignerInfo's `sid` (never merely the first embedded
++     * certificate) - present whenever `valid` is true. Callers
+      * compare its fingerprint against the pinned `Contact` key per the spec's Trust Model (TOFU);
+      * this function only proves the signature is mathematically valid over `content`, not that the
+      * certificate belongs to who the message claims. */
+@@ -31,6 +45,14 @@ export interface VerifyResult {
+  * error - a malformed/foreign CMS blob is exactly the "signature failed" case the spec's Message
+  * Security Indicators table requires being able to render. */
+ export declare function verifyDetached(content: Uint8Array, signatureDer: Uint8Array): Promise<VerifyResult>;
++/**
++ * Extracts every email address a certificate asserts, lowercased: SAN `rfc822Name` entries when the
++ * certificate has any (RFC 5280 §4.2.1.6 - SAN is authoritative when present), otherwise the subject's
++ * legacy `emailAddress` attributes plus a `CN` that is itself an email address (how this deployment's
++ * own self-signed/test certificates and many older CAs name a mailbox). Used by `messageSecurity.ts` to
++ * bind a signer certificate to the message's claimed sender. Returns `[]` for unparseable input.
++ */
++export declare function extractCertificateEmails(certDer: Uint8Array): string[];
+ /**
+  * Builds an *opaque* (content embedded, not detached) CMS `SignedData` structure over `content`.
+  * Used only when the signed message is going to be encrypted immediately afterward (`buildMessage()`
+diff --git a/dist/crypto/smime.js b/dist/crypto/smime.js
+index bfc6236869d92cc0017795be865296eb0f7a079e..21a48531d32b5dd35cae9f2dc07929dec3c28d60 100644
+--- a/dist/crypto/smime.js
++++ b/dist/crypto/smime.js
+@@ -32,6 +32,27 @@ const DIGEST_ALGORITHM = "SHA-256";
+ /** AES-256-GCM for CMS content encryption, matching `masterKey.ts`'s own AEAD choice - one AEAD
+  * construction used consistently across this entire E2E scheme. */
+ const CONTENT_ENCRYPTION_ALGORITHM = { name: "AES-GCM", length: 256 };
++/** `id-data` (RFC 5652 §4) - the only encapsulated content type S/MIME message signatures use. */
++const ID_DATA = pkijs.ContentInfo.DATA;
++/** AES-GCM content-encryption OIDs (id-aes128-GCM, id-aes192-GCM, id-aes256-GCM - RFC 5084). The only
++ * content encryption `decryptEnvelopedData()` accepts: see `UnsupportedContentEncryptionError`. */
++const AEAD_CONTENT_ENCRYPTION_OIDS = new Set(["2.16.840.1.101.3.4.1.6", "2.16.840.1.101.3.4.1.26", "2.16.840.1.101.3.4.1.46"]);
++/**
++ * Thrown by `decryptEnvelopedData()` for content encrypted with a non-AEAD algorithm (e.g. AES-CBC, 3DES).
++ * Unauthenticated CBC content is malleable - an attacker who can't read the message can still flip
++ * plaintext bits or mount EFAIL-style exfiltration gadgets against the decrypted HTML - so it is rejected
++ * outright rather than rendered with a weaker indicator.
++ *
++ * Interop note: many legacy S/MIME clients still send AES-CBC `EnvelopedData`; those messages are
++ * undecryptable in RapidMX clients by design. Everything RapidMX itself sends uses AES-256-GCM.
++ */
++export class UnsupportedContentEncryptionError extends Error {
++    constructor(algorithmOid) {
++        super(`This message uses unauthenticated content encryption (${algorithmOid}), which is not accepted.`);
++        this.name = "UnsupportedContentEncryptionError";
++        this.algorithmOid = algorithmOid;
++    }
++}
+ function toArrayBuffer(bytes) {
+     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+ }
+@@ -70,38 +91,91 @@ export async function signDetached(content, signingCertDer, signingPrivateKey) {
+  * error - a malformed/foreign CMS blob is exactly the "signature failed" case the spec's Message
+  * Security Indicators table requires being able to render. */
+ export async function verifyDetached(content, signatureDer) {
+-    let contentInfo;
++    const signedData = parseSignedData(signatureDer);
++    // A detached signature MUST NOT carry encapsulated content: pkijs's verify() silently prefers an
++    // embedded eContent over the caller-supplied `data`, so accepting one here would let an attacker take
++    // ANY opaque signature the victim ever produced and staple it onto arbitrary content, which would
++    // then verify as "signed" (the round-3 review's PoC 1 - see smimeRegressions.test.ts).
++    if (!signedData || signedData.encapContentInfo.eContent) {
++        return { valid: false };
++    }
++    return verifySignerZero(signedData, toArrayBuffer(content));
++}
++/** Parses untrusted DER as a `ContentInfo` wrapping `SignedData` whose `eContentType` is `id-data`.
++ * Constructing SignedData from an untrusted schema can throw on a structurally-valid-BER-but-not-
++ * actually-SignedData blob - that degrades to `undefined` ("signature failed"), never a thrown error, per
++ * the spec's Message Security Indicators (a malformed CMS blob is exactly that state, not a crash). */
++function parseSignedData(der) {
+     try {
+-        contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(signatureDer));
++        const contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(der));
++        if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
++            return undefined;
++        }
++        const signedData = new pkijs.SignedData({ schema: contentInfo.content });
++        return signedData.encapContentInfo.eContentType === ID_DATA ? signedData : undefined;
+     }
+     catch {
+-        return { valid: false };
++        return undefined;
+     }
+-    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
++}
++/**
++ * Verifies `signerInfos[0]` and returns the certificate pkijs actually matched to that SignerInfo's `sid`
++ * (`extendedMode`) - never simply `certificates[0]`, which an attacker controls independently of who
++ * signed: embedding the victim's certificate first and signing with their own key (whose certificate is
++ * second) previously reported the victim's certificate as the signer (the round-3 review's PoC 2).
++ * pkijs throws a `SignedDataVerifyError` for most failures in extended mode; all degrade to invalid.
++ */
++async function verifySignerZero(signedData, data) {
++    try {
++        const result = await signedData.verify({ signer: 0, data, extendedMode: true });
++        if (result.signatureVerified !== true || !result.signerCertificate) {
++            return { valid: false };
++        }
++        return { valid: true, signerCertificateDer: new Uint8Array(result.signerCertificate.toSchema().toBER()) };
++    }
++    catch {
+         return { valid: false };
+     }
+-    // Constructing SignedData from an untrusted schema, and verify() itself, can both throw on a
+-    // structurally-valid-BER-but-not-actually-SignedData blob (e.g. the right contentType with the
+-    // wrong content shape) - either failure degrades to "signature failed," never a thrown error, per
+-    // the spec's Message Security Indicators (a malformed CMS blob is exactly that state, not a crash).
+-    let signedData;
+-    let valid;
++}
++/**
++ * Extracts every email address a certificate asserts, lowercased: SAN `rfc822Name` entries when the
++ * certificate has any (RFC 5280 §4.2.1.6 - SAN is authoritative when present), otherwise the subject's
++ * legacy `emailAddress` attributes plus a `CN` that is itself an email address (how this deployment's
++ * own self-signed/test certificates and many older CAs name a mailbox). Used by `messageSecurity.ts` to
++ * bind a signer certificate to the message's claimed sender. Returns `[]` for unparseable input.
++ */
++export function extractCertificateEmails(certDer) {
++    let cert;
+     try {
+-        signedData = new pkijs.SignedData({ schema: contentInfo.content });
+-        valid = await signedData.verify({ signer: 0, data: toArrayBuffer(content) });
++        cert = parseCertificate(certDer);
+     }
+     catch {
+-        return { valid: false };
++        return [];
++    }
++    const sanEmails = [];
++    for (const extension of cert.extensions ?? []) {
++        // pkijs parses a SubjectAlternativeName extension's value into an AltName automatically.
++        const altNames = extension.extnID === "2.5.29.17" ? extension.parsedValue.altNames : [];
++        for (const name of altNames) {
++            // GeneralName type 1 = rfc822Name (an IA5String value).
++            if (name.type === 1) {
++                sanEmails.push(String(name.value).toLowerCase());
++            }
++        }
+     }
+-    // `certificates` is a CertificateSetItem union (Certificate | AttributeCertificateV1/V2 |
+-    // OtherCertificateFormat) - `signDetached()` only ever embeds a plain Certificate, so the
+-    // non-Certificate branch here is defensive against a foreign/malformed CMS blob, not reachable
+-    // through this module's own signing path (not exercised in tests for that reason).
+-    const signerCertificate = signedData.certificates?.[0];
+-    const signerCertificateDer = signerCertificate && signerCertificate instanceof pkijs.Certificate
+-        ? new Uint8Array(signerCertificate.toSchema().toBER())
+-        : undefined;
+-    return { valid, signerCertificateDer };
++    if (sanEmails.length > 0) {
++        return sanEmails;
++    }
++    const subjectEmails = [];
++    for (const attribute of cert.subject.typesAndValues) {
++        const isEmailAttribute = attribute.type === "1.2.840.113549.1.9.1";
++        const isCommonName = attribute.type === "2.5.4.3";
++        const value = String(attribute.value.valueBlock.value).trim().toLowerCase();
++        if (isEmailAttribute || (isCommonName && /^[^\s@]+@[^\s@]+$/.test(value))) {
++            subjectEmails.push(value);
++        }
++    }
++    return subjectEmails;
+ }
+ /**
+  * Builds an *opaque* (content embedded, not detached) CMS `SignedData` structure over `content`.
+@@ -135,41 +209,21 @@ export async function signOpaque(content, signingCertDer, signingPrivateKey) {
+  * content — unlike `verifyDetached()`, the content isn't supplied separately by the caller, since the
+  * whole point of an opaque signature is that it carries its own content. */
+ export async function verifyOpaque(signedDer) {
+-    let contentInfo;
+-    try {
+-        contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(signedDer));
+-    }
+-    catch {
+-        return { valid: false };
+-    }
+-    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
++    const signedData = parseSignedData(signedDer);
++    const eContent = signedData?.encapContentInfo.eContent;
++    if (!signedData || !eContent) {
+         return { valid: false };
+     }
+-    let signedData;
+-    let valid;
+-    try {
+-        signedData = new pkijs.SignedData({ schema: contentInfo.content });
+-        valid = await signedData.verify({ signer: 0 });
+-    }
+-    catch {
++    const result = await verifySignerZero(signedData);
++    if (!result.valid) {
+         return { valid: false };
+     }
+-    // Same defensive, not-reachable-through-signOpaque()'s-own-path branch as verifyDetached() above -
+-    // see that function's identical comment.
+-    const signerCertificate = signedData.certificates?.[0];
+-    const signerCertificateDer = signerCertificate && signerCertificate instanceof pkijs.Certificate
+-        ? new Uint8Array(signerCertificate.toSchema().toBER())
+-        : undefined;
+-    // No external `data` is ever passed to verify() in this function - a detached signature (no
+-    // eContent) can only ever fail to verify here, never succeed, so `valid` being true guarantees
+-    // eContent is present; this isn't optional defensive handling for a case that can't occur.
+     // `.getValue()`, not `.valueBlock.valueHexView` directly - eContent commonly round-trips as a
+     // *constructed* OctetString (an outer OctetString wrapping one or more inner primitive OctetString
+     // chunks, standard per RFC 5652), and only `.getValue()` transparently concatenates those chunks;
+     // reading `.valueBlock.valueHexView` directly is only correct for a primitive OctetString and
+     // silently returns empty bytes otherwise (confirmed by direct reproduction).
+-    const content = valid ? new Uint8Array(signedData.encapContentInfo.eContent.getValue()) : undefined;
+-    return { valid, signerCertificateDer, content };
++    return { ...result, content: new Uint8Array(eContent.getValue()) };
+ }
+ /**
+  * Builds a CMS `EnvelopedData` structure encrypting `content` to every certificate in
+@@ -199,6 +253,10 @@ export async function decryptEnvelopedData(envelopedDer, recipientCertDer, recip
+         throw new Error("This CMS content is not EnvelopedData.");
+     }
+     const envelopedData = new pkijs.EnvelopedData({ schema: contentInfo.content });
++    const contentEncryptionOid = envelopedData.encryptedContentInfo.contentEncryptionAlgorithm.algorithmId;
++    if (!AEAD_CONTENT_ENCRYPTION_OIDS.has(contentEncryptionOid)) {
++        throw new UnsupportedContentEncryptionError(contentEncryptionOid);
++    }
+     const recipientCertificate = parseCertificate(recipientCertDer);
+     let lastError;
+     for (let index = 0; index < envelopedData.recipientInfos.length; index++) {
+diff --git a/dist/crypto/smimeMessage.d.ts b/dist/crypto/smimeMessage.d.ts
+index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..3bcb2901cc7363578762d28380248abfa2ab6c9a 100644
+--- a/dist/crypto/smimeMessage.d.ts
++++ b/dist/crypto/smimeMessage.d.ts
+@@ -1,3 +1,4 @@
++import { DisplayBody } from "./mime.js";
+ export interface ProtectedHeaders {
+     from: string;
+     to: string;
+@@ -29,14 +30,21 @@ export interface MimePart {
+ export declare function buildSignedOnlyMessage(bodyContentType: string, bodyText: string, protectedHeaders: ProtectedHeaders, signingCertDer: Uint8Array, signingPrivateKey: CryptoKey): Promise<MimePart>;
+ export interface ParsedSignedOnlyMessage {
+     verified: boolean;
++    /** The certificate pkijs matched to the verified SignerInfo (not merely the first embedded one). */
+     signerCertificateDer?: Uint8Array;
+     protectedHeaders?: ProtectedHeaders;
+     bodyContentType?: string;
++    /** The inner entity's body with its Content-Transfer-Encoding/charset decoded (for a multipart inner
++     * entity this is the raw multipart text - use `displayBody` for what to render). */
+     bodyText?: string;
++    /** The displayable body: `html` only for a real text/html part, `text` for text/plain. */
++    displayBody?: DisplayBody;
+ }
+-/** Parses and verifies a `multipart/signed` message built by `buildSignedOnlyMessage()`. Returns
+- * `{ verified: false }` (never throws) for anything malformed — same "degrade to a failed-signature
+- * state, don't crash" contract as `smime.ts`'s own verify functions. */
++/** Parses and verifies a `multipart/signed` message (RFC 1847/8551). Returns `{ verified: false }` (never
++ * throws) for anything malformed — same "degrade to a failed-signature state, don't crash" contract as
++ * `smime.ts`'s own verify functions. Accepts foreign-MUA framing: unquoted/case-varied parameters,
++ * preamble/epilogue, transport padding, and a signed part stored with bare-LF line endings (retried in
++ * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). */
+ export declare function parseSignedOnlyMessage(contentType: string, body: string): Promise<ParsedSignedOnlyMessage>;
+ /**
+  * Builds an `application/pkcs7-mime; smime-type="enveloped-data"` message with RFC 9788 header
+@@ -75,6 +83,11 @@ export interface ParsedEncryptedMessage {
+      * carries no `HP-Outer:` lines at all (a foreign sender's S/MIME implementation that doesn't write
+      * them, or a message from before this field existed). */
+     headerTamperDetected?: boolean;
++    /** The displayable body: `html` only for a real text/html part, `text` for text/plain. */
++    displayBody?: DisplayBody;
++    /** `true` when decryption was refused because the content encryption isn't AEAD (see `smime.ts`'s
++     * `UnsupportedContentEncryptionError`) - lets the caller explain that instead of "wrong key". */
++    unsupportedContentEncryption?: boolean;
+ }
+ /** RFC 9788's `HP-Outer:` field-copy fields to actually compare - a subset of `ProtectedHeaders`
+  * (`messageId` has no `HP-Outer` counterpart; only the fields the outer envelope itself carries do).
+@@ -90,15 +103,10 @@ export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to
+  * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
+  */
+ export declare function parseEncryptedMessage(base64Body: string, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey, actualOuterHeaders?: ComparableOuterHeaders): Promise<ParsedEncryptedMessage>;
+-/** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
+- * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
+- * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
+- * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped.
+- *
+- * Also returns the raw, unparsed header block text as `rawHeaderBlock` — the flat `headers` map can
+- * only hold one value per (lowercased) name, which silently drops all but the last line for a
+- * repeated-name header like RFC 9788's `HP-Outer` (see `extractHpOuterHeaders()`, which parses
+- * `rawHeaderBlock` directly instead). */
++/** Splits a MIME entity's raw text into its header lines (lowercased-key map, first occurrence of each
++ * name, unfolded) and raw body, plus the entity's own Content-Type value for convenience. Kept for
++ * backward compatibility - new code should use `mime.ts`'s `parseMimeEntity()`, which also exposes every
++ * repeated field in order. Tolerates bare-LF line endings. */
+ export declare function splitHeadersAndBody(entity: string): {
+     headers: Record<string, string>;
+     contentType?: string;
+diff --git a/dist/crypto/smimeMessage.js b/dist/crypto/smimeMessage.js
+index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..a57c3dfaff703619c8e26cdbd570371981c561d6 100644
+--- a/dist/crypto/smimeMessage.js
++++ b/dist/crypto/smimeMessage.js
+@@ -26,8 +26,9 @@
+  * RFC 9788's own worked example uses (outer enveloped-data → decrypts to signed-data → unwraps to the
+  * real `hp="cipher"` content), not a `multipart/signed` structure encrypted as a whole.
+  */
+-import { fromBase64, toBase64 } from "./encoding.js";
+-import { decryptEnvelopedData, encryptForRecipients, signDetached, signOpaque, verifyDetached, verifyOpaque, } from "./smime.js";
++import { toBase64 } from "./encoding.js";
++import { decodeBase64Text, decodeBodyText, extractDisplayBody, parseMimeEntity, parseParameterizedHeader, splitMultipart, } from "./mime.js";
++import { decryptEnvelopedData, encryptForRecipients, signDetached, signOpaque, UnsupportedContentEncryptionError, verifyDetached, verifyOpaque, } from "./smime.js";
+ const CRLF = "\r\n";
+ /** RFC 2045's own line-length limit for base64-encoded body content. */
+ const BASE64_LINE_WIDTH = 76;
+@@ -63,9 +64,8 @@ function protectedHeaderLines(headers, hpOuter) {
+     if (hpOuter) {
+         // RFC 9788 Section 2.2.1's `hp-outer` field: the literal string "HP-Outer:" followed by the
+         // original field name and its (outer, possibly-obscured) value. Written on every encrypted
+-        // message per the spec, but not yet read back and compared against the actual outer envelope
+-        // on receipt (that comparison - detecting a tampered outer header - is real received-message
+-        // work for a later pass, not implemented by parseEncryptedMessage() below yet).
++        // message per the spec, and compared against the actual outer envelope on receipt by
++        // parseEncryptedMessage() (see ParsedEncryptedMessage.headerTamperDetected).
+         lines.push(`HP-Outer: From: ${hpOuter.from}`);
+         lines.push(`HP-Outer: To: ${hpOuter.to}`);
+         if (hpOuter.cc) {
+@@ -83,7 +83,15 @@ function protectedHeaderLines(headers, hpOuter) {
+  */
+ export async function buildSignedOnlyMessage(bodyContentType, bodyText, protectedHeaders, signingCertDer, signingPrivateKey) {
+     const boundary = generateBoundary();
+-    const innerEntity = [protectedHeaderLines(protectedHeaders), `Content-Type: ${bodyContentType}; hp="clear"`, "", bodyText].join(CRLF);
++    // Base64 so the signed bytes survive transport unchanged: a raw UTF-8 body is usually one long line, which
++    // MTAs rewrap past 998 characters and so break the detached signature.
++    const innerEntity = [
++        protectedHeaderLines(protectedHeaders),
++        `Content-Type: ${bodyContentType}; hp="clear"`,
++        `Content-Transfer-Encoding: base64`,
++        "",
++        base64Wrapped(new TextEncoder().encode(bodyText)),
++    ].join(CRLF);
+     const signature = await signDetached(new TextEncoder().encode(innerEntity), signingCertDer, signingPrivateKey);
+     const body = [
+         `--${boundary}`,
+@@ -98,34 +106,49 @@ export async function buildSignedOnlyMessage(bodyContentType, bodyText, protecte
+     ].join(CRLF);
+     return { contentType: `multipart/signed; protocol="application/pkcs7-signature"; micalg=sha-256; boundary="${boundary}"`, body };
+ }
+-/** Parses and verifies a `multipart/signed` message built by `buildSignedOnlyMessage()`. Returns
+- * `{ verified: false }` (never throws) for anything malformed — same "degrade to a failed-signature
+- * state, don't crash" contract as `smime.ts`'s own verify functions. */
++const SIGNATURE_CONTENT_TYPES = new Set(["application/pkcs7-signature", "application/x-pkcs7-signature"]);
++const PKCS7_MIME_CONTENT_TYPES = new Set(["application/pkcs7-mime", "application/x-pkcs7-mime"]);
++/** Parses and verifies a `multipart/signed` message (RFC 1847/8551). Returns `{ verified: false }` (never
++ * throws) for anything malformed — same "degrade to a failed-signature state, don't crash" contract as
++ * `smime.ts`'s own verify functions. Accepts foreign-MUA framing: unquoted/case-varied parameters,
++ * preamble/epilogue, transport padding, and a signed part stored with bare-LF line endings (retried in
++ * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). */
+ export async function parseSignedOnlyMessage(contentType, body) {
+-    const boundary = extractBoundary(contentType);
++    const boundary = parseParameterizedHeader(contentType).params["boundary"];
+     if (!boundary) {
+         return { verified: false };
+     }
+-    const parts = splitOnBoundary(body, boundary);
++    const parts = splitMultipart(body, boundary);
+     if (parts.length < 2) {
+         return { verified: false };
+     }
+-    const [innerEntity, signaturePart] = parts;
+-    const signatureDer = extractBase64Body(signaturePart);
+-    if (!signatureDer) {
++    const [innerText, signaturePartText] = parts;
++    const signaturePart = parseMimeEntity(signaturePartText);
++    if (!SIGNATURE_CONTENT_TYPES.has(parseParameterizedHeader(signaturePart.headers["content-type"]).value)) {
++        return { verified: false };
++    }
++    // The signature part is always base64 in practice (binary DER can't survive a text transport); a
++    // missing Content-Transfer-Encoding header is treated as base64 too, matching common senders.
++    const signatureDer = decodeBase64Text(signaturePart.body);
++    if (!signatureDer || signatureDer.length === 0) {
+         return { verified: false };
+     }
+-    const result = await verifyDetached(new TextEncoder().encode(innerEntity), signatureDer);
++    let result = await verifyDetached(new TextEncoder().encode(innerText), signatureDer);
++    const canonical = innerText.replace(/\r?\n/g, CRLF);
++    if (!result.valid && canonical !== innerText) {
++        result = await verifyDetached(new TextEncoder().encode(canonical), signatureDer);
++    }
+     if (!result.valid) {
+         return { verified: false };
+     }
+-    const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(innerEntity);
++    const inner = parseMimeEntity(innerText);
+     return {
+         verified: true,
+         signerCertificateDer: result.signerCertificateDer,
+-        protectedHeaders: headersToProtectedHeaders(headers),
+-        bodyContentType,
+-        bodyText,
++        protectedHeaders: headersToProtectedHeaders(inner.headers),
++        bodyContentType: inner.headers["content-type"],
++        bodyText: decodeBodyText(inner),
++        displayBody: extractDisplayBody(inner),
+     };
+ }
+ /**
+@@ -192,17 +215,16 @@ export function assembleOutboundMime(outerHeaders, part) {
+  * (a real bug if reused for this - JSON/`Record` keys aren't multi-valued). Scans the raw header block
+  * text directly instead. Returns `undefined` when no `HP-Outer:` lines are present at all, so a caller
+  * can distinguish "nothing to compare" from "compared and everything matched". */
+-function extractHpOuterHeaders(rawHeaderBlock) {
++function extractHpOuterHeaders(fields) {
+     const result = {};
+     let found = false;
+-    for (const line of rawHeaderBlock.split(CRLF)) {
+-        const match = /^HP-Outer:\s*(From|To|Cc|Date|Subject):\s*(.*)$/i.exec(line);
++    for (const { name, value } of fields) {
++        const match = name.toLowerCase() === "hp-outer" ? /^(From|To|Cc|Date|Subject):\s*(.*)$/i.exec(value) : null;
+         if (!match) {
+             continue;
+         }
+         found = true;
+-        const field = match[1].toLowerCase();
+-        result[field] = match[2].trim();
++        result[match[1].toLowerCase()] = match[2].trim();
+     }
+     return found ? result : undefined;
+ }
+@@ -222,7 +244,7 @@ function outerHeadersMatch(hpOuter, actualOuterHeaders) {
+  * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
+  */
+ export async function parseEncryptedMessage(base64Body, recipientCertDer, recipientPrivateKey, actualOuterHeaders) {
+-    const envelopedDer = decodeBase64Body(base64Body);
++    const envelopedDer = decodeBase64Text(base64Body);
+     if (!envelopedDer) {
+         return { decrypted: false };
+     }
+@@ -230,100 +252,49 @@ export async function parseEncryptedMessage(base64Body, recipientCertDer, recipi
+     try {
+         decrypted = await decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey);
+     }
+-    catch {
+-        return { decrypted: false };
++    catch (err) {
++        return err instanceof UnsupportedContentEncryptionError ? { decrypted: false, unsupportedContentEncryption: true } : { decrypted: false };
+     }
+-    function compareTamper(rawHeaderBlock) {
+-        const hpOuter = extractHpOuterHeaders(rawHeaderBlock);
++    function compareTamper(fields) {
++        const hpOuter = extractHpOuterHeaders(fields);
+         if (!hpOuter || !actualOuterHeaders) {
+             return undefined;
+         }
+         return !outerHeadersMatch(hpOuter, actualOuterHeaders);
+     }
+-    const decoded = new TextDecoder().decode(decrypted);
+-    const { headers: outerContentHeaders, body: outerContentBody, rawHeaderBlock: outerRawHeaderBlock } = splitHeadersAndBody(decoded);
+-    const innerContentType = outerContentHeaders["content-type"];
+-    if (innerContentType?.includes('smime-type="signed-data"')) {
+-        const signedDer = decodeBase64Body(outerContentBody);
++    let entity = parseMimeEntity(new TextDecoder().decode(decrypted));
++    const wrapper = parseParameterizedHeader(entity.headers["content-type"]);
++    let signature = {};
++    if (PKCS7_MIME_CONTENT_TYPES.has(wrapper.value) && wrapper.params["smime-type"]?.toLowerCase() === "signed-data") {
++        const signedDer = decodeBase64Text(entity.body);
+         if (!signedDer) {
+             return { decrypted: false };
+         }
+         const verifyResult = await verifyOpaque(signedDer);
+-        if (!verifyResult.valid || !verifyResult.content) {
++        if (!verifyResult.valid) {
+             return { decrypted: true, signatureVerified: false };
+         }
+-        const plaintext = new TextDecoder().decode(verifyResult.content);
+-        const { headers, contentType: bodyContentType, body: bodyText, rawHeaderBlock } = splitHeadersAndBody(plaintext);
+-        return {
+-            decrypted: true,
+-            signatureVerified: true,
+-            signerCertificateDer: verifyResult.signerCertificateDer,
+-            protectedHeaders: headersToProtectedHeaders(headers),
+-            bodyContentType,
+-            bodyText,
+-            headerTamperDetected: compareTamper(rawHeaderBlock),
+-        };
++        // verifyOpaque() always returns `content` alongside `valid: true`.
++        entity = parseMimeEntity(new TextDecoder().decode(verifyResult.content));
++        signature = { signatureVerified: true, signerCertificateDer: verifyResult.signerCertificateDer };
+     }
+-    const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(decoded);
+     return {
+         decrypted: true,
+-        protectedHeaders: headersToProtectedHeaders(headers),
+-        bodyContentType,
+-        bodyText,
+-        headerTamperDetected: compareTamper(outerRawHeaderBlock),
++        ...signature,
++        protectedHeaders: headersToProtectedHeaders(entity.headers),
++        bodyContentType: entity.headers["content-type"],
++        bodyText: decodeBodyText(entity),
++        displayBody: extractDisplayBody(entity),
++        headerTamperDetected: compareTamper(entity.fields),
+     };
+ }
+-// ---------------------------------------------------------------------------
+-// Small, targeted MIME parsing helpers - sufficient for entities this module
+-// itself produces; not a general-purpose MIME parser.
+-// ---------------------------------------------------------------------------
+-function extractBoundary(contentType) {
+-    const match = /boundary="([^"]+)"/.exec(contentType);
+-    return match?.[1];
+-}
+-function splitOnBoundary(body, boundary) {
+-    const delimiter = `--${boundary}`;
+-    return body
+-        .split(delimiter)
+-        .map((part) => part.replace(/^\r\n/, "").replace(/\r\n$/, ""))
+-        .filter((part) => part.length > 0 && part !== "--");
+-}
+-function extractBase64Body(part) {
+-    const { body } = splitHeadersAndBody(part);
+-    return decodeBase64Body(body);
+-}
+-function decodeBase64Body(base64Body) {
+-    try {
+-        return fromBase64(base64Body.replace(/[\r\n]/g, ""));
+-    }
+-    catch {
+-        return undefined;
+-    }
+-}
+-/** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
+- * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
+- * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
+- * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped.
+- *
+- * Also returns the raw, unparsed header block text as `rawHeaderBlock` — the flat `headers` map can
+- * only hold one value per (lowercased) name, which silently drops all but the last line for a
+- * repeated-name header like RFC 9788's `HP-Outer` (see `extractHpOuterHeaders()`, which parses
+- * `rawHeaderBlock` directly instead). */
++/** Splits a MIME entity's raw text into its header lines (lowercased-key map, first occurrence of each
++ * name, unfolded) and raw body, plus the entity's own Content-Type value for convenience. Kept for
++ * backward compatibility - new code should use `mime.ts`'s `parseMimeEntity()`, which also exposes every
++ * repeated field in order. Tolerates bare-LF line endings. */
+ export function splitHeadersAndBody(entity) {
+-    const separatorIndex = entity.indexOf(`${CRLF}${CRLF}`);
+-    const headerBlock = separatorIndex === -1 ? entity : entity.slice(0, separatorIndex);
+-    const body = separatorIndex === -1 ? "" : entity.slice(separatorIndex + 2 * CRLF.length);
+-    const headers = {};
+-    for (const line of headerBlock.split(CRLF)) {
+-        const colonIndex = line.indexOf(":");
+-        if (colonIndex === -1) {
+-            continue;
+-        }
+-        const name = line.slice(0, colonIndex).trim().toLowerCase();
+-        const value = line.slice(colonIndex + 1).trim();
+-        headers[name] = value;
+-    }
+-    return { headers, contentType: headers["content-type"], body, rawHeaderBlock: headerBlock };
++    const { headers, body, rawHeaderBlock } = parseMimeEntity(entity);
++    return { headers, contentType: headers["content-type"], body, rawHeaderBlock };
+ }
+ function headersToProtectedHeaders(headers) {
+     return {
+diff --git a/dist/crypto/useIdleKeyTimeout.js b/dist/crypto/useIdleKeyTimeout.js
+index 6507d543d18d97693f23e9b9961c403119b7c8a7..e5058406d57b8d7473e383c5dbe72e4690e49a62 100644
+--- a/dist/crypto/useIdleKeyTimeout.js
++++ b/dist/crypto/useIdleKeyTimeout.js
+@@ -13,11 +13,33 @@
+  * without touching Mail again is still an actively-attended device, not an idle one; scoping this to
+  * only the app(s) that touch key material would time it out from underneath a session that was never
+  * actually unattended.
++ *
++ * **Iframes.** Events inside an iframe never reach the parent `document`, so activity is also listened
++ * for inside every *same-origin* iframe's own document (attached as iframes appear or (re)load, found via
++ * a `MutationObserver` plus a capture-phase `load` listener). A sandboxed/cross-origin iframe's document
++ * is inaccessible by design — notably `MessageDetailPane`'s `sandbox=""` message body — so for those the
++ * one observable signal is used instead: the parent window blurring *because focus moved into an iframe*
++ * (a click inside it) counts as activity. Scrolling such an iframe without clicking is not observable.
++ *
++ * **Sleep/suspend.** Timers don't run while a laptop sleeps, so a `setTimeout` alone could fire long after
++ * the idle deadline has passed by wall clock. Whenever the page becomes visible or the window regains
++ * focus, elapsed wall-clock time since the last activity is checked and keys are destroyed immediately if
++ * the deadline already passed (otherwise the timer is re-armed for just the remaining time).
+  */
+ import { useEffect } from "react";
+ import { destroyUnlockedKeys } from "./keySession.js";
+ import { getIdleTimeoutMinutes } from "./idleTimeout.js";
+ const ACTIVITY_EVENTS = ["mousedown", "keydown", "scroll", "touchstart"];
++/** Reads an iframe's document if (and only if) this origin may access it — `null` for a cross-origin or
++ * `sandbox`ed (opaque-origin) frame, whichever way the browser reports that (a `null` or a throw). */
++function accessibleFrameDocument(frame) {
++    try {
++        return frame.contentDocument;
++    }
++    catch {
++        return null;
++    }
++}
+ /**
+  * Safe to mount unconditionally, even before any mailbox has been unlocked this session -
+  * `destroyUnlockedKeys()` is a no-op against an empty session store, so an idle period elapsing with
+@@ -35,19 +57,107 @@ export function useIdleKeyTimeout() {
+         }
+         const timeoutMs = minutes * 60000;
+         let timer;
+-        function reset() {
++        let blurCheck;
++        let lastActivity = Date.now();
++        function arm(delayMs) {
+             clearTimeout(timer);
+-            timer = setTimeout(() => destroyUnlockedKeys(), timeoutMs);
++            timer = setTimeout(() => destroyUnlockedKeys(), delayMs);
+         }
+-        reset();
+-        for (const event of ACTIVITY_EVENTS) {
+-            document.addEventListener(event, reset, { passive: true });
++        function reset() {
++            lastActivity = Date.now();
++            arm(timeoutMs);
++        }
++        /** Wall-clock check on resume - see this module's doc comment. */
++        function checkElapsed() {
++            if (document.visibilityState === "hidden") {
++                return;
++            }
++            const remaining = timeoutMs - (Date.now() - lastActivity);
++            if (remaining <= 0) {
++                clearTimeout(timer);
++                destroyUnlockedKeys();
++            }
++            else {
++                arm(remaining);
++            }
++        }
++        function handleWindowBlur() {
++            // `document.activeElement` isn't reliably updated to the iframe until after the blur event
++            // itself has finished dispatching, so check on the next tick.
++            clearTimeout(blurCheck);
++            blurCheck = setTimeout(() => {
++                if (document.activeElement instanceof HTMLIFrameElement) {
++                    reset();
++                }
++            }, 0);
++        }
++        const frameDocs = new Map();
++        function attachFrame(frame) {
++            const doc = accessibleFrameDocument(frame);
++            const previous = frameDocs.get(frame);
++            if (previous === doc) {
++                return;
++            }
++            if (previous) {
++                removeActivityListeners(previous);
++                frameDocs.delete(frame);
++            }
++            if (doc) {
++                addActivityListeners(doc);
++                frameDocs.set(frame, doc);
++            }
++        }
++        function scanFrames() {
++            const current = new Set(document.querySelectorAll("iframe"));
++            for (const [frame, doc] of frameDocs) {
++                if (!current.has(frame)) {
++                    removeActivityListeners(doc);
++                    frameDocs.delete(frame);
++                }
++            }
++            for (const frame of current) {
++                attachFrame(frame);
++            }
++        }
++        function handleLoad(e) {
++            if (e.target instanceof HTMLIFrameElement) {
++                attachFrame(e.target);
++            }
++        }
++        function addActivityListeners(target) {
++            for (const event of ACTIVITY_EVENTS) {
++                target.addEventListener(event, reset, { passive: true });
++            }
+         }
++        function removeActivityListeners(target) {
++            for (const event of ACTIVITY_EVENTS) {
++                target.removeEventListener(event, reset);
++            }
++        }
++        reset();
++        addActivityListeners(document);
++        document.addEventListener("visibilitychange", checkElapsed);
++        document.addEventListener("load", handleLoad, true);
++        window.addEventListener("focus", checkElapsed);
++        window.addEventListener("pageshow", checkElapsed);
++        window.addEventListener("blur", handleWindowBlur);
++        const observer = new MutationObserver(scanFrames);
++        observer.observe(document.documentElement, { childList: true, subtree: true });
++        scanFrames();
+         return () => {
+             clearTimeout(timer);
+-            for (const event of ACTIVITY_EVENTS) {
+-                document.removeEventListener(event, reset);
++            clearTimeout(blurCheck);
++            observer.disconnect();
++            removeActivityListeners(document);
++            document.removeEventListener("visibilitychange", checkElapsed);
++            document.removeEventListener("load", handleLoad, true);
++            window.removeEventListener("focus", checkElapsed);
++            window.removeEventListener("pageshow", checkElapsed);
++            window.removeEventListener("blur", handleWindowBlur);
++            for (const doc of frameDocs.values()) {
++                removeActivityListeners(doc);
+             }
++            frameDocs.clear();
+         };
+     }, []);
+ }
+diff --git a/dist/mail/dataExportApi.d.ts b/dist/mail/dataExportApi.d.ts
+index f510c2cbac228525c2c32a702d78298e24662484..4a61b29d9bbcedacb4e65358955f0b50f95d22d2 100644
+--- a/dist/mail/dataExportApi.d.ts
++++ b/dist/mail/dataExportApi.d.ts
+@@ -1,3 +1,5 @@
++import { RequestListParams } from "../util/apiQuery.js";
++export type { RequestListParams };
+ export type DataExportFormat = "json" | "mbox";
+ export type DataExportStatus = "pending" | "ready" | "failed";
+ export interface DataExportRequest {
+@@ -19,8 +21,9 @@ export interface CreateDataExportRequestInput {
+     mailboxUid?: string;
+ }
+ export declare function createExportRequest(input: CreateDataExportRequestInput): Promise<DataExportRequest>;
+-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
+-export declare function listExportRequests(): Promise<DataExportRequest[]>;
++/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
++ * first; `params` pages through them (`limit` capped at 500 server-side). */
++export declare function listExportRequests(params?: RequestListParams): Promise<DataExportRequest[]>;
+ export declare function getExportRequest(uid: string): Promise<DataExportRequest>;
+ /** A plain URL, not a fetch wrapper — the server streams the export's raw bytes back with its own
+  * `content-disposition: attachment` header, so a caller renders this directly as `<a href={...}>`
+diff --git a/dist/mail/dataExportApi.js b/dist/mail/dataExportApi.js
+index b98e80f1b4a321c9b2f53a9e490a9ce786b2a922..5434e8890638da81760364785ab729272497a441 100644
+--- a/dist/mail/dataExportApi.js
++++ b/dist/mail/dataExportApi.js
+@@ -11,16 +11,18 @@
+  * only stages a `pending` request; poll `getExportRequest()`/`listExportRequests()` for `status` to
+  * become `"ready"` (or `"failed"`) before offering the download.
+  */
+-import { apiFetch } from "../util/api.js";
++import { apiFetch, apiUrl } from "../util/api.js";
++import { buildRequestListQuery } from "../util/apiQuery.js";
+ export function createExportRequest(input) {
+     return apiFetch(`/mail/data-export-requests`, {
+         method: "POST",
+         body: JSON.stringify(input),
+     });
+ }
+-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
+-export function listExportRequests() {
+-    return apiFetch(`/mail/data-export-requests`);
++/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
++ * first; `params` pages through them (`limit` capped at 500 server-side). */
++export function listExportRequests(params = {}) {
++    return apiFetch(`/mail/data-export-requests${buildRequestListQuery(params)}`);
+ }
+ export function getExportRequest(uid) {
+     return apiFetch(`/mail/data-export-requests/${encodeURIComponent(uid)}`);
+@@ -30,5 +32,5 @@ export function getExportRequest(uid) {
+  * (the browser's own native download, no JS fetch/blob needed) — same pattern `mailApi.ts`'s
+  * `attachmentContentUrl()` already establishes. 404s until `status === "ready"`. */
+ export function exportRequestDownloadUrl(uid) {
+-    return `/api/mail/data-export-requests/${encodeURIComponent(uid)}/download`;
++    return apiUrl(`/mail/data-export-requests/${encodeURIComponent(uid)}/download`);
+ }
+diff --git a/dist/mail/erasureRequestApi.d.ts b/dist/mail/erasureRequestApi.d.ts
+index c38b85847049e2752b268c1df403ece4fcdba482..f89e37522fc368bdf34e17e4d9969f52651ce7e9 100644
+--- a/dist/mail/erasureRequestApi.d.ts
++++ b/dist/mail/erasureRequestApi.d.ts
+@@ -1,3 +1,5 @@
++import { RequestListParams } from "../util/apiQuery.js";
++export type { RequestListParams };
+ export type DataSubjectErasureStatus = "pending" | "approved" | "denied" | "completed";
+ export interface DataSubjectErasureRequest {
+     uid: string;
+@@ -15,8 +17,9 @@ export interface DataSubjectErasureRequest {
+ }
+ /** Always the caller's own mailbox — 409s if a `pending` request for it already exists. */
+ export declare function createErasureRequest(): Promise<DataSubjectErasureRequest>;
+-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
+-export declare function listErasureRequests(): Promise<DataSubjectErasureRequest[]>;
++/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
++ * first; `params` pages through them (`limit` capped at 500 server-side). */
++export declare function listErasureRequests(params?: RequestListParams): Promise<DataSubjectErasureRequest[]>;
+ export declare function getErasureRequest(uid: string): Promise<DataSubjectErasureRequest>;
+ /** 409s if the mailbox is a custodian on an active legal hold, naming the blocking Matter uid(s) in the
+  * error message — surface this as-is, the same "server's own message wins" convention used everywhere
+diff --git a/dist/mail/erasureRequestApi.js b/dist/mail/erasureRequestApi.js
+index 5e9a475c3304514e5c5b89cad018e5080116051b..8c50344d8619e25b6bf82ef7dd4be80c62d8182b 100644
+--- a/dist/mail/erasureRequestApi.js
++++ b/dist/mail/erasureRequestApi.js
+@@ -13,13 +13,15 @@
+  * while the target mailbox is a custodian on an active legal hold.
+  */
+ import { apiFetch } from "../util/api.js";
++import { buildRequestListQuery } from "../util/apiQuery.js";
+ /** Always the caller's own mailbox — 409s if a `pending` request for it already exists. */
+ export function createErasureRequest() {
+     return apiFetch(`/mail/erasure-requests`, { method: "POST" });
+ }
+-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
+-export function listErasureRequests() {
+-    return apiFetch(`/mail/erasure-requests`);
++/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
++ * first; `params` pages through them (`limit` capped at 500 server-side). */
++export function listErasureRequests(params = {}) {
++    return apiFetch(`/mail/erasure-requests${buildRequestListQuery(params)}`);
+ }
+ export function getErasureRequest(uid) {
+     return apiFetch(`/mail/erasure-requests/${encodeURIComponent(uid)}`);
+diff --git a/dist/mail/flaggedMessages.js b/dist/mail/flaggedMessages.js
+index bea762b42aeba1188618323fb761bfdecc78d0b9..c275f35934b2bd6f41ad1e3c0256e3380abb073a 100644
+--- a/dist/mail/flaggedMessages.js
++++ b/dist/mail/flaggedMessages.js
+@@ -14,12 +14,26 @@ import { listFolders, listMessages } from "./mailApi.js";
+ /** Folder types that actually hold `Message` records — mirrors `MailShell.tsx`'s own `MAIL_FOLDER_TYPES`
+  * allowlist (kept as a separate local copy rather than a shared export, since the two call sites have no
+  * other coupling and this list is small/stable). */
+-const MAIL_FOLDER_TYPES = new Set(["inbox", "drafts", "outbox", "sent_items", "junk", "deleted_items", "user"]);
++const MAIL_FOLDER_TYPES = new Set(["inbox", "drafts", "outbox", "sent_items", "junk", "deleted_items", "archive", "user"]);
++/** The server's own per-request `limit` cap - a page shorter than this is the folder's last one. */
++const PAGE_SIZE = 500;
++/** Every message in one folder, paging through `listMessages()` until a short page - never silently
++ * truncated at a single page's cap the way one `limit: 500` call would be for a large folder. */
++async function listAllMessages(folderUid) {
++    const all = [];
++    for (let page = 0;; page += 1) {
++        const batch = await listMessages(folderUid, { limit: PAGE_SIZE, page });
++        all.push(...batch);
++        if (batch.length < PAGE_SIZE) {
++            return all;
++        }
++    }
++}
+ /** Lists every flagged message across all of a mailbox's mail folders (not just Inbox), newest first. */
+ export async function listFlaggedMessages(mailboxUid) {
+     const folders = await listFolders(mailboxUid);
+     const mailFolders = folders.filter((f) => MAIL_FOLDER_TYPES.has(f.type));
+-    const perFolder = await Promise.all(mailFolders.map((f) => listMessages(f.uid, { limit: 500 })));
++    const perFolder = await Promise.all(mailFolders.map((f) => listAllMessages(f.uid)));
+     return perFolder
+         .flat()
+         .filter((m) => m.flags.flagged)
+diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
+index 6210243d49fef06808114567464c199e117ca3af..30480729526eba1393f09bc07922cbe833c232a4 100644
+--- a/dist/mail/mailApi.d.ts
++++ b/dist/mail/mailApi.d.ts
+@@ -56,11 +56,16 @@ export interface Mailbox {
+      * real `Mailbox` (defaults `true`/`false` server-side respectively), same optional-for-old-fixtures
+      * caveat as `oofEnabled`. */
+     alwaysRequestReceiptInternal?: boolean;
++    /** Same as `alwaysRequestReceiptInternal`/`External`, for a recipient in a *different* organisation
++     * that has opted into federation with this one - a third tier between same-org and fully external. */
++    alwaysRequestReceiptFederated?: boolean;
+     alwaysRequestReceiptExternal?: boolean;
+     /** Whether this mailbox, as the *recipient* of a receipt request, sends one back immediately versus
+      * holding it for the owner's explicit approval (`approveReceipt()`/`declineReceipt()`) — classifies the
+      * requester, not the recipient. Always present (defaults `true`/`false` respectively), same caveat. */
+     autoSendReceiptsInternal?: boolean;
++    /** The federated-tier counterpart of `autoSendReceiptsInternal`/`External`. */
++    autoSendReceiptsFederated?: boolean;
+     autoSendReceiptsExternal?: boolean;
+     /** This mailbox's own encryption preference, per `specs/end-to-end_encryption.md` — a client
+      * defaults to encrypting only when *both* sender and recipient report `"mutual"`. Absent is
+@@ -129,6 +134,12 @@ export declare function autoProvisionMailbox(selection?: {
+     alias: string;
+     domain: string;
+ }): Promise<MailboxAutoProvisionResult>;
++/**
++ * A partial mailbox update. The fields typed `| null` are the ones `@rapidmx/restapi`'s `Mailbox` model
++ * copies whenever the key is *present* in the body (not only when it's non-`undefined`), so sending
++ * `null` clears them - `JSON.stringify()` drops an `undefined` value entirely, which would instead leave
++ * the old value in place.
++ */
+ export interface UpdateMailboxInput {
+     uid: string;
+     version: number;
+@@ -137,20 +148,25 @@ export interface UpdateMailboxInput {
+     quotaBytes?: number;
+     aliasAddresses?: string[];
+     isResource?: boolean;
+-    resourceType?: "room" | "equipment";
+-    resourceCapacity?: number;
++    resourceType?: "room" | "equipment" | null;
++    resourceCapacity?: number | null;
+     autoAcceptBookings?: boolean;
+     allowConflicts?: boolean;
+-    bookingWindowDays?: number;
+-    maxDurationMinutes?: number;
++    bookingWindowDays?: number | null;
++    maxDurationMinutes?: number | null;
+     oofEnabled?: boolean;
+     oofMessage?: string;
+-    oofStartTime?: string;
+-    oofEndTime?: string;
++    oofStartTime?: string | null;
++    oofEndTime?: string | null;
+     alwaysRequestReceiptInternal?: boolean;
++    alwaysRequestReceiptFederated?: boolean;
+     alwaysRequestReceiptExternal?: boolean;
+     autoSendReceiptsInternal?: boolean;
++    autoSendReceiptsFederated?: boolean;
+     autoSendReceiptsExternal?: boolean;
++    /** Trusted-caller-only server-side. `null` (or `""`) unassigns the mailbox's escrow scope; the
++     * referenced `EscrowScope` must exist otherwise. See `Mailbox.escrowScopeId`. */
++    escrowScopeId?: string | null;
+ }
+ export declare function updateMailbox(input: UpdateMailboxInput): Promise<Mailbox>;
+ export declare function deleteMailbox(uid: string, version: number): Promise<void>;
+@@ -210,7 +226,7 @@ export declare function getMailboxAcl(mailboxUid: string): Promise<AccessControl
+ export declare function grantMailboxAccess(mailboxUid: string, userOrRoleId: string, actions: string[]): Promise<AccessControlList>;
+ /** Revokes a delegate's access to a mailbox previously granted via `grantMailboxAccess`. */
+ export declare function revokeMailboxAccess(mailboxUid: string, userOrRoleId: string): Promise<AccessControlList>;
+-export type FolderType = "inbox" | "sent_items" | "drafts" | "deleted_items" | "outbox" | "junk" | "calendar" | "contacts" | "tasks" | "notes" | "user";
++export type FolderType = "inbox" | "sent_items" | "drafts" | "deleted_items" | "outbox" | "junk" | "archive" | "calendar" | "contacts" | "tasks" | "notes" | "user";
+ export interface Folder {
+     uid: string;
+     version: number;
+@@ -410,7 +426,8 @@ export interface Attachment {
+ }
+ /** Lists the attachments belonging to a single message. */
+ export declare function listAttachments(folderUid: string, messageUid: string): Promise<Attachment[]>;
+-/** The same-origin URL to download/display an attachment's binary content — not fetched via `apiFetch`, used directly as a link/image `href`/`src`. */
++/** The URL to download/display an attachment's binary content — not fetched via `apiFetch`, used directly as
++ * a link/image `href`/`src`. Honors `configureApiBaseUrl()` (see `apiUrl()`). */
+ export declare function attachmentContentUrl(uid: string): string;
+ /**
+  * Uploads a file's raw bytes as a new attachment on a not-yet-sent draft. Bypasses `apiFetch` — that helper
+diff --git a/dist/mail/mailApi.js b/dist/mail/mailApi.js
+index db8dc3e8586d76f658fe6bb90274ae5d3962ebeb..935fa84f789eb16cf7a28f72dbc90aa7b02d6f08 100644
+--- a/dist/mail/mailApi.js
++++ b/dist/mail/mailApi.js
+@@ -9,7 +9,7 @@
+  * everyone's, depending on who's asking. See `BaseMailboxRoute`'s doc comment in `@rapidmx/restapi` and this
+  * repo's `.claude/NOTES.md`.
+  */
+-import { ApiRequestError, apiFetch, authApiFetch } from "../util/api.js";
++import { ApiRequestError, apiFetch, apiUrl, authApiFetch } from "../util/api.js";
+ import { buildQuery } from "../util/apiQuery.js";
+ /** Lists mailboxes the caller can access (owned, shared with them, or — for a trusted caller — every one). */
+ export function listMailboxes(params = {}) {
+@@ -234,9 +234,10 @@ export function declineReceipt(uid, type) {
+ export function listAttachments(folderUid, messageUid) {
+     return apiFetch(`/mail/attachments?${buildQuery({ limit: 200 }, { folderUid, messageUid })}`);
+ }
+-/** The same-origin URL to download/display an attachment's binary content — not fetched via `apiFetch`, used directly as a link/image `href`/`src`. */
++/** The URL to download/display an attachment's binary content — not fetched via `apiFetch`, used directly as
++ * a link/image `href`/`src`. Honors `configureApiBaseUrl()` (see `apiUrl()`). */
+ export function attachmentContentUrl(uid) {
+-    return `/api/mail/attachments/${encodeURIComponent(uid)}/content`;
++    return apiUrl(`/mail/attachments/${encodeURIComponent(uid)}/content`);
+ }
+ /**
+  * Uploads a file's raw bytes as a new attachment on a not-yet-sent draft. Bypasses `apiFetch` — that helper
+@@ -245,8 +246,9 @@ export function attachmentContentUrl(uid) {
+  */
+ export async function uploadAttachment(messageUid, file) {
+     const params = new URLSearchParams({ messageUid, filename: file.name, mimeType: file.type || "application/octet-stream" });
+-    const res = await fetch(`/api/mail/attachments/upload?${params.toString()}`, {
++    const res = await fetch(apiUrl(`/mail/attachments/upload?${params.toString()}`), {
+         method: "POST",
++        credentials: "include",
+         headers: { "Content-Type": file.type || "application/octet-stream" },
+         body: file,
+     });
+@@ -307,7 +309,7 @@ export function sendMessage(messageUid) {
+  * that library's own `GET /:id/content` deliberately never serves (see that route's own doc comment).
+  */
+ export async function getMessageRawContent(messageUid) {
+-    const res = await fetch(`/api/mail/messages/${encodeURIComponent(messageUid)}/raw`);
++    const res = await fetch(apiUrl(`/mail/messages/${encodeURIComponent(messageUid)}/raw`), { credentials: "include" });
+     if (!res.ok) {
+         const contentType = res.headers.get("content-type") ?? "";
+         const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
+diff --git a/dist/mail/mailFilterRulesApi.d.ts b/dist/mail/mailFilterRulesApi.d.ts
+index 02c7774568770a24d120cfa2a515ce1828e37c84..d0617f4d7555f2d8b8a4b581d57b5db7109c4259 100644
+--- a/dist/mail/mailFilterRulesApi.d.ts
++++ b/dist/mail/mailFilterRulesApi.d.ts
+@@ -9,13 +9,15 @@
+ import { ListParams } from "../util/apiQuery.js";
+ import { MessageImportance } from "./mailApi.js";
+ export type { ListParams };
+-export type MailFilterActionType = "move_to_folder" | "copy_to_folder" | "delete" | "mark_as_read" | "forward";
++export type MailFilterActionType = "move_to_folder" | "copy_to_folder" | "delete" | "mark_as_read" | "forward" | "apply_label";
+ export interface MailFilterAction {
+     type: MailFilterActionType;
+     /** Required for `move_to_folder`/`copy_to_folder`. */
+     folderUid?: string;
+     /** Required for `forward`. */
+     forwardTo?: string;
++    /** The `Label.uid` to apply (`labelsApi.ts`). Required for `apply_label`. */
++    labelUid?: string;
+ }
+ export interface MailFilterConditions {
+     fromContains?: string[];
 diff --git a/dist/mail/mailboxAccessApi.d.ts b/dist/mail/mailboxAccessApi.d.ts
 index e0d05d30172c848527f600d7943cc7a00c8ccd73..6bf239f5b17e893ad5688e62a2cf72274bda75a9 100644
 --- a/dist/mail/mailboxAccessApi.d.ts
@@ -275,3 +3092,400 @@ index d08ecc009f4948281e4f0105d7e63c2e77e56a35..0f734f06ca695d7e20738b727b5d0597
  /** Revokes a delegate's access to a mailbox - never rejects for a `userOrRoleId` that wasn't a member. */
  export function removeMailboxAccess(mailboxUid, userOrRoleId) {
      return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, { method: "DELETE" });
+diff --git a/dist/mail/mailboxImportApi.d.ts b/dist/mail/mailboxImportApi.d.ts
+index a9805f1642a12c21f2430f86461c23ee19bd6d4e..c015f07cf129e3635fc1c4c545af85f8fd99d887 100644
+--- a/dist/mail/mailboxImportApi.d.ts
++++ b/dist/mail/mailboxImportApi.d.ts
+@@ -1,3 +1,5 @@
++import { RequestListParams } from "../util/apiQuery.js";
++export type { RequestListParams };
+ export type MailboxImportFormat = "mbox" | "pst";
+ export type MailboxImportStatus = "pending" | "processing" | "completed" | "failed";
+ export interface MailboxImportRequest {
+@@ -30,6 +32,7 @@ export interface UploadMailboxImportInput {
+  * shape `mailApi.ts`'s `uploadAttachment()` already establishes for a raw-bytes upload.
+  */
+ export declare function uploadMailboxImport(file: File, input: UploadMailboxImportInput): Promise<MailboxImportRequest>;
+-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
+-export declare function listImportRequests(): Promise<MailboxImportRequest[]>;
++/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
++ * first; `params` pages through them (`limit` capped at 500 server-side). */
++export declare function listImportRequests(params?: RequestListParams): Promise<MailboxImportRequest[]>;
+ export declare function getImportRequest(uid: string): Promise<MailboxImportRequest>;
+diff --git a/dist/mail/mailboxImportApi.js b/dist/mail/mailboxImportApi.js
+index 874a256eb31ad9f177616ac17bf8350a0548cd64..70f22201a14a87bc80886e0f9e07395b19fe7c31 100644
+--- a/dist/mail/mailboxImportApi.js
++++ b/dist/mail/mailboxImportApi.js
+@@ -9,7 +9,8 @@
+  * stages the upload and returns the `pending` request; poll `getImportRequest()`/`listImportRequests()`
+  * for `status` to become `"completed"` (with `importedCount`/`failedCount`) or `"failed"`.
+  */
+-import { ApiRequestError, apiFetch } from "../util/api.js";
++import { ApiRequestError, apiFetch, apiUrl } from "../util/api.js";
++import { buildRequestListQuery } from "../util/apiQuery.js";
+ /**
+  * Uploads `file`'s raw bytes as a new mailbox-import request. Bypasses `apiFetch` — that helper always
+  * forces `Content-Type: application/json`, which would corrupt binary content; this sends the file's own
+@@ -22,8 +23,9 @@ export async function uploadMailboxImport(file, input) {
+     if (input.mailboxUid) {
+         params.set("mailboxUid", input.mailboxUid);
+     }
+-    const res = await fetch(`/api/mail/mailbox-import-requests?${params.toString()}`, {
++    const res = await fetch(apiUrl(`/mail/mailbox-import-requests?${params.toString()}`), {
+         method: "POST",
++        credentials: "include",
+         headers: { "Content-Type": input.format === "pst" ? "application/vnd.ms-outlook" : "application/mbox" },
+         body: file,
+     });
+@@ -35,9 +37,10 @@ export async function uploadMailboxImport(file, input) {
+     }
+     return responseBody;
+ }
+-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
+-export function listImportRequests() {
+-    return apiFetch(`/mail/mailbox-import-requests`);
++/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
++ * first; `params` pages through them (`limit` capped at 500 server-side). */
++export function listImportRequests(params = {}) {
++    return apiFetch(`/mail/mailbox-import-requests${buildRequestListQuery(params)}`);
+ }
+ export function getImportRequest(uid) {
+     return apiFetch(`/mail/mailbox-import-requests/${encodeURIComponent(uid)}`);
+diff --git a/dist/search/queryGrammar.js b/dist/search/queryGrammar.js
+index 628642650cd59af2beb137db8dda2ba3195a7763..a71a8f5b68df2b7e00fd6dde6987d17bc6388802 100644
+--- a/dist/search/queryGrammar.js
++++ b/dist/search/queryGrammar.js
+@@ -45,12 +45,23 @@ function extractHasAttachment(input) {
+     }
+     return { found: true, rest: input.slice(0, match.index) + match[1] + input.slice(match.index + match[0].length) };
+ }
++/** Local midnight on `year`-`month`-`day`, or an Invalid Date when that calendar date doesn't exist
++ * (e.g. `2026-02-30`, which the `Date` constructor would otherwise silently roll over into March). */
++function localDate(year, month, day) {
++    const date = new Date(year, month - 1, day);
++    date.setFullYear(year);
++    return date.getMonth() === month - 1 && date.getDate() === day ? date : new Date(Number.NaN);
++}
+ function extractDate(input, key) {
+     const { value, rest } = extractFirst(input, key);
+     if (value === undefined) {
+         return { rest: input };
+     }
+-    const date = new Date(value);
++    // A date-only `yyyy-MM-dd` value means local midnight on that day (what a user typing `before:2026-01-02`
++    // means) — `new Date("2026-01-02")` alone would parse it as UTC midnight per the ECMAScript spec.
++    // Anything else (a full ISO date-time, with or without an offset) is left to `new Date()` as-is.
++    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
++    const date = dateOnly ? localDate(Number(dateOnly[1]), Number(dateOnly[2]), Number(dateOnly[3])) : new Date(value);
+     if (Number.isNaN(date.getTime())) {
+         // Unparseable — leave the whole token in the free-text remainder rather than silently dropping
+         // it, mirroring BaseSearchRoute's own parseDateParam() leniency (invalid date -> undefined).
+diff --git a/dist/search/searchApi.d.ts b/dist/search/searchApi.d.ts
+index c5146c2ac6150512598c56237fdac5cec431cd58..b0d7ed31bb79c3fe9595cc6f8d63351947bbc869 100644
+--- a/dist/search/searchApi.d.ts
++++ b/dist/search/searchApi.d.ts
+@@ -45,6 +45,9 @@ export interface SearchParams {
+     flags?: string[];
+     /** `label:` — one or more `Label.uid`s, matched as an AND (all must be present). */
+     labels?: string[];
++    /** Which of the caller's accessible mailboxes to search (e.g. the one currently open). Omitted, the
++     * server falls back to the caller's own mailbox; access to a supplied one is checked server-side. */
++    mailboxUid?: string;
+ }
+ /** Exported so `admin/matterSearchApi.ts` can build the identical query-param set against a different
+  * base path (`escrow/matter-search`, plus its own required `matterId`) — `BaseMatterSearchRoute` reuses
+@@ -69,6 +72,8 @@ export interface CandidateParams {
+     labels?: string[];
+     limit?: number;
+     cursor?: string;
++    /** Same as `SearchParams.mailboxUid`. */
++    mailboxUid?: string;
+ }
+ export interface CandidateResult {
+     entityType: SearchEntityType;
+diff --git a/dist/search/searchApi.js b/dist/search/searchApi.js
+index 8ca651f1418ad32942601e9d73b52300d90fa4c3..1ad3e8c00f1065772ef827feae89096dcbdcda8e 100644
+--- a/dist/search/searchApi.js
++++ b/dist/search/searchApi.js
+@@ -5,8 +5,9 @@
+ /**
+  * Client wrapper for `@rapidmx/restapi`'s `BaseSearchRoute` (mounted at `/mail/search` — see
+  * `src/mongo/routes/SearchRoute.ts`/`src/sql/routes/SearchRoute.ts`), the full-text search endpoint across
+- * a mailbox's messages/contacts/calendar events/notes/tasks. Always scoped server-side to the caller's own
+- * mailbox — there is no `mailboxUid` param to pass here.
++ * a mailbox's messages/contacts/calendar events/notes/tasks. Scoped server-side to the caller's own mailbox
++ * unless an optional `mailboxUid` (one the caller can access, e.g. the currently open shared mailbox) is
++ * passed.
+  *
+  * The structured filter params below mirror `specs/search.md` §14's operator grammar
+  * (`from:`/`to:`/`cc:`/`subject:`/`has:attachment`/`before:`/`after:`/`in:`/`is:`/`label:`), already parsed
+@@ -59,6 +60,9 @@ export function buildSearchParams(text, params) {
+     if (params.labels?.length) {
+         query.set("label", params.labels.join(","));
+     }
++    if (params.mailboxUid) {
++        query.set("mailboxUid", params.mailboxUid);
++    }
+     return query;
+ }
+ export function search(text, params = {}) {
+@@ -93,6 +97,9 @@ function buildCandidateParams(params) {
+     if (params.limit) {
+         query.set("limit", String(params.limit));
+     }
++    if (params.mailboxUid) {
++        query.set("mailboxUid", params.mailboxUid);
++    }
+     return query;
+ }
+ export function candidates(params = {}) {
+diff --git a/dist/search/searchTier3.d.ts b/dist/search/searchTier3.d.ts
+index a620cdc61051fa0ce773ebf75ac979d27f0934c8..5b7748243e1d6ae51568900b92ab8933a4cc6021 100644
+--- a/dist/search/searchTier3.d.ts
++++ b/dist/search/searchTier3.d.ts
+@@ -17,15 +17,29 @@
+ import type { UnlockedKeys } from "../crypto/keySession.js";
+ import type { ParsedSearchQuery } from "./queryGrammar.js";
+ import { SearchResult } from "./searchApi.js";
++/** How many candidates are fetched/decrypted at once - bounds the burst of raw-MIME requests and
++ * concurrent WebCrypto work a large candidate page would otherwise fire all at once. */
++export declare const TIER3_DECRYPT_CONCURRENCY = 4;
++export interface SearchEncryptedCandidatesOptions {
++    /** Forwarded to `candidates()` - which accessible mailbox to search (e.g. the one currently open).
++     * Omitted, the server uses the caller's own mailbox. */
++    mailboxUid?: string;
++}
+ /**
+  * Runs Tier 3 for one parsed query: fetches a bounded candidate set from the server, decrypts each
+- * candidate this device can open, and returns only the ones whose real (decrypted) content actually
+- * matches - each with a raw (not yet normalized) score the caller should run through
+- * `searchScoring.ts#normalizeServerScores()` alongside Tier 1's own scores before merging.
++ * candidate this device can open (at most `TIER3_DECRYPT_CONCURRENCY` at a time), and returns only the
++ * ones whose real (decrypted) content actually matches - each with a raw (not yet normalized) score the
++ * caller should run through `searchScoring.ts#normalizeServerScores()` alongside Tier 1's own scores
++ * before merging.
++ *
++ * Honors every operator `parseSearchQuery()` produces, not just free text: `subject:` must appear
++ * (case-insensitively) in the *decrypted* subject, and `has:attachment` is checked against the
++ * message's own `Message.hasAttachments` (fetched via `getMessage()` before decrypting, so a mismatch
++ * never pays for a decrypt). The candidates endpoint accepts neither filter, so both are applied here.
+  *
+  * Returns `[]` (never throws) when `unlocked` is absent - nothing can be decrypted without it, so
+  * there is nothing this tier can contribute - or when the query has no free text and no structured
+  * filter at all, mirroring `BaseSearchRoute`'s own "at least one of q or a filter" requirement rather
+  * than pulling a pointless full-mailbox candidate set.
+  */
+-export declare function searchEncryptedCandidates(parsed: ParsedSearchQuery, unlocked: UnlockedKeys | undefined, limit?: number): Promise<SearchResult[]>;
++export declare function searchEncryptedCandidates(parsed: ParsedSearchQuery, unlocked: UnlockedKeys | undefined, limit?: number, options?: SearchEncryptedCandidatesOptions): Promise<SearchResult[]>;
+diff --git a/dist/search/searchTier3.js b/dist/search/searchTier3.js
+index 6fef764d904128d7b711048d2cbcb3a327853c56..0858af70ab3324a4684fba3f29304141d33328c2 100644
+--- a/dist/search/searchTier3.js
++++ b/dist/search/searchTier3.js
+@@ -1,5 +1,5 @@
+ import { evaluateMessageSecurity } from "../crypto/messageSecurity.js";
+-import { getMessageRawContent } from "../mail/mailApi.js";
++import { getMessage, getMessageRawContent } from "../mail/mailApi.js";
+ import { SEARCH_FIELD_WEIGHTS } from "./searchScoring.js";
+ import { candidates } from "./searchApi.js";
+ /** Strips HTML down to plain text for content matching. Deliberately not `dompurify` (used elsewhere
+@@ -160,18 +160,46 @@ function hasAnyFilter(parsed) {
+         parsed.flags?.length ||
+         parsed.labels?.length);
+ }
++/** How many candidates are fetched/decrypted at once - bounds the burst of raw-MIME requests and
++ * concurrent WebCrypto work a large candidate page would otherwise fire all at once. */
++export const TIER3_DECRYPT_CONCURRENCY = 4;
++/** `Promise.allSettled()` over `items`, but never running more than `concurrency` `task`s at a time.
++ * Outcomes are returned in `items`' own order. */
++async function settleWithConcurrency(items, concurrency, task) {
++    const outcomes = new Array(items.length);
++    let next = 0;
++    async function worker() {
++        while (next < items.length) {
++            const index = next++;
++            try {
++                outcomes[index] = { status: "fulfilled", value: await task(items[index]) };
++            }
++            catch (reason) {
++                outcomes[index] = { status: "rejected", reason };
++            }
++        }
++    }
++    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
++    return outcomes;
++}
+ /**
+  * Runs Tier 3 for one parsed query: fetches a bounded candidate set from the server, decrypts each
+- * candidate this device can open, and returns only the ones whose real (decrypted) content actually
+- * matches - each with a raw (not yet normalized) score the caller should run through
+- * `searchScoring.ts#normalizeServerScores()` alongside Tier 1's own scores before merging.
++ * candidate this device can open (at most `TIER3_DECRYPT_CONCURRENCY` at a time), and returns only the
++ * ones whose real (decrypted) content actually matches - each with a raw (not yet normalized) score the
++ * caller should run through `searchScoring.ts#normalizeServerScores()` alongside Tier 1's own scores
++ * before merging.
++ *
++ * Honors every operator `parseSearchQuery()` produces, not just free text: `subject:` must appear
++ * (case-insensitively) in the *decrypted* subject, and `has:attachment` is checked against the
++ * message's own `Message.hasAttachments` (fetched via `getMessage()` before decrypting, so a mismatch
++ * never pays for a decrypt). The candidates endpoint accepts neither filter, so both are applied here.
+  *
+  * Returns `[]` (never throws) when `unlocked` is absent - nothing can be decrypted without it, so
+  * there is nothing this tier can contribute - or when the query has no free text and no structured
+  * filter at all, mirroring `BaseSearchRoute`'s own "at least one of q or a filter" requirement rather
+  * than pulling a pointless full-mailbox candidate set.
+  */
+-export async function searchEncryptedCandidates(parsed, unlocked, limit = 50) {
++export async function searchEncryptedCandidates(parsed, unlocked, limit = 50, options = {}) {
+     if (!unlocked || !hasAnyFilter(parsed)) {
+         return [];
+     }
+@@ -185,17 +213,23 @@ export async function searchEncryptedCandidates(parsed, unlocked, limit = 50) {
+         flags: parsed.flags,
+         labels: parsed.labels,
+         limit,
++        mailboxUid: options.mailboxUid,
+     });
+-    const settled = await Promise.allSettled(page.candidates
+-        .filter((candidate) => candidate.entityType === "message")
+-        .map(async (candidate) => {
++    const settled = await settleWithConcurrency(page.candidates.filter((candidate) => candidate.entityType === "message"), TIER3_DECRYPT_CONCURRENCY, async (candidate) => {
++        if (parsed.hasAttachment !== undefined) {
++            const message = await getMessage(candidate.entityUid);
++            if (Boolean(message.hasAttachments) !== parsed.hasAttachment) {
++                return undefined;
++            }
++        }
+         const rawMime = await getMessageRawContent(candidate.entityUid);
+         const security = await evaluateMessageSecurity(rawMime, unlocked);
+         return { entityUid: candidate.entityUid, security };
+-    }));
++    });
++    const subjectFilter = parsed.subject?.toLowerCase();
+     const results = [];
+     for (const outcome of settled) {
+-        if (outcome.status === "rejected") {
++        if (outcome.status === "rejected" || !outcome.value) {
+             continue;
+         }
+         const { entityUid, security } = outcome.value;
+@@ -206,7 +240,13 @@ export async function searchEncryptedCandidates(parsed, unlocked, limit = 50) {
+             continue;
+         }
+         const subjectText = security.subject ?? "";
+-        const bodyText = security.html ? stripHtml(security.html) : "";
++        // Prefer the raw plain text when the body was text/plain - `html` is then only an escaped
++        // `<pre>` rendering of it (always set alongside `text`, so the guard above needn't check
++        // `text` separately) - and fall back to stripping a real text/html body.
++        const bodyText = security.text ?? (security.html ? stripHtml(security.html) : "");
++        if (subjectFilter && !subjectText.toLowerCase().includes(subjectFilter)) {
++            continue;
++        }
+         const haystack = `${subjectText} ${bodyText}`;
+         if (!matchesFreeText(parsed.text, haystack)) {
+             continue;
+diff --git a/dist/util/api.d.ts b/dist/util/api.d.ts
+index c781c98f369f7ee6e6a158ef720332ed5aee2208..1324bc38389422032fbb1f14008cd4cb09b1d497 100644
+--- a/dist/util/api.d.ts
++++ b/dist/util/api.d.ts
+@@ -28,6 +28,16 @@ export declare class ApiRequestError extends Error {
+  * functional on its own.
+  */
+ export declare function configureApiBaseUrl(baseUrl: string): void;
++/**
++ * The full URL for an `@ApiRoute`-declared `path` (e.g. `/mail/attachments/a1/content`) - the `/api`
++ * prefix plus whatever origin `configureApiBaseUrl()` set (a same-origin relative `/api/...` path when
++ * it was never called). Every call site that can't go through `apiFetch()` - a raw-bytes upload, a
++ * non-JSON download, or a plain URL handed to an `<a href>`/`<img src>` - must build its URL here rather
++ * than hard-coding `/api...`, or it silently ignores a configured cross-origin base URL. A raw `fetch()`
++ * built on this should also pass `credentials: "include"` so a cross-origin call still carries the `jwt`
++ * cookie (harmless for a same-origin one).
++ */
++export declare function apiUrl(path: string): string;
+ /**
+  * `fetch()` against the RapidMX server's API - same-origin unless `configureApiBaseUrl()` has been
+  * called, in which case this also switches to `credentials: "include"` so the configured cross-origin
+diff --git a/dist/util/api.js b/dist/util/api.js
+index bf68d405d2ba322105ae398dfda8961a69b38977..055858d09133e6c0f8f742c2abed4f2325d99752 100644
+--- a/dist/util/api.js
++++ b/dist/util/api.js
+@@ -45,6 +45,18 @@ let apiBaseUrl = "";
+ export function configureApiBaseUrl(baseUrl) {
+     apiBaseUrl = baseUrl.replace(/\/$/, "");
+ }
++/**
++ * The full URL for an `@ApiRoute`-declared `path` (e.g. `/mail/attachments/a1/content`) - the `/api`
++ * prefix plus whatever origin `configureApiBaseUrl()` set (a same-origin relative `/api/...` path when
++ * it was never called). Every call site that can't go through `apiFetch()` - a raw-bytes upload, a
++ * non-JSON download, or a plain URL handed to an `<a href>`/`<img src>` - must build its URL here rather
++ * than hard-coding `/api...`, or it silently ignores a configured cross-origin base URL. A raw `fetch()`
++ * built on this should also pass `credentials: "include"` so a cross-origin call still carries the `jwt`
++ * cookie (harmless for a same-origin one).
++ */
++export function apiUrl(path) {
++    return `${apiBaseUrl}/api${path}`;
++}
+ /**
+  * `fetch()` against the RapidMX server's API - same-origin unless `configureApiBaseUrl()` has been
+  * called, in which case this also switches to `credentials: "include"` so the configured cross-origin
+@@ -57,7 +69,7 @@ export async function apiFetch(path, init = {}) {
+     const headers = new Headers(init.headers);
+     headers.set("Content-Type", "application/json");
+     const credentials = apiBaseUrl ? "include" : init.credentials;
+-    const res = await fetch(`${apiBaseUrl}/api${path}`, { ...init, headers, credentials });
++    const res = await fetch(apiUrl(path), { ...init, headers, credentials });
+     return decodeApiResponse(res);
+ }
+ /**
+diff --git a/dist/util/apiQuery.d.ts b/dist/util/apiQuery.d.ts
+index 4c3bcdf234994a18e81cdadb530abaef28885dd5..7b3d9227daf7226b1a7d5eadac19ee5970cb1764 100644
+--- a/dist/util/apiQuery.d.ts
++++ b/dist/util/apiQuery.d.ts
+@@ -13,3 +13,20 @@ export interface ListParams {
+  * or one of `@rapidmx/restapi`'s generic query-operator values like `startDate=lte(...)`).
+  */
+ export declare function buildQuery(params: ListParams, extra?: Record<string, string>): string;
++/**
++ * Optional paging/scope params for the async-request list endpoints (`listExportRequests()`,
++ * `listImportRequests()`, `listErasureRequests()`, `listMatterExportRequests()`,
++ * `listAccessRequests()`). Server contract: newest first, `limit` capped at 500, `page` zero-based,
++ * `matterId` honored only by the Matter-scoped (escrow) endpoints.
++ */
++export interface RequestListParams extends ListParams {
++    /** Restricts the list to one Matter - only meaningful for Matter-scoped request lists. */
++    matterId?: string;
++}
++/**
++ * Builds a `?limit=&page=&matterId=` suffix from only the params actually supplied - unlike
++ * `buildQuery()`, applies no default page size (these endpoints historically returned every request
++ * with no params at all, so a caller passing nothing keeps that exact request). Returns `""` when no
++ * param is set.
++ */
++export declare function buildRequestListQuery(params?: RequestListParams): string;
+diff --git a/dist/util/apiQuery.js b/dist/util/apiQuery.js
+index 157383224ed1c2988761c1de9a86bd730e72c4b8..e7a493a27344bab71387809a9cc405d78bc3c96c 100644
+--- a/dist/util/apiQuery.js
++++ b/dist/util/apiQuery.js
+@@ -20,3 +20,23 @@ export function buildQuery(params, extra = {}) {
+     }
+     return parts.join("&");
+ }
++/**
++ * Builds a `?limit=&page=&matterId=` suffix from only the params actually supplied - unlike
++ * `buildQuery()`, applies no default page size (these endpoints historically returned every request
++ * with no params at all, so a caller passing nothing keeps that exact request). Returns `""` when no
++ * param is set.
++ */
++export function buildRequestListQuery(params = {}) {
++    const query = new URLSearchParams();
++    if (params.limit !== undefined) {
++        query.set("limit", String(params.limit));
++    }
++    if (params.page !== undefined) {
++        query.set("page", String(params.page));
++    }
++    if (params.matterId) {
++        query.set("matterId", params.matterId);
++    }
++    const encoded = query.toString();
++    return encoded ? `?${encoded}` : "";
++}

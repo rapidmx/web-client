@@ -30,6 +30,9 @@ function ContactDetailContent({ uid }: { uid: string }) {
     const [contact, setContact] = useState<Contact | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    // Kept apart from the load `error` - a failed delete must leave the contact on screen (with the
+    // reason) rather than replacing the whole page with an error as if it had never loaded.
+    const [deleteError, setDeleteError] = useState<string | null>(null);
     const [mode, setMode] = useState<Mode>("view");
 
     useEffect(() => {
@@ -46,11 +49,12 @@ function ContactDetailContent({ uid }: { uid: string }) {
     // rendered once `contact` is already resolved (see the `error || !contact` guard above it), so this
     // never runs with a stale/absent contact — no redundant null check needed here.
     async function handleDelete(contact: Contact) {
+        setDeleteError(null);
         try {
             await deleteContact(contact.uid, contact.version);
             window.location.href = "/contacts";
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not delete this contact.");
+            setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this contact.");
         }
     }
 
@@ -82,6 +86,7 @@ function ContactDetailContent({ uid }: { uid: string }) {
 
     return (
         <div className="p-6">
+            {deleteError && <Alert>{deleteError}</Alert>}
             <ContactDetailPane contact={contact} onEdit={() => setMode("edit")} onDelete={() => handleDelete(contact)} backHref={backHref} />
         </div>
     );

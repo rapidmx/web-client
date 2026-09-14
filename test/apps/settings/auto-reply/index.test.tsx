@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -122,7 +122,7 @@ describe("SettingsAutoReplyPage", () => {
         );
     });
 
-    it("saves with oofStartTime/oofEndTime left undefined when both are left blank", async () => {
+    it("saves with oofStartTime/oofEndTime sent as null when both are left blank, clearing any saved window", async () => {
         const fetchMock = mockShell(mailbox(), (url, init) =>
             url === "/api/mail/mailboxes/mb1" && init?.method === "PUT" ? jsonResponse(200, mailbox({ oofEnabled: true })) : undefined,
         );
@@ -135,8 +135,37 @@ describe("SettingsAutoReplyPage", () => {
         await screen.findByText("Saved.");
         const call = fetchMock.mock.calls.find(([url, init]) => url === "/api/mail/mailboxes/mb1" && (init as RequestInit)?.method === "PUT");
         const body = JSON.parse((call![1] as RequestInit).body as string);
-        expect(body.oofStartTime).toBeUndefined();
-        expect(body.oofEndTime).toBeUndefined();
+        expect(body.oofStartTime).toBeNull();
+        expect(body.oofEndTime).toBeNull();
+    });
+
+    it("clears a previously saved window by sending null, and sends the version the previous save returned on the next save", async () => {
+        let saves = 0;
+        const fetchMock = mockShell(
+            mailbox({ oofEnabled: true, oofStartTime: "2026-06-01T09:00:00.000Z", oofEndTime: "2026-06-08T09:00:00.000Z" }),
+            (url, init) => {
+                if (url === "/api/mail/mailboxes/mb1" && init?.method === "PUT") {
+                    saves++;
+                    return jsonResponse(200, mailbox({ oofEnabled: true, version: saves }));
+                }
+                return undefined;
+            },
+        );
+        const user = userEvent.setup();
+        render(<SettingsAutoReplyPage userUid="u1" />);
+
+        fireEvent.change(await screen.findByLabelText("Automatic reply start"), { target: { value: "" } });
+        fireEvent.change(screen.getByLabelText("Automatic reply end"), { target: { value: "" } });
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await screen.findByText("Saved.");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(saves).toBe(2));
+
+        const bodies = fetchMock.mock.calls
+            .filter(([url, init]) => url === "/api/mail/mailboxes/mb1" && (init as RequestInit)?.method === "PUT")
+            .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(bodies[0]).toMatchObject({ version: 0, oofStartTime: null, oofEndTime: null });
+        expect(bodies[1]).toMatchObject({ version: 1 });
     });
 
     it("shows an API error message when saving fails", async () => {

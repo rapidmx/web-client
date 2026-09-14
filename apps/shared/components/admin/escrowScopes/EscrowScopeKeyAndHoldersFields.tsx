@@ -51,6 +51,20 @@ export function emptyEscrowScopeKeyAndHoldersValue(): EscrowScopeKeyAndHoldersVa
     };
 }
 
+/** The message shown when an administrator tries to make themselves a holder: whoever configures a scope must not
+ * also be able to approve access under it (separation of duties - the server refuses it too). Holders who were
+ * already on the scope (`existingHolderUserUids`) aren't treated as newly added. */
+export function selfAsHolderError(
+    holderUserUids: string[],
+    adminUid: string | undefined,
+    existingHolderUserUids: string[] = [],
+): string | null {
+    if (!adminUid || !holderUserUids.includes(adminUid) || existingHolderUserUids.includes(adminUid)) {
+        return null;
+    }
+    return "You can't add yourself as a holder of an escrow scope you configure. Ask another administrator to add you, or choose different holders.";
+}
+
 export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabled, keyReadOnly }: EscrowScopeKeyAndHoldersFieldsProps) {
     function set<K extends keyof EscrowScopeKeyAndHoldersValue>(key: K, next: EscrowScopeKeyAndHoldersValue[K]) {
         onChange({ ...value, [key]: next });

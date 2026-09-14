@@ -257,7 +257,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                             turn encryption on.
                         </p>
                     ) : (
-                        <EscrowSetupStep />
+                        <EscrowSetupStep adminUid={userUid} />
                     ))}
                 {step === "branding" && (
                     <LoadedSettingsForm load={getBranding} loadErrorMessage="Could not load branding.">

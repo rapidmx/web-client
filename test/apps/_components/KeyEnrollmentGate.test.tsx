@@ -89,6 +89,19 @@ describe("KeyEnrollmentGate", () => {
         expect(getKeyVault).not.toHaveBeenCalled();
     });
 
+    it("renders children instead of first-time setup for a mailbox the caller can't provision (not its owner)", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        render(
+            <KeyEnrollmentGate mailboxUid="mb-shared" mailboxAddress="team@example.com" canProvision={false}>
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        expect(await screen.findByText("Mail content")).toBeInTheDocument();
+        expect(screen.queryByText("Protect your mailbox")).not.toBeInTheDocument();
+        expect(enrollKey).not.toHaveBeenCalled();
+    });
+
     it("does not update state after unmounting before the key-vault check settles (avoids a set-state-after-unmount warning)", async () => {
         let resolveVault: ((vault: { wrappedKeys: unknown[]; masterKeyWraps: unknown[] }) => void) | undefined;
         getKeyVault.mockImplementation(

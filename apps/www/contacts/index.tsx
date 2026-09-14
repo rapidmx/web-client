@@ -24,6 +24,9 @@ import ContactDetailPane from "../../shared/components/contacts/ContactDetailPan
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { LIST_PAGE_SIZE, listAllPages } from "../../shared/mail/listAllPages.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -43,14 +46,20 @@ function primaryInfo(contact: Contact): string {
     return contact.emails[0]?.address ?? contact.phones[0]?.phoneNumber ?? "";
 }
 
+/** How long an export's object URL is kept alive after the click - some browsers are still reading the
+ * blob after `click()` returns, so revoking it synchronously can cancel the download. */
+const VCARD_DOWNLOAD_URL_LIFETIME_MS = 60_000;
+
 function downloadTextFile(filename: string, content: string): void {
     const blob = new Blob([content], { type: "text/vcard" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), VCARD_DOWNLOAD_URL_LIFETIME_MS);
 }
 
 function ContactsContent({ userUid }: { userUid?: string }) {
@@ -74,6 +83,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     const [mode, setMode] = useState<Mode>("view");
     // Set after a contact is created in a different mailbox than the one this list shows.
     const [savedElsewhere, setSavedElsewhere] = useState<{ mailboxUid: string; displayName: string } | null>(null);
+    const [confirmingBulkDelete, setConfirmingBulkDelete] = useState(false);
 
     /** Returns a promise so bulk actions (below) can wait for the refreshed list before re-asserting their
      * own error message — this always clears `error` first (a legitimate reset for a fresh fetch attempt),
@@ -87,7 +97,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         }
         setLoading(true);
         setError(null);
-        return listContacts(folderUid, { limit: 500 })
+        return listAllPages((page) => listContacts(folderUid, { limit: LIST_PAGE_SIZE, page }))
             .then(setContacts)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load contacts."))
             .finally(() => setLoading(false));
@@ -103,7 +113,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         }
         setDeletedLoading(true);
         setDeletedError(null);
-        listDeletedContacts(folderUid, { limit: 500 })
+        listAllPages((page) => listDeletedContacts(folderUid, { limit: LIST_PAGE_SIZE, page }))
             .then(setDeletedContacts)
             .catch((err) => setDeletedError(err instanceof ApiRequestError ? err.message : "Could not load deleted contacts."))
             .finally(() => setDeletedLoading(false));
@@ -225,6 +235,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     }
 
     async function handleBulkDelete() {
+        setConfirmingBulkDelete(false);
         let bulkError: string | null = null;
         for (const contact of checkedContacts) {
             try {
@@ -277,7 +288,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         for (const contact of checkedContacts) {
             const categories = Array.from(new Set([...(contact.categories ?? []), category.trim()]));
             try {
-                await updateContact({ ...contact, categories });
+                // Only the changed field - sending the whole fetched contact back includes server-managed
+                // fields restapi rejects, and would overwrite any concurrent edit to the other fields.
+                await updateContact({ uid: contact.uid, version: contact.version, categories });
             } catch (err) {
                 bulkError = err instanceof ApiRequestError ? err.message : "Could not update one or more contacts.";
             }
@@ -328,7 +341,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                     allSelectedFavorited={checkedContacts.length > 0 && checkedContacts.every((c) => c.favorite)}
                     onNewContact={handleNew}
                     onEdit={handleToolbarEdit}
-                    onDelete={handleBulkDelete}
+                    onDelete={() => setConfirmingBulkDelete(true)}
                     onEmail={handleEmail}
                     onToggleFavorite={handleToggleFavorite}
                     onAddCategory={handleAddCategory}
@@ -461,6 +474,20 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                     <p className="text-sm text-text-muted">Select a contact, or create a new one.</p>
                 )}
             </div>
+            <Modal open={confirmingBulkDelete} onClose={() => setConfirmingBulkDelete(false)} title="Delete contacts">
+                <p className="text-sm mb-5">
+                    Delete {checkedContacts.length} selected {checkedContacts.length === 1 ? "contact" : "contacts"}? They
+                    move to Deleted contacts.
+                </p>
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingBulkDelete(false)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger" onClick={handleBulkDelete}>
+                        Delete
+                    </Button>
+                </div>
+            </Modal>
         </div>
     );
 }

@@ -390,6 +390,9 @@ export default function MailShell({
             // First-time provisioning (a mailbox with no vault at all yet) still always blocks - see this
             // prop's own doc comment on KeyEnrollmentGateProps.
             blocking={false}
+            // A shared/delegated mailbox the caller doesn't own is never provisioned from here - its keys
+            // belong to its owner (or its admins), not to whoever happens to open it first.
+            canProvision={activeMailbox?.ownerUserUid === userUid}
         >
             <LocalIndexLifecycle
                 mailboxUid={activeMailboxUid}

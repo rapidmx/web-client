@@ -59,7 +59,7 @@ function renderGrid(props: Partial<React.ComponentProps<typeof TimeGridView>> = 
 describe("TimeGridView", () => {
     it("shows an all-day event in its day's column of the all-day strip, and selects it on click", async () => {
         const onSelectEvent = vi.fn();
-        const allDay = occurrence({ allDay: true, title: "Holiday" });
+        const allDay = occurrence({ allDay: true, title: "Holiday", startDate: "2026-06-10T00:00:00.000Z", endDate: "2026-06-11T00:00:00.000Z" });
         const user = userEvent.setup();
         renderGrid({ occurrences: [allDay], onSelectEvent });
 
@@ -133,5 +133,42 @@ describe("TimeGridView", () => {
     it("shows a resize handle on each timed event block", () => {
         renderGrid({ occurrences: [occurrence()] });
         expect(screen.getByLabelText('Resize "Standup"')).toBeInTheDocument();
+    });
+
+    it("draws a multi-day timed event in every day column it overlaps, clipped, with only the first day draggable", async () => {
+        const onSelectEvent = vi.fn();
+        const occ = occurrence({ title: "Offsite", startDate: "2026-06-10T20:00:00.000Z", endDate: "2026-06-11T02:00:00.000Z" });
+        const user = userEvent.setup();
+        renderGrid({ days: [DAY, new Date("2026-06-11T00:00:00.000Z")], occurrences: [occ], onSelectEvent });
+
+        const blocks = screen.getAllByText("Offsite").map((el) => el.closest("div[style]") as HTMLElement);
+        expect(blocks).toHaveLength(2);
+        expect(blocks[0].style.top).toBe("960px");
+        expect(blocks[0].style.height).toBe("192px");
+        expect(blocks[1].style.top).toBe("0px");
+        expect(blocks[1].style.height).toBe("96px");
+        expect(screen.getAllByLabelText('Resize "Offsite"')).toHaveLength(1);
+
+        await user.click(blocks[1]);
+        expect(onSelectEvent).toHaveBeenCalledWith(occ);
+    });
+
+    it("styles a 'free' continuation block with the muted style", () => {
+        renderGrid({
+            days: [new Date("2026-06-11T00:00:00.000Z")],
+            occurrences: [occurrence({ title: "Free Offsite", busyStatus: "free", startDate: "2026-06-10T20:00:00.000Z", endDate: "2026-06-11T02:00:00.000Z" })],
+        });
+        const block = screen.getByText("Free Offsite").closest("div[style]") as HTMLElement;
+        expect(block.className).toContain("bg-surface-alt");
+        expect(block.style.backgroundColor).toBe("");
+    });
+
+    it("shows a multi-day all-day event on each day it covers in the all-day strip", () => {
+        const week = [new Date("2026-06-10T00:00:00.000Z"), new Date("2026-06-11T00:00:00.000Z"), new Date("2026-06-12T00:00:00.000Z")];
+        renderGrid({
+            days: week,
+            occurrences: [occurrence({ allDay: true, title: "Conference", startDate: "2026-06-10T00:00:00.000Z", endDate: "2026-06-12T00:00:00.000Z" })],
+        });
+        expect(screen.getAllByRole("button", { name: "Conference" })).toHaveLength(2);
     });
 });

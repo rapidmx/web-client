@@ -21,7 +21,7 @@ describe("Layout", () => {
         expect(html).toContain("<body><p>page content</p></body>");
     });
 
-    it("renders the configured title, icon, and custom stylesheet when branding is supplied", () => {
+    it("renders the configured title and icon but never the custom stylesheet when branding is supplied", () => {
         const html = renderToStaticMarkup(
             <Layout
                 branding={{
@@ -38,8 +38,8 @@ describe("Layout", () => {
 
         expect(html).toContain("<title>Acme Mail: Escrow Console</title>");
         expect(html).toContain('href="https://cdn.example.com/icon.png"');
-        expect(html).toContain('id="branding-stylesheet"');
-        expect(html).toContain('href="https://cdn.example.com/theme.css"');
+        expect(html).not.toContain('id="branding-stylesheet"');
+        expect(html).not.toContain("theme.css");
     });
 
     it("falls back to the logo for the favicon and to companyName for the title when no icon/title is configured", () => {

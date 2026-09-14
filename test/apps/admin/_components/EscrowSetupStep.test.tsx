@@ -68,7 +68,7 @@ describe("EscrowSetupStep", () => {
     it("generates keys, requires the private key to be saved, then creates the scope with the generated public key", async () => {
         const fetchMock = mockEscrow();
         const user = userEvent.setup();
-        render(<EscrowSetupStep />);
+        render(<EscrowSetupStep adminUid="admin-1" />);
         await user.click(await screen.findByLabelText("Generate new escrow keys in this browser"));
 
         await user.clear(screen.getByLabelText("Escrow scope name"));
@@ -81,6 +81,7 @@ describe("EscrowSetupStep", () => {
         expect(generateEscrowKeyPair).toHaveBeenCalledWith({ name: "Legal escrow", validDays: 3650 });
 
         expect(await screen.findByText(/if it.s lost, no escrowed mail can ever be recovered/)).toBeInTheDocument();
+        expect(screen.getByText(/you must not also be one of its holders/)).toBeInTheDocument();
         expect(screen.getByLabelText("Escrow scope name")).toBeDisabled();
         expect(screen.queryByRole("button", { name: "Create escrow scope" })).not.toBeInTheDocument();
 
@@ -104,6 +105,11 @@ describe("EscrowSetupStep", () => {
 
         await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
         expect(await screen.findByText("At least one holder is required.")).toBeInTheDocument();
+
+        await addHolder(user, "admin-1");
+        await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
+        expect(await screen.findByText(/You can't add yourself as a holder/)).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Remove" }));
 
         await addHolder(user, "holder-1");
         await user.click(screen.getByRole("button", { name: "Create escrow scope" }));

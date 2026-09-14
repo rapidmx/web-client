@@ -74,6 +74,8 @@ describe("SettingsReadReceiptsPage", () => {
         expect(screen.getByLabelText("From external recipients")).not.toBeChecked();
         expect(screen.getByLabelText("From internal senders")).toBeChecked();
         expect(screen.getByLabelText("From external senders")).not.toBeChecked();
+        expect(screen.getByLabelText("From federated recipients (partner organizations)")).not.toBeChecked();
+        expect(screen.getByLabelText("From federated senders (partner organizations)")).not.toBeChecked();
     });
 
     it("saves every toggle", async () => {
@@ -91,6 +93,8 @@ describe("SettingsReadReceiptsPage", () => {
         await user.click(screen.getByLabelText("From external recipients"));
         await user.click(screen.getByLabelText("From internal senders"));
         await user.click(screen.getByLabelText("From external senders"));
+        await user.click(screen.getByLabelText("From federated recipients (partner organizations)"));
+        await user.click(screen.getByLabelText("From federated senders (partner organizations)"));
         await user.click(screen.getByRole("button", { name: "Save" }));
 
         expect(await screen.findByText("Saved.")).toBeInTheDocument();
@@ -101,7 +105,38 @@ describe("SettingsReadReceiptsPage", () => {
             alwaysRequestReceiptExternal: true,
             autoSendReceiptsInternal: false,
             autoSendReceiptsExternal: true,
+            alwaysRequestReceiptFederated: true,
+            autoSendReceiptsFederated: true,
+            version: 0,
         });
+    });
+
+    it("seeds the federated checkboxes from the mailbox, and sends the version the previous save returned on the next save", async () => {
+        let saves = 0;
+        const federatedMailbox = { ...mailbox, alwaysRequestReceiptFederated: true, autoSendReceiptsFederated: true };
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url === "/api/mail/mailboxes/mb1" && init?.method === "PUT") {
+                saves++;
+                return jsonResponse(200, { ...federatedMailbox, version: saves });
+            }
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [federatedMailbox]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<SettingsReadReceiptsPage userUid="u1" />);
+
+        expect(await screen.findByLabelText("From federated recipients (partner organizations)")).toBeChecked();
+        expect(screen.getByLabelText("From federated senders (partner organizations)")).toBeChecked();
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await screen.findByText("Saved.");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await vi.waitFor(() => expect(saves).toBe(2));
+
+        const versions = fetchMock.mock.calls
+            .filter(([url, init]: any) => url === "/api/mail/mailboxes/mb1" && init?.method === "PUT")
+            .map(([, init]: any) => JSON.parse(init.body).version);
+        expect(versions).toEqual([0, 1]);
     });
 
     it("shows an error message when saving fails", async () => {

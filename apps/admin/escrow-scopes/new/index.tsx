@@ -8,6 +8,7 @@ import { createEscrowScope } from "@rapidmx/react-shared/admin/escrowScopesApi.j
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
 import EscrowScopeKeyAndHoldersFields, {
     emptyEscrowScopeKeyAndHoldersValue,
+    selfAsHolderError,
 } from "../../../shared/components/admin/escrowScopes/EscrowScopeKeyAndHoldersFields.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -19,12 +20,12 @@ const INPUT_CLASS =
 export default function NewEscrowScopePage(props: Omit<AdminShellProps, "active">) {
     return (
         <AdminShell {...props} active="escrowScopes">
-            <NewEscrowScopeForm />
+            <NewEscrowScopeForm adminUid={props.userUid} />
         </AdminShell>
     );
 }
 
-function NewEscrowScopeForm() {
+function NewEscrowScopeForm({ adminUid }: { adminUid?: string }) {
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
     const [keyAndHolders, setKeyAndHolders] = useState(emptyEscrowScopeKeyAndHoldersValue());
@@ -49,6 +50,11 @@ function NewEscrowScopeForm() {
         }
         if (keyAndHolders.requiredHolders < 1 || keyAndHolders.requiredHolders > keyAndHolders.holderUserUids.length) {
             setError("Required holders must be between 1 and the number of holders.");
+            return;
+        }
+        const selfError = selfAsHolderError(keyAndHolders.holderUserUids, adminUid);
+        if (selfError) {
+            setError(selfError);
             return;
         }
 

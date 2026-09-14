@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
+import { format } from "date-fns";
 import { RecurrenceFrequency, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import { WEEKDAY_CODES, WEEKDAY_LABELS, describeRecurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
@@ -19,6 +20,14 @@ const FREQ_LABEL: Record<RecurrenceFrequency, { unit: string; unitPlural: string
 };
 
 type EndCondition = "never" | "count" | "until";
+
+/** The "Ends on" date is inclusive and picked as a local calendar date, so it's stored as the end of that
+ * local day — `new Date("YYYY-MM-DD")` would be UTC midnight, which is the previous day west of UTC and
+ * would drop that day's own occurrence. */
+function endOfLocalDay(dateKey: string): string {
+    const [y, m, d] = dateKey.split("-").map(Number);
+    return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+}
 
 function endConditionOf(rule: RecurrenceRule): EndCondition {
     if (rule.count) return "count";
@@ -61,8 +70,31 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
         } else if (condition === "count") {
             update({ count: 10, until: undefined });
         } else {
-            update({ until: new Date().toISOString(), count: undefined });
+            update({ until: endOfLocalDay(format(new Date(), "yyyy-MM-dd")), count: undefined });
         }
+    }
+
+    /** A positive whole number from a number input, or `null` while it's empty (a user clearing the field
+     * to type a new value) — the rule keeps its previous value then, rather than becoming 0/NaN. */
+    function parsePositive(raw: string): number | null {
+        if (raw.trim() === "") return null;
+        const n = Math.floor(Number(raw));
+        return n >= 1 ? n : 1;
+    }
+
+    function handleInterval(raw: string) {
+        const interval = parsePositive(raw);
+        if (interval !== null) update({ interval });
+    }
+
+    function handleCount(raw: string) {
+        const count = parsePositive(raw);
+        if (count !== null) update({ count });
+    }
+
+    function handleUntil(raw: string) {
+        // A cleared (or partially typed) date input reports "" — keep the previous end date.
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) update({ until: endOfLocalDay(raw) });
     }
 
     return (
@@ -81,7 +113,7 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
                             min={1}
                             className={`${INPUT_CLASS} w-16`}
                             value={value.interval}
-                            onChange={(e) => update({ interval: Number(e.target.value) })}
+                            onChange={(e) => handleInterval(e.target.value)}
                             aria-label="Recurrence interval"
                         />
                         <select
@@ -145,7 +177,7 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
                                 className={`${INPUT_CLASS} w-16`}
                                 value={value.count ?? 10}
                                 disabled={endConditionOf(value) !== "count"}
-                                onChange={(e) => update({ count: Number(e.target.value) })}
+                                onChange={(e) => handleCount(e.target.value)}
                                 aria-label="Number of occurrences"
                             />
                             occurrences
@@ -162,9 +194,9 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
                             <input
                                 type="date"
                                 className={INPUT_CLASS}
-                                value={value.until ? value.until.slice(0, 10) : ""}
+                                value={value.until ? format(new Date(value.until), "yyyy-MM-dd") : ""}
                                 disabled={endConditionOf(value) !== "until"}
-                                onChange={(e) => update({ until: new Date(e.target.value).toISOString() })}
+                                onChange={(e) => handleUntil(e.target.value)}
                                 aria-label="End date"
                             />
                         </label>

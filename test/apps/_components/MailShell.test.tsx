@@ -41,6 +41,9 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     getUnlockedKeys: vi.fn().mockReturnValue({ masterKey: new Uint8Array(32) }),
     unlockWithPassword: vi.fn(),
+    // AppShell's sign-out destroys unlocked keys; ComposeWindow re-renders on key lock.
+    destroyUnlockedKeys: vi.fn(),
+    subscribeKeySession: vi.fn(() => () => undefined),
 }));
 
 // The local search index's lifecycle has its own test file; here only the props MailShell hands it matter.
@@ -414,7 +417,7 @@ describe("MailShell", () => {
         await screen.findByText("content");
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
-        expect(location.href).toBe(AUTH_SERVER_URL);
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
     });
 
     it("signs out to '/' when authServerUrl is not configured", async () => {
@@ -426,7 +429,7 @@ describe("MailShell", () => {
         await screen.findByText("content");
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
-        expect(location.href).toBe("/");
+        await waitFor(() => expect(location.href).toBe("/"));
     });
 
     it("sorts folders not in the well-known order alphabetically by name, after well-known folders", async () => {

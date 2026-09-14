@@ -41,6 +41,7 @@ import KeyEnrollmentGate from "../../../shared/components/layout/KeyEnrollmentGa
 import { destroyLocalIndex } from "../../../shared/search/localIndexRpcClient.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -99,6 +100,7 @@ function EncryptionContent() {
     const [vault, setVault] = useState<KeyVault | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [removingMethod, setRemovingMethod] = useState<string | null>(null);
+    const [pendingRemoval, setPendingRemoval] = useState<MasterKeyWrap | null>(null);
     const [actionError, setActionError] = useState<string | null>(null);
 
     const [newPassword, setNewPassword] = useState("");
@@ -113,6 +115,13 @@ function EncryptionContent() {
     const [recoveryCodesReason, setRecoveryCodesReason] = useState<"regenerate" | "rotate">("regenerate");
     const [codesSaved, setCodesSaved] = useState(false);
     const [codesCopied, setCodesCopied] = useState(false);
+    // Shown on the "Save your new recovery codes" screen itself - a regeneration or rotation that only
+    // partly finished (e.g. some new codes saved but not all, or old codes that couldn't be removed) still
+    // lands there, since whatever codes did save must be shown now or never.
+    const [codesWarning, setCodesWarning] = useState<string | null>(null);
+    // Set when a rotation succeeded but this session couldn't re-unlock under the new master key - the
+    // stale keys are destroyed, and the "keys removed" screen explains why.
+    const [rotationRelockReason, setRotationRelockReason] = useState<string | null>(null);
 
     const [rotationPassword, setRotationPassword] = useState("");
     const [rotationConfirmPassword, setRotationConfirmPassword] = useState("");
@@ -241,7 +250,13 @@ function EncryptionContent() {
     const recoveryWraps = vault?.masterKeyWraps.filter((w) => w.method === "recovery") ?? [];
     const otherWraps = vault?.masterKeyWraps.filter((w) => w.method !== "password" && w.method !== "recovery") ?? [];
 
+    // The owner's own unlock methods are every non-escrow wrap - restapi refuses (409) to remove the last
+    // one, since that would leave the master key recoverable only through escrow (or not at all). Mirrored
+    // here so the button simply isn't offered rather than failing after a confirmation.
+    const ownUnlockWrapCount = vault?.masterKeyWraps.filter((w) => w.method !== "escrow").length ?? 0;
+
     async function handleRemove(wrap: MasterKeyWrap) {
+        setPendingRemoval(null);
         const key = `${wrap.method}:${wrap.methodId ?? ""}`;
         setRemovingMethod(key);
         setActionError(null);
@@ -282,26 +297,75 @@ function EncryptionContent() {
         }
     }
 
+    /**
+     * Adds the new recovery wraps *before* removing any old one, so a failure part-way through can never
+     * leave the mailbox with fewer working recovery codes than it started with. `buildRecoveryWraps()`
+     * labels its wraps `recovery-1..N` - the same labels the old set most likely has, and restapi's
+     * `removeMasterKeyWrap()` removes every wrap matching a `methodId` - so each new wrap gets a
+     * batch-unique label first, letting the old ones be removed by their own `methodId` without touching
+     * the new ones.
+     */
     async function handleRegenerateRecoveryCodes() {
+        // Only reachable once the vault has loaded (the button is disabled until then) - otherwise
+        // `recoveryWraps` would be empty and the old codes would silently survive a "regeneration".
         setActionError(null);
+        const oldRecoveryWraps = recoveryWraps;
         setRegenerating(true);
+        let built: { wraps: MasterKeyWrap[]; codes: string[] };
         try {
-            for (const wrap of recoveryWraps) {
-                await removeMasterKeyWrap(mailboxUid!, "recovery", wrap.methodId);
-            }
-            const { wraps, codes } = await buildRecoveryWraps(mailboxUid!, unlocked!.masterKey);
-            for (const wrap of wraps) {
-                await addMasterKeyWrap(mailboxUid!, wrap);
-            }
-            setRecoveryCodesReason("regenerate");
-            setNewRecoveryCodes(codes);
-            setCodesSaved(false);
-            await loadVault();
+            built = await buildRecoveryWraps(mailboxUid!, unlocked!.masterKey);
         } catch (err) {
             setActionError(err instanceof ApiRequestError ? err.message : "Could not regenerate recovery codes.");
-        } finally {
             setRegenerating(false);
+            return;
         }
+        const batch = Date.now().toString(36);
+        const savedCodes: string[] = [];
+        let addError: unknown = null;
+        for (let i = 0; i < built.wraps.length; i++) {
+            try {
+                await addMasterKeyWrap(mailboxUid!, { ...built.wraps[i], methodId: `recovery-${batch}-${i + 1}` });
+                savedCodes.push(built.codes[i]);
+            } catch (err) {
+                addError = err;
+                break;
+            }
+        }
+
+        if (savedCodes.length === 0) {
+            setActionError(addError instanceof ApiRequestError ? addError.message : "Could not regenerate recovery codes.");
+            setRegenerating(false);
+            await loadVault();
+            return;
+        }
+
+        let warning: string | null = null;
+        if (savedCodes.length < built.wraps.length) {
+            // Old codes are deliberately left in place - the new set is incomplete, so the old one is
+            // still the user's full recovery safety net.
+            warning = `Only ${savedCodes.length} of ${built.wraps.length} new recovery codes could be saved${
+                addError instanceof ApiRequestError ? ` (${addError.message})` : ""
+            }. Your old recovery codes were kept and still work - save the codes below, then try regenerating again.`;
+        } else {
+            let notRemoved = 0;
+            for (const wrap of oldRecoveryWraps) {
+                try {
+                    await removeMasterKeyWrap(mailboxUid!, "recovery", wrap.methodId);
+                } catch {
+                    notRemoved++;
+                }
+            }
+            if (notRemoved > 0) {
+                warning = `${notRemoved} of your old recovery codes could not be removed and still work. Remove them from the unlock methods list, or regenerate again.`;
+            }
+        }
+
+        setRecoveryCodesReason("regenerate");
+        setCodesWarning(warning);
+        setNewRecoveryCodes(savedCodes);
+        setCodesSaved(false);
+        setRegenerating(false);
+        await loadVault();
     }
 
     async function handleCopyCodes() {
@@ -336,16 +400,50 @@ function EncryptionContent() {
             setActionError("Passwords do not match.");
             return;
         }
+        // `rekey()` replaces the vault's wrapped private keys wholesale with whatever this session re-wraps -
+        // a key this session never decrypted (e.g. a signing key issued after this session unlocked) would
+        // be silently dropped from the vault, and its private key lost for good.
+        const uncoveredKeys = ["encrypt", "sign"].flatMap((useType) => {
+            const active = findActivePublicKey(displayedKeys, useType as "encrypt" | "sign");
+            const unlockedFingerprint = useType === "encrypt" ? unlocked!.encryptionFingerprint : unlocked!.signingFingerprint;
+            return active && active.fingerprint !== unlockedFingerprint ? [active] : [];
+        });
+        if (uncoveredKeys.length > 0) {
+            setActionError(
+                "This session hasn't unlocked every active key for this mailbox (e.g. a signing key issued after you unlocked), so rotating now would lose it. Reload the page, unlock again, then rotate.",
+            );
+            return;
+        }
         setActionError(null);
         setEscrowError(null);
         setRotating(true);
+        const keys = displayedKeys;
+        let mk: Uint8Array;
+        let codes: string[];
         try {
             // Only reachable once `unlocked` is defined - see `handleAddPassword`'s identical note.
-            const { mk, wrappedKeys } = await rewrapPrivateKeysUnderNewMasterKey(mailboxUid!, unlocked!);
+            const rewrapped = await rewrapPrivateKeysUnderNewMasterKey(mailboxUid!, unlocked!);
+            mk = rewrapped.mk;
             const passwordWrap = await buildPasswordWrap(mailboxUid!, mk, rotationPassword);
-            const { wraps: newRecoveryWraps, codes } = await buildRecoveryWraps(mailboxUid!, mk);
-            await rekey(mailboxUid!, { wrappedKeys, masterKeyWraps: [passwordWrap, ...newRecoveryWraps], keys: mailbox.keys ?? [] });
+            const recovery = await buildRecoveryWraps(mailboxUid!, mk);
+            codes = recovery.codes;
+            await rekey(mailboxUid!, { wrappedKeys: rewrapped.wrappedKeys, masterKeyWraps: [passwordWrap, ...recovery.wraps], keys });
+        } catch (err) {
+            setActionError(err instanceof ApiRequestError ? err.message : "Could not rotate your encryption keys.");
+            setRotating(false);
+            return;
+        }
 
+        // The rotation is committed - every old unlock method is already dead, so these codes must be on
+        // screen right now, before anything below that could fail or hang.
+        const newPassword = rotationPassword;
+        setRotationPassword("");
+        setRotationConfirmPassword("");
+        setRecoveryCodesReason("rotate");
+        setCodesWarning(null);
+        setNewRecoveryCodes(codes);
+        setCodesSaved(false);
+        try {
             // restapi's own rekey() can never accept a fresh escrow wrap (its validateMasterKeyWrap()
             // always passes allowEscrow: false there) - it preserves this mailbox's existing escrow wrap
             // verbatim instead, which now encrypts a master key nobody has any longer. Re-wrap it
@@ -371,16 +469,19 @@ function EncryptionContent() {
 
             // Refreshes this session's own cached keys against the new MK, via the password we just set -
             // the underlying private key material didn't change, but the stale MK in memory would silently
-            // build wrong future wraps (e.g. a second "Add a password") if left as-is.
-            await unlockWithPassword(mailboxUid!, mailbox.keys ?? [], rotationPassword);
-            setRotationPassword("");
-            setRotationConfirmPassword("");
-            setRecoveryCodesReason("rotate");
-            setNewRecoveryCodes(codes);
-            setCodesSaved(false);
+            // build wrong future wraps (e.g. a second "Add a password") if left as-is. If that fails, the
+            // stale keys are destroyed instead of kept around.
+            try {
+                await unlockWithPassword(mailboxUid!, keys, newPassword);
+            } catch {
+                destroyUnlockedKeys(mailboxUid);
+                void destroyLocalIndex(mailboxUid!);
+                setRotationRelockReason(
+                    "Your keys were rotated, but this session couldn't unlock them again with your new password. Reload the page and unlock with your new password.",
+                );
+                setDestroyed(true);
+            }
             await loadVault();
-        } catch (err) {
-            setActionError(err instanceof ApiRequestError ? err.message : "Could not rotate your encryption keys.");
         } finally {
             setRotating(false);
         }
@@ -397,28 +498,20 @@ function EncryptionContent() {
         setDestroyed(true);
     }
 
-    if (destroyed) {
-        return (
-            <div className="flex-1 min-w-0 overflow-y-auto p-6">
-                <div className="max-w-xl">
-                    <Alert>
-                        Your encryption keys have been removed from this session. Reload the page (or open Mail
-                        again) to unlock them when you need to read or send encrypted mail.
-                    </Alert>
-                </div>
-            </div>
-        );
-    }
-
+    // Checked before `destroyed` - a rotation whose re-unlock failed destroys this session's keys, but its
+    // new recovery codes still have to be seen (and acknowledged) first.
     if (newRecoveryCodes) {
         return (
             <div className="flex-1 min-w-0 overflow-y-auto p-6">
                 <div className="max-w-xl">
                     <h1 className="text-lg font-bold tracking-tight mb-1">Save your new recovery codes</h1>
+                    {codesWarning && <Alert>{codesWarning}</Alert>}
                     <p className="text-sm text-text-muted mb-4">
                         {recoveryCodesReason === "rotate"
                             ? "Your keys have been rotated - every previous unlock method (password, recovery codes, or anything else on file) has stopped working. "
-                            : "Your old recovery codes no longer work. "}
+                            : codesWarning
+                              ? ""
+                              : "Your old recovery codes no longer work. "}
                         If you lose your password, these new codes are the only way to recover your encrypted mail.
                         Each code can be used once. Store them somewhere safe — they will not be shown again.
                     </p>
@@ -439,6 +532,19 @@ function EncryptionContent() {
                     <Button type="button" disabled={!codesSaved} onClick={() => setNewRecoveryCodes(null)} className="!w-auto">
                         Done
                     </Button>
+                </div>
+            </div>
+        );
+    }
+
+    if (destroyed) {
+        return (
+            <div className="flex-1 min-w-0 overflow-y-auto p-6">
+                <div className="max-w-xl">
+                    <Alert>
+                        {rotationRelockReason ??
+                            "Your encryption keys have been removed from this session. Reload the page (or open Mail again) to unlock them when you need to read or send encrypted mail."}
+                    </Alert>
                 </div>
             </div>
         );
@@ -558,18 +664,21 @@ function EncryptionContent() {
                                 return (
                                     <li key={key} className="flex items-center justify-between gap-3 text-sm py-1.5 px-3 bg-surface-alt rounded-sm">
                                         <span>{METHOD_LABELS[wrap.method] ?? wrap.method}</span>
-                                        {wrap.method !== "escrow" && (
-                                            <Button
-                                                type="button"
-                                                variant="text"
-                                                className="!w-auto text-danger"
-                                                loading={removingMethod === key}
-                                                disabled={removingMethod !== null}
-                                                onClick={() => handleRemove(wrap)}
-                                            >
-                                                Remove
-                                            </Button>
-                                        )}
+                                        {wrap.method !== "escrow" &&
+                                            (ownUnlockWrapCount > 1 ? (
+                                                <Button
+                                                    type="button"
+                                                    variant="text"
+                                                    className="!w-auto text-danger"
+                                                    loading={removingMethod === key}
+                                                    disabled={removingMethod !== null}
+                                                    onClick={() => setPendingRemoval(wrap)}
+                                                >
+                                                    Remove
+                                                </Button>
+                                            ) : (
+                                                <span className="text-xs text-text-muted">Your only unlock method</span>
+                                            ))}
                                     </li>
                                 );
                             })}
@@ -577,6 +686,23 @@ function EncryptionContent() {
                     ) : (
                         <p className="text-sm text-text-muted">No unlock methods on file.</p>
                     )}
+                    <Modal open={pendingRemoval !== null} onClose={() => setPendingRemoval(null)} title="Remove unlock method">
+                        <p className="text-sm mb-5">
+                            Remove this unlock method? It will no longer unlock this mailbox&rsquo;s encrypted mail on any device.
+                        </p>
+                        <div className="flex gap-3 justify-end">
+                            <Button type="button" variant="secondary" className="!w-auto" onClick={() => setPendingRemoval(null)}>
+                                Cancel
+                            </Button>
+                            <Button
+                                type="button"
+                                className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger"
+                                onClick={() => handleRemove(pendingRemoval!)}
+                            >
+                                Remove method
+                            </Button>
+                        </div>
+                    </Modal>
                 </div>
 
                 <form onSubmit={handleAddPassword} className="flex flex-col gap-2">
@@ -618,7 +744,7 @@ function EncryptionContent() {
                         type="button"
                         variant="secondary"
                         loading={regenerating}
-                        disabled={regenerating}
+                        disabled={regenerating || !vault}
                         onClick={handleRegenerateRecoveryCodes}
                         className="!w-auto"
                     >

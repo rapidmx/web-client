@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { HiOutlineLockClosed } from "react-icons/hi2";
 import DOMPurify from "dompurify";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
@@ -23,8 +23,12 @@ import {
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import { buildForwardQuote, buildReplyQuote, forwardSubject, replySubject } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
-import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
-import { MessageSecurityResult, evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
+import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
+import {
+    MessageSecurityResult,
+    SignatureFailureReason,
+    evaluateMessageSecurity,
+} from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { useCompose } from "./compose/ComposeContext.js";
 import { useMailShell } from "./layout/MailShell.js";
@@ -50,6 +54,84 @@ const SECURITY_INDICATOR: Record<MessageSecurityResult["state"], { label: string
 function SecurityIndicator({ state }: { state: MessageSecurityResult["state"] }) {
     const { label, className } = SECURITY_INDICATOR[state];
     return <span className={`text-xs font-medium shrink-0 py-1 px-2.5 rounded-pill ${className}`}>{label}</span>;
+}
+
+/** User-facing explanation for each `signatureFailureReason` - shown alongside the "Signature failed"
+ * badge so an unverifiable (e.g. foreign/unparseable) signed message reads as "not verified, and here's
+ * why" rather than as a bare error. The body itself stays visible either way. */
+const SIGNATURE_FAILURE_MESSAGE: Record<SignatureFailureReason, string> = {
+    invalid_signature:
+        "This message's digital signature couldn't be verified - it may be malformed, use an unsupported format, or the content may have been altered after signing. Treat it as unverified.",
+    untrusted_signer: "This message was signed with a certificate that doesn't match the sender's known key. Treat it as unverified.",
+    signer_identity_mismatch:
+        "This message's signing certificate doesn't belong to the sender shown in From. Treat it as unverified.",
+    header_mismatch:
+        "The sender/recipients this message was signed with don't match its visible From/To. Treat it as unverified.",
+};
+const GENERIC_SIGNATURE_FAILURE_MESSAGE = "This message's digital signature couldn't be verified. Treat it as unverified.";
+
+/** Fallback when the raw MIME for an encrypted message can't even be fetched/evaluated - an encrypted
+ * message must never be mislabeled "Unprotected" just because loading failed. */
+const ENCRYPTED_LOAD_ERROR = "Couldn't load this message's encrypted content.";
+
+/** Content Security Policy prepended to every client-rendered (decrypted/verified) body's `srcDoc` - the
+ * backstop behind the sanitizer below: nothing in the document may load any remote resource at all, only
+ * inline styles and `data:`/`cid:` images. */
+const BODY_CSP_META =
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'\">";
+
+const EMBEDDED_URI = /^\s*(?:data|cid):/i;
+/** Attributes whose value makes the browser fetch a resource (as opposed to a user-clicked link). */
+const RESOURCE_URI_ATTRIBUTES = new Set(["src", "srcset", "background", "poster", "lowsrc", "dynsrc", "xlink:href", "action", "formaction"]);
+
+/** Decodes CSS escapes first (so an escaped `u\72l(` can't hide from the checks below), then drops every
+ * `@import` and neutralizes every `url()`/`image-set()` reference that isn't a `data:`/`cid:` URI. */
+export function stripRemoteCssUrls(css: string): string {
+    return css
+        .replace(/\\([0-9a-f]{1,6})\s?/gi, (_match, hex: string) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)))
+        .replace(/\\(.)/g, "$1")
+        .replace(/@import[^;]*;?/gi, "")
+        .replace(/(?:-webkit-)?image-set\((?:[^()]|\([^()]*\))*\)/gi, (match) =>
+            [...match.matchAll(/(["'])(.*?)\1/g)].every(([, , uri]) => EMBEDDED_URI.test(uri)) ? match : "none",
+        )
+        .replace(/url\(\s*(["']?)(.*?)\1\s*\)/gi, (match, _quote: string, uri: string) => (EMBEDDED_URI.test(uri) ? match : "none"));
+}
+
+let bodyPurifier: ReturnType<typeof DOMPurify> | undefined;
+
+/** A dedicated DOMPurify instance (hooks registered here never leak into any other DOMPurify caller)
+ * that additionally strips every remote resource reference - see `stripRemoteCssUrls()`. */
+function getBodyPurifier(): ReturnType<typeof DOMPurify> {
+    if (!bodyPurifier) {
+        bodyPurifier = DOMPurify(window);
+        bodyPurifier.addHook("uponSanitizeElement", (node, data) => {
+            if (data.tagName === "style") {
+                // An element's `textContent` is always a string (only documents/doctypes yield null).
+                node.textContent = stripRemoteCssUrls(node.textContent as string);
+            }
+        });
+        bodyPurifier.addHook("uponSanitizeAttribute", (node, data) => {
+            const name = data.attrName.toLowerCase();
+            if (name === "style") {
+                data.attrValue = stripRemoteCssUrls(data.attrValue);
+                return;
+            }
+            const isNavigationLink = name === "href" && ["a", "area"].includes(node.nodeName.toLowerCase());
+            if (RESOURCE_URI_ATTRIBUTES.has(name) || (name === "href" && !isNavigationLink)) {
+                const candidates = name === "srcset" ? data.attrValue.split(/,\s+/) : [data.attrValue];
+                if (!candidates.every((candidate) => EMBEDDED_URI.test(candidate))) {
+                    data.keepAttr = false;
+                }
+            }
+        });
+    }
+    return bodyPurifier;
+}
+
+/** Sanitizes a client-rendered body for `srcDoc`, with the CSP meta as its very first element. */
+export function buildSecureSrcDoc(html: string): string {
+    const sanitized = getBodyPurifier().sanitize(html, { FORBID_TAGS: ["link", "meta", "base"] });
+    return BODY_CSP_META + sanitized;
 }
 
 export interface MessageDetailPaneProps {
@@ -120,7 +202,25 @@ function formatBytes(bytes: number): string {
  * a message row), and `ConversationThreadPane` (one per expanded message in a thread) — see each call
  * site for how `message`/`attachments`/`isSentItems` are sourced.
  */
-export default function MessageDetailPane({
+export default function MessageDetailPane(props: MessageDetailPaneProps) {
+    if (!props.message) {
+        return <p className="p-8 text-sm text-text-muted">Select a message to read it.</p>;
+    }
+    // Keyed by uid so every piece of per-message state below (security result, open modals, in-flight
+    // flags, errors) resets cleanly when a caller swaps `message` in place rather than remounting.
+    return <MessageDetailContent key={props.message.uid} {...props} message={props.message} />;
+}
+
+/** Whether a message's raw MIME has to be fetched to evaluate its security state. `encrypted` is the
+ * server's own classification; there is no server-side "signed" flag, but every S/MIME-signed shape
+ * (detached `multipart/signed`'s `smime.p7s`, opaque-signed `smime.p7m`) is stored with its CMS part
+ * surfaced as an attachment - so a message with neither flag can't carry a signature to verify, and
+ * fetching its full raw source (attachments included) would be pure waste. */
+function needsRawSecurityEvaluation(message: Message): boolean {
+    return !!message.encrypted || message.hasAttachments;
+}
+
+function MessageDetailContent({
     message,
     attachments,
     backHref,
@@ -135,7 +235,7 @@ export default function MessageDetailPane({
     onArchived,
     labels,
     onLabelsChanged,
-}: MessageDetailPaneProps) {
+}: MessageDetailPaneProps & { message: Message }) {
     const { openCompose } = useCompose();
     const [confirming, setConfirming] = useState(false);
     const [recalling, setRecalling] = useState(false);
@@ -165,42 +265,73 @@ export default function MessageDetailPane({
     // state; see keySession.ts's own doc comment).
     const [unlockRefresh, setUnlockRefresh] = useState(0);
 
-    // Evaluates every message's security state, not just ones flagged `encrypted` - a detached
-    // `multipart/signed` message needs its raw MIME read too (a sanitized HTML body never carries the
-    // signature part) to tell "Signed & verified" apart from plain "Unprotected". A fetch/parse failure
-    // degrades to "Unprotected" rather than surfacing an error - the spec treats that as this module's
-    // safe default, not a distinct failure state of its own.
+    // The newest copy of this message known to the Labels popover - normally just the `message` prop,
+    // but a successful label toggle's server response is held here too, so a follow-up toggle always
+    // builds on the latest `labelUids`/`version` even before (or without) the caller patching its own
+    // state via `onLabelsChanged`. A prop copy at least as new (by `version`) always wins.
+    const [labelsMessage, setLabelsMessage] = useState<Message>(message);
+    const currentLabelsMessage = message.version >= labelsMessage.version ? message : labelsMessage;
+    const latestLabelsMessageRef = useRef<Message>(message);
+    const rawEvaluationNeeded = needsRawSecurityEvaluation(message);
+
+    // Evaluates a message's security state from its raw MIME - only for a message that can actually be
+    // encrypted or signed (see `needsRawSecurityEvaluation()`); anything else is "Unprotected" without a
+    // fetch. A detached `multipart/signed` message needs its raw MIME read (a sanitized HTML body never
+    // carries the signature part) to tell "Signed & verified" apart from plain "Unprotected". A
+    // fetch/parse failure degrades to "Unprotected" (or, for a server-flagged encrypted message, to
+    // "Encrypted" with an explanation) rather than hiding the message.
+    //
+    // `getMessageRawContent()` takes no `AbortSignal`, so a superseded fetch can't be aborted - its
+    // result is ignored via `cancelled` instead (and never handed to `evaluateMessageSecurity()`).
     useEffect(() => {
-        if (!message) {
-            setSecurity(null);
+        if (!rawEvaluationNeeded) {
+            setSecurity({ state: "unprotected" });
             return;
         }
         let cancelled = false;
         setSecurity(null);
         getMessageRawContent(message.uid)
-            .then((rawMime) => evaluateMessageSecurity(rawMime, getUnlockedKeys(message.mailboxUid)))
-            .then((result) => {
+            .then(async (rawMime) => {
+                if (cancelled) {
+                    return;
+                }
+                const result = await evaluateMessageSecurity(rawMime, getUnlockedKeys(message.mailboxUid));
                 if (!cancelled) {
                     setSecurity(result);
                 }
             })
             .catch(() => {
                 if (!cancelled) {
-                    setSecurity({ state: "unprotected" });
+                    setSecurity(
+                        message.encrypted ? { state: "encrypted", decryptError: ENCRYPTED_LOAD_ERROR } : { state: "unprotected" },
+                    );
                 }
             });
         return () => {
             cancelled = true;
         };
-    }, [message?.uid, unlockRefresh]);
+    }, [message.uid, message.mailboxUid, message.encrypted, rawEvaluationNeeded, unlockRefresh]);
+
+    // Decrypted plaintext must not outlive the key session that produced it: the moment this mailbox's
+    // keys are destroyed (logout, idle timeout, explicit lock), drop the recovered html/text and
+    // re-evaluate - an encrypted message then falls back to its "Unlock to view" state.
+    useEffect(
+        () =>
+            subscribeKeySession((event) => {
+                if (event.mailboxUid === message.mailboxUid && event.state === "locked") {
+                    setSecurity(null);
+                    setUnlockRefresh((n) => n + 1);
+                }
+            }),
+        [message.mailboxUid],
+    );
 
     // Offered only when this device genuinely has no unlocked session for this message's mailbox at all
     // (as opposed to being unlocked but still unable to decrypt - a wrong/since-rotated key, which
     // re-unlocking the same session can't fix) - see `evaluateMessageSecurity()`'s own doc comment on why
     // `decryptError` alone can't distinguish those two cases.
     async function handleUnlockToView() {
-        // Only reachable via the button below, which never renders while `message` is null.
-        const mailboxUid = message!.mailboxUid;
+        const mailboxUid = message.mailboxUid;
         const mailboxKeys = mailboxes.find((mb) => mb.uid === mailboxUid)?.keys ?? [];
         try {
             await requestUnlock(mailboxUid, mailboxKeys);
@@ -210,42 +341,38 @@ export default function MessageDetailPane({
         }
     }
 
-    if (!message) {
-        return <p className="p-8 text-sm text-text-muted">Select a message to read it.</p>;
-    }
-
     // Only ever invoked from the Reply/Reply All/Forward buttons below, which themselves only render
     // once `message` is loaded (the early return above covers the only other state) — the non-null
     // assertions reflect that real invariant, matching `handleRecall`'s identical pattern just below.
     function handleReply() {
         openCompose({
-            mailboxUid: message!.mailboxUid,
-            to: message!.from.address,
-            subject: replySubject(message!.subject),
-            quotedHtml: buildReplyQuote(message!),
+            mailboxUid: message.mailboxUid,
+            to: message.from.address,
+            subject: replySubject(message.subject),
+            quotedHtml: buildReplyQuote(message),
             signatureContext: "reply_forward",
-            suppressSigning: isLikelyMailingList({ listUnsubscribe: message!.listUnsubscribeHeader }),
+            suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
         });
     }
 
     function handleReplyAll() {
-        const cc = message!.recipients.filter((r) => r.type !== "bcc").map((r) => r.address);
+        const cc = message.recipients.filter((r) => r.type !== "bcc").map((r) => r.address);
         openCompose({
-            mailboxUid: message!.mailboxUid,
-            to: message!.from.address,
+            mailboxUid: message.mailboxUid,
+            to: message.from.address,
             cc: cc.join(", "),
-            subject: replySubject(message!.subject),
-            quotedHtml: buildReplyQuote(message!),
+            subject: replySubject(message.subject),
+            quotedHtml: buildReplyQuote(message),
             signatureContext: "reply_forward",
-            suppressSigning: isLikelyMailingList({ listUnsubscribe: message!.listUnsubscribeHeader }),
+            suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
         });
     }
 
     function handleForward() {
         openCompose({
-            mailboxUid: message!.mailboxUid,
-            subject: forwardSubject(message!.subject),
-            quotedHtml: buildForwardQuote(message!),
+            mailboxUid: message.mailboxUid,
+            subject: forwardSubject(message.subject),
+            quotedHtml: buildForwardQuote(message),
             signatureContext: "reply_forward",
         });
     }
@@ -258,7 +385,7 @@ export default function MessageDetailPane({
         setRecalling(true);
         setError(null);
         try {
-            const updated = await recallMessage(message!.uid);
+            const updated = await recallMessage(message.uid);
             setConfirming(false);
             onRecalled?.(updated);
         } catch (err) {
@@ -276,7 +403,7 @@ export default function MessageDetailPane({
         setCanceling(true);
         setCancelError(null);
         try {
-            const updated = await cancelScheduledSend(message!, draftsFolderUid!);
+            const updated = await cancelScheduledSend(message, draftsFolderUid!);
             // Keeps a `folder:`-scoped Tier 2 local search from still finding it in its old folder.
             void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
             onScheduledSendCanceled?.(updated);
@@ -294,7 +421,7 @@ export default function MessageDetailPane({
         setArchiving(true);
         setArchiveError(null);
         try {
-            const updated = await archiveMessage(message!.uid);
+            const updated = await archiveMessage(message.uid);
             void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
             onArchived?.(updated);
         } catch (err) {
@@ -308,13 +435,24 @@ export default function MessageDetailPane({
     // `message` is loaded — auto-saves on every toggle (no separate "Save" step), computing the full
     // new `labelUids` set from the message's current one since `setMessageLabels()` replaces the whole
     // list rather than patching a single entry.
+    //
+    // Toggles are serialized (every checkbox is disabled while one is in flight - React flushes a
+    // discrete input event's state update synchronously, so a second change can't slip in first), and
+    // each one reads the latest known copy (`latestLabelsMessageRef`, never a stale render closure) - so
+    // two quick toggles can never compute their full list, or send their optimistic-lock `version`, from
+    // the same stale snapshot.
     async function handleToggleLabel(labelUid: string) {
         setTogglingLabelUid(labelUid);
         setLabelsError(null);
         try {
-            const current = message!.labelUids ?? [];
+            // Read through the ref (not this render's closure) so a toggle fired from a not-yet-re-rendered
+            // handler still sees the previous toggle's server response.
+            const base = message.version >= latestLabelsMessageRef.current.version ? message : latestLabelsMessageRef.current;
+            const current = base.labelUids ?? [];
             const next = current.includes(labelUid) ? current.filter((uid) => uid !== labelUid) : [...current, labelUid];
-            const updated = await setMessageLabels(message!, next);
+            const updated = await setMessageLabels(base, next);
+            latestLabelsMessageRef.current = updated;
+            setLabelsMessage(updated);
             onLabelsChanged?.(updated);
         } catch (err) {
             setLabelsError(err instanceof ApiRequestError ? err.message : "Could not update this message's labels.");
@@ -330,7 +468,7 @@ export default function MessageDetailPane({
         setClassifying(true);
         setClassifyError(null);
         try {
-            const updated = await classifyMessage(message!.uid, classifyAs, alwaysForSender);
+            const updated = await classifyMessage(message.uid, classifyAs, alwaysForSender);
             onClassified?.(updated);
         } catch (err) {
             setClassifyError(err instanceof ApiRequestError ? err.message : "Could not reclassify this message.");
@@ -345,7 +483,7 @@ export default function MessageDetailPane({
         setReceiptBusy(type);
         setReceiptError(null);
         try {
-            const updated = await (action === "approve" ? approveReceipt : declineReceipt)(message!.uid, type);
+            const updated = await (action === "approve" ? approveReceipt : declineReceipt)(message.uid, type);
             onReceiptHandled?.(updated);
         } catch (err) {
             setReceiptError(err instanceof ApiRequestError ? err.message : "Could not handle this receipt request.");
@@ -414,6 +552,15 @@ export default function MessageDetailPane({
                         </Alert>
                     </div>
                 )}
+                {security?.state === "signature_failed" && (
+                    // Deliberately an informational notice, not an error `Alert`: an unverifiable signature
+                    // means "don't trust the signer", not "this message is broken" - the body stays readable.
+                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        {security.signatureFailureReason
+                            ? SIGNATURE_FAILURE_MESSAGE[security.signatureFailureReason]
+                            : GENERIC_SIGNATURE_FAILURE_MESSAGE}
+                    </p>
+                )}
                 <p className="text-sm text-text-muted mt-1">
                     From {message.from.displayName || message.from.address} &middot;{" "}
                     {new Date(message.receivedDate).toLocaleString()}
@@ -454,9 +601,9 @@ export default function MessageDetailPane({
                         <Alert>{archiveError}</Alert>
                     </div>
                 )}
-                {labels && (message.labelUids?.length ?? 0) > 0 && (
+                {labels && (currentLabelsMessage.labelUids?.length ?? 0) > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                        {message
+                        {currentLabelsMessage
                             .labelUids!.map((uid) => labels.find((l) => l.uid === uid))
                             .filter((l): l is Label => !!l)
                             .map((l) => (
@@ -552,7 +699,7 @@ export default function MessageDetailPane({
             {security?.decryptError && (
                 <div className="px-4 pt-2">
                     <Alert>{security.decryptError}</Alert>
-                    {message && !getUnlockedKeys(message.mailboxUid) && (
+                    {!getUnlockedKeys(message.mailboxUid) && (
                         <button
                             type="button"
                             onClick={handleUnlockToView}
@@ -564,14 +711,23 @@ export default function MessageDetailPane({
                     )}
                 </div>
             )}
-            {security?.html !== undefined ? (
+            {security?.text !== undefined ? (
+                // A recovered text/plain body renders as text (React escapes it) - never as markup.
+                <pre
+                    aria-label={message.subject || "Message content"}
+                    className="flex-1 w-full overflow-auto p-4 m-0 text-sm font-sans whitespace-pre-wrap break-words"
+                >
+                    {security.text}
+                </pre>
+            ) : security?.html !== undefined ? (
                 // A decrypted/verified body never came through the server's own sanitize-html pass (it
-                // couldn't - the server never saw the plaintext) - DOMPurify sanitizes it here, client-side,
-                // before it ever touches the DOM, on top of (not instead of) the iframe's own `sandbox=""`.
+                // couldn't - the server never saw the plaintext) - it's sanitized here, client-side, before
+                // it ever touches the DOM (remote images/stylesheets/`url()`s stripped too, so opening it
+                // can't ping a tracker), behind a no-remote-loads CSP, on top of the iframe's `sandbox=""`.
                 <iframe
                     key={message.uid}
                     title={message.subject || "Message content"}
-                    srcDoc={DOMPurify.sanitize(security.html)}
+                    srcDoc={buildSecureSrcDoc(security.html)}
                     sandbox=""
                     className="flex-1 w-full border-0"
                 />
@@ -611,14 +767,14 @@ export default function MessageDetailPane({
                 {labelsError && <Alert>{labelsError}</Alert>}
                 <ul className="flex flex-col gap-1">
                     {(labels ?? []).map((l) => {
-                        const checked = message.labelUids?.includes(l.uid) ?? false;
+                        const checked = currentLabelsMessage.labelUids?.includes(l.uid) ?? false;
                         return (
                             <li key={l.uid}>
                                 <label className="flex items-center gap-2 py-1.5 px-1 text-sm rounded-sm hover:bg-surface-alt">
                                     <input
                                         type="checkbox"
                                         checked={checked}
-                                        disabled={togglingLabelUid === l.uid}
+                                        disabled={togglingLabelUid !== null}
                                         onChange={() => handleToggleLabel(l.uid)}
                                     />
                                     <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: l.color ?? "#6366f1" }} />

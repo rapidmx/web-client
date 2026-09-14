@@ -145,6 +145,31 @@ describe("BrandingPage", () => {
         expect(screen.queryByRole("button", { name: "Remove logo" })).not.toBeInTheDocument();
     });
 
+    it("rejects SVG logo and icon uploads client-side, by type or by extension", async () => {
+        const uploads: string[] = [];
+        mockAdminFetch((url, init) => {
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (init.method === "POST") uploads.push(url);
+            return jsonResponse(200, BRANDING);
+        });
+        render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByLabelText("Company name");
+
+        expect(screen.getByLabelText("Upload logo").getAttribute("accept")).not.toContain("svg");
+        fireEvent.change(screen.getByLabelText("Upload logo"), {
+            target: { files: [new File(["<svg/>"], "logo.svg", { type: "image/svg+xml" })] },
+        });
+        expect(await screen.findByText('"logo.svg" is an SVG — upload a PNG, JPEG, GIF, or WebP logo instead.')).toBeInTheDocument();
+
+        fireEvent.change(screen.getByLabelText("Upload icon"), {
+            target: { files: [new File(["<svg/>"], "ICON.SVG", { type: "" })] },
+        });
+        expect(
+            await screen.findByText('"ICON.SVG" is an SVG — upload a PNG, JPEG, GIF, WebP, or ICO icon instead.'),
+        ).toBeInTheDocument();
+        expect(uploads).toEqual([]);
+    });
+
     it("rejects an oversized stylesheet file client-side without ever calling the upload endpoint", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url) => {

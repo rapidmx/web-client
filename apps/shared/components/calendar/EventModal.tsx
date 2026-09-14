@@ -13,6 +13,7 @@ import {
     CalendarEventInput,
     RecurrenceRule,
     createCalendarEvent,
+    getCalendarEvent,
     respondToEvent,
     updateCalendarEvent,
 } from "@rapidmx/react-shared/calendar/calendarApi.js";
@@ -25,6 +26,7 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
+import { addDaysToKey, allDayDateKey, allDayInstant, localDateKey } from "./allDay.js";
 import ResourcePicker from "./ResourcePicker.js";
 
 const INPUT_CLASS =
@@ -70,6 +72,49 @@ export interface EventModalProps {
 
 type EditScope = "occurrence" | "series";
 
+/** `CalendarEventInput` fields as sent on save. `null` explicitly clears a field on an update - an
+ * omitted (`undefined`) field is dropped by `JSON.stringify` and would leave the stored value in place. */
+type EventFields = { [K in keyof CalendarEventInput]?: CalendarEventInput[K] | null };
+
+const MS_PER_DAY = 86_400_000;
+
+/** Milliseconds since local midnight. */
+function timeOfDayMs(date: Date): number {
+    return date.getTime() - new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/**
+ * Rewrites an edited occurrence's `startDate`/`endDate` for a save to the entire series. The modal only
+ * ever shows (and edits) *this occurrence's* dates, but the series is stored as its master record starting
+ * at the first occurrence - sending the occurrence's dates as-is would move the whole series' start to
+ * this occurrence. So only the change in time-of-day (and the new duration) is applied to the master's own
+ * start; the series keeps its original first date. Unchanged times aren't sent at all.
+ */
+async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventFields): Promise<EventFields> {
+    const { startDate, endDate, ...rest } = fields;
+    if (startDate === occurrence.startDate && endDate === occurrence.endDate) {
+        return rest;
+    }
+    const master = await getCalendarEvent(occurrence.uid);
+    const newStart = new Date(startDate as string);
+    const durationMs = new Date(endDate as string).getTime() - newStart.getTime();
+    let masterStart: number;
+    if (fields.allDay) {
+        masterStart = new Date(allDayInstant(master.allDay ? allDayDateKey(master.startDate) : localDateKey(new Date(master.startDate)))).getTime();
+    } else if (master.allDay) {
+        // All-day -> timed: the master's own date at the newly chosen local time.
+        const [y, m, d] = allDayDateKey(master.startDate).split("-").map(Number);
+        masterStart = new Date(y, m - 1, d).getTime() + timeOfDayMs(newStart);
+    } else {
+        masterStart = new Date(master.startDate).getTime() + (timeOfDayMs(newStart) - timeOfDayMs(new Date(occurrence.startDate)));
+    }
+    return {
+        ...rest,
+        startDate: new Date(masterStart).toISOString(),
+        endDate: new Date(masterStart + durationMs).toISOString(),
+    };
+}
+
 /**
  * Create/view/edit/delete for a single calendar event. Editing or deleting a recurring event's
  * occurrence offers a choice between "this event" and "the entire series" (see
@@ -95,6 +140,13 @@ export default function EventModal({
     // Create mode follows the chosen mailbox; editing an existing event always keeps the passed-in values.
     const calendarChoices = !occurrence && targetMailboxOption ? targetMailboxOption.calendars : calendars;
     const effectiveOrganizerAddress = !occurrence && targetMailboxOption ? targetMailboxOption.mailbox.primarySmtpAddress : organizerAddress;
+    // An existing event organized by someone else is the viewing mailbox's copy of an invitation: only the
+    // organizer can change it (their next update would overwrite local edits anyway), so it's read-only
+    // apart from the RSVP controls.
+    const isInvited =
+        !!occurrence &&
+        occurrence.organizer.address.toLowerCase() !== organizerAddress.toLowerCase() &&
+        !occurrence.attendees.some((a) => a.isOrganizer && a.address.toLowerCase() === organizerAddress.toLowerCase());
 
     function handleMailboxChange(nextMailboxUid: string) {
         setTargetMailboxUid(nextMailboxUid);
@@ -105,10 +157,21 @@ export default function EventModal({
     }
     const [title, setTitle] = useState(occurrence?.title ?? "");
     const [location, setLocation] = useState(occurrence?.location ?? "");
-    const [start, setStart] = useState(toDatetimeLocal(occurrence?.startDate ?? initialStart?.toISOString() ?? new Date().toISOString()));
-    const [end, setEnd] = useState(
-        toDatetimeLocal(occurrence?.endDate ?? initialEnd?.toISOString() ?? new Date(Date.now() + 30 * 60_000).toISOString()),
+    // An all-day event is stored date-only with an exclusive end (see `allDay.ts`); the form shows its
+    // inclusive last day instead.
+    const [start, setStart] = useState(() =>
+        occurrence?.allDay
+            ? `${allDayDateKey(occurrence.startDate)}T00:00`
+            : toDatetimeLocal(occurrence?.startDate ?? initialStart?.toISOString() ?? new Date().toISOString()),
     );
+    const [end, setEnd] = useState(() => {
+        if (occurrence?.allDay) {
+            const startKey = allDayDateKey(occurrence.startDate);
+            const lastDayKey = addDaysToKey(allDayDateKey(occurrence.endDate), -1);
+            return `${lastDayKey < startKey ? startKey : lastDayKey}T00:00`;
+        }
+        return toDatetimeLocal(occurrence?.endDate ?? initialEnd?.toISOString() ?? new Date(Date.now() + 30 * 60_000).toISOString());
+    });
     const [allDay, setAllDay] = useState(occurrence?.allDay ?? false);
     const [timezone] = useState(occurrence?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
     const [attendees, setAttendees] = useState<Attendee[]>(occurrence?.attendees ?? []);
@@ -133,6 +196,8 @@ export default function EventModal({
     // single event document, so this deliberately does not consult `editScope`.
     const myAttendeeIndex = occurrence ? attendees.findIndex((a) => a.address.toLowerCase() === organizerAddress.toLowerCase()) : -1;
     const canRespond = myAttendeeIndex !== -1 && !attendees[myAttendeeIndex].isOrganizer;
+    // "This event only" detaches a standalone, non-repeating copy - the series' rule doesn't apply to it.
+    const editingSingleOccurrence = !!occurrence?.isRecurringOccurrence && editScope === "occurrence";
 
     function updateAttendee(index: number, patch: Partial<Attendee>) {
         setAttendees((prev) => prev.map((a, i) => (i === index ? { ...a, ...patch } : a)));
@@ -156,37 +221,61 @@ export default function EventModal({
             setError("A title is required.");
             return;
         }
-        if (new Date(end) <= new Date(start)) {
-            setError("The end time must be after the start time.");
-            return;
+        let startDate: string;
+        let endDate: string;
+        if (allDay) {
+            const startKey = start.slice(0, 10);
+            const lastDayKey = end.slice(0, 10);
+            if (lastDayKey < startKey) {
+                setError("The end date can't be before the start date.");
+                return;
+            }
+            startDate = allDayInstant(startKey);
+            endDate = allDayInstant(addDaysToKey(lastDayKey, 1));
+        } else {
+            if (new Date(end) <= new Date(start)) {
+                setError("The end time must be after the start time.");
+                return;
+            }
+            startDate = new Date(start).toISOString();
+            endDate = new Date(end).toISOString();
         }
 
-        const fields: Partial<CalendarEventInput> = {
+        // Only a stored event is updated in place, where a cleared field must be sent as `null`; creating
+        // (a new event, or the detached copy of one occurrence) just omits it.
+        const updatingInPlace = !!occurrence && !editingSingleOccurrence;
+        const cleared = updatingInPlace ? null : undefined;
+        const fields: EventFields = {
             title: title.trim(),
-            location: location.trim() || undefined,
-            startDate: new Date(start).toISOString(),
-            endDate: new Date(end).toISOString(),
+            location: location.trim() || cleared,
+            startDate,
+            endDate,
             allDay,
             timezone,
-            organizer: { address: effectiveOrganizerAddress, type: "to" },
             attendees,
-            recurrenceRule: recurrenceRule ?? undefined,
-            reminderMinutesBeforeStart: reminderMinutes.trim() ? Number(reminderMinutes) : undefined,
+            recurrenceRule: editingSingleOccurrence ? undefined : (recurrenceRule ?? cleared),
+            reminderMinutesBeforeStart: reminderMinutes.trim() ? Number(reminderMinutes) : cleared,
             busyStatus,
             autoReplyEnabled,
-            autoReplyMessage: autoReplyEnabled ? autoReplyMessage : undefined,
+            autoReplyMessage: autoReplyEnabled ? autoReplyMessage : cleared,
         };
 
         setSaving(true);
         try {
             if (!occurrence) {
-                await createCalendarEvent({ mailboxUid: targetMailboxUid, folderUid: targetFolderUid, ...fields } as CalendarEventInput);
-            } else if (occurrence.isRecurringOccurrence && editScope === "occurrence") {
-                await detachOccurrence(occurrence, fields);
+                // The organizer is only ever set on create - an edit keeps the event's own organizer.
+                await createCalendarEvent({
+                    mailboxUid: targetMailboxUid,
+                    folderUid: targetFolderUid,
+                    ...fields,
+                    organizer: { address: effectiveOrganizerAddress, type: "to" },
+                } as CalendarEventInput);
+            } else if (editingSingleOccurrence) {
+                await detachOccurrence(occurrence, fields as Partial<CalendarEventInput>);
             } else if (occurrence.isRecurringOccurrence) {
-                await saveEventSeries(occurrence, fields);
+                await saveEventSeries(occurrence, (await toSeriesFields(occurrence, fields)) as Partial<CalendarEventInput>);
             } else {
-                await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...fields });
+                await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) });
             }
             onSaved();
         } catch (err) {
@@ -239,6 +328,52 @@ export default function EventModal({
         <Modal open={open} onClose={onClose} title={occurrence ? "Edit event" : "New event"}>
             <form onSubmit={handleSubmit} className="flex flex-col gap-1">
                 {error && <Alert>{error}</Alert>}
+
+                {canRespond && (
+                    <div className="flex flex-col gap-2 mb-3 p-3 rounded-sm bg-surface-alt">
+                        <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <span className="text-sm font-medium">Your response</span>
+                            <div className="flex gap-2">
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className="!w-auto"
+                                    disabled={responding}
+                                    onClick={() => handleRespond("accepted")}
+                                >
+                                    Accept
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className="!w-auto"
+                                    disabled={responding}
+                                    onClick={() => handleRespond("tentative")}
+                                >
+                                    Tentative
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className="!w-auto text-danger"
+                                    disabled={responding}
+                                    onClick={() => handleRespond("declined")}
+                                >
+                                    Decline
+                                </Button>
+                            </div>
+                        </div>
+                        <p className="text-xs text-text-muted">Other attendees&rsquo; responses may take a few minutes to update.</p>
+                    </div>
+                )}
+
+                {isInvited && (
+                    <p className="text-xs text-text-muted mb-3">
+                        You were invited to this event. Only the organizer can change its details.
+                    </p>
+                )}
+
+                <fieldset disabled={isInvited} className="flex flex-col gap-1 min-w-0">
 
                 {!occurrence && mailboxOptions && mailboxOptions.length > 1 && (
                     <FormField label="Mailbox" htmlFor="event-mailbox">
@@ -373,44 +508,6 @@ export default function EventModal({
                     </div>
                 </FormField>
 
-                {canRespond && (
-                    <div className="flex flex-col gap-2 mb-3 p-3 rounded-sm bg-surface-alt">
-                        <div className="flex items-center justify-between gap-3 flex-wrap">
-                            <span className="text-sm font-medium">Your response</span>
-                            <div className="flex gap-2">
-                                <Button
-                                    type="button"
-                                    variant="secondary"
-                                    className="!w-auto"
-                                    disabled={responding}
-                                    onClick={() => handleRespond("accepted")}
-                                >
-                                    Accept
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant="secondary"
-                                    className="!w-auto"
-                                    disabled={responding}
-                                    onClick={() => handleRespond("tentative")}
-                                >
-                                    Tentative
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant="secondary"
-                                    className="!w-auto text-danger"
-                                    disabled={responding}
-                                    onClick={() => handleRespond("declined")}
-                                >
-                                    Decline
-                                </Button>
-                            </div>
-                        </div>
-                        <p className="text-xs text-text-muted">Other attendees&rsquo; responses may take a few minutes to update.</p>
-                    </div>
-                )}
-
                 <div className="grid grid-cols-2 gap-3">
                     <FormField label="Busy status" htmlFor="event-busyStatus">
                         <select
@@ -464,11 +561,13 @@ export default function EventModal({
                     )}
                 </div>
 
-                <FormField label="Recurrence" htmlFor="event-recurrence">
-                    <RecurrenceEditor value={recurrenceRule} onChange={setRecurrenceRule} />
-                </FormField>
+                {!editingSingleOccurrence && (
+                    <FormField label="Recurrence" htmlFor="event-recurrence">
+                        <RecurrenceEditor value={recurrenceRule} onChange={setRecurrenceRule} />
+                    </FormField>
+                )}
 
-                {occurrence?.isRecurringOccurrence && (
+                {occurrence?.isRecurringOccurrence && !isInvited && (
                     <fieldset className="flex flex-col gap-1.5 text-sm mb-3">
                         <legend className="text-xs font-bold uppercase tracking-wide text-text-muted mb-1">Apply changes to</legend>
                         <label className="flex items-center gap-2">
@@ -492,10 +591,14 @@ export default function EventModal({
                     </fieldset>
                 )}
 
+                </fieldset>
+
                 <div className="flex gap-3 mt-2">
-                    <Button type="submit" loading={saving} disabled={saving} className="!w-auto">
-                        Save
-                    </Button>
+                    {!isInvited && (
+                        <Button type="submit" loading={saving} disabled={saving} className="!w-auto">
+                            Save
+                        </Button>
+                    )}
                     <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
                         Cancel
                     </Button>

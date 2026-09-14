@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
-import { endOfWeek, isAfter, isBefore, isToday, startOfDay } from "date-fns";
+import { endOfWeek, isAfter, isBefore, isToday, parseISO, startOfDay } from "date-fns";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Task,
@@ -22,8 +22,10 @@ import TasksSidebar, { TasksView } from "../../shared/components/tasks/TasksSide
 import TasksToolbar, { TasksViewMode } from "../../shared/components/tasks/TasksToolbar.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import { findWellKnownFolderUid } from "../../shared/mail/findWellKnownFolderUid.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
+import { LIST_PAGE_SIZE, listAllPages } from "../../shared/mail/listAllPages.js";
 
 const INPUT_CLASS =
     "text-sm py-1.5 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -36,6 +38,15 @@ export default function TasksPage(props: TasksShellProps) {
     );
 }
 
+/**
+ * Parses a task's `dueDate` - `parseISO()` rather than `new Date()`, since `new Date("2026-06-16")` reads a
+ * date-only value as UTC midnight, which is the *previous* local day anywhere west of UTC. A full
+ * timestamp parses identically either way.
+ */
+function parseDueDate(value: string): Date {
+    return parseISO(value);
+}
+
 type Bucket = "Overdue" | "Today" | "This Week" | "Later" | "No due date";
 const BUCKET_ORDER: Bucket[] = ["Overdue", "Today", "This Week", "Later", "No due date"];
 
@@ -44,7 +55,7 @@ function bucketFor(task: Task, now: Date): Bucket {
     if (!task.dueDate) {
         return "No due date";
     }
-    const due = new Date(task.dueDate);
+    const due = parseDueDate(task.dueDate);
     if (isBefore(due, startOfDay(now))) {
         return "Overdue";
     }
@@ -86,6 +97,9 @@ function TasksContent() {
     const [flaggedMessages, setFlaggedMessages] = useState<Message[]>([]);
     const [flaggedLoading, setFlaggedLoading] = useState(false);
     const [flaggedError, setFlaggedError] = useState<string | null>(null);
+    // What the delete confirmation dialog is asking about - one task (a row's delete button), or every
+    // checked task (the toolbar's Delete).
+    const [pendingDelete, setPendingDelete] = useState<{ type: "single"; task: Task } | { type: "bulk" } | null>(null);
 
     function reload(): Promise<void> {
         if (!folderUid) {
@@ -95,7 +109,7 @@ function TasksContent() {
         }
         setLoading(true);
         setError(null);
-        return listTasks(folderUid, { limit: 500 })
+        return listAllPages((page) => listTasks(folderUid, { limit: LIST_PAGE_SIZE, page }))
             .then(setTasks)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load tasks."))
             .finally(() => setLoading(false));
@@ -144,7 +158,8 @@ function TasksContent() {
                 mailboxUid: target,
                 folderUid: targetFolderUid,
                 title: title.trim(),
-                dueDate: dueDate ? new Date(dueDate).toISOString() : undefined,
+                // The date input's "yyyy-MM-dd" is the user's *local* day - see `parseDueDate()`.
+                dueDate: dueDate ? parseDueDate(dueDate).toISOString() : undefined,
                 priority,
             });
             if (target === mailboxUid) {
@@ -267,6 +282,20 @@ function TasksContent() {
         setError(bulkError);
     }
 
+    function requestDelete(task: Task) {
+        setPendingDelete({ type: "single", task });
+    }
+
+    function handleConfirmDelete() {
+        const pending = pendingDelete!;
+        setPendingDelete(null);
+        if (pending.type === "single") {
+            void handleDelete(pending.task);
+        } else {
+            void handleBulkDelete();
+        }
+    }
+
     const grouped = useMemo(() => {
         const now = new Date();
         const map = new Map<Bucket, Task[]>(BUCKET_ORDER.map((b) => [b, []]));
@@ -290,7 +319,7 @@ function TasksContent() {
                     onViewModeChange={setViewMode}
                     selectedCount={checkedTasks.length}
                     onComplete={handleBulkComplete}
-                    onDelete={handleBulkDelete}
+                    onDelete={() => setPendingDelete({ type: "bulk" })}
                     onAddToMyDay={handleBulkAddToMyDay}
                 />
                 <div role="region" aria-label="Tasks list" className="max-w-2xl mx-auto w-full flex flex-col gap-6 p-6">
@@ -332,7 +361,8 @@ function TasksContent() {
                                     <select
                                         aria-label="Task mailbox"
                                         className={`${INPUT_CLASS} max-w-40`}
-                                        value={targetMailboxUid ?? mailboxUid ?? ""}
+                                        // `writableMailboxes` only has entries once `mailboxUid` has resolved.
+                                        value={targetMailboxUid ?? mailboxUid}
                                         onChange={(e) => setTargetMailboxUid(e.target.value)}
                                     >
                                         {writableMailboxes.map((mb) => (
@@ -371,7 +401,7 @@ function TasksContent() {
                                     checkedUids={checkedUids}
                                     onToggleChecked={toggleChecked}
                                     onToggle={handleToggle}
-                                    onDelete={handleDelete}
+                                    onDelete={requestDelete}
                                 />
                             ) : (
                                 <>
@@ -388,7 +418,7 @@ function TasksContent() {
                                                 checkedUids={checkedUids}
                                                 onToggleChecked={toggleChecked}
                                                 onToggle={handleToggle}
-                                                onDelete={handleDelete}
+                                                onDelete={requestDelete}
                                             />
                                         );
                                     })}
@@ -399,7 +429,7 @@ function TasksContent() {
                                             checkedUids={checkedUids}
                                             onToggleChecked={toggleChecked}
                                             onToggle={handleToggle}
-                                            onDelete={handleDelete}
+                                            onDelete={requestDelete}
                                         />
                                     )}
                                 </>
@@ -408,6 +438,21 @@ function TasksContent() {
                     )}
                 </div>
             </div>
+            <Modal open={pendingDelete !== null} onClose={() => setPendingDelete(null)} title="Delete tasks">
+                <p className="text-sm mb-5">
+                    {pendingDelete?.type === "single"
+                        ? `Delete "${pendingDelete.task.title}"?`
+                        : `Delete ${checkedTasks.length} selected ${checkedTasks.length === 1 ? "task" : "tasks"}?`}
+                </p>
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setPendingDelete(null)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger" onClick={handleConfirmDelete}>
+                        Delete
+                    </Button>
+                </div>
+            </Modal>
         </div>
     );
 }
@@ -487,7 +532,7 @@ function TaskGroup({ label, tasks, checkedUids, onToggleChecked, onToggle, onDel
                             </span>
                         )}
                         {task.dueDate && (
-                            <span className="text-xs text-text-muted shrink-0">{new Date(task.dueDate).toLocaleDateString()}</span>
+                            <span className="text-xs text-text-muted shrink-0">{parseDueDate(task.dueDate).toLocaleDateString()}</span>
                         )}
                         <button
                             type="button"
@@ -561,7 +606,7 @@ function TaskTable({ tasks, checkedUids, onToggleChecked, onToggle, onDelete }: 
                                 <CompletionToggle task={task} onToggle={onToggle} />
                             </td>
                             <td className={["px-3 py-2", task.completed ? "line-through text-text-muted" : ""].join(" ")}>{task.title}</td>
-                            <td className="px-3 py-2 text-text-muted">{task.dueDate ? new Date(task.dueDate).toLocaleDateString() : ""}</td>
+                            <td className="px-3 py-2 text-text-muted">{task.dueDate ? parseDueDate(task.dueDate).toLocaleDateString() : ""}</td>
                             <td className={["px-3 py-2", PRIORITY_CLASS[task.priority]].join(" ")}>{PRIORITY_LABEL[task.priority]}</td>
                             <td className="px-3 py-2">
                                 <button

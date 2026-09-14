@@ -126,4 +126,69 @@ describe("EscrowShell", () => {
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
         expect(location.href).toBe("/");
     });
+
+    it("uses the branding icon but never renders branding header/footer HTML or injects the custom stylesheet", async () => {
+        mockFetch((url) => {
+            if (url === "/api/system/branding") {
+                return jsonResponse(200, {
+                    companyName: "Acme",
+                    title: "Acme Mail",
+                    iconUrl: "https://cdn.example.com/icon.png",
+                    headerHtml: '<div data-testid="brand-header">Acme banner</div>',
+                    footerHtml: '<div data-testid="brand-footer">Acme footer</div>',
+                    stylesheetUrl: "https://cdn.example.com/theme.css",
+                });
+            }
+            return jsonResponse(200, []);
+        });
+        render(
+            <EscrowShell active="matters" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </EscrowShell>,
+        );
+        await screen.findByText("content");
+
+        const rail = screen.getByRole("navigation", { name: "Escrow sections" });
+        await waitFor(() => expect(rail.querySelector("img")).toHaveAttribute("src", "https://cdn.example.com/icon.png"));
+        expect(screen.queryByTestId("brand-header")).not.toBeInTheDocument();
+        expect(screen.queryByTestId("brand-footer")).not.toBeInTheDocument();
+        expect(document.getElementById("branding-stylesheet")).toBeNull();
+    });
+
+    it("falls back to the logo, then the default icon, and ignores a branding response after unmount", async () => {
+        let resolveBranding: (response: Response) => void = () => undefined;
+        mockFetch((url) => {
+            if (url === "/api/system/branding") return new Promise<Response>((resolve) => (resolveBranding = resolve));
+            return jsonResponse(200, []);
+        });
+        const { unmount } = render(
+            <EscrowShell active="matters" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </EscrowShell>,
+        );
+        await screen.findByText("content");
+        expect(screen.getByRole("navigation", { name: "Escrow sections" }).querySelector("img")).toHaveAttribute(
+            "src",
+            "/images/logo.svg",
+        );
+        unmount();
+        resolveBranding(jsonResponse(200, { companyName: "", title: "" }));
+
+        mockFetch((url) => {
+            if (url === "/api/system/branding") return jsonResponse(200, { companyName: "", title: "", logoUrl: "/logo.png" });
+            return jsonResponse(200, []);
+        });
+        render(
+            <EscrowShell active="matters" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </EscrowShell>,
+        );
+        await screen.findByText("content");
+        await waitFor(() =>
+            expect(screen.getByRole("navigation", { name: "Escrow sections" }).querySelector("img")).toHaveAttribute(
+                "src",
+                "/logo.png",
+            ),
+        );
+    });
 });

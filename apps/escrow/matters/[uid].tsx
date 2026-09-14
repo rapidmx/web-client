@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useEffect, useState } from "react";
+import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { closeMatter, getMatter, Matter } from "@rapidmx/react-shared/admin/mattersApi.js";
 import {
@@ -17,11 +17,11 @@ import {
     createMatterExportRequest,
     listMatterExportRequests,
     matterExportRequestDownloadUrl,
-    MatterExportRequest,
 } from "@rapidmx/react-shared/admin/matterExportApi.js";
 import { searchMatter, SearchResultPage } from "@rapidmx/react-shared/admin/matterSearchApi.js";
 import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import EscrowShell, { EscrowShellProps } from "../../shared/components/escrow/layout/EscrowShell.js";
+import { LoadMoreButton, usePagedList } from "../../shared/components/admin/usePagedList.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
@@ -29,14 +29,6 @@ import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
-
-// `BaseEscrowAccessRequestRoute.find()` always returns every request under every scope the caller holds
-// (it unconditionally overwrites any `matterId` filter with its own held-scopes-derived one — see
-// `escrowAccessRequestsApi.ts`'s own doc comment) — there is no server-side way to ask for just this one
-// matter's requests. This page fetches a generously-sized single page and filters client-side instead of
-// paginating a second, matter-scoped list UI on top of an already-scoped one; a holder with more than this
-// many *total* in-flight requests across every matter they hold is not the common case this v1 targets.
-const REQUESTS_FETCH_LIMIT = 200;
 
 function statusBadgeClass(status: string): string {
     if (status === "denied" || status === "failed") return "bg-danger-bg text-danger";
@@ -52,14 +44,30 @@ export default function MatterDetailPage(props: Omit<EscrowShellProps, "active">
     );
 }
 
+function formatDateRange(matter: Matter): string {
+    return `${new Date(matter.dateRangeStart).toLocaleDateString()} – ${new Date(matter.dateRangeEnd).toLocaleDateString()}`;
+}
+
 function MatterDetailContent({ uid }: { uid: string }) {
     const [matter, setMatter] = useState<Matter | null>(null);
-    const [requests, setRequests] = useState<EscrowAccessRequest[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    // Both lists are fetched for this matter only (`matterId`), newest first, a page at a time. Rows are still
+    // checked against this matter in case an older server ignores the filter.
+    const requests = usePagedList(
+        (params) => listAccessRequests({ ...params, matterId: uid }),
+        "Could not load this matter's access requests.",
+    );
+    const exportRequests = usePagedList(
+        (params) => listMatterExportRequests({ ...params, matterId: uid }),
+        "Could not load this matter's export requests.",
+    );
+
+    const [confirmingClose, setConfirmingClose] = useState(false);
     const [closing, setClosing] = useState(false);
     const [closeError, setCloseError] = useState<string | null>(null);
+    const [approveTarget, setApproveTarget] = useState<EscrowAccessRequest | null>(null);
 
     const [showNewRequest, setShowNewRequest] = useState(false);
     const [newRequestMailboxUid, setNewRequestMailboxUid] = useState("");
@@ -74,8 +82,10 @@ function MatterDetailContent({ uid }: { uid: string }) {
     const [materialText, setMaterialText] = useState("");
     const [materialError, setMaterialError] = useState<string | null>(null);
     const [loadingMaterial, setLoadingMaterial] = useState(false);
+    // Bumped whenever the material modal closes (or the matter does), so a slow "Get material" response for a
+    // modal that's already gone - or for an earlier request - is never shown.
+    const materialSeq = useRef(0);
 
-    const [exportRequests, setExportRequests] = useState<MatterExportRequest[]>([]);
     const [creatingExport, setCreatingExport] = useState(false);
     const [exportError, setExportError] = useState<string | null>(null);
 
@@ -84,41 +94,40 @@ function MatterDetailContent({ uid }: { uid: string }) {
     const [searchError, setSearchError] = useState<string | null>(null);
     const [searchResults, setSearchResults] = useState<Record<string, SearchResultPage> | null>(null);
 
-    // Same "no server-side single-matter filter, fetch a generous page and filter client-side" shape
-    // REQUESTS_FETCH_LIMIT's own doc comment already establishes for access requests -
-    // listMatterExportRequests() has the identical held-scopes-derived scoping, not a per-matter one.
-    function reload() {
+    useEffect(() => {
         setLoading(true);
         setError(null);
-        Promise.all([getMatter(uid), listAccessRequests({ limit: REQUESTS_FETCH_LIMIT }), listMatterExportRequests()])
-            .then(([loadedMatter, allRequests, allExportRequests]) => {
-                setMatter(loadedMatter);
-                setRequests(allRequests.filter((r) => r.matterId === uid));
-                setExportRequests(allExportRequests.filter((r) => r.matterId === uid));
-            })
+        getMatter(uid)
+            .then(setMatter)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this matter."))
             .finally(() => setLoading(false));
-    }
-
-    useEffect(() => {
-        reload();
+        void requests.reload();
+        void exportRequests.reload();
     }, [uid]);
 
-    // Only ever invoked from the "Close matter" button below, which itself only renders once `matter` is
+    // Only ever invoked from the close-confirmation modal below, which itself only renders once `matter` is
     // resolved (children only render once loaded — see the early returns further down) — the non-null
-    // assertion reflects that real invariant, not an unchecked assumption. Matches `DomainDetailContent.
-    // handleVerify`'s identical pattern.
+    // assertion reflects that real invariant, not an unchecked assumption.
     async function handleClose() {
         setClosing(true);
         setCloseError(null);
         try {
             const updated = await closeMatter(matter!.uid);
             setMatter(updated);
+            setConfirmingClose(false);
+            // Nothing more may be read under a closed matter - drop any material already on screen.
+            closeMaterialModal();
+            setSearchResults(null);
         } catch (err) {
             setCloseError(err instanceof ApiRequestError ? err.message : "Could not close this matter.");
         } finally {
             setClosing(false);
         }
+    }
+
+    function closeCloseModal() {
+        setConfirmingClose(false);
+        setCloseError(null);
     }
 
     async function handleCreateRequest(e: FormEvent) {
@@ -133,7 +142,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
             await createAccessRequest({ matterId: uid, mailboxUid: newRequestMailboxUid.trim() });
             setShowNewRequest(false);
             setNewRequestMailboxUid("");
-            reload();
+            void requests.reload();
         } catch (err) {
             setNewRequestError(err instanceof ApiRequestError ? err.message : "Could not create this access request.");
         } finally {
@@ -141,12 +150,15 @@ function MatterDetailContent({ uid }: { uid: string }) {
         }
     }
 
-    async function handleApprove(request: EscrowAccessRequest) {
+    // Only ever invoked from the approve-confirmation modal below, which only renders once `approveTarget` is set.
+    async function handleApprove() {
+        const request = approveTarget!;
+        setApproveTarget(null);
         setActingOn((prev) => ({ ...prev, [request.uid]: true }));
         setActionErrors((prev) => ({ ...prev, [request.uid]: "" }));
         try {
             const updated = await approveAccessRequest(request.uid);
-            setRequests((prev) => prev.map((r) => (r.uid === updated.uid ? updated : r)));
+            requests.replaceItem(updated);
         } catch (err) {
             setActionErrors((prev) => ({
                 ...prev,
@@ -162,7 +174,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
         setActionErrors((prev) => ({ ...prev, [request.uid]: "" }));
         try {
             const updated = await denyAccessRequest(request.uid);
-            setRequests((prev) => prev.map((r) => (r.uid === updated.uid ? updated : r)));
+            requests.replaceItem(updated);
         } catch (err) {
             setActionErrors((prev) => ({
                 ...prev,
@@ -174,22 +186,29 @@ function MatterDetailContent({ uid }: { uid: string }) {
     }
 
     async function handleGetMaterial(request: EscrowAccessRequest) {
+        const seq = ++materialSeq.current;
         setMaterialFor(request);
         setMaterialText("");
         setMaterialError(null);
         setLoadingMaterial(true);
         try {
             const material = await getAccessRequestMaterial(request.uid);
-            setMaterialText(JSON.stringify(material.masterKeyWraps, null, 2));
+            if (seq === materialSeq.current) setMaterialText(JSON.stringify(material.masterKeyWraps, null, 2));
         } catch (err) {
-            setMaterialError(err instanceof ApiRequestError ? err.message : "Could not read this request's material.");
+            if (seq === materialSeq.current) {
+                setMaterialError(err instanceof ApiRequestError ? err.message : "Could not read this request's material.");
+            }
         } finally {
-            setLoadingMaterial(false);
+            if (seq === materialSeq.current) setLoadingMaterial(false);
         }
     }
 
     function closeMaterialModal() {
+        materialSeq.current++;
         setMaterialFor(null);
+        setMaterialText("");
+        setMaterialError(null);
+        setLoadingMaterial(false);
     }
 
     async function handleCreateExport() {
@@ -197,7 +216,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
         setCreatingExport(true);
         try {
             await createMatterExportRequest(uid);
-            reload();
+            void exportRequests.reload();
         } catch (err) {
             setExportError(err instanceof ApiRequestError ? err.message : "Could not start this export.");
         } finally {
@@ -245,6 +264,9 @@ function MatterDetailContent({ uid }: { uid: string }) {
         return <Alert>{error ?? "Matter not found."}</Alert>;
     }
 
+    const matterRequests = requests.items.filter((request) => request.matterId === uid);
+    const matterExportRequests = exportRequests.items.filter((request) => request.matterId === uid);
+
     return (
         <div className="max-w-4xl flex flex-col gap-5">
             <div className="flex items-start justify-between gap-4">
@@ -259,16 +281,12 @@ function MatterDetailContent({ uid }: { uid: string }) {
                         type="button"
                         variant="secondary"
                         className="!w-auto shrink-0"
-                        loading={closing}
-                        disabled={closing}
-                        onClick={handleClose}
+                        onClick={() => setConfirmingClose(true)}
                     >
                         Close matter
                     </Button>
                 )}
             </div>
-
-            {closeError && <Alert>{closeError}</Alert>}
 
             <div className="bg-surface border border-border rounded-md p-6">
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
@@ -279,10 +297,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
                     <dt className="text-text-muted">Custodian mailboxes</dt>
                     <dd>{matter.custodianMailboxUids.join(", ")}</dd>
                     <dt className="text-text-muted">Date range</dt>
-                    <dd>
-                        {new Date(matter.dateRangeStart).toLocaleDateString()} &ndash;{" "}
-                        {new Date(matter.dateRangeEnd).toLocaleDateString()}
-                    </dd>
+                    <dd>{formatDateRange(matter)}</dd>
                     <dt className="text-text-muted">Status</dt>
                     <dd>{matter.closedAt ? `Closed ${new Date(matter.closedAt).toLocaleString()}` : "Open"}</dd>
                 </dl>
@@ -298,11 +313,12 @@ function MatterDetailContent({ uid }: { uid: string }) {
                     )}
                 </div>
 
-                {requests.length === 0 ? (
-                    <p className="text-sm text-text-muted">No access requests yet.</p>
+                {requests.loadError && <Alert>{requests.loadError}</Alert>}
+                {matterRequests.length === 0 ? (
+                    <p className="text-sm text-text-muted">{requests.loading ? "Loading…" : "No access requests yet."}</p>
                 ) : (
                     <ul className="flex flex-col gap-3">
-                        {requests.map((request) => (
+                        {matterRequests.map((request) => (
                             <li key={request.uid} className="border border-border rounded-sm p-4">
                                 <div className="flex items-center justify-between gap-3 flex-wrap">
                                     <div>
@@ -336,7 +352,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
                                                 className="!w-auto"
                                                 loading={actingOn[request.uid]}
                                                 disabled={actingOn[request.uid]}
-                                                onClick={() => handleApprove(request)}
+                                                onClick={() => setApproveTarget(request)}
                                             >
                                                 Approve
                                             </Button>
@@ -352,7 +368,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
                                             </Button>
                                         </>
                                     )}
-                                    {(request.status === "approved" || request.status === "fulfilled") && (
+                                    {!matter.closedAt && (request.status === "approved" || request.status === "fulfilled") && (
                                         <Button
                                             type="button"
                                             variant="secondary"
@@ -367,14 +383,17 @@ function MatterDetailContent({ uid }: { uid: string }) {
                         ))}
                     </ul>
                 )}
+                <LoadMoreButton list={requests} label="Load more access requests" />
             </div>
 
             <div className="bg-surface border border-border rounded-md p-6">
                 <div className="flex items-center justify-between mb-3">
                     <h2 className="text-base font-bold uppercase tracking-wide">Export this matter</h2>
-                    <Button type="button" className="!w-auto" loading={creatingExport} disabled={creatingExport} onClick={handleCreateExport}>
-                        + New export
-                    </Button>
+                    {!matter.closedAt && (
+                        <Button type="button" className="!w-auto" loading={creatingExport} disabled={creatingExport} onClick={handleCreateExport}>
+                            + New export
+                        </Button>
+                    )}
                 </div>
                 <p className="text-xs text-text-muted mb-3">
                     Exports messages (narrowed to this matter&rsquo;s own date range), plus full contacts,
@@ -382,11 +401,12 @@ function MatterDetailContent({ uid }: { uid: string }) {
                     matter&rsquo;s escrow scope, as one combined NDJSON file.
                 </p>
                 {exportError && <Alert>{exportError}</Alert>}
-                {exportRequests.length === 0 ? (
-                    <p className="text-sm text-text-muted">No export requests yet.</p>
+                {exportRequests.loadError && <Alert>{exportRequests.loadError}</Alert>}
+                {matterExportRequests.length === 0 ? (
+                    <p className="text-sm text-text-muted">{exportRequests.loading ? "Loading…" : "No export requests yet."}</p>
                 ) : (
                     <ul className="flex flex-col gap-2">
-                        {exportRequests.map((request) => (
+                        {matterExportRequests.map((request) => (
                             <li
                                 key={request.uid}
                                 className="flex items-center justify-between gap-3 text-sm py-1.5 px-3 bg-surface-alt rounded-sm"
@@ -420,18 +440,22 @@ function MatterDetailContent({ uid }: { uid: string }) {
 
             <div className="bg-surface border border-border rounded-md p-6">
                 <h2 className="text-base font-bold uppercase tracking-wide mb-3">Search this matter&rsquo;s custodians</h2>
-                <form onSubmit={handleSearch} className="flex gap-3 mb-4">
-                    <input
-                        aria-label="Search this matter"
-                        className={INPUT_CLASS}
-                        value={searchText}
-                        onChange={(e) => setSearchText(e.target.value)}
-                        placeholder="Free text or an operator filter, e.g. from:alice@example.com"
-                    />
-                    <Button type="submit" className="!w-auto shrink-0" loading={searching} disabled={searching || !searchText.trim()}>
-                        Search
-                    </Button>
-                </form>
+                {matter.closedAt ? (
+                    <p className="text-sm text-text-muted">This matter is closed, so its custodians can no longer be searched or exported.</p>
+                ) : (
+                    <form onSubmit={handleSearch} className="flex gap-3 mb-4">
+                        <input
+                            aria-label="Search this matter"
+                            className={INPUT_CLASS}
+                            value={searchText}
+                            onChange={(e) => setSearchText(e.target.value)}
+                            placeholder="Free text or an operator filter, e.g. from:alice@example.com"
+                        />
+                        <Button type="submit" className="!w-auto shrink-0" loading={searching} disabled={searching || !searchText.trim()}>
+                            Search
+                        </Button>
+                    </form>
+                )}
                 {searchError && <Alert>{searchError}</Alert>}
                 {searchResults &&
                     (Object.keys(searchResults).length === 0 ? (
@@ -461,6 +485,62 @@ function MatterDetailContent({ uid }: { uid: string }) {
                         </div>
                     ))}
             </div>
+
+            <Modal open={confirmingClose} onClose={closeCloseModal} title="Close matter">
+                <p className="text-sm mb-3">
+                    Close <strong>{matter.name}</strong>? Once closed, no new access requests, exports, searches, or key
+                    material reads are allowed under it. This cannot be reopened here.
+                </p>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm mb-4">
+                    <dt className="text-text-muted">Custodians</dt>
+                    <dd className="break-all">{matter.custodianMailboxUids.join(", ")}</dd>
+                    <dt className="text-text-muted">Date range</dt>
+                    <dd>{formatDateRange(matter)}</dd>
+                </dl>
+                {closeError && <Alert>{closeError}</Alert>}
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={closing} onClick={closeCloseModal}>
+                        Cancel
+                    </Button>
+                    <Button
+                        type="button"
+                        className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger"
+                        loading={closing}
+                        disabled={closing}
+                        onClick={handleClose}
+                    >
+                        Close matter
+                    </Button>
+                </div>
+            </Modal>
+
+            <Modal open={approveTarget !== null} onClose={() => setApproveTarget(null)} title="Approve access request">
+                <p className="text-sm mb-3">
+                    Approving lets holders of this matter&rsquo;s escrow scope read the key material for this mailbox once
+                    enough holders have approved.
+                </p>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm mb-4">
+                    <dt className="text-text-muted">Matter</dt>
+                    <dd>{matter.name}</dd>
+                    <dt className="text-text-muted">Mailbox</dt>
+                    <dd className="break-all">{approveTarget?.mailboxUid}</dd>
+                    <dt className="text-text-muted">Date range</dt>
+                    <dd>{formatDateRange(matter)}</dd>
+                    <dt className="text-text-muted">Approvals</dt>
+                    <dd>
+                        {approveTarget?.approvals.length} of {approveTarget?.requiredHoldersAtCreation} so far, including
+                        requester {approveTarget?.requestedByUserUid}
+                    </dd>
+                </dl>
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setApproveTarget(null)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto" onClick={() => void handleApprove()}>
+                        Approve request
+                    </Button>
+                </div>
+            </Modal>
 
             <Modal open={showNewRequest} onClose={() => setShowNewRequest(false)} title="New access request">
                 <form onSubmit={handleCreateRequest} className="flex flex-col gap-4">

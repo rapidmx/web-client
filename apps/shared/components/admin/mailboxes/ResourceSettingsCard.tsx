@@ -51,11 +51,11 @@ export default function ResourceSettingsCard({ mailbox, onUpdate }: ResourceSett
                 uid: mailbox.uid,
                 version: mailbox.version,
                 resourceType,
-                resourceCapacity: resourceCapacity ? Number(resourceCapacity) : undefined,
+                resourceCapacity: resourceCapacity ? Number(resourceCapacity) : null,
                 autoAcceptBookings,
                 allowConflicts,
-                bookingWindowDays: bookingWindowDays ? Number(bookingWindowDays) : undefined,
-                maxDurationMinutes: maxDurationMinutes ? Number(maxDurationMinutes) : undefined,
+                bookingWindowDays: bookingWindowDays ? Number(bookingWindowDays) : null,
+                maxDurationMinutes: maxDurationMinutes ? Number(maxDurationMinutes) : null,
             });
             onUpdate(updated);
             setSaved(true);

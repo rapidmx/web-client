@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
@@ -178,7 +178,30 @@ describe("ComposeProvider / useCompose", () => {
             expect(await screen.findAllByRole("dialog", { name: "New Message" })).toHaveLength(1);
         });
 
-        it("minimizing the visible session reveals the previous one, which was not rendered at all until then", async () => {
+        it("keeps a session hidden behind a newer one mounted, so what was typed into it survives", async () => {
+            mockMatchMedia(true);
+            mockDraft();
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <Opener mailboxUid="mb1" />
+                    <Opener mailboxUid="mb2" />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Open mb1" }));
+            await user.type(await screen.findByLabelText("To"), "first@example.com");
+            await user.click(screen.getByRole("button", { name: "Open mb2" }));
+            // Both windows stay in the DOM; only the newest is exposed (the older one is `hidden`).
+            await waitFor(() => expect(screen.getAllByLabelText("To")).toHaveLength(2));
+            expect(screen.getByRole("textbox", { name: "To" })).toHaveValue("");
+
+            await user.click(screen.getByRole("button", { name: "Minimize" }));
+
+            expect(await screen.findByRole("textbox", { name: "To" })).toHaveValue("first@example.com");
+        });
+
+        it("minimizing the visible session reveals the previous one, which was hidden until then", async () => {
             mockMatchMedia(true);
             mockDraft();
             const user = userEvent.setup();

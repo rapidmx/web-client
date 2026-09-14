@@ -68,7 +68,7 @@ function mockMatterFetch(overrides: Record<string, (init?: RequestInit) => Respo
         // own doc comment. Distinct from the `/api/escrow/matters/m1` single-matter fetch above.
         if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
         if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, [pendingRequest, otherMatterRequest]);
-        if (url === "/api/escrow/matter-export-requests") return jsonResponse(200, []);
+        if (url.startsWith("/api/escrow/matter-export-requests")) return jsonResponse(200, []);
         throw new Error(`unexpected ${key}`);
     });
 }
@@ -98,7 +98,7 @@ describe("MatterDetailPage", () => {
             if (url === "/api/escrow/matters/m1") return jsonResponse(200, matterWithoutDescription);
             if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, []);
-            if (url === "/api/escrow/matter-export-requests") return jsonResponse(200, []);
+            if (url.startsWith("/api/escrow/matter-export-requests")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
@@ -138,7 +138,7 @@ describe("MatterDetailPage", () => {
             if (url === "/api/escrow/matters/m1") return jsonResponse(200, null);
             if (url.startsWith("/api/escrow/matters?")) return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/access-requests")) return jsonResponse(200, []);
-            if (url === "/api/escrow/matter-export-requests") return jsonResponse(200, []);
+            if (url.startsWith("/api/escrow/matter-export-requests")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
@@ -160,6 +160,7 @@ describe("MatterDetailPage", () => {
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
         await user.click(screen.getByRole("button", { name: "Close matter" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Close matter" })).getByRole("button", { name: "Close matter" }));
 
         expect(await screen.findByText(/^Closed/)).toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "Close matter" })).not.toBeInTheDocument();
@@ -173,6 +174,7 @@ describe("MatterDetailPage", () => {
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
         await user.click(screen.getByRole("button", { name: "Close matter" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Close matter" })).getByRole("button", { name: "Close matter" }));
         expect(await screen.findByText("not a holder")).toBeInTheDocument();
     });
 
@@ -187,6 +189,7 @@ describe("MatterDetailPage", () => {
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
         await user.click(screen.getByRole("button", { name: "Close matter" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Close matter" })).getByRole("button", { name: "Close matter" }));
         expect(await screen.findByText("Could not close this matter.")).toBeInTheDocument();
     });
 
@@ -288,7 +291,8 @@ describe("MatterDetailPage", () => {
         render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
-        await user.click(screen.getByRole("button", { name: "Approve" }));
+        await user.click(await screen.findByRole("button", { name: "Approve" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Approve access request" })).getByRole("button", { name: "Approve request" }));
 
         expect(await screen.findByText("approved")).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "Get material" })).toBeInTheDocument();
@@ -308,7 +312,8 @@ describe("MatterDetailPage", () => {
 
         // ar2 already shows its own "Get material" action before anything is clicked.
         expect(await screen.findAllByRole("button", { name: "Get material" })).toHaveLength(1);
-        await user.click(screen.getByRole("button", { name: "Approve" }));
+        await user.click(await screen.findByRole("button", { name: "Approve" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Approve access request" })).getByRole("button", { name: "Approve request" }));
 
         // ar1 is now approved too (both rows render "Get material"), and ar2's own row is still present
         // and untouched - not reset, not removed.
@@ -343,7 +348,8 @@ describe("MatterDetailPage", () => {
         render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
-        await user.click(screen.getByRole("button", { name: "Approve" }));
+        await user.click(await screen.findByRole("button", { name: "Approve" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Approve access request" })).getByRole("button", { name: "Approve request" }));
         expect(await screen.findByText("already approved")).toBeInTheDocument();
     });
 
@@ -357,7 +363,8 @@ describe("MatterDetailPage", () => {
         render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
-        await user.click(screen.getByRole("button", { name: "Approve" }));
+        await user.click(await screen.findByRole("button", { name: "Approve" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Approve access request" })).getByRole("button", { name: "Approve request" }));
         expect(await screen.findByText("Could not approve this request.")).toBeInTheDocument();
     });
 
@@ -651,5 +658,157 @@ describe("MatterDetailPage", () => {
         await user.click(screen.getByRole("button", { name: "Search" }));
 
         expect(await screen.findByText("Could not search this matter.")).toBeInTheDocument();
+    });
+
+    it("fetches both lists for this matter only, a page at a time, with Load more", async () => {
+        const page0 = Array.from({ length: 50 }, (_, i) => ({ ...pendingRequest, uid: `ar-${i}`, mailboxUid: `mbox-${i}` }));
+        const fetchMock = mockMatterFetch({
+            "GET /api/escrow/access-requests?limit=50&page=0&matterId=m1": () => jsonResponse(200, page0),
+            "GET /api/escrow/access-requests?limit=50&page=1&matterId=m1": () =>
+                jsonResponse(200, [{ ...pendingRequest, uid: "ar-50", mailboxUid: "mbox-50" }]),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+
+        expect(await screen.findByText("mbox-49")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Load more access requests" }));
+        expect(await screen.findByText("mbox-50")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Load more access requests" })).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.map(([url]) => url)).toContain("/api/escrow/matter-export-requests?limit=50&page=0&matterId=m1");
+    });
+
+    it("shows list load failures inline without replacing the page", async () => {
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(500, { message: "requests unavailable" }),
+            "/api/escrow/matter-export-requests": () => {
+                throw new TypeError("network down");
+            },
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+
+        expect(await screen.findByText("requests unavailable")).toBeInTheDocument();
+        expect(await screen.findByText("Could not load this matter's export requests.")).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Smith v. Acme" })).toBeInTheDocument();
+    });
+
+    it("shows Loading in each list while it's still being fetched", async () => {
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => new Promise<Response>(() => undefined) as unknown as Response,
+            "/api/escrow/matter-export-requests": () => new Promise<Response>(() => undefined) as unknown as Response,
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+        expect(screen.getAllByText("Loading…")).toHaveLength(2);
+    });
+
+    it("confirms closing with the custodians and date range, and Cancel keeps the matter open", async () => {
+        let closed = false;
+        mockMatterFetch({
+            "POST /api/escrow/matters/m1/close": () => {
+                closed = true;
+                return jsonResponse(200, { ...matter, closedAt: "2026-02-01T00:00:00.000Z" });
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Close matter" }));
+        const dialog = await screen.findByRole("dialog", { name: "Close matter" });
+        expect(within(dialog).getByText("mb1, mb2")).toBeInTheDocument();
+        expect(within(dialog).getByText(/cannot be reopened/)).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByRole("dialog", { name: "Close matter" })).not.toBeInTheDocument();
+        expect(closed).toBe(false);
+        expect(screen.getByText("Open")).toBeInTheDocument();
+    });
+
+    it("hides new exports, search, and Get material once the matter is closed", async () => {
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, [approvedRequest]),
+            "POST /api/escrow/matters/m1/close": () => jsonResponse(200, { ...matter, closedAt: "2026-02-01T00:00:00.000Z" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+        expect(await screen.findByRole("button", { name: "Get material" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "+ New export" })).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Close matter" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Close matter" })).getByRole("button", { name: "Close matter" }));
+
+        expect(await screen.findByText(/^Closed/)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "+ New export" })).not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Search this matter")).not.toBeInTheDocument();
+        expect(screen.getByText(/can no longer be searched or exported/)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Get material" })).not.toBeInTheDocument();
+    });
+
+    it("confirms an approval with the matter, mailbox, date range, and approval count, and Cancel doesn't approve", async () => {
+        let approved = false;
+        mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/approve": () => {
+                approved = true;
+                return jsonResponse(200, { ...pendingRequest, status: "approved" });
+            },
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(await screen.findByRole("button", { name: "Approve" }));
+        const dialog = await screen.findByRole("dialog", { name: "Approve access request" });
+        expect(within(dialog).getByText("Smith v. Acme")).toBeInTheDocument();
+        expect(within(dialog).getByText("mb1")).toBeInTheDocument();
+        expect(within(dialog).getByText(/1 of 2 so far, including requester u1/)).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog", { name: "Approve access request" })).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Approve" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Approve access request" })).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog", { name: "Approve access request" })).not.toBeInTheDocument();
+        expect(approved).toBe(false);
+    });
+
+    it("ignores a Get material response (or failure) that arrives after its modal was closed", async () => {
+        const pending: ((response: Response) => void)[] = [];
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, [approvedRequest]),
+            "/api/escrow/access-requests/ar2/material": () =>
+                new Promise<Response>((resolve) => pending.push(resolve)) as unknown as Response,
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(await screen.findByRole("button", { name: "Get material" }));
+        let dialog = await screen.findByRole("dialog", { name: "Escrow key material" });
+        expect(within(dialog).getByText("Loading…")).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        pending[0](jsonResponse(200, { masterKeyWraps: [{ method: "escrow", ciphertext: "stale" }] }));
+
+        await user.click(screen.getByRole("button", { name: "Get material" }));
+        dialog = await screen.findByRole("dialog", { name: "Escrow key material" });
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        pending[1](jsonResponse(403, { message: "stale failure" }));
+
+        await user.click(screen.getByRole("button", { name: "Get material" }));
+        await vi.waitFor(() => expect(pending).toHaveLength(3));
+        pending[2](jsonResponse(200, { masterKeyWraps: [{ method: "escrow", ciphertext: "fresh" }] }));
+        expect(await screen.findByText(/"ciphertext": "fresh"/)).toBeInTheDocument();
+        expect(screen.queryByText(/stale/)).not.toBeInTheDocument();
+    });
+
+    it("hides new exports and search for a matter that was already closed when loaded", async () => {
+        mockMatterFetch({
+            "GET /api/escrow/matters/m1": () => jsonResponse(200, { ...matter, closedAt: "2026-02-01T00:00:00.000Z" }),
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        expect(screen.queryByRole("button", { name: "Close matter" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "+ New export" })).not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Search this matter")).not.toBeInTheDocument();
     });
 });

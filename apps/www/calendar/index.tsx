@@ -14,6 +14,7 @@ import {
     endOfMonth,
     endOfWeek,
     format,
+    parseISO,
     startOfDay,
     startOfMonth,
     startOfWeek,
@@ -89,7 +90,9 @@ function CalendarContent({ userUid }: { userUid?: string }) {
             setView(requestedView as ViewType);
         }
         const requestedDate = params.get("date");
-        const parsedDate = requestedDate ? new Date(requestedDate) : null;
+        // `parseISO()`, not `new Date()` - `?date=2026-06-16` is a local calendar day, but `new Date()` reads a
+        // date-only string as UTC midnight, i.e. the previous day anywhere west of UTC.
+        const parsedDate = requestedDate ? parseISO(requestedDate) : null;
         if (parsedDate && !isNaN(parsedDate.getTime())) {
             setViewDate(startOfDay(parsedDate));
         }

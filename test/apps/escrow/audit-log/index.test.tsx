@@ -63,6 +63,26 @@ describe("EscrowAuditLogPage", () => {
         expect(screen.getByText("mb1")).toBeInTheDocument();
     });
 
+    it("labels matter export events, and falls back to the raw action name for an unknown one", async () => {
+        mockAuditLogFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(403, { message: "not trusted" });
+            if (url.startsWith("/api/escrow/audit-log")) {
+                return jsonResponse(200, [
+                    { ...entry(1), action: "matter_export.requested" },
+                    { ...entry(2), action: "matter_export.ready" },
+                    { ...entry(3), action: "matter_export.failed" },
+                    { ...entry(4), action: "matter.closed" },
+                ]);
+            }
+        });
+        render(<EscrowAuditLogPage userUid="u1" authServerUrl="https://auth.example.com" />);
+
+        expect(await screen.findByText("Matter export requested")).toBeInTheDocument();
+        expect(screen.getByText("Matter export ready")).toBeInTheDocument();
+        expect(screen.getByText("Matter export failed")).toBeInTheDocument();
+        expect(screen.getByText("matter.closed")).toBeInTheDocument();
+    });
+
     it("shows an error message when the list fails to load", async () => {
         mockAuditLogFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(403, { message: "not trusted" });

@@ -47,6 +47,23 @@ describe("NewEscrowScopePage", () => {
         ).toBeInTheDocument();
     });
 
+    it("refuses to make the signed-in admin a holder", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        const user = userEvent.setup();
+        render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New escrow scope");
+
+        await user.type(screen.getByLabelText("Name"), "Legal Hold Q1");
+        await user.type(screen.getByLabelText("Public key (base64)"), "base64cert");
+        await user.type(screen.getByLabelText("Fingerprint (hex SHA-256)"), "abc123");
+        await user.type(screen.getByLabelText("Holder user uids"), "admin-1");
+        await user.click(screen.getByRole("button", { name: "Add" }));
+        await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
+
+        expect(await screen.findByText(/You can't add yourself as a holder/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "POST")).toBe(false);
+    });
+
     it("validates at least one holder is required", async () => {
         mockFetch(() => jsonResponse(200, {}));
         const user = userEvent.setup();
@@ -106,8 +123,8 @@ describe("NewEscrowScopePage", () => {
         await fillMinimalRequiredFields(user);
         await user.clear(screen.getByLabelText("Key type"));
         await user.type(screen.getByLabelText("Key type"), "ec-p256");
-        const notBefore = screen.getByLabelText("Not before") as HTMLInputElement;
-        const notAfter = screen.getByLabelText("Not after") as HTMLInputElement;
+        const notBefore = screen.getByLabelText("Not before");
+        const notAfter = screen.getByLabelText("Not after");
         await user.clear(notBefore);
         await user.type(notBefore, "2026-01-01T00:00");
         await user.clear(notAfter);

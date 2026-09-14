@@ -13,6 +13,7 @@ import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import EscrowScopeKeyAndHoldersFields, {
     emptyEscrowScopeKeyAndHoldersValue,
     EscrowScopeKeyAndHoldersValue,
+    selfAsHolderError,
 } from "../escrowScopes/EscrowScopeKeyAndHoldersFields.js";
 
 const INPUT_CLASS =
@@ -45,7 +46,7 @@ function fileSafe(name: string): string {
  * generate the key pair here (downloading the private key, which never leaves the browser), paste in an existing
  * certificate, or go without escrow.
  */
-export default function EscrowSetupStep() {
+export default function EscrowSetupStep({ adminUid }: { adminUid?: string }) {
     const [scopes, setScopes] = useState<EscrowScope[] | null>(null);
     const [mode, setMode] = useState<Mode>("none");
     const [name, setName] = useState("Escrow");
@@ -124,6 +125,11 @@ export default function EscrowSetupStep() {
         }
         if (keyAndHolders.requiredHolders < 1 || keyAndHolders.requiredHolders > keyAndHolders.holderUserUids.length) {
             setError("Required holders must be between 1 and the number of holders.");
+            return;
+        }
+        const selfError = selfAsHolderError(keyAndHolders.holderUserUids, adminUid);
+        if (selfError) {
+            setError(selfError);
             return;
         }
         setBusy(true);
@@ -234,6 +240,11 @@ export default function EscrowSetupStep() {
                             <Alert>
                                 Download the private key now and give it to your escrow holders. It isn&rsquo;t stored
                                 anywhere else - if it&rsquo;s lost, no escrowed mail can ever be recovered.
+                            </Alert>
+                            <Alert>
+                                You&rsquo;re downloading this private key, so you must not also be one of its holders:
+                                pick holders other than yourself, hand the key over, and delete your copy once they
+                                have it. Otherwise one person could both configure escrow and recover mail with it.
                             </Alert>
                             <div className="flex flex-wrap gap-2">
                                 <Button

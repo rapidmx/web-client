@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { addMinutes, format, isSameDay, startOfDay } from "date-fns";
+import { addDays, addMinutes, format, startOfDay } from "date-fns";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { occursOnDay } from "./allDay.js";
 
 const HOUR_HEIGHT_PX = 48;
 const SLOT_MINUTES = 30;
@@ -39,7 +40,7 @@ export interface SplitDayViewProps {
  * calendar) — a practical scope cut, not an oversight.
  */
 export default function SplitDayView({ day, columns, occurrences, onSelectEvent, onSelectSlot }: SplitDayViewProps) {
-    const dayOccurrences = occurrences.filter((occ) => isSameDay(new Date(occ.startDate), day));
+    const dayOccurrences = occurrences.filter((occ) => occursOnDay(occ, day));
     const dayStart = startOfDay(day);
 
     return (
@@ -107,8 +108,13 @@ function SplitColumn({
             {occurrences.map((occurrence) => {
                 const start = new Date(occurrence.startDate);
                 const end = new Date(occurrence.endDate);
-                const top = ((start.getTime() - dayStart.getTime()) / 60_000 / 60) * HOUR_HEIGHT_PX;
-                const height = Math.max(((end.getTime() - start.getTime()) / 60_000 / 60) * HOUR_HEIGHT_PX, 16);
+                // Clipped to this day, so a multi-day event fills only the part of the day it covers. An
+                // all-day event is date-only (see `allDay.ts`), so it always spans the whole local day.
+                const dayEnd = addDays(dayStart, 1).getTime();
+                const visibleStart = occurrence.allDay ? dayStart.getTime() : Math.max(start.getTime(), dayStart.getTime());
+                const visibleEnd = occurrence.allDay ? dayEnd : Math.min(end.getTime(), dayEnd);
+                const top = ((visibleStart - dayStart.getTime()) / 60_000 / 60) * HOUR_HEIGHT_PX;
+                const height = Math.max(((visibleEnd - visibleStart) / 60_000 / 60) * HOUR_HEIGHT_PX, 16);
                 const isFree = occurrence.busyStatus === "free";
                 return (
                     <div

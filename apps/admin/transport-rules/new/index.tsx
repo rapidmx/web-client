@@ -11,7 +11,13 @@ import {
 } from "@rapidmx/react-shared/admin/transportRulesApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
 import RuleBuilder, { RuleBuilderValue } from "../../../shared/components/rules/RuleBuilder.js";
-import { TRANSPORT_RULE_ACTION_TYPES, TRANSPORT_RULE_CONDITION_FIELDS } from "../_transportRuleConfig.js";
+import {
+    checkRuleConditions,
+    NO_CONDITIONS_BLOCKED_MESSAGE,
+    NoConditionsConfirmModal,
+    TRANSPORT_RULE_ACTION_TYPES,
+    TRANSPORT_RULE_CONDITION_FIELDS,
+} from "../_transportRuleConfig.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
@@ -38,6 +44,8 @@ function NewTransportRuleForm() {
     });
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    const [showValidation, setShowValidation] = useState(false);
+    const [confirmingNoConditions, setConfirmingNoConditions] = useState(false);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -47,7 +55,21 @@ function NewTransportRuleForm() {
             setError("A name is required.");
             return;
         }
+        const check = checkRuleConditions(rule);
+        if (check === "blocked") {
+            setShowValidation(true);
+            setError(NO_CONDITIONS_BLOCKED_MESSAGE);
+            return;
+        }
+        if (check === "confirm") {
+            setConfirmingNoConditions(true);
+            return;
+        }
+        await create();
+    }
 
+    async function create() {
+        setConfirmingNoConditions(false);
         setSaving(true);
         try {
             const created = await createTransportRule({ name: name.trim(), ...rule });
@@ -87,6 +109,7 @@ function NewTransportRuleForm() {
                     onChange={setRule}
                     conditionFields={TRANSPORT_RULE_CONDITION_FIELDS}
                     actionTypes={TRANSPORT_RULE_ACTION_TYPES}
+                    showValidation={showValidation}
                 />
 
                 <div className="flex gap-3">
@@ -100,6 +123,12 @@ function NewTransportRuleForm() {
                     </a>
                 </div>
             </form>
+
+            <NoConditionsConfirmModal
+                open={confirmingNoConditions}
+                onCancel={() => setConfirmingNoConditions(false)}
+                onConfirm={() => void create()}
+            />
         </div>
     );
 }

@@ -666,15 +666,38 @@ function PluginBrowser({
     );
 }
 
-/** Shown while any server copy hasn't applied the saved plugin set yet, or when one is in safe mode. */
+/** Name a server reports an error under when it isn't about any single plugin (e.g. the plugin set as a whole failed). */
+const SERVER_WIDE_ERROR_NAME = "*";
+
+/**
+ * Shown while any server copy hasn't applied the saved plugin set yet, when one is in safe mode, or when one reports a
+ * server-wide plugin error - those match no plugin row, so without this they'd never be shown.
+ */
 function RolloutBanner({ status }: { status: PluginStatus | null }) {
     if (!status || status.instances.length === 0) {
         return null;
     }
     const behind = status.instances.filter((instance) => instance.hash !== status.hash).length;
     const safeMode = status.instances.filter((instance) => instance.safeMode);
+    const serverWideErrors = status.instances.flatMap((instance) =>
+        instance.errors
+            .filter((entry) => entry.name === SERVER_WIDE_ERROR_NAME)
+            .map((entry) => `${instance.instance}: ${entry.message}`),
+    );
     return (
         <>
+            {serverWideErrors.length > 0 && (
+                <Alert>
+                    Plugins couldn&rsquo;t be loaded:
+                    <ul className="list-disc pl-5 mt-1">
+                        {serverWideErrors.map((message) => (
+                            <li key={message} className="break-words">
+                                {message}
+                            </li>
+                        ))}
+                    </ul>
+                </Alert>
+            )}
             {behind > 0 && (
                 <p role="status" className="mb-4 text-sm py-2 px-3 rounded-sm bg-surface-alt text-text">
                     Applying changes: {status.instances.length - behind} of {status.instances.length}{" "}

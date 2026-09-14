@@ -7,6 +7,9 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { IngestQueueEntry, listIngestQueue } from "@rapidmx/react-shared/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+
+const PAGE_SIZE = 25;
 
 export function readMailboxUid(): string | null {
     if (typeof window === "undefined") return null;
@@ -30,6 +33,7 @@ export default function IngestQueuePage(props: Omit<AdminShellProps, "active">) 
 
 function IngestQueueContent() {
     const [mailboxUid, setMailboxUid] = useState<string | null>(null);
+    const [page, setPage] = useState(0);
     const [entries, setEntries] = useState<IngestQueueEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -42,13 +46,26 @@ function IngestQueueContent() {
         if (!mailboxUid) {
             return;
         }
+        // Paging quickly can leave an older page's response landing last - only the latest request's is applied.
+        let cancelled = false;
         setLoading(true);
         setError(null);
-        listIngestQueue(mailboxUid)
-            .then(setEntries)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load the ingest queue."))
-            .finally(() => setLoading(false));
-    }, [mailboxUid]);
+        listIngestQueue(mailboxUid, { page, limit: PAGE_SIZE })
+            .then((data) => {
+                if (!cancelled) setEntries(data);
+            })
+            .catch((err) => {
+                if (!cancelled) setError(err instanceof ApiRequestError ? err.message : "Could not load the ingest queue.");
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [mailboxUid, page]);
+
+    const hasNextPage = entries.length === PAGE_SIZE;
 
     if (!mailboxUid) {
         return <Alert>No mailbox specified. Open a mailbox's detail page and choose "View ingest queue".</Alert>;
@@ -111,6 +128,28 @@ function IngestQueueContent() {
                     </table>
                 </div>
             )}
+
+            <div className="flex gap-3 items-center">
+                <Button
+                    variant="secondary"
+                    type="button"
+                    className="!w-auto"
+                    disabled={page === 0 || loading}
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                >
+                    Previous
+                </Button>
+                <span className="text-sm text-text-muted">Page {page + 1}</span>
+                <Button
+                    variant="secondary"
+                    type="button"
+                    className="!w-auto"
+                    disabled={!hasNextPage || loading}
+                    onClick={() => setPage((p) => p + 1)}
+                >
+                    Next
+                </Button>
+            </div>
         </div>
     );
 }

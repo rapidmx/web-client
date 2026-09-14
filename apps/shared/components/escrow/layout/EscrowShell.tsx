@@ -8,10 +8,9 @@ import { HiOutlineClipboardDocumentList, HiOutlineFolderOpen } from "react-icons
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { listMatters } from "@rapidmx/react-shared/admin/mattersApi.js";
 import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
-import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
+import { getBranding } from "@rapidmx/react-shared/branding/brandingApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
-import { BrandingFooter, BrandingHeader } from "../../layout/BrandingChrome.js";
 import UserMenu from "../../layout/UserMenu.js";
 
 export type EscrowSection = "matters" | "auditLog";
@@ -23,6 +22,8 @@ export interface EscrowShellProps {
 }
 
 type Status = "checking" | "error" | "authorized";
+
+const DEFAULT_ICON_SRC = "/images/logo.svg";
 
 const NAV_ITEMS: NavItem[] = [
     { id: "matters", href: "/escrow", label: "Matters", icon: HiOutlineFolderOpen },
@@ -48,9 +49,26 @@ const NAV_ITEMS: NavItem[] = [
 export default function EscrowShell({ active, userUid, authServerUrl, children }: PropsWithChildren<EscrowShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
-    const { branding, iconSrc } = useBranding();
+    const [iconSrc, setIconSrc] = useState(DEFAULT_ICON_SRC);
 
     useRedirectIfUnauthenticated(userUid, authServerUrl);
+
+    // Only the icon is taken from branding here. The escrow console deliberately skips `useBranding()`, which
+    // would inject the custom stylesheet, and never renders the admin-configured header/footer HTML - this
+    // console handles escrow key material, so no admin-supplied markup or CSS runs on it.
+    useEffect(() => {
+        let cancelled = false;
+        getBranding()
+            .then((branding) => {
+                if (!cancelled) setIconSrc(branding.iconUrl || branding.logoUrl || DEFAULT_ICON_SRC);
+            })
+            .catch(() => {
+                // Decorative only - keep the default icon.
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     useEffect(() => {
         if (!userUid) {
@@ -124,11 +142,5 @@ export default function EscrowShell({ active, userUid, authServerUrl, children }
         );
     }
 
-    return (
-        <>
-            <BrandingHeader branding={branding} />
-            {content}
-            <BrandingFooter branding={branding} />
-        </>
-    );
+    return <>{content}</>;
 }

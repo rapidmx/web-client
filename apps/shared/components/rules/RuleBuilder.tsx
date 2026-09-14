@@ -47,6 +47,22 @@ export interface RuleBuilderProps<C extends object, A extends { type: string }> 
     onChange: (next: RuleBuilderValue<C, A>) => void;
     conditionFields: ConditionFieldDef[];
     actionTypes: ActionTypeDef<A>[];
+    /** Set by the page once the user has tried to save a rule `hasConditions()` rejects - turns the
+     * "add at least one condition" hint into an error. */
+    showValidation?: boolean;
+}
+
+/**
+ * Whether `conditions` holds at least one real condition: a list with a non-blank entry, a ticked
+ * boolean, or a chosen select value. A rule with none would match *every* message, so the pages that save
+ * a `RuleBuilder` value (mail filters, transport rules) must refuse to save unless this returns `true`.
+ */
+export function hasConditions(conditions: object): boolean {
+    return Object.values(conditions as Record<string, unknown>).some((v) => {
+        if (Array.isArray(v)) return v.some((entry) => typeof entry !== "string" || entry.trim() !== "");
+        if (typeof v === "string") return v.trim() !== "";
+        return v !== undefined && v !== null && v !== false;
+    });
 }
 
 /**
@@ -67,6 +83,7 @@ export default function RuleBuilder<C extends object, A extends { type: string }
     onChange,
     conditionFields,
     actionTypes,
+    showValidation = false,
 }: RuleBuilderProps<C, A>) {
     const [draftText, setDraftText] = useState<Record<string, string>>({});
     const [newActionType, setNewActionType] = useState(actionTypes[0]?.value ?? "");
@@ -85,13 +102,22 @@ export default function RuleBuilder<C extends object, A extends { type: string }
         setDraftText({ ...draftText, [key]: "" });
     }
 
+    // Only invoked from a chip's own "Remove" button, which only renders while `conditions[key]` holds
+    // that entry. Removing the last entry deletes the key rather than leaving an empty list behind.
     function removeListEntry(key: string, entry: string) {
-        const existing = (conditions[key] as string[] | undefined) ?? [];
-        patch({ conditions: { ...conditions, [key]: existing.filter((e) => e !== entry) } as C });
+        const remaining = (conditions[key] as string[]).filter((e) => e !== entry);
+        const next = { ...conditions };
+        if (remaining.length > 0) {
+            next[key] = remaining;
+        } else {
+            delete next[key];
+        }
+        patch({ conditions: next as C });
     }
 
     function toggleBoolean(key: string) {
-        patch({ conditions: { ...conditions, [key]: !conditions[key] } as C });
+        // Unticking stores `undefined` (no condition), not `false`.
+        patch({ conditions: { ...conditions, [key]: conditions[key] ? undefined : true } as C });
     }
 
     function setSelect(key: string, value: string) {
@@ -116,6 +142,11 @@ export default function RuleBuilder<C extends object, A extends { type: string }
         <div className="flex flex-col gap-5">
             <div className="bg-surface border border-border rounded-md p-6">
                 <h2 className="text-base font-bold uppercase tracking-wide mb-4">Conditions</h2>
+                {!hasConditions(value.conditions) && (
+                    <p role={showValidation ? "alert" : undefined} className={`text-sm mb-4 ${showValidation ? "text-danger" : "text-text-muted"}`}>
+                        Add at least one condition. A rule without conditions would apply to every message.
+                    </p>
+                )}
                 <div className="flex flex-col gap-4">
                     {conditionFields.map((field) => {
                         if (field.kind === "boolean") {
@@ -181,6 +212,10 @@ export default function RuleBuilder<C extends object, A extends { type: string }
                                         placeholder={field.placeholder ?? "Add a value"}
                                         value={draftText[field.key] ?? ""}
                                         onChange={(e) => setDraftText({ ...draftText, [field.key]: e.target.value })}
+                                        // Text typed but never added (no Add/Enter) is committed when the field
+                                        // loses focus - e.g. to the page's Save button - so it's never silently
+                                        // dropped from the saved rule.
+                                        onBlur={() => addListEntry(field.key)}
                                         onKeyDown={(e) => {
                                             if (e.key === "Enter") {
                                                 e.preventDefault();

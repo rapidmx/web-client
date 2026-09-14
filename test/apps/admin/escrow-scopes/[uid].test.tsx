@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
@@ -197,6 +197,96 @@ describe("EscrowScopeDetailPage", () => {
 
         expect(await screen.findByText("Saved.")).toBeInTheDocument();
         expect(screen.getByRole("heading", { name: "Renamed scope" })).toBeInTheDocument();
+    });
+
+    it("refuses to add the signed-in admin as a holder, but keeps an admin who was already one", async () => {
+        const fetchMock = mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/escrow/scopes/es1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, scope);
+            if (url === "/api/escrow/scopes/es1" && init?.method === "PUT") return jsonResponse(200, { ...scope, version: 1 });
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        const { unmount } = render(
+            <EscrowScopeDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "es1" }} />,
+        );
+        await screen.findByLabelText("Name");
+
+        await user.type(screen.getByLabelText("Holder user uids"), "admin-1");
+        await user.click(screen.getByRole("button", { name: "Add" }));
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+        expect(await screen.findByText(/You can't add yourself as a holder/)).toBeInTheDocument();
+        expect(screen.queryByText("Confirm escrow scope changes")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PUT")).toBe(false);
+        unmount();
+
+        // u1 is already a holder, so an unrelated save by u1 goes straight through.
+        render(<EscrowScopeDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "es1" }} />);
+        await screen.findByLabelText("Name");
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    });
+
+    it("confirms holder, approval-count, and key changes with a diff before saving", async () => {
+        let requestBody: any;
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/escrow/scopes/es1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, scope);
+            if (url === "/api/escrow/scopes/es1" && init?.method === "PUT") {
+                requestBody = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...scope, ...requestBody, version: 1 });
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<EscrowScopeDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "es1" }} />);
+        await screen.findByLabelText("Name");
+
+        await user.click(screen.getAllByRole("button", { name: "Remove" })[1]);
+        await user.type(screen.getByLabelText("Holder user uids"), "u3");
+        await user.click(screen.getByRole("button", { name: "Add" }));
+        fireEvent.change(screen.getByLabelText("Required holders (M-of-N dual control)"), { target: { value: "1" } });
+        await user.type(screen.getByLabelText("Public key (base64)"), "X");
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+        expect(await screen.findByText("Confirm escrow scope changes")).toBeInTheDocument();
+        expect(screen.getByText("Add holders: u3")).toBeInTheDocument();
+        expect(screen.getByText("Remove holders: u2")).toBeInTheDocument();
+        expect(screen.getByText("Required approvals: 2 → 1")).toBeInTheDocument();
+        expect(screen.getByText("Replace the public key")).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByText("Confirm escrow scope changes")).not.toBeInTheDocument();
+        expect(requestBody).toBeUndefined();
+
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+        await user.click(await screen.findByRole("button", { name: "Confirm and save" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(requestBody.holderUserUids).toEqual(["u1", "u3"]);
+        expect(requestBody.requiredHolders).toBe(1);
+    });
+
+    it("lists fingerprint, key type, and validity changes in the confirmation", async () => {
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/escrow/scopes/es1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, scope);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<EscrowScopeDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "es1" }} />);
+        await screen.findByLabelText("Name");
+
+        await user.type(screen.getByLabelText("Fingerprint (hex SHA-256)"), "d");
+        await user.type(screen.getByLabelText("Key type"), "v3");
+        fireEvent.change(screen.getByLabelText("Not after"), { target: { value: "2030-01-01T00:00" } });
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+        expect(await screen.findByText("Fingerprint: abc123 → abc123d")).toBeInTheDocument();
+        expect(screen.getByText("Replace the public key")).toBeInTheDocument();
+        expect(screen.getByText(/^Key validity: .* → .*2030-01-01T00:00$/)).toBeInTheDocument();
+        // Closing the modal (Escape) leaves the edits unsaved.
+        await user.keyboard("{Escape}");
+        expect(screen.queryByText("Confirm escrow scope changes")).not.toBeInTheDocument();
     });
 
     it("shows an error message when saving fails", async () => {

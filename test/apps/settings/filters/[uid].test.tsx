@@ -101,6 +101,20 @@ describe("MailFilterDetailPage", () => {
         expect(within(screen.getByLabelText("Destination folder")).getAllByRole("option")).toHaveLength(1); // just the placeholder
     });
 
+    it("lists the folders of the rule's own mailbox, even when the switcher is on a different one", async () => {
+        const fetchMock = mockShell((url) => {
+            if (url === "/api/mail/mail-filter-rules/mfr1") return jsonResponse(200, { ...rule, mailboxUid: "mb2", actions: [{ type: "move_to_folder", folderUid: "f9" }] });
+            if (url.startsWith("/api/mail/folders") && url.includes("mailboxUid=mb2")) return jsonResponse(200, [{ ...inboxFolder, uid: "f9", mailboxUid: "mb2", name: "Shared Inbox" }]);
+            return undefined;
+        });
+        render(<MailFilterDetailPage userUid="u1" params={{ uid: "mfr1" }} />);
+
+        expect(await screen.findByLabelText("Destination folder")).toHaveValue("f9");
+        expect(screen.getByRole("option", { name: "Shared Inbox" })).toBeInTheDocument();
+        const folderCalls = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith("/api/mail/folders"));
+        expect(folderCalls.every((url) => url.includes("mailboxUid=mb2"))).toBe(true);
+    });
+
     it("renders an empty forward-to address for a forward action loaded with forwardTo unset", async () => {
         mockShell((url) =>
             url === "/api/mail/mail-filter-rules/mfr1" ? jsonResponse(200, { ...rule, actions: [{ type: "forward" }] }) : undefined,
@@ -108,6 +122,26 @@ describe("MailFilterDetailPage", () => {
         render(<MailFilterDetailPage userUid="u1" params={{ uid: "mfr1" }} />);
 
         expect(await screen.findByLabelText("Forward to address")).toHaveValue("");
+    });
+
+    it("refuses to save a filter whose conditions were all removed", async () => {
+        let put = false;
+        mockShell((url, init) => {
+            if (url === "/api/mail/mail-filter-rules/mfr1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, { ...rule, conditions: {} });
+            if (url === "/api/mail/mail-filter-rules/mfr1" && init?.method === "PUT") {
+                put = true;
+                return jsonResponse(200, rule);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<MailFilterDetailPage userUid="u1" params={{ uid: "mfr1" }} />);
+        await screen.findByLabelText("Name");
+
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+        expect(await screen.findByText("Add at least one condition. A filter without conditions would apply to every message.")).toBeInTheDocument();
+        expect(put).toBe(false);
     });
 
     it("validates the name before saving", async () => {

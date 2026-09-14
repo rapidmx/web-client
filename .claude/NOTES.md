@@ -1088,3 +1088,136 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     `autoProvisionMailbox()` shows "Couldn't check right now" + Retry instead of "No mailbox available".
   - **Test gotcha**: a builder test whose `listMessages` mock resolves immediately forever never yields to timers,
     so `vi.waitFor` can't poll and the fork dies with exit 134 (OOM) - make endless mocks `await` a `setTimeout`.
+
+- **2026-09-14 — Round-3 review fixes, www pages (W1: inbox, settings, contacts/tasks/calendar pages).** Not committed.
+  - **Encryption settings**: regenerating recovery codes now *adds* the new wraps first, then removes the old ones by
+    `methodId`. `buildRecoveryWraps()` always labels wraps `recovery-1..N`, and restapi's remove deletes every wrap
+    with a matching `methodId`, so each new wrap is relabelled `recovery-<batch>-<i>` before it's added. The button is
+    disabled until the vault loads. Whatever codes saved are shown even on partial failure, with a warning on the
+    codes screen. If not every new code saved, the old codes are kept. If some old ones couldn't be removed, the
+    warning says so. Removing an unlock method now needs confirmation, and the last non-escrow method shows "Your
+    only unlock method" with no Remove button (restapi also returns 409). Key rotation: refused unless the unlocked
+    session covers every active key in `displayedKeys` (e.g. a signing key issued after unlocking), since `rekey()`
+    would drop it. It sends `displayedKeys` (including `refreshedKeys`). Codes show as soon as `rekey()` commits.
+    Escrow re-wrap and re-unlock handle their own errors. If re-unlock fails, the session keys and local index are
+    destroyed, and the "keys removed" screen explains why once the codes are acknowledged.
+  - **Inbox (`apps/www/index.tsx`)**: Tier 1 `search()` and Tier 3 `searchEncryptedCandidates()` pass the open
+    `mailboxUid`, on the first page and on load-more. A `subscribeKeySession` "locked" event for `activeMailboxUid`
+    clears `decryptedRows`, `snippets` and the Tier 3 cache, and a live search re-runs. The sentinel is now a
+    callback ref kept in state, so the observer re-attaches whenever the node remounts. It also renders in the
+    empty-filtered branch. After a page lands with the sentinel still in view, loading continues. Offset paging:
+    `listedOffsetRef` counts server rows fetched and goes down by one per local removal (archive or scheduled-send
+    cancel). Load-more requests `floor(offset/50)`, and `appendUnseenMessages` removes the overlap. Aggregate mode
+    picks `ownerUserUid === userUid`.
+  - **Privacy**: export and erasure only show while the selected mailbox is the caller's own. Otherwise a notice
+    names the own mailbox. Both sections name their target. ImportSection shows an error when `listFolders` fails.
+  - **Auto-reply / read receipts**: keep the version each `updateMailbox()` returns. Cleared OOF dates are sent as
+    `null`. Read receipts gained federated request/auto-send toggles (default false, same as restapi).
+  - **Booking type detail**: separate load and save errors, so the form stays on a failed save. `description` is
+    sent as `null` to clear it (cast: `UpdateBookingTypeInput` doesn't declare null). The contact detail page shows
+    a delete error above the contact instead of replacing the page.
+  - **Filter detail**: folders load for `original.mailboxUid`.
+  - **Tasks/calendar**: date-only values are parsed with `parseISO()` (local day). Tests can set `process.env.TZ`
+    at runtime (e.g. `America/Los_Angeles`) and restore it, which Node honours even under the suite's TZ=UTC.
+  - **Deletes and lists**: tasks (single + bulk) and contacts bulk delete now need confirmation in a Modal.
+    Contacts/tasks lists page through all results via `apps/shared/mail/listAllPages.ts` (500 per page, 40-page
+    safety cap). The contacts Add category request sends only `{uid, version, categories}`. The vCard export URL
+    is revoked after 60s. Focused Inbox lowercases the sender address (restapi normalizes it anyway).
+  - **Test gotcha**: in `test/apps/index.test.tsx`, other tests replace `window.location` with `mockLocation()`,
+    so `history.pushState` doesn't reach `location.search` later in the file. Set `search` on a fresh
+    `mockLocation()` instead. A vitest coverage dir lock can outlive a killed background run, so use a new
+    `reportsDirectory` name if a run reports the directory is in use.
+
+- **2026-09-14 — Round-3 review fixes, admin + escrow consoles (W3).** Not committed.
+  - **Branding**: `BrandingChrome` sanitizes header/footer HTML with DOMPurify (also strips style/form/input/
+    button/iframe/object/embed/svg/math/link/meta/base and `action`/`formaction`/`srcdoc`). With no DOM (SSR) it
+    renders nothing rather than raw HTML. The escrow console skips branding HTML and the custom stylesheet
+    entirely: `EscrowShell` calls `getBranding()` only for the rail icon (not `useBranding()`, which injects the
+    stylesheet), and `apps/escrow/_layout.tsx` no longer links it. `BrandingForm` refuses SVG logo/icon uploads by
+    MIME type or `.svg` name, and the file inputs accept raster types only.
+  - **Escrow scopes**: `selfAsHolderError()` (in `EscrowScopeKeyAndHoldersFields.tsx`) blocks adding the signed-in
+    admin as a holder on the new page, the `[uid]` page (only if newly added), and the setup wizard's escrow step
+    (`SetupWizard` passes `adminUid`). The generated-key step also warns that whoever downloads the key must not be
+    a holder. `[uid]` shows a "Confirm escrow scope changes" diff (holders added/removed, required approvals, key,
+    fingerprint, validity) before saving any of those; name/description-only saves go straight through.
+  - **Paging**: `apps/shared/components/admin/usePagedList.tsx` (`usePagedList` + `LoadMoreButton`, 50 per page) is
+    used by all three data-request lists and the matter page's access/export request lists (with `matterId`; rows
+    are still filtered client-side in case an older server ignores it). Only the latest `reload()` applies, and a
+    Load more that was in flight during a reload is dropped. Ingest queue got Previous/Next paging (25) with a
+    cancelled-effect guard.
+  - **Confirmations**: erasure Approve (names the mailbox, irreversible, errors shown in the modal); matter Close
+    (custodians + date range) and access-request Approve (matter, mailbox, date range, approval count); quarantine
+    "Mark released" (reason, date, original message uid - `QuarantineEntry` has no sender/subject, so those aren't
+    shown; `releaseQuarantineEntry()` still sends `releasedAt`/`releasedByUserUid`, which the server now overwrites);
+    share Revoke (the owner row, via the new `ownerUserUid` prop, has no Revoke); impersonation ("Access this
+    mailbox", error stays in the modal instead of replacing the page); retention (setting message retention when
+    none is set, or lowering it, compared against the last saved value); transport rules without conditions
+    (blocked when any action is reject/quarantine, "Apply to every message?" otherwise - uses W2's exported
+    `hasConditions()` via `checkRuleConditions()` in `_transportRuleConfig.tsx`).
+  - **Matter page**: closed matters hide "+ New export", the search form, and "Get material". Closing clears any
+    open material and search results. "Get material" has a sequence guard, so a response that arrives after its
+    modal was closed (or for an earlier request) is ignored.
+  - **Smaller**: ShareAccessCard grants merge with the uid's existing actions (never downgrade) and say "already has
+    this access" when nothing is missing. ResourceSettingsCard sends `null` for cleared numbers. Admin audit log
+    debounces filter typing (`FILTER_DEBOUNCE_MS` 300), never fetches before the URL filters are read, and ignores
+    stale responses. Escrow audit log labels `matter_export.*` and falls back to the raw action. DomainDnsSetup shows
+    verify/refresh failures next to a "Try again" button and keeps the panel. New `EscrowScopeCard` on the admin
+    mailbox page assigns `escrowScopeId` (or `null`). PluginsManager's rollout banner lists errors reported under
+    plugin name `"*"`.
+  - **Test gotchas**: AdminShell also fetches `/api/system/setup` etc., so a mock that hangs or fails "everything
+    but release-notes" catches the shell's own calls too - match the page's URL prefix instead. userEvent `clear`
+    on the required-holders number input leaves `1` (the `|| 1` fallback), so typing appends; use `fireEvent.change`.
+
+- **2026-09-14 — Round-3 review fixes, W2 (mail panes/compose, calendar, contacts, rules, AppShell).** Not committed.
+  - **EventModal**: "This event only" hides the Repeats editor and never sends a rule (react-shared's
+    `detachOccurrence` also forces it off). "Entire series" no longer sends the occurrence's dates: unchanged times
+    aren't sent; changed ones fetch the master (`getCalendarEvent`) and apply only the time-of-day delta + new
+    duration to the master start (`toSeriesFields`; all-day<->timed transitions handled). `organizer` only on create.
+    An event whose organizer isn't this mailbox (and no `isOrganizer` attendee matching it) is read-only: fields in a
+    disabled `<fieldset>`, no Save/scope choice, RSVP block moved to the top. Updates in place send `null` for cleared
+    location/reminder/recurrenceRule/autoReplyMessage (creates/detaches omit them).
+  - **All-day = date-only** (`calendar/allDay.ts`): stored as UTC midnight of the first day, exclusive `endDate` (UTC
+    midnight after the last day); the modal shows the inclusive last day. Reading rounds to the nearest UTC midnight
+    so legacy local-midnight values land on the intended date (wrong only for UTC-12/+13/+14 creators). Month/week/
+    split views use `occursOnDay` - multi-day events show on every covered day (timed blocks clipped per day); only
+    the start day's chip/block is draggable (`startsOnDay`), later days render non-draggable continuation copies
+    (dnd-kit ids must be unique). Test fixtures with `allDay: true` must use midnight dates.
+  - **RecurrenceEditor**: empty interval/count keep the previous value, <1 clamps to 1; "Ends on" stores the end of
+    the chosen *local* day; an empty date input is ignored.
+  - **ContactForm**: keeps/edits all `addresses` (first entry keeps the old "Address type"/"Remove address" labels,
+    later ones get an index suffix); update is a `ContactPatch` (uid/version + fields, no mailbox/folder) with `null`
+    for cleared text fields.
+  - **RuleBuilder**: exports `hasConditions(conditions)` (non-blank list entry, truthy boolean, non-empty select) and a
+    `showValidation` prop; always shows an "Add at least one condition" hint (becomes `role=alert`/danger with
+    `showValidation`). **W1 (www settings/filters) and W3 (admin transport-rules) pages must call `hasConditions()`
+    before saving and pass `showValidation` after a rejected save.** Typed-but-not-added list text commits on blur
+    (so clicking Save captures it). Removing a list's last entry deletes the key; unticking a boolean stores
+    `undefined`. `removeListEntry`'s `?? []` fallback is gone, so the vitest.config branch-exception comment about it
+    is stale.
+  - **AppShell sign-out**: `destroyUnlockedKeys()`, then in parallel `destroyAllLocalIndexes()` and auth-server logout
+    (`authApiFetch(authServerUrl, "/auth/logout", POST)` = `${authServerUrl}/api/auth/logout`, credentials include,
+    aborted after `LOGOUT_TIMEOUT_MS` 3s, errors ignored), then navigate. Other tabs: AppShell listens on
+    `SIGN_OUT_CHANNEL` (the `{type:"sign-out"}` `destroyAllLocalIndexes` already broadcasts) and destroys keys +
+    navigates; the originating tab ignores its own message (`signingOutRef`). AdminShell/EscrowShell (W3) still only
+    navigate. Tests that mock `crypto/keySession.js` and reach sign-out or ComposeWindow need `destroyUnlockedKeys`/
+    `subscribeKeySession` in the mock.
+  - **KeyEnrollmentGate** `canProvision` (default true); MailShell passes `activeMailbox.ownerUserUid === userUid`, so
+    a shared mailbox without a vault is never provisioned by a delegate. Unlock is unaffected.
+  - **ComposeWindow/ComposeContext**: sign/encrypt that can't happen (keys locked, mailbox/policy fetch failed while
+    encryption is possible) blocks send with a banner + explicit "Send without ..." override and re-prompts unlock;
+    re-renders on `subscribeKeySession`. Overrides replay a pending schedule time and are disabled while sending.
+    Encrypt + Bcc is blocked (one draft/one envelope, no per-recipient copies). Inline images (cid:/uploaded
+    attachment URLs) are blocked when signing/encrypting. Autosave after `DEFAULT_AUTOSAVE_DELAY_MS` (2s, prop
+    `autosaveDelayMs`) via the existing draft save, never for encrypted messages; discard asks (in-app Modal) and
+    deletes the draft; close saves (or deletes a blank draft). Mobile keeps background sessions mounted but hidden.
+    **react-shared follow-up**: `crypto/smimeMessage` `buildSignedOnlyMessage()`/`buildEncryptedMessage()` write the
+    body part without `Content-Transfer-Encoding` (raw UTF-8, TipTap HTML is one long line) - should base64/QP it.
+  - **MessageDetailPane**: client-rendered HTML uses a dedicated DOMPurify instance allowing only `data:`/`cid:` URLs
+    (attributes, inline/`<style>` `url()`/`image-set`, no `@import`/link/meta/base) plus a CSP meta in `srcDoc`;
+    `result.text` renders in a `<pre>`. Raw content is fetched only for `encrypted || hasAttachments` (no signed
+    flag exists; S/MIME parts arrive as attachments - so ordinary attachment mail still fetches raw; a restapi
+    `signed` flag would fix it). `getMessageRawContent` takes no AbortSignal, so stale results are dropped via a
+    cancelled flag. `signature_failed` shows the `signatureFailureReason` as a neutral status. Key lock clears the
+    decrypted body. Inner component keyed by `message.uid`; label toggles build on the newest version.
+  - **ConversationThreadPane**: generation counter drops stale loads/errors/mark-read results; mark-read and
+    attachment fetches once per message uid with the current version.

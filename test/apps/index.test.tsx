@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
@@ -15,11 +15,27 @@ import InboxPage from "../../apps/www/index.js";
 // MessageDetailPane.test.tsx already uses for `evaluateMessageSecurity`/`getUnlockedKeys`) so these
 // tests only verify `InboxContent`'s own concern: merging whatever Tier 3 returns with Tier 1's
 // results, not re-proving decryption correctness.
-const { searchEncryptedCandidates, getUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
-    searchEncryptedCandidates: vi.fn(),
-    getUnlockedKeys: vi.fn(),
-    unlockWithPassword: vi.fn(),
-}));
+const { searchEncryptedCandidates, getUnlockedKeys, unlockWithPassword, subscribeKeySession, keySessionListeners } = vi.hoisted(() => {
+    // A real-enough session event bus: `InboxContent` subscribes on mount, and the "keys locked" tests
+    // below fire events through `emitKeySession()`.
+    const keySessionListeners = new Set<(event: { mailboxUid: string; state: "unlocked" | "locked" }) => void>();
+    return {
+        searchEncryptedCandidates: vi.fn(),
+        getUnlockedKeys: vi.fn(),
+        unlockWithPassword: vi.fn(),
+        keySessionListeners,
+        subscribeKeySession: vi.fn((listener: (event: { mailboxUid: string; state: "unlocked" | "locked" }) => void) => {
+            keySessionListeners.add(listener);
+            return () => keySessionListeners.delete(listener);
+        }),
+    };
+});
+
+function emitKeySession(event: { mailboxUid: string; state: "unlocked" | "locked" }) {
+    for (const listener of [...keySessionListeners]) {
+        listener(event);
+    }
+}
 vi.mock("@rapidmx/react-shared/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
 
 // Tier 2 (the local encrypted index) is mocked at the same module boundary and for the same reason as
@@ -31,7 +47,7 @@ vi.mock("../../apps/shared/search/searchTier2.js", () => ({ searchLocalIndex }))
 // unlockWithPassword is real UnlockPromptProvider's own dependency (mounted for real by the real
 // AppShell this file renders through, via MailShell/KeyEnrollmentGate) - needed so the "unlock" tests
 // below (list/search banners) can actually complete a real unlock, not just getUnlockedKeys' read side.
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword }));
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
 
 // evaluateMessageSecurity() does real WebCrypto decryption against real unlocked keys - already
 // exercised end to end in react-shared's own test suite (see the Tier 3 comment above for the identical
@@ -2112,6 +2128,230 @@ describe("InboxPage", () => {
             await settle();
 
             expect(screen.queryByText("Late label")).not.toBeInTheDocument();
+        });
+    });
+
+    describe("round 3", () => {
+        const sharedMailbox = { ...mailbox, uid: "mb2", ownerUserUid: "u2", displayName: "Support", primarySmtpAddress: "support@example.com" };
+        const sharedInbox = { ...inboxFolder, uid: "f-shared-inbox", mailboxUid: "mb2" };
+        const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+        afterEach(() => {
+            keySessionListeners.clear();
+            // Other tests in this file replace window.location wholesale (see mockLocation()), so a fresh
+            // stub - not history.pushState - is what reliably resets the query string between tests.
+            mockLocation();
+        });
+
+        it("scopes Tier 1 and Tier 3 search - first page and load-more - to the open (shared) mailbox", async () => {
+            const location = mockLocation();
+            (location as any).search = "?mailboxUid=mb2&folderUid=f-shared-inbox";
+            const hits = [
+                messageFixture({ uid: "s1", subject: "Shared hit one", mailboxUid: "mb2", folderUid: "f-shared-inbox" }),
+                messageFixture({ uid: "s2", subject: "Shared hit two", mailboxUid: "mb2", folderUid: "f-shared-inbox" }),
+            ];
+            const io = mockIntersectionObserver();
+            const fetchMock = mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) {
+                    if (url.includes("cursor=c1")) return jsonResponse(200, { results: [{ entityType: "message", entityUid: "s2", score: 1 }] });
+                    return jsonResponse(200, { results: [{ entityType: "message", entityUid: "s1", score: 1 }], nextCursor: "c1" });
+                }
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/")) {
+                    const uid = url.split("/api/mail/messages/")[1].split("?")[0];
+                    const found = hits.find((m) => m.uid === uid);
+                    return found ? jsonResponse(200, found) : jsonResponse(404, { message: "not found" });
+                }
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("No messages in this folder.");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "hit");
+            await screen.findByText("Shared hit one");
+            io.trigger();
+            expect(await screen.findByText("Shared hit two")).toBeInTheDocument();
+
+            const searchCalls = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith("/api/mail/search"));
+            expect(searchCalls.length).toBeGreaterThanOrEqual(2);
+            expect(searchCalls.every((url) => url.includes("mailboxUid=mb2"))).toBe(true);
+            expect(searchEncryptedCandidates).toHaveBeenCalledWith(expect.anything(), undefined, expect.any(Number), { mailboxUid: "mb2" });
+        });
+
+        it("clears decrypted list subjects/previews when the open mailbox's keys are locked, ignoring other session events", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([encryptedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted_verified", subject: "Secret subject", html: "<p>Secret body</p>" });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Secret subject")).toBeInTheDocument();
+
+            act(() => {
+                emitKeySession({ mailboxUid: "mb1", state: "unlocked" });
+                emitKeySession({ mailboxUid: "some-other-mailbox", state: "locked" });
+            });
+            expect(screen.getByText("Secret subject")).toBeInTheDocument();
+
+            getUnlockedKeys.mockReturnValue(undefined);
+            act(() => emitKeySession({ mailboxUid: "mb1", state: "locked" }));
+
+            expect(await screen.findByText("Encrypted message")).toBeInTheDocument();
+            expect(screen.queryByText("Secret subject")).not.toBeInTheDocument();
+            expect(screen.queryByText("Secret body")).not.toBeInTheDocument();
+        });
+
+        it("drops decrypted search snippets and re-runs the search without keys when the open mailbox's keys are locked", async () => {
+            const hit = messageFixture({ uid: "m-local", subject: "Local hit" });
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            searchLocalIndex.mockImplementation(async (_mailboxUid: string, _parsed: unknown, unlocked: unknown) => ({
+                results: unlocked ? [{ entityType: "message", entityUid: "m-local", score: 5, source: "local", metadataOnly: false, snippet: "decrypted secret snippet" }] : [],
+            }));
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) return jsonResponse(200, { results: [] });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url === "/api/mail/messages/m-local") return jsonResponse(200, hit);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("No messages in this folder.");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "secret");
+            expect(await screen.findByText("decrypted secret snippet")).toBeInTheDocument();
+            const searchesBefore = searchLocalIndex.mock.calls.length;
+
+            getUnlockedKeys.mockReturnValue(undefined);
+            act(() => emitKeySession({ mailboxUid: "mb1", state: "locked" }));
+
+            await waitFor(() => expect(screen.queryByText("decrypted secret snippet")).not.toBeInTheDocument());
+            await waitFor(() => expect(searchLocalIndex.mock.calls.length).toBeGreaterThan(searchesBefore));
+            expect(await screen.findByText('No messages match "secret".')).toBeInTheDocument();
+        });
+
+        it("keeps loading pages while the Focused/Other filter hides every loaded row", async () => {
+            const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Focused ${i}` }));
+            const io = mockIntersectionObserver();
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages")) {
+                    if (url.includes("page=1")) {
+                        return jsonResponse(200, [messageFixture({ uid: "m-other", subject: "Other on page two", inferenceClassification: "other" })]);
+                    }
+                    return jsonResponse(200, firstPage);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Focused 0");
+
+            await user.click(screen.getByRole("button", { name: "Other" }));
+            expect(screen.getByText("No messages here.")).toBeInTheDocument();
+            expect(screen.getByTestId("load-more-sentinel")).toBeInTheDocument();
+
+            act(() => io.trigger());
+
+            expect(await screen.findByText("Other on page two")).toBeInTheDocument();
+        });
+
+        it("keeps loading while the sentinel stays in view after a page lands, without a new intersection report", async () => {
+            const page = (n: number, count: number) => Array.from({ length: count }, (_, i) => messageFixture({ uid: `p${n}-${i}`, subject: `Page ${n} row ${i}` }));
+            const io = mockIntersectionObserver();
+            const requestedPages: string[] = [];
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages")) {
+                    const pageParam = new URL(url, "http://localhost").searchParams.get("page")!;
+                    requestedPages.push(pageParam);
+                    return jsonResponse(200, pageParam === "2" ? page(2, 1) : page(Number(pageParam), 50));
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 row 0");
+
+            act(() => io.trigger());
+
+            expect(await screen.findByText("Page 2 row 0")).toBeInTheDocument();
+            expect(requestedPages).toEqual(["0", "1", "2"]);
+
+            // Once the sentinel reports it's out of view, a finished page doesn't chain another load.
+            act(() => io.trigger(false));
+            await settle();
+            expect(requestedPages).toEqual(["0", "1", "2"]);
+        });
+
+        it("re-requests the page a locally archived message shifted, instead of skipping the message that moved back", async () => {
+            const serverFolder = Array.from({ length: 120 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Row ${i}` }));
+            const io = mockIntersectionObserver();
+            const requestedPages: string[] = [];
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/")) return jsonResponse(200, serverFolder[0]);
+                if (url.startsWith("/api/mail/messages")) {
+                    const pageNumber = Number(new URL(url, "http://localhost").searchParams.get("page"));
+                    requestedPages.push(String(pageNumber));
+                    return jsonResponse(200, serverFolder.slice(pageNumber * 50, pageNumber * 50 + 50));
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+
+            await user.click(await screen.findByText("Row 0"));
+            await user.click(await screen.findByRole("button", { name: "simulate-archive" }));
+            // The archive moved it out of the folder server-side too - everything after it shifts back one.
+            serverFolder.splice(0, 1);
+            expect(screen.queryByText("Row 0")).not.toBeInTheDocument();
+
+            act(() => io.trigger(false));
+            act(() => io.trigger());
+
+            // Row 50 now sits at index 49 on the server - the first page again, not the second.
+            expect(await screen.findByText("Row 50")).toBeInTheDocument();
+            expect(requestedPages.slice(0, 2)).toEqual(["0", "0"]);
+            expect(screen.getAllByText("Row 49")).toHaveLength(1);
+        });
+
+        it("uses the caller's own mailbox (not merely the first owned-by-someone one) for the aggregate conversation view", async () => {
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            const fetchMock = mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [sharedMailbox, mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Open a mailbox's own folder to search");
+
+            await user.click(screen.getByRole("button", { name: "By conversation" }));
+
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/conversations?mailboxUid=mb1", expect.anything()));
+            expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/mail/messages/conversations?mailboxUid=mb2")).toBe(false);
+            mockLocation();
         });
     });
 });

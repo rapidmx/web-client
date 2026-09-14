@@ -100,28 +100,32 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
 
     // On mobile, a non-minimized `ComposeWindow` renders full-screen (see that component's own doc
     // comment) — Gmail-style stacking of several full-screen overlays at once makes no sense there, so
-    // at most one non-minimized session is ever rendered: the most recently opened one. Minimized
-    // sessions are small chips regardless of device, so every one of those still renders — an earlier
+    // at most one non-minimized session is ever shown: the most recently opened one. Minimized
+    // sessions are small chips regardless of device, so every one of those still shows — an earlier
     // session becomes visible again (as its own chip, or full-screen if it's the new most-recent
-    // non-minimized one) once whatever's currently "on top" is closed or minimized.
+    // non-minimized one) once whatever's currently "on top" is closed or minimized. The others stay
+    // mounted, just hidden: unmounting them would throw away everything typed into them.
     const lastNonMinimizedId = isMobile ? [...sessions].reverse().find((s) => !s.minimized)?.id : undefined;
-    const visibleSessions = isMobile ? sessions.filter((s) => s.minimized || s.id === lastNonMinimizedId) : sessions;
 
     return (
         <ComposeContext.Provider value={value}>
             {children}
-            {visibleSessions.length > 0 && (
+            {sessions.length > 0 && (
                 <div className="fixed bottom-0 right-6 flex items-end gap-3 z-50">
-                    {visibleSessions.map((session) => (
-                        <ComposeWindow
-                            key={session.id}
-                            session={session}
-                            userUid={userUid}
-                            trusted={trusted}
-                            onClose={() => closeCompose(session.id)}
-                            onToggleMinimize={() => toggleMinimize(session.id)}
-                        />
-                    ))}
+                    {sessions.map((session) => {
+                        const hidden = isMobile && !session.minimized && session.id !== lastNonMinimizedId;
+                        return (
+                            <div key={session.id} hidden={hidden} className={hidden ? "hidden" : "contents"}>
+                                <ComposeWindow
+                                    session={session}
+                                    userUid={userUid}
+                                    trusted={trusted}
+                                    onClose={() => closeCompose(session.id)}
+                                    onToggleMinimize={() => toggleMinimize(session.id)}
+                                />
+                            </div>
+                        );
+                    })}
                 </div>
             )}
         </ComposeContext.Provider>

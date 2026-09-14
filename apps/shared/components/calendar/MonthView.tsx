@@ -4,9 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { eachDayOfInterval, endOfMonth, endOfWeek, format, isSameDay, isSameMonth, isToday, startOfMonth, startOfWeek } from "date-fns";
+import { eachDayOfInterval, endOfMonth, endOfWeek, format, isSameMonth, isToday, startOfMonth, startOfWeek } from "date-fns";
 import { dayDropId, eventDragId } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { occursOnDay, startsOnDay } from "./allDay.js";
 
 const MAX_CHIPS_PER_DAY = 3;
 
@@ -21,8 +22,8 @@ export interface MonthViewProps {
     onSelectEvent: (occurrence: CalendarOccurrence) => void;
 }
 
-/** A real 6-week month grid (Mon-start), matching Outlook/Gmail's month view. Multi-day/all-day
- * events are shown only on their start day — a deliberate v1 simplification, not a bug. */
+/** A real 6-week month grid (Mon-start), matching Outlook/Gmail's month view. Multi-day and all-day
+ * events are shown on every day they cover (see `allDay.ts`'s `occursOnDay`). */
 export default function MonthView({ viewDate, occurrences, folderColors, onSelectDay, onSelectEvent }: MonthViewProps) {
     const gridStart = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 1 });
     const gridEnd = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 1 });
@@ -35,7 +36,7 @@ export default function MonthView({ viewDate, occurrences, folderColors, onSelec
                     key={day.toISOString()}
                     day={day}
                     inCurrentMonth={isSameMonth(day, viewDate)}
-                    occurrences={occurrences.filter((occ) => isSameDay(new Date(occ.startDate), day))}
+                    occurrences={occurrences.filter((occ) => occursOnDay(occ, day))}
                     folderColors={folderColors}
                     onSelectDay={onSelectDay}
                     onSelectEvent={onSelectEvent}
@@ -79,14 +80,23 @@ function DayCell({ day, inCurrentMonth, occurrences, folderColors, onSelectDay, 
                 {format(day, "d")}
             </button>
             <div className="flex-1 flex flex-col gap-0.5 min-h-0 overflow-hidden">
-                {visible.map((occurrence) => (
-                    <EventChip
-                        key={occurrence.occurrenceKey}
-                        occurrence={occurrence}
-                        color={folderColors[occurrence.folderUid]}
-                        onSelect={onSelectEvent}
-                    />
-                ))}
+                {visible.map((occurrence) =>
+                    startsOnDay(occurrence, day) ? (
+                        <EventChip
+                            key={occurrence.occurrenceKey}
+                            occurrence={occurrence}
+                            color={folderColors[occurrence.folderUid]}
+                            onSelect={onSelectEvent}
+                        />
+                    ) : (
+                        <ContinuationChip
+                            key={occurrence.occurrenceKey}
+                            occurrence={occurrence}
+                            color={folderColors[occurrence.folderUid]}
+                            onSelect={onSelectEvent}
+                        />
+                    ),
+                )}
                 {overflowCount > 0 && (
                     <button
                         type="button"
@@ -133,6 +143,30 @@ function EventChip({
             {...attributes}
         >
             {occurrence.allDay ? "" : `${format(new Date(occurrence.startDate), "h:mma")} `}
+            {occurrence.title}
+        </button>
+    );
+}
+
+/** A multi-day event's chip on a day after its first: clickable, but not draggable (its drag id is
+ * already taken by the start day's chip) and without a start-time prefix. */
+function ContinuationChip({
+    occurrence,
+    color,
+    onSelect,
+}: {
+    occurrence: CalendarOccurrence;
+    color: string;
+    onSelect: (occurrence: CalendarOccurrence) => void;
+}) {
+    const isFree = occurrence.busyStatus === "free";
+    return (
+        <button
+            type="button"
+            onClick={() => onSelect(occurrence)}
+            style={isFree ? undefined : { backgroundColor: color, color: "#fff" }}
+            className={["text-xs text-left truncate rounded-sm px-1.5 py-0.5 shrink-0", isFree ? "bg-surface-alt text-text-muted" : ""].join(" ")}
+        >
             {occurrence.title}
         </button>
     );

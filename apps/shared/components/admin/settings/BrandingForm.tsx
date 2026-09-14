@@ -22,6 +22,13 @@ const INPUT_CLASS =
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
+/** SVG logo/icon uploads are refused (the server refuses them too): an SVG served from this origin can carry script. */
+export function isSvgFile(file: File): boolean {
+    return file.type === "image/svg+xml" || file.name.toLowerCase().endsWith(".svg");
+}
+
+const RASTER_IMAGE_ACCEPT = "image/png,image/jpeg,image/gif,image/webp,image/x-icon,image/vnd.microsoft.icon";
+
 /** The branding editor, shared by the Branding page and the setup wizard. */
 export default function BrandingForm({ branding, onChange }: { branding: Branding; onChange: (b: Branding) => void }) {
     const [companyName, setCompanyName] = useState(branding.companyName);
@@ -58,7 +65,9 @@ export default function BrandingForm({ branding, onChange }: { branding: Brandin
     function handleLogoFileChange(e: ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0];
         if (!file) return;
-        if (file.size > MAX_UPLOAD_BYTES) {
+        if (isSvgFile(file)) {
+            setError(`"${file.name}" is an SVG — upload a PNG, JPEG, GIF, or WebP logo instead.`);
+        } else if (file.size > MAX_UPLOAD_BYTES) {
             setError(`"${file.name}" is too large — logos must be 5MB or smaller.`);
         } else {
             void runAsset("logo-upload", () => uploadBrandingLogo(file));
@@ -69,7 +78,9 @@ export default function BrandingForm({ branding, onChange }: { branding: Brandin
     function handleIconFileChange(e: ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0];
         if (!file) return;
-        if (file.size > MAX_UPLOAD_BYTES) {
+        if (isSvgFile(file)) {
+            setError(`"${file.name}" is an SVG — upload a PNG, JPEG, GIF, WebP, or ICO icon instead.`);
+        } else if (file.size > MAX_UPLOAD_BYTES) {
             setError(`"${file.name}" is too large — icons must be 5MB or smaller.`);
         } else {
             void runAsset("icon-upload", () => uploadBrandingIcon(file));
@@ -140,7 +151,7 @@ export default function BrandingForm({ branding, onChange }: { branding: Brandin
                             <input
                                 ref={logoFileRef}
                                 type="file"
-                                accept="image/*"
+                                accept={RASTER_IMAGE_ACCEPT}
                                 aria-label="Upload logo"
                                 className="hidden"
                                 onChange={handleLogoFileChange}
@@ -212,7 +223,7 @@ export default function BrandingForm({ branding, onChange }: { branding: Brandin
                             <input
                                 ref={iconFileRef}
                                 type="file"
-                                accept="image/*"
+                                accept={RASTER_IMAGE_ACCEPT}
                                 aria-label="Upload icon"
                                 className="hidden"
                                 onChange={handleIconFileChange}

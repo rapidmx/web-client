@@ -195,13 +195,15 @@ describe("DomainDetailPage", () => {
         expect(await screen.findByText("Verified")).toBeInTheDocument();
     });
 
-    it("shows an error message when verification fails", async () => {
+    it("shows a verification failure beside the button, keeps the panel, and lets it be retried", async () => {
+        let attempts = 0;
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, attempts > 1 ? { ...domain, verified: true } : domain);
             if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, []);
             if (url === "/api/mail/domains/example.com/verify" && init?.method === "POST") {
-                return jsonResponse(500, { message: "DNS lookup failed" });
+                attempts++;
+                return attempts === 1 ? jsonResponse(500, { message: "DNS lookup failed" }) : jsonResponse(200, { ...domain, verified: true });
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
@@ -210,6 +212,35 @@ describe("DomainDetailPage", () => {
 
         await user.click(await screen.findByRole("button", { name: "Verify now" }));
         expect(await screen.findByText("DNS lookup failed")).toBeInTheDocument();
+        expect(screen.getByText("rapidmx-domain-verification=tok123")).toBeInTheDocument();
+        expect(screen.getByText("Unverified")).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Try again" }));
+        expect(await screen.findByText("Verified")).toBeInTheDocument();
+        expect(screen.queryByText("DNS lookup failed")).not.toBeInTheDocument();
+    });
+
+    it("keeps the panel when refreshing after a successful verification fails", async () => {
+        let verified = false;
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com/verify" && init?.method === "POST") {
+                verified = true;
+                return jsonResponse(200, domain);
+            }
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com/dns-setup") {
+                if (verified) throw new TypeError("network down");
+                return jsonResponse(200, []);
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<DomainDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "example.com" }} />);
+
+        await user.click(await screen.findByRole("button", { name: "Verify now" }));
+        expect(await screen.findByText("Could not verify this domain.")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
     });
 
     it("shows a generic error message when verification fails with a non-API error", async () => {

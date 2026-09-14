@@ -14,6 +14,7 @@ import {
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import EscrowScopeKeyAndHoldersFields, {
     EscrowScopeKeyAndHoldersValue,
+    selfAsHolderError,
 } from "../../shared/components/admin/escrowScopes/EscrowScopeKeyAndHoldersFields.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -36,15 +37,45 @@ function toFieldsValue(scope: EscrowScope): EscrowScopeKeyAndHoldersValue {
     };
 }
 
+/**
+ * Describes every change to the security-relevant parts of a scope - who holds it, how many holders must approve,
+ * and its public key - so the administrator confirms exactly what they're changing before it's saved.
+ */
+export function describeSecurityChanges(original: EscrowScope, next: EscrowScopeKeyAndHoldersValue): string[] {
+    const changes: string[] = [];
+    const added = next.holderUserUids.filter((holder) => !original.holderUserUids.includes(holder));
+    const removed = original.holderUserUids.filter((holder) => !next.holderUserUids.includes(holder));
+    if (added.length > 0) {
+        changes.push(`Add holders: ${added.join(", ")}`);
+    }
+    if (removed.length > 0) {
+        changes.push(`Remove holders: ${removed.join(", ")}`);
+    }
+    if (next.requiredHolders !== original.requiredHolders) {
+        changes.push(`Required approvals: ${original.requiredHolders} → ${next.requiredHolders}`);
+    }
+    const originalKey = toFieldsValue(original);
+    if (next.publicKey.trim() !== originalKey.publicKey || next.keyType.trim() !== originalKey.keyType) {
+        changes.push("Replace the public key");
+    }
+    if (next.fingerprint.trim() !== originalKey.fingerprint) {
+        changes.push(`Fingerprint: ${originalKey.fingerprint} → ${next.fingerprint.trim()}`);
+    }
+    if (next.notBefore !== originalKey.notBefore || next.notAfter !== originalKey.notAfter) {
+        changes.push(`Key validity: ${originalKey.notBefore} – ${originalKey.notAfter} → ${next.notBefore} – ${next.notAfter}`);
+    }
+    return changes;
+}
+
 export default function EscrowScopeDetailPage(props: Omit<AdminShellProps, "active"> & { params: { uid: string } }) {
     return (
         <AdminShell {...props} active="escrowScopes">
-            <EscrowScopeDetailContent uid={props.params.uid} />
+            <EscrowScopeDetailContent uid={props.params.uid} adminUid={props.userUid} />
         </AdminShell>
     );
 }
 
-function EscrowScopeDetailContent({ uid }: { uid: string }) {
+function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: string }) {
     const [original, setOriginal] = useState<EscrowScope | null>(null);
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
@@ -56,6 +87,7 @@ function EscrowScopeDetailContent({ uid }: { uid: string }) {
     const [confirmingDelete, setConfirmingDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
+    const [pendingChanges, setPendingChanges] = useState<string[] | null>(null);
 
     useEffect(() => {
         setLoading(true);
@@ -97,7 +129,22 @@ function EscrowScopeDetailContent({ uid }: { uid: string }) {
             setError("Required holders must be between 1 and the number of holders.");
             return;
         }
+        const selfError = selfAsHolderError(fields!.holderUserUids, adminUid, original!.holderUserUids);
+        if (selfError) {
+            setError(selfError);
+            return;
+        }
 
+        const changes = describeSecurityChanges(original!, fields!);
+        if (changes.length > 0) {
+            setPendingChanges(changes);
+            return;
+        }
+        await save();
+    }
+
+    async function save() {
+        setPendingChanges(null);
         setSaving(true);
         setSaved(false);
         try {
@@ -210,6 +257,30 @@ function EscrowScopeDetailContent({ uid }: { uid: string }) {
                     </Button>
                 </div>
             </form>
+
+            <Modal open={pendingChanges !== null} onClose={() => setPendingChanges(null)} title="Confirm escrow scope changes">
+                <p className="text-sm mb-3">
+                    These changes decide who can recover escrowed mail under <strong>{original.name}</strong>:
+                </p>
+                <ul className="list-disc pl-5 text-sm flex flex-col gap-1 mb-3">
+                    {pendingChanges?.map((change) => (
+                        <li key={change} className="break-all">
+                            {change}
+                        </li>
+                    ))}
+                </ul>
+                <p className="text-xs text-text-muted">
+                    The server refuses changes while an access request under this scope is still awaiting approval.
+                </p>
+                <div className="flex gap-3 justify-end mt-5">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setPendingChanges(null)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto" onClick={() => void save()}>
+                        Confirm and save
+                    </Button>
+                </div>
+            </Modal>
 
             <Modal open={confirmingDelete} onClose={closeDeleteModal} title="Delete escrow scope">
                 <p className="text-sm mb-5">

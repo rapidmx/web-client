@@ -32,12 +32,13 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [verifying, setVerifying] = useState(false);
+    const [verifyError, setVerifyError] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
 
     function reload(id: string) {
         setLoading(true);
         setError(null);
-        Promise.all([getDomain(id), getDnsSetup(id)])
+        return Promise.all([getDomain(id), getDnsSetup(id)])
             .then(([d, checks]) => {
                 setDomain(d);
                 setDnsSetup(checks);
@@ -48,18 +49,23 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
     }
 
     useEffect(() => {
-        reload(uid);
+        void reload(uid);
     }, [uid]);
 
-    // Only ever invoked from the "Verify now" button below, which only renders once `domain` is loaded.
+    // Only ever invoked from the "Verify now" button below, which only renders once `domain` is loaded. Any failure -
+    // verifying, or refreshing afterwards - is shown next to the button with the panel kept, so it can be retried
+    // (e.g. once a DNS record has propagated) instead of the whole panel being replaced by an error.
     async function handleVerify() {
         setVerifying(true);
-        setError(null);
+        setVerifyError(null);
         try {
             await verifyDomain(domain!.uid);
-            reload(domain!.uid);
+            const [d, checks] = await Promise.all([getDomain(domain!.uid), getDnsSetup(domain!.uid)]);
+            setDomain(d);
+            setDnsSetup(checks);
+            onLoaded?.(d);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not verify this domain.");
+            setVerifyError(err instanceof ApiRequestError ? err.message : "Could not verify this domain.");
         } finally {
             setVerifying(false);
         }
@@ -120,8 +126,13 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                                 {copied ? "Copied" : "Copy"}
                             </Button>
                         </div>
+                        {verifyError && (
+                            <div className="mt-3">
+                                <Alert>{verifyError}</Alert>
+                            </div>
+                        )}
                         <Button type="button" className="!w-auto mt-3" loading={verifying} disabled={verifying} onClick={handleVerify}>
-                            Verify now
+                            {verifyError ? "Try again" : "Verify now"}
                         </Button>
                     </div>
                 )}

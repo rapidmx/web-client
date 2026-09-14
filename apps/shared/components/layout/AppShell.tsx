@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import "../../styles/app.css";
-import React, { PropsWithChildren, useState, useEffect } from "react";
+import React, { PropsWithChildren, useEffect, useRef, useState } from "react";
 import type { IconType } from "react-icons";
 import { HiOutlineCalendarDays, HiOutlineClipboardDocumentList, HiOutlineEnvelope, HiOutlineUsers } from "react-icons/hi2";
 import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
@@ -16,7 +16,32 @@ import BottomTabBar from "@rapidmx/react-shared/components/navigation/BottomTabB
 import { BrandingFooter, BrandingHeader } from "./BrandingChrome.js";
 import UserMenu from "./UserMenu.js";
 import { UnlockPromptProvider } from "./UnlockPromptProvider.js";
-import { destroyAllLocalIndexes } from "../../search/localIndexRpcClient.js";
+import { SIGN_OUT_CHANNEL, destroyAllLocalIndexes } from "../../search/localIndexRpcClient.js";
+import { authApiFetch } from "@rapidmx/react-shared/util/api.js";
+import { destroyUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+
+/** How long sign-out waits for auth-server's logout before navigating anyway. */
+export const LOGOUT_TIMEOUT_MS = 3_000;
+
+/**
+ * Calls auth-server's logout (`POST /api/auth/logout`, cross-origin with credentials), which clears the auth
+ * cookie and invalidates the session's refresh token. Bounded by `LOGOUT_TIMEOUT_MS` and never rejects - a
+ * failure (unreachable server, CORS) must not keep the user from leaving.
+ */
+async function logOutOfAuthServer(authServerUrl: string | undefined): Promise<void> {
+    if (!authServerUrl) {
+        return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+    try {
+        await authApiFetch(authServerUrl, "/auth/logout", { method: "POST", signal: controller.signal });
+    } catch {
+        // Navigate anyway - see this function's doc comment.
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 export type AppShellApp = "mail" | "calendar" | "contacts" | "tasks";
 
@@ -85,6 +110,7 @@ export default function AppShell({
     children,
 }: PropsWithChildren<AppShellProps>) {
     const [stoppingImpersonation, setStoppingImpersonation] = useState(false);
+    const signingOutRef = useRef(false);
     const { branding, iconSrc } = useBranding();
 
     useRedirectIfUnauthenticated(userUid, authServerUrl);
@@ -108,12 +134,36 @@ export default function AppShell({
             .catch(() => undefined);
     }, [userUid, impersonating, trusted]);
 
+    // Another tab signing out (see `handleSignOut`) ended this session too - its auth cookie is gone - so this
+    // tab destroys its own unlocked keys and leaves as well, rather than keeping plaintext keys in memory
+    // behind a signed-out UI. `destroyAllLocalIndexes()` announces the sign-out on this channel; the tab that
+    // started it ignores its own announcement (it's already mid-sign-out).
+    useEffect(() => {
+        if (!userUid || typeof BroadcastChannel === "undefined") {
+            return;
+        }
+        const channel = new BroadcastChannel(SIGN_OUT_CHANNEL);
+        channel.addEventListener("message", (event: MessageEvent<{ type?: string }>) => {
+            if (event.data?.type !== "sign-out" || signingOutRef.current) {
+                return;
+            }
+            destroyUnlockedKeys();
+            window.location.href = authServerUrl ?? "/";
+        });
+        return () => channel.close();
+    }, [userUid, authServerUrl]);
+
     async function handleSignOut() {
+        signingOutRef.current = true;
+        // Unlocked private keys never outlive an explicit sign-out.
+        destroyUnlockedKeys();
         // The Tier 2 local index MUST be destroyed on explicit logout, the same as unlocked keys themselves
         // (spec §11). Destroys every index on this device (not only mailboxes opened this page load) and is
         // awaited before navigating - a navigation tears down the Worker mid-delete otherwise.
         // destroyAllLocalIndexes() is bounded by its own timeout and never rejects, so sign-out can't hang.
-        await destroyAllLocalIndexes();
+        // In parallel, auth-server's logout clears the auth cookie and invalidates the session's refresh
+        // token - without it, "Sign Out" would only navigate away from a still-valid session.
+        await Promise.all([destroyAllLocalIndexes(), logOutOfAuthServer(authServerUrl)]);
         window.location.href = authServerUrl ?? "/";
     }
 

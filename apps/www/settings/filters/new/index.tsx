@@ -11,7 +11,7 @@ import {
     createMailFilterRule,
 } from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../../shared/components/settings/layout/SettingsShell.js";
-import RuleBuilder, { RuleBuilderValue } from "../../../../shared/components/rules/RuleBuilder.js";
+import RuleBuilder, { hasConditions, RuleBuilderValue } from "../../../../shared/components/rules/RuleBuilder.js";
 import { MAIL_FILTER_CONDITION_FIELDS, buildMailFilterActionTypes } from "../_mailFilterRuleConfig.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -44,6 +44,7 @@ function NewMailFilterForm() {
     });
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    const [showValidation, setShowValidation] = useState(false);
 
     // `SettingsShell` only ever renders its children once `mailboxUid` has resolved — same established
     // non-null pattern as `apps/www/settings/auto-reply/index.tsx`.
@@ -59,6 +60,11 @@ function NewMailFilterForm() {
 
         if (!name.trim()) {
             setError("A name is required.");
+            return;
+        }
+        if (!hasConditions(rule.conditions)) {
+            setShowValidation(true);
+            setError("Add at least one condition. A filter without conditions would apply to every message.");
             return;
         }
 
@@ -106,6 +112,7 @@ function NewMailFilterForm() {
                             onChange={setRule}
                             conditionFields={MAIL_FILTER_CONDITION_FIELDS}
                             actionTypes={buildMailFilterActionTypes(folders)}
+                            showValidation={showValidation}
                         />
 
                         <div className="flex gap-3">

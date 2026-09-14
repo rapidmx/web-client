@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import IngestQueuePage from "../../../../apps/admin/ingest-queue/index.js";
@@ -104,5 +105,48 @@ describe("IngestQueuePage", () => {
             "href",
             "/admin/mailboxes/mb1",
         );
+    });
+
+    it("pages through the queue with Next and Previous", async () => {
+        const fetchMock = mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1") {
+                return jsonResponse(200, Array.from({ length: 25 }, (_, i) => ({ ...entry, uid: `iq${i}`, envelopeFrom: `s${i}@example.com` })));
+            }
+            if (url === "/api/mail/ingest-queue?limit=25&page=1&mailboxUid=mb1") {
+                return jsonResponse(200, [{ ...entry, uid: "iq25", envelopeFrom: "last@example.com" }]);
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<IngestQueuePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        expect(await screen.findByText("s24@example.com")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        expect(await screen.findByText("last@example.com")).toBeInTheDocument();
+        expect(screen.getByText("Page 2")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+        await user.click(screen.getByRole("button", { name: "Previous" }));
+        expect(await screen.findByText("s0@example.com")).toBeInTheDocument();
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=1&mailboxUid=mb1", expect.anything());
+    });
+
+    it("ignores a response or failure that lands after the page was left", async () => {
+        const pending: { resolve: (r: Response) => void; reject: (e: Error) => void }[] = [];
+        mockFetch((url) => {
+            if (!url.startsWith("/api/mail/ingest-queue")) return jsonResponse(200, {});
+            return new Promise<Response>((resolve, reject) => pending.push({ resolve, reject }));
+        });
+        const first = render(<IngestQueuePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+        first.unmount();
+        pending[0].resolve(jsonResponse(200, [entry]));
+
+        const second = render(<IngestQueuePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await vi.waitFor(() => expect(pending).toHaveLength(2));
+        second.unmount();
+        pending[1].reject(new TypeError("network down"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
     });
 });

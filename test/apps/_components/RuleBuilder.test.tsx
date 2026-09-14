@@ -10,6 +10,7 @@ import RuleBuilder, {
     ActionTypeDef,
     ConditionFieldDef,
     RuleBuilderValue,
+    hasConditions,
 } from "../../../apps/shared/components/rules/RuleBuilder.js";
 
 interface TestConditions {
@@ -286,5 +287,69 @@ describe("RuleBuilder", () => {
 
         await user.click(screen.getByRole("checkbox", { name: "Enabled" }));
         expect(onChangeSpy).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
+    });
+
+    it("commits typed-but-not-added list text when the field loses focus", async () => {
+        const onChangeSpy = vi.fn();
+        const user = userEvent.setup();
+        render(<ControlledRuleBuilder onChangeSpy={onChangeSpy} />);
+
+        await user.type(screen.getByLabelText("From contains"), "pending.example.com");
+        await user.tab();
+
+        expect(screen.getByText("pending.example.com")).toBeInTheDocument();
+        expect(onChangeSpy).toHaveBeenLastCalledWith(expect.objectContaining({ conditions: { fromContains: ["pending.example.com"] } }));
+    });
+
+    it("deletes a list condition's key when its last entry is removed, and stores undefined when a boolean is unticked", async () => {
+        const onChangeSpy = vi.fn();
+        const user = userEvent.setup();
+        render(<ControlledRuleBuilder onChangeSpy={onChangeSpy} />);
+
+        await user.type(screen.getByLabelText("From contains"), "a.example.com{Enter}");
+        await user.type(screen.getByLabelText("From contains"), "b.example.com{Enter}");
+        await user.click(screen.getByRole("button", { name: "Remove a.example.com" }));
+        expect(onChangeSpy.mock.lastCall![0].conditions).toEqual({ fromContains: ["b.example.com"] });
+        await user.click(screen.getByRole("button", { name: "Remove b.example.com" }));
+        expect("fromContains" in onChangeSpy.mock.lastCall![0].conditions).toBe(false);
+
+        const checkbox = screen.getByRole("checkbox", { name: "Has an attachment" });
+        await user.click(checkbox);
+        expect(onChangeSpy.mock.lastCall![0].conditions.hasAttachment).toBe(true);
+        await user.click(checkbox);
+        const last = onChangeSpy.mock.lastCall![0].conditions;
+        expect("hasAttachment" in last && last.hasAttachment === undefined).toBe(true);
+    });
+
+    it("shows a muted hint with no conditions, an error once showValidation is set, and nothing once a condition exists", async () => {
+        const { rerender } = render(
+            <RuleBuilder value={EMPTY_VALUE} onChange={vi.fn()} conditionFields={CONDITION_FIELDS} actionTypes={ACTION_TYPES} />,
+        );
+        expect(screen.getByText(/Add at least one condition/)).toHaveClass("text-text-muted");
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+        rerender(<RuleBuilder value={EMPTY_VALUE} onChange={vi.fn()} conditionFields={CONDITION_FIELDS} actionTypes={ACTION_TYPES} showValidation />);
+        expect(screen.getByRole("alert")).toHaveTextContent(/Add at least one condition/);
+
+        rerender(
+            <RuleBuilder
+                value={{ ...EMPTY_VALUE, conditions: { hasAttachment: true } }}
+                onChange={vi.fn()}
+                conditionFields={CONDITION_FIELDS}
+                actionTypes={ACTION_TYPES}
+                showValidation
+            />,
+        );
+        expect(screen.queryByText(/Add at least one condition/)).not.toBeInTheDocument();
+    });
+
+    it("hasConditions() only counts real conditions", () => {
+        expect(hasConditions({})).toBe(false);
+        expect(hasConditions({ a: undefined, b: null, c: false, d: [], e: ["  "], f: "" })).toBe(false);
+        expect(hasConditions({ a: ["x"] })).toBe(true);
+        expect(hasConditions({ a: [1] })).toBe(true);
+        expect(hasConditions({ a: true })).toBe(true);
+        expect(hasConditions({ a: "high" })).toBe(true);
+        expect(hasConditions({ a: 0 })).toBe(true);
     });
 });

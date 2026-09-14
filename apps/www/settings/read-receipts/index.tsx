@@ -26,9 +26,13 @@ function ReadReceiptsContent() {
     const mailbox = mailboxes.find((mb) => mb.uid === mailboxUid)!;
 
     const [alwaysRequestReceiptInternal, setAlwaysRequestReceiptInternal] = useState(mailbox.alwaysRequestReceiptInternal ?? true);
+    const [alwaysRequestReceiptFederated, setAlwaysRequestReceiptFederated] = useState(mailbox.alwaysRequestReceiptFederated ?? false);
     const [alwaysRequestReceiptExternal, setAlwaysRequestReceiptExternal] = useState(mailbox.alwaysRequestReceiptExternal ?? false);
     const [autoSendReceiptsInternal, setAutoSendReceiptsInternal] = useState(mailbox.autoSendReceiptsInternal ?? true);
+    const [autoSendReceiptsFederated, setAutoSendReceiptsFederated] = useState(mailbox.autoSendReceiptsFederated ?? false);
     const [autoSendReceiptsExternal, setAutoSendReceiptsExternal] = useState(mailbox.autoSendReceiptsExternal ?? false);
+    // See auto-reply/index.tsx's identical note - later saves must carry the version the previous save returned.
+    const [version, setVersion] = useState(mailbox.version);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -39,14 +43,17 @@ function ReadReceiptsContent() {
         setSaved(false);
         setSaving(true);
         try {
-            await updateMailbox({
+            const updated = await updateMailbox({
                 uid: mailbox.uid,
-                version: mailbox.version,
+                version,
                 alwaysRequestReceiptInternal,
+                alwaysRequestReceiptFederated,
                 alwaysRequestReceiptExternal,
                 autoSendReceiptsInternal,
+                autoSendReceiptsFederated,
                 autoSendReceiptsExternal,
             });
+            setVersion(updated.version);
             setSaved(true);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save read receipt settings.");
@@ -82,6 +89,14 @@ function ReadReceiptsContent() {
                         <label className="flex items-center gap-2 text-sm">
                             <input
                                 type="checkbox"
+                                checked={alwaysRequestReceiptFederated}
+                                onChange={(e) => setAlwaysRequestReceiptFederated(e.target.checked)}
+                            />
+                            From federated recipients (partner organizations)
+                        </label>
+                        <label className="flex items-center gap-2 text-sm">
+                            <input
+                                type="checkbox"
                                 checked={alwaysRequestReceiptExternal}
                                 onChange={(e) => setAlwaysRequestReceiptExternal(e.target.checked)}
                             />
@@ -98,6 +113,14 @@ function ReadReceiptsContent() {
                                 onChange={(e) => setAutoSendReceiptsInternal(e.target.checked)}
                             />
                             From internal senders
+                        </label>
+                        <label className="flex items-center gap-2 text-sm">
+                            <input
+                                type="checkbox"
+                                checked={autoSendReceiptsFederated}
+                                onChange={(e) => setAutoSendReceiptsFederated(e.target.checked)}
+                            />
+                            From federated senders (partner organizations)
                         </label>
                         <label className="flex items-center gap-2 text-sm">
                             <input

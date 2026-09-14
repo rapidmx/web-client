@@ -14,7 +14,7 @@ import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScorin
 import { searchEncryptedCandidates } from "@rapidmx/react-shared/search/searchTier3.js";
 import { searchLocalIndex } from "../shared/search/searchTier2.js";
 import type { Coverage } from "../shared/search/localIndexWorker.js";
-import { getUnlockedKeys, UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { getUnlockedKeys, subscribeKeySession, UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
@@ -144,8 +144,11 @@ function mergeSearchResults(tier1: SearchResult[], tier2: SearchResult[], tier3:
  * (this inbox list only ever shows message rows; a real multi-entity-type results view is a separate,
  * larger UI project outside this pass). Shared by both the fresh-search orchestration and `loadMore()`
  * below, which each build this from the same `ParsedSearchQuery` differently only in `cursor`. */
-function tier1SearchParams(parsed: ParsedSearchQuery, cursor: string | undefined) {
+function tier1SearchParams(parsed: ParsedSearchQuery, cursor: string | undefined, mailboxUid: string) {
     return {
+        // The mailbox actually open - omitted, the server searches the caller's *own* mailbox, which is the
+        // wrong one whenever a shared mailbox's folder is being viewed.
+        mailboxUid,
         types: parsed.entityTypes ?? ["message"],
         cursor,
         limit: MESSAGE_PAGE_SIZE,
@@ -255,8 +258,10 @@ function tier3Windows(parsed: ParsedSearchQuery, coverage: Coverage | undefined,
 
 /** Runs Tier 3 over each window and merges the candidates (a uid can't match in two disjoint windows, but a
  * message whose date sits exactly on a boundary may come back from both). */
-async function searchTier3Windows(windows: ParsedSearchQuery[], unlocked: UnlockedKeys | undefined): Promise<SearchResult[]> {
-    const pages = await Promise.all(windows.map((window) => searchEncryptedCandidates(window, unlocked, TIER3_CANDIDATE_LIMIT)));
+async function searchTier3Windows(windows: ParsedSearchQuery[], unlocked: UnlockedKeys | undefined, mailboxUid: string): Promise<SearchResult[]> {
+    const pages = await Promise.all(
+        windows.map((window) => searchEncryptedCandidates(window, unlocked, TIER3_CANDIDATE_LIMIT, { mailboxUid })),
+    );
     const merged = new Map<string, SearchResult>();
     for (const result of pages.flat()) {
         if (!merged.has(result.entityUid)) {
@@ -372,12 +377,12 @@ async function fetchAggregateMessages(mailboxFolders: MailboxFolders[], type: Ag
 export default function InboxPage(props: MailShellProps) {
     return (
         <MailShell {...props}>
-            <InboxContent />
+            <InboxContent userUid={props.userUid} />
         </MailShell>
     );
 }
 
-function InboxContent() {
+function InboxContent({ userUid }: { userUid?: string }) {
     const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType } = useMailShell();
     const isMobile = useIsMobile();
     const { requestUnlock } = useUnlockPrompt();
@@ -399,8 +404,9 @@ function InboxContent() {
     // before Tier 2 has resolved yet for this search pass.
     const [coverage, setCoverage] = useState<Coverage | undefined>(undefined);
     // Keyed by message uid - see decryptEncryptedRows(). Never cleared on folder/search switches (a
-    // decrypted row stays decrypted for the rest of the session; re-decrypting on every navigation would
-    // waste work for no benefit), only ever added to.
+    // decrypted row stays decrypted while its keys stay unlocked; re-decrypting on every navigation would
+    // waste work for no benefit) - only cleared when the mailbox's keys are locked (see the
+    // `subscribeKeySession()` effect below).
     const [decryptedRows, setDecryptedRows] = useState<Record<string, DecryptedRow>>({});
     // Bumped after a successful on-demand unlock to re-run the search effect below - it's not a
     // dependency the effect could otherwise react to (getUnlockedKeys() is a plain module-level read, not
@@ -425,15 +431,22 @@ function InboxContent() {
     // to span an arbitrary number of mailboxes is out of scope for this pass (see the aggregate-fetch
     // branch below, which the search effect never reaches while `folderUid` is unset).
     const isSearching = viewMode === "date" && searchQuery.length > 0 && !aggregateFolderType;
-    const pageRef = useRef(0);
+    // How far into the folder's *current* server-side listing the rows fetched so far reach. Offset
+    // paging, not a cursor (`listMessages()` has none): a row removed locally (archived, scheduled send
+    // cancelled) also left the folder server-side, shifting every later message back by one - so each
+    // removal steps this back too, or the next page would silently skip a message. See `loadMore()`.
+    const listedOffsetRef = useRef(0);
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-    const sentinelRef = useRef<HTMLDivElement | null>(null);
+    // State (via a callback ref), not a plain ref: the sentinel mounts and unmounts as the list loads,
+    // filters, and empties, and the observer effect below must re-attach to whichever node is current.
+    const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
+    const sentinelVisibleRef = useRef(false);
     // The mailbox unlock/decrypt call sites below treat as "the" mailbox when there's no single selected
     // one (aggregate mode) - mirrors `MailShell`'s own identical `defaultMailboxUid` fallback. An
     // aggregate-view row from a *different*, not-yet-unlocked mailbox stays locked until that mailbox's
     // own folder view is opened directly - an accepted limitation, not a bug (see `MailShell`'s own doc
     // comment on the same tradeoff for its `LocalIndexLifecycle`/`KeyEnrollmentGate` wiring).
-    const activeMailboxUid = mailboxUid ?? mailboxes.find((mb) => mb.ownerUserUid)?.uid ?? mailboxes[0]?.uid;
+    const activeMailboxUid = mailboxUid ?? mailboxes.find((mb) => mb.ownerUserUid === userUid)?.uid ?? mailboxes[0]?.uid;
     const mailboxKeys = mailboxes.find((mb) => mb.uid === activeMailboxUid)?.keys ?? [];
     // Reset to a fresh Map at the start of every new search pass (see the search effect below) - see
     // resolveHitsToMessages()'s own doc comment on why this needs to persist *within* one pass but not
@@ -489,6 +502,30 @@ function InboxContent() {
             cancelled = true;
         };
     }, [messages, unlockRefresh]);
+
+    // Locking a mailbox's keys (idle timeout, "Destroy keys on this device now", sign-out) must take its
+    // decrypted content off screen too, not just out of memory: decrypted subjects/previews, search
+    // snippets (Tier 2/3 snippets are decrypted content), and the already-decrypted Tier 3 candidates. A
+    // live search re-runs, so Tier 2/3 contribute nothing again until the user unlocks. Read through a ref
+    // so the subscription itself doesn't churn on every render.
+    const keyLockStateRef = useRef({ activeMailboxUid, isSearching });
+    keyLockStateRef.current = { activeMailboxUid, isSearching };
+    useEffect(
+        () =>
+            subscribeKeySession(({ mailboxUid: changedMailboxUid, state }) => {
+                const current = keyLockStateRef.current;
+                if (state !== "locked" || changedMailboxUid !== current.activeMailboxUid) {
+                    return;
+                }
+                setDecryptedRows({});
+                setSnippets({});
+                tier3CacheRef.current.clear();
+                if (current.isSearching) {
+                    setUnlockRefresh((n) => n + 1);
+                }
+            }),
+        [],
+    );
 
     async function handleUnlockList() {
         try {
@@ -550,7 +587,7 @@ function InboxContent() {
         setSelectedUid(null);
         setSelectedConversationId(null);
         setClassificationFilter("all");
-        pageRef.current = 0;
+        listedOffsetRef.current = 0;
         compositeCursorRef.current = undefined;
         setHasMore(false);
         // Every run - search or not - supersedes whatever an earlier run (or a `loadMore()` it started)
@@ -662,7 +699,7 @@ function InboxContent() {
             void (async () => {
                 try {
                     const [tier1Page, tier2Page] = await Promise.all([
-                        searchMailbox(parsed.text, tier1SearchParams(parsed, undefined)),
+                        searchMailbox(parsed.text, tier1SearchParams(parsed, undefined, mailboxUid!)),
                         searchLocalIndex(mailboxUid!, parsed, unlocked, MESSAGE_PAGE_SIZE, 0),
                     ]);
                     if (searchRunIdRef.current !== myRunId) {
@@ -678,7 +715,7 @@ function InboxContent() {
                     const cacheKey = tier3CacheKey(mailboxUid!, windows, !!unlocked);
                     let tier3Full = tier3CacheRef.current.get(cacheKey);
                     if (!tier3Full) {
-                        tier3Full = await searchTier3Windows(windows, unlocked);
+                        tier3Full = await searchTier3Windows(windows, unlocked, mailboxUid!);
                         if (searchRunIdRef.current !== myRunId) {
                             return;
                         }
@@ -709,6 +746,7 @@ function InboxContent() {
             .then((results) => {
                 if (isCurrentRun()) {
                     setMessages(results);
+                    listedOffsetRef.current = results.length;
                     setHasMore(results.length === MESSAGE_PAGE_SIZE);
                 }
             })
@@ -756,7 +794,7 @@ function InboxContent() {
                 const cursor = searchCursor!;
 
                 const [tier1Page, tier2Page] = await Promise.all([
-                    searchMailbox(parsed.text, tier1SearchParams(parsed, cursor.tier1Cursor)),
+                    searchMailbox(parsed.text, tier1SearchParams(parsed, cursor.tier1Cursor, mailboxUid!)),
                     searchLocalIndex(mailboxUid!, parsed, unlocked, MESSAGE_PAGE_SIZE, cursor.tier2Offset),
                 ]);
                 // The first page cached this pass under `tier3Key` before it created the cursor.
@@ -788,14 +826,17 @@ function InboxContent() {
                 };
                 setHasMore(!!tier1Page.nextCursor || tier2Page.hasMore || nextTier3Offset < tier3Full.length);
             } else {
-                const nextPage = pageRef.current + 1;
-                const more = await listMessages(folderUid, { page: nextPage, limit: MESSAGE_PAGE_SIZE });
+                // The page containing the first message not fetched yet. After a local removal that offset is
+                // no longer a page boundary, so this page overlaps rows already shown - `appendUnseenMessages()`
+                // drops those - rather than skipping the message that shifted back across the boundary.
+                const page = Math.floor(listedOffsetRef.current / MESSAGE_PAGE_SIZE);
+                const more = await listMessages(folderUid, { page, limit: MESSAGE_PAGE_SIZE });
                 if (!isCurrentRun()) {
                     return;
                 }
                 setMessages((prev) => appendUnseenMessages(prev, more));
                 setHasMore(more.length === MESSAGE_PAGE_SIZE);
-                pageRef.current = nextPage;
+                listedOffsetRef.current = page * MESSAGE_PAGE_SIZE + more.length;
             }
         } catch (err) {
             if (isCurrentRun()) {
@@ -811,18 +852,18 @@ function InboxContent() {
     const loadMoreRef = useRef(loadMore);
     loadMoreRef.current = loadMore;
 
-    // `hasMore` is deliberately a dependency: the sentinel div only renders while `hasMore` is true (see
-    // the JSX below), so this effect must re-run when it flips - otherwise a run that fires before the
-    // first page of results has loaded (sentinel not in the DOM yet, `sentinelRef.current` still null)
-    // would bail out once and never attach an observer to the sentinel that appears moments later.
+    // Keyed on the sentinel node itself (see `sentinel`'s own comment): it unmounts whenever the list shows
+    // "Loading..." and remounts afterwards, so an observer attached once to an earlier node would watch a
+    // detached element forever. Only ever rendered in "By date" mode, so no view-mode check is needed.
     useEffect(() => {
-        const sentinel = sentinelRef.current;
-        if (!sentinel || viewMode !== "date") {
+        if (!sentinel) {
+            sentinelVisibleRef.current = false;
             return;
         }
         const observer = new IntersectionObserver(
             (entries) => {
-                if (entries[0]?.isIntersecting) {
+                sentinelVisibleRef.current = entries.some((entry) => entry.isIntersecting);
+                if (sentinelVisibleRef.current) {
                     void loadMoreRef.current();
                 }
             },
@@ -830,7 +871,22 @@ function InboxContent() {
         );
         observer.observe(sentinel);
         return () => observer.disconnect();
-    }, [viewMode, folderUid, isSearching, searchQuery, hasMore]);
+    }, [sentinel]);
+
+    // An observer only reports *changes* - a sentinel still in view after a page lands (the new rows didn't
+    // push it out of view, e.g. the Focused/Other filter hid every one of them) never reports again, so
+    // keep loading until it leaves the view or there's nothing more to load.
+    useEffect(() => {
+        if (!loadingMore && sentinelVisibleRef.current) {
+            void loadMoreRef.current();
+        }
+    }, [loadingMore]);
+
+    function removeListedMessage(uid: string) {
+        setMessages((prev) => prev.filter((m) => m.uid !== uid));
+        listedOffsetRef.current = Math.max(0, listedOffsetRef.current - 1);
+        setSelectedUid(null);
+    }
 
     const selected = messages.find((m) => m.uid === selectedUid) ?? null;
     const selectedConversation = conversations.find((c) => c.conversationId === selectedConversationId) ?? null;
@@ -1027,13 +1083,18 @@ function InboxContent() {
                         onSelect={handleSelectConversation}
                     />
                 ) : visibleMessages.length === 0 ? (
-                    <p className="p-4 text-sm text-text-muted">
-                        {isSearching
-                            ? `No messages match "${searchQuery}".`
-                            : classificationFilter === "all"
-                              ? "No messages in this folder."
-                              : "No messages here."}
-                    </p>
+                    <>
+                        <p className="p-4 text-sm text-text-muted">
+                            {isSearching
+                                ? `No messages match "${searchQuery}".`
+                                : classificationFilter === "all"
+                                  ? "No messages in this folder."
+                                  : "No messages here."}
+                        </p>
+                        {/* Still offered while a filter hides every loaded row - what it's looking for may be
+                            on a later page. */}
+                        {hasMore && <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4" />}
+                    </>
                 ) : (
                     <>
                         <ul>
@@ -1088,7 +1149,7 @@ function InboxContent() {
                             ))}
                         </ul>
                         {hasMore && (
-                            <div ref={sentinelRef} className="p-4 text-center text-xs text-text-muted">
+                            <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
                                 {loadingMore ? "Loading more…" : ""}
                             </div>
                         )}
@@ -1123,15 +1184,13 @@ function InboxContent() {
                             // The message moved out of the currently-viewed Outbox folder (into Drafts)
                             // — unlike a recall, which patches a message in place, this removes it from
                             // the list entirely, matching what a real folder switch would show.
-                            setMessages((prev) => prev.filter((m) => m.uid !== updated.uid));
-                            setSelectedUid(null);
+                            removeListedMessage(updated.uid);
                         }}
                         onArchived={(updated) => {
                             // Same reasoning as onScheduledSendCanceled above — the message moved out of
                             // whichever folder is currently being viewed (into Archive), so it's removed
                             // from the list rather than patched in place.
-                            setMessages((prev) => prev.filter((m) => m.uid !== updated.uid));
-                            setSelectedUid(null);
+                            removeListedMessage(updated.uid);
                         }}
                         labels={labels}
                         onLabelsChanged={(updated) => setMessages((prev) => prev.map((m) => (m.uid === updated.uid ? updated : m)))}

@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -47,15 +47,20 @@ describe("QuarantinePage", () => {
         expect(await screen.findByText("Nothing quarantined for this mailbox.")).toBeInTheDocument();
     });
 
-    it("lists held entries and releases one", async () => {
-        let entries = [entry];
+    it("lists held entries and marks one released after confirming, showing the server's own stamp", async () => {
+        let entries: (typeof entry & { releasedAt?: string; releasedByUserUid?: string; originalMessageUid?: string })[] = [
+            { ...entry, originalMessageUid: "msg-9" },
+        ];
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             const method = init?.method ?? "GET";
             if (method === "GET" && url.startsWith("/api/mail/quarantine")) return jsonResponse(200, entries);
             if (method === "PUT") {
                 const body = JSON.parse(init.body as string);
-                entries = entries.map((e) => (e.uid === body.uid ? { ...e, releasedAt: body.releasedAt, releasedByUserUid: body.releasedByUserUid } : e));
+                // The server ignores any client-supplied release stamp and records its own.
+                entries = entries.map((e) =>
+                    e.uid === body.uid ? { ...e, releasedAt: "2026-03-01T00:00:00.000Z", releasedByUserUid: "server-stamped" } : e,
+                );
                 return jsonResponse(200, entries[0]);
             }
             throw new Error(`unexpected ${method} ${url}`);
@@ -66,10 +71,15 @@ describe("QuarantinePage", () => {
         expect(await screen.findByText("spam_policy")).toBeInTheDocument();
         expect(screen.getByText("Held")).toBeInTheDocument();
 
-        await user.click(screen.getByRole("button", { name: "Release" }));
+        await user.click(screen.getByRole("button", { name: "Mark released" }));
+        const dialog = await screen.findByRole("dialog", { name: "Mark message released" });
+        expect(within(dialog).getByText("msg-9")).toBeInTheDocument();
+        expect(within(dialog).getByText(/does not deliver the/)).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Mark released" }));
 
         expect(await screen.findByText("Released")).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Release" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Mark released" })).not.toBeInTheDocument();
     });
 
     it("shows an error message when loading fails", async () => {
@@ -90,7 +100,26 @@ describe("QuarantinePage", () => {
         expect(await screen.findByText("Could not load quarantine.")).toBeInTheDocument();
     });
 
-    it("shows an error message when releasing fails", async () => {
+    it("cancels the release confirmation without changing anything", async () => {
+        const fetchMock = mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if ((init?.method ?? "GET") === "GET") return jsonResponse(200, [entry]);
+            throw new Error(`unexpected ${init?.method} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<QuarantinePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("spam_policy");
+
+        await user.click(screen.getByRole("button", { name: "Mark released" }));
+        const dialog = await screen.findByRole("dialog", { name: "Mark message released" });
+        expect(within(dialog).getByText("Not delivered to the mailbox")).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PUT")).toBe(false);
+    });
+
+    it("shows an error message in the confirmation when releasing fails", async () => {
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             const method = init?.method ?? "GET";
@@ -101,9 +130,10 @@ describe("QuarantinePage", () => {
         render(<QuarantinePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("spam_policy");
 
-        await user.click(screen.getByRole("button", { name: "Release" }));
+        await user.click(screen.getByRole("button", { name: "Mark released" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Mark released" }));
 
-        expect(await screen.findByText("release failed")).toBeInTheDocument();
+        expect(await within(screen.getByRole("dialog")).findByText("release failed")).toBeInTheDocument();
     });
 
     it("shows a generic error message when releasing fails with a non-API error", async () => {
@@ -117,9 +147,10 @@ describe("QuarantinePage", () => {
         render(<QuarantinePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("spam_policy");
 
-        await user.click(screen.getByRole("button", { name: "Release" }));
+        await user.click(screen.getByRole("button", { name: "Mark released" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Mark released" }));
 
-        expect(await screen.findByText("Could not release this message.")).toBeInTheDocument();
+        expect(await screen.findByText("Could not mark this message released.")).toBeInTheDocument();
     });
 
     it("paginates: Next fetches the following page, Previous returns to the first", async () => {

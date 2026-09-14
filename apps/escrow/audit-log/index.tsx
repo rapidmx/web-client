@@ -20,7 +20,15 @@ const ACTION_LABELS: Record<EscrowAuditLogEntry["action"], string> = {
     "escrow_access_request.created": "Access request created",
     "escrow_access_request.approved": "Access request approved",
     "escrow_access_request.material_read": "Material read",
+    "matter_export.requested": "Matter export requested",
+    "matter_export.ready": "Matter export ready",
+    "matter_export.failed": "Matter export failed",
 };
+
+/** The label for an audit action - the raw action name for one this console doesn't know yet (a newer server). */
+export function actionLabel(action: string): string {
+    return (ACTION_LABELS as Record<string, string>)[action] ?? action;
+}
 
 export default function EscrowAuditLogPage(props: Omit<EscrowShellProps, "active">) {
     return (
@@ -129,7 +137,7 @@ function EscrowAuditLogContent() {
                             {entries.map((entry) => (
                                 <tr key={entry.uid}>
                                     <td className="py-2.5 px-2.5 border-b border-border">{entry.sequence}</td>
-                                    <td className="py-2.5 px-2.5 border-b border-border">{ACTION_LABELS[entry.action]}</td>
+                                    <td className="py-2.5 px-2.5 border-b border-border">{actionLabel(entry.action)}</td>
                                     <td className="py-2.5 px-2.5 border-b border-border">{entry.holderUserUid}</td>
                                     <td className="py-2.5 px-2.5 border-b border-border">{entry.mailboxUid}</td>
                                     <td className="py-2.5 px-2.5 border-b border-border">

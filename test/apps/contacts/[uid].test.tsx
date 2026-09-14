@@ -164,6 +164,8 @@ describe("ContactDetailPage", () => {
         await user.click(await screen.findByRole("button", { name: "Delete" }));
 
         expect(await screen.findByText("boom")).toBeInTheDocument();
+        // The contact stays on screen - a failed delete isn't a failed load.
+        expect(screen.getByRole("heading", { name: "Jane Doe" })).toBeInTheDocument();
     });
 
     it("shows a generic error message when deleting the contact fails with a non-API error", async () => {
