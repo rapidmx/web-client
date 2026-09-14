@@ -6,7 +6,7 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch } from "../testUtils.js";
+import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import MailboxesListPage from "../../../apps/admin/index.js";
 
 const mailbox = (n: number) => ({
@@ -81,5 +81,26 @@ describe("MailboxesListPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Previous" }));
         expect(await screen.findByText("u0@example.com")).toBeInTheDocument();
+    });
+
+    it("reopens setup and goes to the wizard, or shows why it couldn't", async () => {
+        const location = mockLocation();
+        let fail = true;
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, []);
+            if (url === "/api/system/setup/reopen" && init?.method === "POST") {
+                return fail ? jsonResponse(500, { message: "Could not save" }) : jsonResponse(200, { required: true });
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxesListPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await user.click(await screen.findByRole("button", { name: "Run setup again" }));
+        expect(await screen.findByText("Could not save")).toBeInTheDocument();
+
+        fail = false;
+        await user.click(screen.getByRole("button", { name: "Run setup again" }));
+        await vi.waitFor(() => expect(location.href).toBe("/admin/setup"));
     });
 });

@@ -1,0 +1,595 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+import React, { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import {
+    addPlugin,
+    getPluginStatus,
+    listPlugins,
+    lookupPluginPackage,
+    Plugin,
+    PluginInstanceStatus,
+    PluginRegistryLookup,
+    PluginSettingDefinition,
+    PluginSettingValue,
+    PluginStatus,
+    removePlugin,
+    updatePlugin,
+} from "@rapidmx/react-shared/admin/pluginsApi.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+
+const INPUT_CLASS =
+    "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
+
+/** How often status is refreshed while server copies are still applying a change. */
+const PENDING_POLL_MS = 5000;
+
+function errorMessage(err: unknown, fallback: string): string {
+    return err instanceof ApiRequestError ? err.message : fallback;
+}
+
+/** Installed plugins with their rollout status, and every plugin action - shared by the Plugins page and the
+ * setup wizard. */
+export default function PluginsManager() {
+    const [plugins, setPlugins] = useState<Plugin[]>([]);
+    const [status, setStatus] = useState<PluginStatus | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [adding, setAdding] = useState(false);
+    const [upgrading, setUpgrading] = useState<Plugin | null>(null);
+    const [configuring, setConfiguring] = useState<Plugin | null>(null);
+    const [removing, setRemoving] = useState<Plugin | null>(null);
+    const [busyUid, setBusyUid] = useState<string | null>(null);
+
+    const refreshStatus = useCallback(() => {
+        // Status is advisory - a failure to read it shouldn't hide the plugin list.
+        return getPluginStatus()
+            .then(setStatus)
+            .catch(() => setStatus(null));
+    }, []);
+
+    useEffect(() => {
+        Promise.all([listPlugins(), refreshStatus()])
+            .then(([list]) => setPlugins(list))
+            .catch((err) => setError(errorMessage(err, "Could not load plugins.")))
+            .finally(() => setLoading(false));
+    }, [refreshStatus]);
+
+    const pending: boolean = !!status && status.instances.some((instance) => instance.hash !== status.hash);
+    useEffect(() => {
+        if (!pending) {
+            return;
+        }
+        const timer = setInterval(() => void refreshStatus(), PENDING_POLL_MS);
+        return () => clearInterval(timer);
+    }, [pending, refreshStatus]);
+
+    /** Applies a saved change locally and re-reads status, since saving starts a rollout. */
+    function applied(updated: Plugin) {
+        setPlugins((prev) => {
+            const exists = prev.some((plugin) => plugin.uid === updated.uid);
+            const next = exists ? prev.map((plugin) => (plugin.uid === updated.uid ? updated : plugin)) : [...prev, updated];
+            return next.sort((a, b) => a.name.localeCompare(b.name));
+        });
+        void refreshStatus();
+    }
+
+    async function toggle(plugin: Plugin) {
+        setBusyUid(plugin.uid);
+        setError(null);
+        try {
+            applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: !plugin.enabled }));
+        } catch (err) {
+            setError(errorMessage(err, `Could not ${plugin.enabled ? "disable" : "enable"} ${plugin.manifest.displayName}.`));
+        } finally {
+            setBusyUid(null);
+        }
+    }
+
+    return (
+        <>
+            <div className="flex items-center justify-between mb-2">
+                <h1 className="text-xl font-bold uppercase tracking-wide">Plugins</h1>
+                <Button type="button" className="!w-auto" onClick={() => setAdding(true)}>
+                    + Add plugin
+                </Button>
+            </div>
+            <p className="text-sm text-text-muted mb-5 max-w-3xl">
+                Plugins add protocols and features to every server. Changes are applied by restarting the servers
+                one at a time, so mail keeps flowing. Plugins run with full access to the server, so only add ones
+                you trust.
+            </p>
+
+            {error && <Alert>{error}</Alert>}
+            <RolloutBanner status={status} />
+
+            {loading ? (
+                <p className="text-sm text-text-muted">Loading&hellip;</p>
+            ) : plugins.length === 0 ? (
+                <p className="text-sm text-text-muted">No plugins installed.</p>
+            ) : (
+                <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-collapse">
+                        <thead>
+                            <tr>
+                                {["Plugin", "Version", "Status", "Enabled", ""].map((h) => (
+                                    <th
+                                        key={h}
+                                        className="text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border"
+                                    >
+                                        {h}
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {plugins.map((plugin) => (
+                                <tr key={plugin.uid}>
+                                    <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                        <div className="font-semibold">{plugin.manifest.displayName}</div>
+                                        <div className="text-xs text-text-muted">{plugin.name}</div>
+                                        {plugin.manifest.description && (
+                                            <div className="text-xs text-text-muted mt-1 max-w-md">{plugin.manifest.description}</div>
+                                        )}
+                                    </td>
+                                    <td className="py-2.5 px-2.5 border-b border-border align-top">{plugin.packageVersion}</td>
+                                    <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                        <PluginStatusCell plugin={plugin} status={status} />
+                                    </td>
+                                    <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                        <label className="inline-flex items-center gap-2">
+                                            <input
+                                                type="checkbox"
+                                                aria-label={`Enable ${plugin.manifest.displayName}`}
+                                                checked={plugin.enabled}
+                                                disabled={busyUid === plugin.uid}
+                                                onChange={() => void toggle(plugin)}
+                                            />
+                                        </label>
+                                    </td>
+                                    <td className="py-2.5 px-2.5 border-b border-border align-top text-right whitespace-nowrap">
+                                        {(plugin.manifest.settings ?? []).length > 0 && (
+                                            <Button variant="text" type="button" className="!w-auto" onClick={() => setConfiguring(plugin)}>
+                                                Settings
+                                            </Button>
+                                        )}
+                                        <Button variant="text" type="button" className="!w-auto" onClick={() => setUpgrading(plugin)}>
+                                            Change version
+                                        </Button>
+                                        <Button variant="text" type="button" className="!w-auto" onClick={() => setRemoving(plugin)}>
+                                            Remove
+                                        </Button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+
+            <AddPluginModal
+                open={adding}
+                onClose={() => setAdding(false)}
+                onAdded={(plugin) => {
+                    setAdding(false);
+                    applied(plugin);
+                }}
+            />
+            {upgrading && (
+                <ChangeVersionModal
+                    plugin={upgrading}
+                    onClose={() => setUpgrading(null)}
+                    onSaved={(plugin) => {
+                        setUpgrading(null);
+                        applied(plugin);
+                    }}
+                />
+            )}
+            {configuring && (
+                <SettingsModal
+                    plugin={configuring}
+                    onClose={() => setConfiguring(null)}
+                    onSaved={(plugin) => {
+                        setConfiguring(null);
+                        applied(plugin);
+                    }}
+                />
+            )}
+            {removing && (
+                <RemoveModal
+                    plugin={removing}
+                    onClose={() => setRemoving(null)}
+                    onRemoved={() => {
+                        const uid = removing.uid;
+                        setRemoving(null);
+                        setPlugins((prev) => prev.filter((plugin) => plugin.uid !== uid));
+                        void refreshStatus();
+                    }}
+                />
+            )}
+        </>
+    );
+}
+
+/** Shown while any server copy hasn't applied the saved plugin set yet, or when one is in safe mode. */
+function RolloutBanner({ status }: { status: PluginStatus | null }) {
+    if (!status || status.instances.length === 0) {
+        return null;
+    }
+    const behind = status.instances.filter((instance) => instance.hash !== status.hash).length;
+    const safeMode = status.instances.filter((instance) => instance.safeMode);
+    return (
+        <>
+            {behind > 0 && (
+                <p role="status" className="mb-4 text-sm py-2 px-3 rounded-sm bg-surface-alt text-text">
+                    Applying changes: {status.instances.length - behind} of {status.instances.length}{" "}
+                    {status.instances.length === 1 ? "server" : "servers"} updated. Servers restart one at a time.
+                </p>
+            )}
+            {safeMode.length > 0 && (
+                <Alert>
+                    {safeMode.map((instance) => instance.instance).join(", ")} started without any plugins because recent
+                    starts failed. Fix or disable the failing plugin, and the server will pick up the change.
+                </Alert>
+            )}
+        </>
+    );
+}
+
+function PluginStatusCell({ plugin, status }: { plugin: Plugin; status: PluginStatus | null }) {
+    if (!plugin.enabled) {
+        return <span className="text-text-muted">Disabled</span>;
+    }
+    if (!status || status.instances.length === 0) {
+        return <span className="text-text-muted">Unknown</span>;
+    }
+    const current: PluginInstanceStatus[] = status.instances.filter((instance) => instance.hash === status.hash);
+    const loaded = current.filter((instance) =>
+        instance.loaded.some((entry) => entry.name === plugin.name && entry.version === plugin.packageVersion),
+    ).length;
+    const errors = current.flatMap((instance) =>
+        instance.errors.filter((entry) => entry.name === plugin.name).map((entry) => `${instance.instance}: ${entry.message}`),
+    );
+    return (
+        <div>
+            <span className={loaded === status.instances.length ? "text-success font-medium" : "text-text-muted"}>
+                Loaded on {loaded} of {status.instances.length} {status.instances.length === 1 ? "server" : "servers"}
+            </span>
+            {errors.map((message) => (
+                <div key={message} className="text-xs text-danger mt-1">
+                    {message}
+                </div>
+            ))}
+        </div>
+    );
+}
+
+function AddPluginModal({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded: (plugin: Plugin) => void }) {
+    const [name, setName] = useState("");
+    const [lookup, setLookup] = useState<PluginRegistryLookup | null>(null);
+    const [selectedVersion, setSelectedVersion] = useState("");
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+        if (!open) {
+            setName("");
+            setLookup(null);
+            setSelectedVersion("");
+            setError(null);
+        }
+    }, [open]);
+
+    async function find(e: FormEvent) {
+        e.preventDefault();
+        if (!name.trim()) {
+            setError("Enter a package name.");
+            return;
+        }
+        setBusy(true);
+        setError(null);
+        try {
+            const found = await lookupPluginPackage(name.trim());
+            setLookup(found);
+            setSelectedVersion(found.selected.version);
+        } catch (err) {
+            setLookup(null);
+            setError(errorMessage(err, "Could not look that package up."));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function add() {
+        setBusy(true);
+        setError(null);
+        try {
+            onAdded(await addPlugin(lookup!.package.name, selectedVersion));
+        } catch (err) {
+            setError(errorMessage(err, "Could not add the plugin."));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    const manifest = lookup?.selected.manifest;
+    return (
+        <Modal open={open} onClose={onClose} title="Add plugin">
+            {error && <Alert>{error}</Alert>}
+            <form onSubmit={find} className="flex gap-2 items-end mb-4">
+                <label className="flex flex-col gap-1.5 text-sm flex-1">
+                    <span className="font-semibold">Package name</span>
+                    <input
+                        aria-label="Package name"
+                        className={INPUT_CLASS}
+                        value={name}
+                        placeholder="@rapidmx/activesync"
+                        onChange={(e) => {
+                            setName(e.target.value);
+                            setLookup(null);
+                        }}
+                    />
+                </label>
+                <Button type="submit" variant="secondary" className="!w-auto" loading={busy && !lookup} disabled={busy}>
+                    Find
+                </Button>
+            </form>
+            {lookup && (
+                <div className="flex flex-col gap-3">
+                    {typeof manifest === "string" ? (
+                        <Alert>{manifest}</Alert>
+                    ) : (
+                        <div className="text-sm">
+                            <div className="font-semibold">{manifest?.displayName}</div>
+                            {manifest?.description && <div className="text-text-muted">{manifest.description}</div>}
+                        </div>
+                    )}
+                    <label className="flex flex-col gap-1.5 text-sm">
+                        <span className="font-semibold">Version</span>
+                        <select aria-label="Version" className={INPUT_CLASS} value={selectedVersion} onChange={(e) => setSelectedVersion(e.target.value)}>
+                            {lookup.package.versions.map((version) => (
+                                <option key={version} value={version}>
+                                    {version}
+                                    {version === lookup.package.latest ? " (latest)" : ""}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <div className="flex gap-2 justify-end">
+                        <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                            Cancel
+                        </Button>
+                        <Button type="button" className="!w-auto" loading={busy} disabled={busy || typeof manifest === "string"} onClick={() => void add()}>
+                            Add plugin
+                        </Button>
+                    </div>
+                </div>
+            )}
+        </Modal>
+    );
+}
+
+function ChangeVersionModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: () => void; onSaved: (plugin: Plugin) => void }) {
+    const [versions, setVersions] = useState<string[] | null>(null);
+    const [latest, setLatest] = useState<string | undefined>();
+    const [selected, setSelected] = useState(plugin.packageVersion);
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+        lookupPluginPackage(plugin.name)
+            .then((found) => {
+                setVersions(found.package.versions);
+                setLatest(found.package.latest);
+            })
+            .catch((err) => setError(errorMessage(err, "Could not load the available versions.")));
+    }, [plugin.name]);
+
+    async function save() {
+        setBusy(true);
+        setError(null);
+        try {
+            onSaved(await updatePlugin(plugin.uid, { version: plugin.version, packageVersion: selected }));
+        } catch (err) {
+            setError(errorMessage(err, "Could not change the version."));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    return (
+        <Modal open onClose={onClose} title={`${plugin.manifest.displayName} version`}>
+            {error && <Alert>{error}</Alert>}
+            {versions === null ? (
+                !error && <p className="text-sm text-text-muted">Loading&hellip;</p>
+            ) : (
+                <div className="flex flex-col gap-3">
+                    <label className="flex flex-col gap-1.5 text-sm">
+                        <span className="font-semibold">Version</span>
+                        <select aria-label="Version" className={INPUT_CLASS} value={selected} onChange={(e) => setSelected(e.target.value)}>
+                            {versions.map((version) => (
+                                <option key={version} value={version}>
+                                    {version}
+                                    {version === latest ? " (latest)" : ""}
+                                    {version === plugin.packageVersion ? " (installed)" : ""}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <div className="flex gap-2 justify-end">
+                        <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            className="!w-auto"
+                            loading={busy}
+                            disabled={busy || selected === plugin.packageVersion}
+                            onClick={() => void save()}
+                        >
+                            Save
+                        </Button>
+                    </div>
+                </div>
+            )}
+        </Modal>
+    );
+}
+
+/** A setting's current form value: its saved value, else its default. Kept as a string for text inputs. */
+function initialValue(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined): PluginSettingValue | "" {
+    const value = saved ?? definition.default;
+    if (definition.type === "boolean") {
+        return value === true;
+    }
+    return value === undefined ? "" : String(value);
+}
+
+function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: () => void; onSaved: (plugin: Plugin) => void }) {
+    const definitions: PluginSettingDefinition[] = plugin.manifest.settings ?? [];
+    const initial = useRef(Object.fromEntries(definitions.map((d) => [d.key, initialValue(d, plugin.settings[d.key])])));
+    const [values, setValues] = useState<Record<string, PluginSettingValue | "">>(initial.current);
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+
+    async function save(e: FormEvent) {
+        e.preventDefault();
+        const settings: Record<string, PluginSettingValue | null> = {};
+        for (const definition of definitions) {
+            const value = values[definition.key];
+            if (definition.type === "number") {
+                if (value === "") {
+                    settings[definition.key] = null;
+                    continue;
+                }
+                // A number input only ever reports a valid number or an empty string.
+                settings[definition.key] = Number(value);
+            } else {
+                settings[definition.key] = value === "" ? null : value;
+            }
+        }
+        setBusy(true);
+        setError(null);
+        try {
+            onSaved(await updatePlugin(plugin.uid, { version: plugin.version, settings }));
+        } catch (err) {
+            setError(errorMessage(err, "Could not save the settings."));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    return (
+        <Modal open onClose={onClose} title={`${plugin.manifest.displayName} settings`}>
+            {error && <Alert>{error}</Alert>}
+            <form onSubmit={save} className="flex flex-col gap-4">
+                {definitions.map((definition) => (
+                    <SettingField
+                        key={definition.key}
+                        definition={definition}
+                        value={values[definition.key]}
+                        onChange={(value) => setValues((prev) => ({ ...prev, [definition.key]: value }))}
+                    />
+                ))}
+                <p className="text-xs text-text-muted">Saving restarts the servers one at a time to apply the new settings.</p>
+                <div className="flex gap-2 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                        Cancel
+                    </Button>
+                    <Button type="submit" className="!w-auto" loading={busy} disabled={busy}>
+                        Save
+                    </Button>
+                </div>
+            </form>
+        </Modal>
+    );
+}
+
+function SettingField({
+    definition,
+    value,
+    onChange,
+}: {
+    definition: PluginSettingDefinition;
+    value: PluginSettingValue | "";
+    onChange: (value: PluginSettingValue | "") => void;
+}) {
+    const help = definition.help && <span className="text-xs text-text-muted">{definition.help}</span>;
+    if (definition.type === "boolean") {
+        return (
+            <label className="flex flex-col gap-1 text-sm">
+                <span className="inline-flex items-center gap-2 font-semibold">
+                    <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} />
+                    {definition.label}
+                </span>
+                {help}
+            </label>
+        );
+    }
+    return (
+        <label className="flex flex-col gap-1.5 text-sm">
+            <span className="font-semibold">{definition.label}</span>
+            {definition.type === "select" ? (
+                <select aria-label={definition.label} className={INPUT_CLASS} value={String(value)} onChange={(e) => onChange(e.target.value)}>
+                    {!definition.required && <option value="">Default</option>}
+                    {(definition.options ?? []).map((option) => (
+                        <option key={option.value} value={option.value}>
+                            {option.label}
+                        </option>
+                    ))}
+                </select>
+            ) : (
+                <input
+                    aria-label={definition.label}
+                    className={INPUT_CLASS}
+                    type={definition.type === "number" ? "number" : "text"}
+                    min={definition.min}
+                    max={definition.max}
+                    required={definition.required}
+                    value={String(value)}
+                    onChange={(e) => onChange(e.target.value)}
+                />
+            )}
+            {help}
+        </label>
+    );
+}
+
+function RemoveModal({ plugin, onClose, onRemoved }: { plugin: Plugin; onClose: () => void; onRemoved: () => void }) {
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+
+    async function remove() {
+        setBusy(true);
+        setError(null);
+        try {
+            await removePlugin(plugin.uid);
+            onRemoved();
+        } catch (err) {
+            setError(errorMessage(err, "Could not remove the plugin."));
+            setBusy(false);
+        }
+    }
+
+    return (
+        <Modal open onClose={onClose} title={`Remove ${plugin.manifest.displayName}?`}>
+            {error && <Alert>{error}</Alert>}
+            <p className="text-sm mb-4">
+                The servers stop running this plugin after they restart. Data it stored stays in the database, and adding
+                the plugin again brings it back.
+            </p>
+            <div className="flex gap-2 justify-end">
+                <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                    Cancel
+                </Button>
+                <Button type="button" className="!w-auto" loading={busy} disabled={busy} onClick={() => void remove()}>
+                    Remove
+                </Button>
+            </div>
+        </Modal>
+    );
+}

@@ -11,14 +11,18 @@ import {
     HiOutlineGlobeAlt,
     HiOutlineInboxStack,
     HiOutlineKey,
+    HiOutlineLockClosed,
     HiOutlinePaintBrush,
     HiOutlinePuzzlePiece,
     HiOutlineQueueList,
+    HiOutlineRocketLaunch,
     HiOutlineShieldCheck,
     HiOutlineShieldExclamation,
     HiOutlineUserGroup,
+    HiOutlineWrenchScrewdriver,
 } from "react-icons/hi2";
 import { apiFetch, ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
 import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -36,6 +40,9 @@ export type AdminSection =
     | "transportRules"
     | "escrowScopes"
     | "retentionPolicy"
+    | "encryptionPolicy"
+    | "mailboxPolicy"
+    | "setup"
     | "dataRequests"
     | "plugins"
     | "branding";
@@ -84,6 +91,18 @@ const NAV_ITEMS: NavItem[] = [
         icon: HiOutlineKey,
     },
     {
+        id: "encryptionPolicy",
+        href: "/admin/encryption-policy",
+        label: "Encryption Policy",
+        icon: HiOutlineLockClosed,
+    },
+    {
+        id: "mailboxPolicy",
+        href: "/admin/mailbox-policy",
+        label: "Mailbox Policy",
+        icon: HiOutlineWrenchScrewdriver,
+    },
+    {
         id: "retentionPolicy",
         href: "/admin/retention-policy",
         label: "Retention Policy",
@@ -106,7 +125,10 @@ const MAILBOX_SCOPED_ITEMS: NavItem[] = [
     { id: "ingestQueue", href: "/admin/ingest-queue", label: "Ingest Queue", icon: HiOutlineQueueList },
 ];
 
-const ALL_ITEMS: NavItem[] = [...NAV_ITEMS, ...MAILBOX_SCOPED_ITEMS];
+/** The setup wizard - reached by redirect or from the Mailboxes page, not from the rail. */
+const SETUP_ITEM: NavItem = { id: "setup", href: "/admin/setup", label: "Setup", icon: HiOutlineRocketLaunch };
+
+const ALL_ITEMS: NavItem[] = [...NAV_ITEMS, ...MAILBOX_SCOPED_ITEMS, SETUP_ITEM];
 
 /**
  * Gates every `apps/admin` page behind the `admin` trusted role. Uses `GET /api/admin/release-notes` (any
@@ -126,7 +148,21 @@ export default function AdminShell({ active, userUid, authServerUrl, children }:
             return;
         }
         apiFetch("/admin/release-notes")
-            .then(() => setStatus("authorized"))
+            .then(async () => {
+                // Until first-run setup is finished, every other admin page sends the admin to the wizard. A failed
+                // check never blocks the console - the admin can still reach setup from the Mailboxes page.
+                if (active !== "setup") {
+                    try {
+                        if ((await getSetupStatus()).required) {
+                            window.location.href = SETUP_ITEM.href;
+                            return;
+                        }
+                    } catch {
+                        // Fall through to the page.
+                    }
+                }
+                setStatus("authorized");
+            })
             .catch((err) => {
                 if (err instanceof ApiRequestError && (err.status === 403 || err.status === 401)) {
                     setStatus("denied");

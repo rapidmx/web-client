@@ -5,6 +5,7 @@
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { reopenSetup } from "@rapidmx/react-shared/admin/setupApi.js";
 import AdminShell, { AdminShellProps } from "../shared/components/admin/layout/AdminShell.js";
 import MailboxTable from "../shared/components/admin/mailboxes/MailboxTable.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -36,16 +37,33 @@ function MailboxesListContent() {
     }, [page]);
 
     const hasNextPage = mailboxes.length === PAGE_SIZE;
+    const [reopening, setReopening] = useState(false);
+
+    async function handleRunSetup() {
+        setReopening(true);
+        try {
+            await reopenSetup();
+            window.location.href = "/admin/setup";
+        } catch (err) {
+            setError(err instanceof ApiRequestError ? err.message : "Could not reopen setup.");
+            setReopening(false);
+        }
+    }
 
     return (
         <>
             <div className="flex items-center justify-between mb-5">
                 <h1 className="text-xl font-bold uppercase tracking-wide">Mailboxes</h1>
-                <a href="/admin/mailboxes/new">
-                    <Button type="button" className="!w-auto">
-                        + New mailbox
+                <div className="flex gap-2">
+                    <Button type="button" variant="secondary" className="!w-auto" loading={reopening} disabled={reopening} onClick={() => void handleRunSetup()}>
+                        Run setup again
                     </Button>
-                </a>
+                    <a href="/admin/mailboxes/new">
+                        <Button type="button" className="!w-auto">
+                            + New mailbox
+                        </Button>
+                    </a>
+                </div>
             </div>
 
             {error && <Alert>{error}</Alert>}

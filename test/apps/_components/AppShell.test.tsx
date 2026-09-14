@@ -34,6 +34,37 @@ describe("AppShell", () => {
         expect(screen.queryByRole("navigation", { name: "Apps" })).not.toBeInTheDocument();
     });
 
+    it("sends an administrator to the setup wizard while first-run setup is required", async () => {
+        const location = mockLocation();
+        mockFetch((url) => (url === "/api/system/setup" ? jsonResponse(200, { required: true }) : jsonResponse(404, {})));
+        render(<AppShell active="mail" userUid="admin-1">content</AppShell>);
+        await waitFor(() => expect(location.href).toBe("/admin/setup"));
+    });
+
+    it("leaves everyone else where they are: non-admins (403), finished setup, and impersonating admins", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/";
+        const denied = mockFetch(() => jsonResponse(403, { message: "User does not have permission." }));
+        const { unmount } = render(<AppShell active="mail" userUid="user-1">content</AppShell>);
+        await waitFor(() => expect(denied).toHaveBeenCalledWith("/api/system/setup", expect.anything()));
+        unmount();
+
+        const finished = mockFetch(() => jsonResponse(200, { required: false }));
+        const second = render(<AppShell active="mail" userUid="admin-1">content</AppShell>);
+        await waitFor(() => expect(finished).toHaveBeenCalledWith("/api/system/setup", expect.anything()));
+        second.unmount();
+
+        const impersonating = mockFetch(() => jsonResponse(200, { required: true }));
+        render(
+            <AppShell active="mail" userUid="user-1" impersonating>
+                content
+            </AppShell>,
+        );
+        await Promise.resolve();
+        expect(impersonating).not.toHaveBeenCalledWith("/api/system/setup", expect.anything());
+        expect(location.href).toBe("https://mail.example.com/");
+    });
+
     it("mounts the idle-key-timeout hook", () => {
         render(<AppShell active="mail" userUid="u1">content</AppShell>);
         expect(useIdleKeyTimeout).toHaveBeenCalled();

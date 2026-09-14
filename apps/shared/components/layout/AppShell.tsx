@@ -3,10 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import "../../styles/app.css";
-import React, { PropsWithChildren, useState } from "react";
+import React, { PropsWithChildren, useState, useEffect } from "react";
 import type { IconType } from "react-icons";
 import { HiOutlineCalendarDays, HiOutlineClipboardDocumentList, HiOutlineEnvelope, HiOutlineUsers } from "react-icons/hi2";
 import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
+import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
 import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import { useIdleKeyTimeout } from "@rapidmx/react-shared/crypto/useIdleKeyTimeout.js";
@@ -90,6 +91,21 @@ export default function AppShell({
     // Mounted here, not scoped to Mail/Settings (the only shells that actually read unlocked keys),
     // specifically so activity in *any* app resets the idle clock - see that hook's own doc comment.
     useIdleKeyTimeout();
+
+    // An administrator on a server that hasn't finished first-run setup is sent to the setup wizard. Everyone else
+    // gets a 403 from the setup status check (it's admin-only), which is ignored along with any other failure.
+    useEffect(() => {
+        if (!userUid || impersonating) {
+            return;
+        }
+        getSetupStatus()
+            .then((status) => {
+                if (status.required) {
+                    window.location.href = "/admin/setup";
+                }
+            })
+            .catch(() => undefined);
+    }, [userUid, impersonating]);
 
     function handleSignOut() {
         // Best-effort, fire-and-forget: the Tier 2 local index MUST be destroyed on explicit logout, the

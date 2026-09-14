@@ -4,12 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import PluginsManager from "../../shared/components/admin/settings/PluginsManager.js";
+import SetupWizard from "../../shared/components/admin/setup/SetupWizard.js";
 
-export default function PluginsPage(props: Omit<AdminShellProps, "active">) {
+export default function SetupPage(props: Omit<AdminShellProps, "active">) {
     return (
-        <AdminShell {...props} active="plugins">
-            <PluginsManager />
+        <AdminShell {...props} active="setup">
+            <SetupWizard userUid={props.userUid ?? ""} />
         </AdminShell>
     );
 }

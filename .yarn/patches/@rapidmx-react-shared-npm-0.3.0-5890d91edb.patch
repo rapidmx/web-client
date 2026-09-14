@@ -1,3 +1,44 @@
+diff --git a/dist/admin/mailboxPolicyApi.d.ts b/dist/admin/mailboxPolicyApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..40834e9ba8eedec91a7774b44c6228bf4f1638e2
+--- /dev/null
++++ b/dist/admin/mailboxPolicyApi.d.ts
+@@ -0,0 +1,12 @@
++/** Mirrors `@rapidmx/restapi`'s `PublicMailboxPolicy`. */
++export interface MailboxPolicy {
++    /** The quota a newly created mailbox starts with, in bytes. */
++    defaultQuotaBytes: number;
++    /** Whether a signed-in user without a mailbox may create their own on first sign-in. */
++    autoProvisionEnabled: boolean;
++    /** The quota of a mailbox a user creates for themselves, in bytes. */
++    autoProvisionQuotaBytes: number;
++}
++export declare function getMailboxPolicy(): Promise<MailboxPolicy>;
++/** Partial patch - only supplied fields change. */
++export declare function updateMailboxPolicy(patch: Partial<MailboxPolicy>): Promise<MailboxPolicy>;
+diff --git a/dist/admin/mailboxPolicyApi.js b/dist/admin/mailboxPolicyApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0d691e70070b6367db4b7ada4b8408505e2708e
+--- /dev/null
++++ b/dist/admin/mailboxPolicyApi.js
+@@ -0,0 +1,17 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s deployment-wide `MailboxPolicy` singleton (`BaseMailboxPolicyRoute`,
++ * mounted at `system/mailbox-policy`). `GET` is readable by any authenticated user and always returns the values in
++ * effect (server config fills anything never saved); `PUT` is trusted-admin-only.
++ */
++import { apiFetch } from "../util/api.js";
++export function getMailboxPolicy() {
++    return apiFetch("/system/mailbox-policy");
++}
++/** Partial patch - only supplied fields change. */
++export function updateMailboxPolicy(patch) {
++    return apiFetch("/system/mailbox-policy", { method: "PUT", body: JSON.stringify(patch) });
++}
 diff --git a/dist/admin/pluginsApi.d.ts b/dist/admin/pluginsApi.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..66882725c0b6e48a76ce4e3aa5b062194d954298
@@ -164,6 +205,56 @@ index 47aed4992d3f7588d1a6869bc56acd91a2ad29c7..8b04e4b0d0cb7547322949db1862d2a7
          method: "PUT",
          body: JSON.stringify(patch),
      });
+diff --git a/dist/admin/setupApi.d.ts b/dist/admin/setupApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8071cf06b58493d88b5df929d7f1532f90b9c748
+--- /dev/null
++++ b/dist/admin/setupApi.d.ts
+@@ -0,0 +1,15 @@
++/** Mirrors `@rapidmx/restapi`'s `SetupStatus`. Dates arrive as ISO strings. */
++export interface SetupStatus {
++    /** Whether an administrator should be taken to the setup wizard. */
++    required: boolean;
++    startedAt?: string;
++    completedAt?: string;
++    /** The wizard step last saved with `saveSetupStep()`. */
++    currentStep?: string;
++}
++export declare function getSetupStatus(): Promise<SetupStatus>;
++/** Records the step the administrator is on, so leaving and coming back resumes there. */
++export declare function saveSetupStep(currentStep: string): Promise<SetupStatus>;
++export declare function completeSetup(): Promise<SetupStatus>;
++/** Sends administrators back through the wizard from its first step. */
++export declare function reopenSetup(): Promise<SetupStatus>;
+diff --git a/dist/admin/setupApi.js b/dist/admin/setupApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..375b938fa680790dbe3b6a070f9a31ad0b576f83
+--- /dev/null
++++ b/dist/admin/setupApi.js
+@@ -0,0 +1,23 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s first-run setup state (`BaseSetupRoute`, mounted at `system/setup`).
++ * Trusted-admin-only: a non-admin gets a `403`, which is how the web apps know not to send them to the wizard.
++ */
++import { apiFetch } from "../util/api.js";
++export function getSetupStatus() {
++    return apiFetch("/system/setup");
++}
++/** Records the step the administrator is on, so leaving and coming back resumes there. */
++export function saveSetupStep(currentStep) {
++    return apiFetch("/system/setup", { method: "PUT", body: JSON.stringify({ currentStep }) });
++}
++export function completeSetup() {
++    return apiFetch("/system/setup/complete", { method: "POST" });
++}
++/** Sends administrators back through the wizard from its first step. */
++export function reopenSetup() {
++    return apiFetch("/system/setup/reopen", { method: "POST" });
++}
 diff --git a/dist/branding/brandingApi.d.ts b/dist/branding/brandingApi.d.ts
 index 21670c4ae53d8744130f5ce94346684b168cc541..bdf6175ecd538a7b6c5f967724b11635c1ecebe4 100644
 --- a/dist/branding/brandingApi.d.ts
@@ -300,6 +391,102 @@ index d99b18431c7de8b3df461962a6aca06536820942..0b3d19adbcb2e63ca195bb8cee55329a
 +    }
 +    return choices[hash % choices.length];
  }
+diff --git a/dist/crypto/escrowKeys.d.ts b/dist/crypto/escrowKeys.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d202d4555944a392ac6634b3f94dadbc664b4356
+--- /dev/null
++++ b/dist/crypto/escrowKeys.d.ts
+@@ -0,0 +1,25 @@
++/**
++ * Generates an escrow scope's key pair in the browser, for an administrator setting up escrow without an existing
++ * PKI. The certificate goes to the server (as the scope's public key, which mailbox master keys are wrapped to);
++ * the private key never does - the administrator must download it and hand it to the scope's holders, whose
++ * offline tooling is the only thing that can ever unwrap an escrowed master key. Losing it makes every escrow
++ * wrap made to this scope permanently unusable.
++ *
++ * The key is P-256, like every other key in this app: the certificate is signed with it as ECDSA, and holders
++ * re-import the same key material as ECDH to decrypt (see `keys.ts`'s `importPrivateKeyPkcs8()`).
++ */
++import "reflect-metadata";
++import type { EscrowScopePublicKey } from "../admin/escrowScopesApi.js";
++export interface GeneratedEscrowKeys {
++    certificateDer: Uint8Array;
++    certificatePem: string;
++    /** PKCS#8, PEM encoded. */
++    privateKeyPem: string;
++    /** Ready to pass as `createEscrowScope()`'s `publicKey`. */
++    publicKey: EscrowScopePublicKey;
++}
++export declare function generateEscrowKeyPair(options: {
++    name: string;
++    validDays: number;
++    now?: Date;
++}): Promise<GeneratedEscrowKeys>;
+diff --git a/dist/crypto/escrowKeys.js b/dist/crypto/escrowKeys.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..8076564b9ff8489e9b642fcf8dbb6836aaf823f5
+--- /dev/null
++++ b/dist/crypto/escrowKeys.js
+@@ -0,0 +1,59 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Generates an escrow scope's key pair in the browser, for an administrator setting up escrow without an existing
++ * PKI. The certificate goes to the server (as the scope's public key, which mailbox master keys are wrapped to);
++ * the private key never does - the administrator must download it and hand it to the scope's holders, whose
++ * offline tooling is the only thing that can ever unwrap an escrowed master key. Losing it makes every escrow
++ * wrap made to this scope permanently unusable.
++ *
++ * The key is P-256, like every other key in this app: the certificate is signed with it as ECDSA, and holders
++ * re-import the same key material as ECDH to decrypt (see `keys.ts`'s `importPrivateKeyPkcs8()`).
++ */
++import "reflect-metadata";
++import * as x509 from "@peculiar/x509";
++import { toBase64 } from "./encoding.js";
++import { computeCertFingerprint } from "./smime.js";
++x509.cryptoProvider.set(crypto);
++const DAY_MS = 24 * 60 * 60 * 1000;
++function toPem(label, der) {
++    const lines = toBase64(der).match(/.{1,64}/g) ?? [];
++    return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
++}
++/** A random, positive certificate serial number, hex encoded. */
++function randomSerial() {
++    const bytes = crypto.getRandomValues(new Uint8Array(16));
++    bytes[0] &= 0x7f;
++    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
++}
++export async function generateEscrowKeyPair(options) {
++    const notBefore = options.now ?? new Date();
++    const notAfter = new Date(notBefore.getTime() + options.validDays * DAY_MS);
++    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]));
++    const certificate = await x509.X509CertificateGenerator.createSelfSigned({
++        serialNumber: randomSerial(),
++        // Structural name, never string-interpolated - see keys.ts's identical note on RDN injection.
++        name: [{ CN: [options.name] }],
++        notBefore,
++        notAfter,
++        signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
++        keys,
++        extensions: [new x509.KeyUsagesExtension(x509.KeyUsageFlags.keyAgreement | x509.KeyUsageFlags.digitalSignature, true)],
++    });
++    const certificateDer = new Uint8Array(certificate.rawData);
++    const privateKeyDer = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keys.privateKey));
++    return {
++        certificateDer,
++        certificatePem: toPem("CERTIFICATE", certificateDer),
++        privateKeyPem: toPem("PRIVATE KEY", privateKeyDer),
++        publicKey: {
++            publicKey: toBase64(certificateDer),
++            type: "x509",
++            fingerprint: await computeCertFingerprint(certificateDer),
++            notBefore: notBefore.getTime(),
++            notAfter: notAfter.getTime(),
++        },
++    };
++}
 diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
 index 0acb10931ab44256e926ea4dd88cf0b0ba0beb7f..0c20e1474cff85aa06a91446979ccab550d1b282 100644
 --- a/dist/crypto/keyvaultApi.js

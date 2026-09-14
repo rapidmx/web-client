@@ -65,6 +65,47 @@ describe("AdminShell", () => {
         expect(await screen.findByText("Could not verify administrator access.")).toBeInTheDocument();
     });
 
+    it("sends an administrator to the setup wizard while first-run setup is required", async () => {
+        const location = mockLocation();
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/system/setup") return jsonResponse(200, { required: true });
+            throw new Error(`unexpected ${url}`);
+        });
+        render(
+            <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AdminShell>,
+        );
+        await waitFor(() => expect(location.href).toBe("/admin/setup"));
+        expect(screen.queryByText("content")).not.toBeInTheDocument();
+    });
+
+    it("shows the page when setup is finished, and never checks setup on the wizard itself", async () => {
+        const fetchMock = mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/system/setup") return jsonResponse(200, { required: false });
+            throw new Error(`unexpected ${url}`);
+        });
+        const { unmount } = render(
+            <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AdminShell>,
+        );
+        expect(await screen.findByText("content")).toBeInTheDocument();
+        unmount();
+
+        fetchMock.mockClear();
+        render(
+            <AdminShell active="setup" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                wizard
+            </AdminShell>,
+        );
+        expect(await screen.findByText("wizard")).toBeInTheDocument();
+        expect(screen.getByText("Setup", { selector: "span" })).toBeInTheDocument();
+        expect(fetchMock.mock.calls.map((c) => c[0])).not.toContain("/api/system/setup");
+    });
+
     it("renders the icon rail with the five global sections, highlighting the active one", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});

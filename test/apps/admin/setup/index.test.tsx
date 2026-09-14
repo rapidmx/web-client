@@ -1,0 +1,234 @@
+// @vitest-environment jsdom
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
+///////////////////////////////////////////////////////////////////////////////
+import React from "react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
+import SetupPage from "../../../../apps/admin/setup/index.js";
+
+const domain = {
+    uid: "example.com",
+    version: 0,
+    name: "example.com",
+    enabled: true,
+    verified: false,
+    verificationToken: "tok",
+};
+const mailbox = (uid: string, ownerUserUid?: string) => ({
+    uid,
+    version: 0,
+    ownerUserUid,
+    primarySmtpAddress: `${uid}@example.com`,
+    displayName: uid,
+    timezone: "UTC",
+    quotaBytes: 1,
+    usedBytes: 0,
+    aliasAddresses: [],
+});
+
+type Handler = (url: string, init?: RequestInit) => Response | undefined;
+
+interface Options {
+    currentStep?: string;
+    domains?: unknown[];
+    encryption?: Record<string, string>;
+    mailboxes?: unknown[];
+    extra?: Handler;
+}
+
+function mockSetup(options: Options = {}) {
+    const domains = [...(options.domains ?? [])];
+    return mockFetch((url, init) => {
+        const method = init?.method ?? "GET";
+        const custom = options.extra?.(url, init);
+        if (custom) return custom;
+        if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+        if (url === "/api/system/setup" && method === "GET") return jsonResponse(200, { required: true, currentStep: options.currentStep });
+        if (url === "/api/system/setup" && method === "PUT") return jsonResponse(200, { required: true, currentStep: JSON.parse(init.body as string).currentStep });
+        if (url === "/api/system/setup/complete") return jsonResponse(200, { required: false });
+        if (url.startsWith("/api/mail/domains?")) return jsonResponse(200, domains);
+        if (url === "/api/mail/domains" && method === "POST") {
+            const created = { ...domain, uid: JSON.parse(init.body as string).name, name: JSON.parse(init.body as string).name };
+            domains.push(created);
+            return jsonResponse(200, created);
+        }
+        if (url.startsWith("/api/mail/domains/") && url.endsWith("/dns-setup")) return jsonResponse(200, []);
+        if (url.startsWith("/api/mail/domains/")) return jsonResponse(200, domains.find((d: any) => url.endsWith(encodeURIComponent(d.uid))) ?? domain);
+        if (url === "/api/system/plugins") return jsonResponse(200, []);
+        if (url === "/api/system/plugins/status") return jsonResponse(200, { hash: "h", instances: [] });
+        if (url === "/api/system/encryption-policy") {
+            return jsonResponse(200, options.encryption ?? { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" });
+        }
+        if (url === "/api/system/retention-policy") return jsonResponse(200, {});
+        if (url === "/api/system/mailbox-policy") return jsonResponse(200, { defaultQuotaBytes: 2_000_000_000, autoProvisionEnabled: false, autoProvisionQuotaBytes: 1_000_000_000 });
+        if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
+        if (url === "/api/system/branding") return jsonResponse(200, { companyName: "", title: "" });
+        if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, ["example.com"]);
+        if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, options.mailboxes ?? []);
+        throw new Error(`unexpected ${method} ${url}`);
+    });
+}
+
+function calls(fetchMock: any, url: string, method: string): any[] {
+    return fetchMock.mock.calls.filter((c: any[]) => c[0] === url && ((c[1] as RequestInit)?.method ?? "GET") === method);
+}
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
+
+const renderPage = () => render(<SetupPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+describe("SetupPage", () => {
+    it("starts at the plugins step and requires a domain before moving past the domain step", async () => {
+        const fetchMock = mockSetup();
+        const user = userEvent.setup();
+        renderPage();
+
+        expect(await screen.findByRole("heading", { name: "Step 1 of 6: Plugins" })).toBeInTheDocument();
+        expect(await screen.findByText("No plugins installed.")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
+        // Steps after the domain can't be jumped to until a domain exists.
+        expect(screen.getByRole("button", { name: "3. Server settings" })).toBeDisabled();
+
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        expect(await screen.findByRole("heading", { name: "Step 2 of 6: Domain" })).toBeInTheDocument();
+        expect(JSON.parse(calls(fetchMock, "/api/system/setup", "PUT")[0][1].body)).toEqual({ currentStep: "domain" });
+        expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+        expect(screen.getByText("Add a domain to continue.")).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Add domain" }));
+        expect(await screen.findByText("A domain name is required.")).toBeInTheDocument();
+
+        await user.type(screen.getByLabelText("Domain name"), "example.com");
+        await user.click(screen.getByRole("button", { name: "Add domain" }));
+        expect(await screen.findByText(/to prove ownership, then verify/)).toBeInTheDocument();
+        expect(screen.getByLabelText("Add another domain")).toHaveValue("");
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        expect(await screen.findByRole("heading", { name: "Step 1 of 6: Plugins" })).toBeInTheDocument();
+    });
+
+    it("shows an error when adding the domain fails", async () => {
+        mockSetup({
+            currentStep: "domain",
+            extra: (url, init) => (url === "/api/mail/domains" && init?.method === "POST" ? jsonResponse(409, { message: "That domain already exists." }) : undefined),
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.type(await screen.findByLabelText("Domain name"), "example.com");
+        await user.click(screen.getByRole("button", { name: "Add domain" }));
+        expect(await screen.findByText("That domain already exists.")).toBeInTheDocument();
+    });
+
+    it("resumes at the saved step, and shows every server setting on the settings step", async () => {
+        mockSetup({ currentStep: "settings", domains: [domain] });
+        renderPage();
+        expect(await screen.findByRole("heading", { name: "Step 3 of 6: Server settings" })).toBeInTheDocument();
+        expect(await screen.findByLabelText("Mail within this server")).toBeInTheDocument();
+        expect(await screen.findByText("Message retention (days)")).toBeInTheDocument();
+        expect(await screen.findByLabelText("Default quota (GB)")).toHaveValue(2);
+    });
+
+    it("falls back to the first step when the saved step is unknown or status can't load", async () => {
+        mockSetup({ currentStep: "nonsense", domains: [domain] });
+        const { unmount } = renderPage();
+        expect(await screen.findByRole("heading", { name: "Step 1 of 6: Plugins" })).toBeInTheDocument();
+        unmount();
+
+        mockSetup({ extra: (url, init) => (url === "/api/system/setup" && !init?.method ? jsonResponse(500, {}) : undefined) });
+        renderPage();
+        expect(await screen.findByRole("heading", { name: "Step 1 of 6: Plugins" })).toBeInTheDocument();
+    });
+
+    it("skips escrow when end-to-end encryption is turned off everywhere", async () => {
+        mockSetup({ currentStep: "escrow", domains: [domain], encryption: { encryptSameOrg: "prohibited", encryptFederated: "prohibited", encryptExternal: "prohibited" } });
+        renderPage();
+        expect(await screen.findByText(/End-to-end encryption is turned off, so escrow isn.t needed/)).toBeInTheDocument();
+    });
+
+    it("offers escrow when encryption is allowed, and tracks the policy saved on the settings step", async () => {
+        let encryption = { encryptSameOrg: "prohibited", encryptFederated: "prohibited", encryptExternal: "prohibited" };
+        mockSetup({
+            currentStep: "settings",
+            domains: [domain],
+            extra: (url, init) => {
+                if (url !== "/api/system/encryption-policy") return undefined;
+                if (init?.method === "PUT") encryption = { ...encryption, ...JSON.parse(init.body as string) };
+                return jsonResponse(200, encryption);
+            },
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.selectOptions(await screen.findByLabelText("Mail within this server"), "automatic");
+        const encryptionForm = screen.getByLabelText("Mail within this server").closest("form") as HTMLElement;
+        await user.click(within(encryptionForm).getByRole("button", { name: "Save" }));
+        expect(await within(encryptionForm.parentElement as HTMLElement).findByText("Saved.")).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        expect(await screen.findByRole("heading", { name: "Step 4 of 6: Escrow" })).toBeInTheDocument();
+        expect(await screen.findByText("How do you want to set up escrow?")).toBeInTheDocument();
+    });
+
+    it("shows branding on the branding step", async () => {
+        mockSetup({ currentStep: "branding", domains: [domain] });
+        renderPage();
+        expect(await screen.findByRole("heading", { name: "Step 5 of 6: Branding" })).toBeInTheDocument();
+        expect(await screen.findByLabelText("Company name")).toBeInTheDocument();
+    });
+
+    it("creates the admin's own mailbox first, then more, and finishes setup", async () => {
+        const location = mockLocation();
+        const created: unknown[] = [];
+        const fetchMock = mockSetup({
+            currentStep: "mailboxes",
+            domains: [{ ...domain, verified: true }],
+            extra: (url, init) => {
+                if (url === "/api/mail/mailboxes" && init?.method === "POST") {
+                    const body = JSON.parse(init.body as string);
+                    const row = { ...mailbox(body.primarySmtpAddress.split("@")[0], body.ownerUserUid), displayName: body.displayName, primarySmtpAddress: body.primarySmtpAddress };
+                    created.push(body);
+                    return jsonResponse(200, row);
+                }
+                return undefined;
+            },
+        });
+        const user = userEvent.setup();
+        renderPage();
+
+        expect(await screen.findByRole("heading", { name: "Your mailbox" })).toBeInTheDocument();
+        expect(await screen.findByLabelText("Local part")).toHaveValue("admin");
+        expect(screen.getByLabelText("Display name")).toHaveValue("Administrator");
+        expect(screen.getByLabelText("Owner user uid (optional)")).toHaveValue("admin-1");
+        await waitFor(() => expect(screen.getByLabelText("Quota (GB)")).toHaveValue(2));
+
+        await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+        expect(await screen.findByRole("heading", { name: "Add another mailbox" })).toBeInTheDocument();
+        expect(screen.getByText(/Administrator <admin@example.com>/)).toBeInTheDocument();
+        expect(screen.getByText("(yours)")).toBeInTheDocument();
+        expect(created[0]).toEqual(expect.objectContaining({ primarySmtpAddress: "admin@example.com", ownerUserUid: "admin-1", quotaBytes: 2_000_000_000 }));
+        expect(screen.getByLabelText("Local part")).toHaveValue("");
+
+        await user.click(screen.getByRole("button", { name: "Finish setup" }));
+        await waitFor(() => expect(location.href).toBe("/admin"));
+        expect(calls(fetchMock, "/api/system/setup/complete", "POST")).toHaveLength(1);
+    });
+
+    it("shows an error when finishing fails", async () => {
+        mockSetup({
+            currentStep: "mailboxes",
+            domains: [domain],
+            mailboxes: [mailbox("admin", "admin-1")],
+            extra: (url) => (url === "/api/system/setup/complete" ? jsonResponse(500, { message: "Try again" }) : undefined),
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await user.click(await screen.findByRole("button", { name: "Finish setup" }));
+        expect(await screen.findByText("Try again")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Finish setup" })).toBeEnabled();
+    });
+});
