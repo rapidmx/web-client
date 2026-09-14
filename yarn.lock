@@ -921,7 +921,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:^0.3.0":
+"@rapidmx/react-shared@npm:0.3.0":
   version: 0.3.0
   resolution: "@rapidmx/react-shared@npm:0.3.0"
   dependencies:
@@ -942,6 +942,27 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.3.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.3.0-5890d91edb.patch":
+  version: 0.3.0
+  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.3.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.3.0-5890d91edb.patch::version=0.3.0&hash=7781d3"
+  dependencies:
+    "@emoji-mart/data": "npm:^1.2.1"
+    "@peculiar/x509": "npm:^2.1.0"
+    asn1js: "npm:^3.0.10"
+    date-fns: "npm:^4.4.0"
+    dompurify: "npm:^3.4.15"
+    hash-wasm: "npm:^4.12.0"
+    pkijs: "npm:^3.4.0"
+    react-icons: "npm:^5.7.0"
+    reflect-metadata: "npm:^0.2.2"
+    rrule: "npm:^2.8.1"
+  peerDependencies:
+    react: 19.x
+    react-dom: 19.x
+  checksum: 10c0/a1380ff15e25d3b02c7887a8fd2159ec90bc8cabc6019e165ce68df8448f1581b23541bdd087c1a2be2146caffc45cd4eb536b413ed477584331df6a7b8a0d91
+  languageName: node
+  linkType: hard
+
 "@rapidmx/web-client@workspace:.":
   version: 0.0.0-use.local
   resolution: "@rapidmx/web-client@workspace:."
@@ -949,7 +970,7 @@ __metadata:
     "@dnd-kit/core": "npm:^6.3.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.3.0"
+    "@rapidmx/react-shared": "patch:@rapidmx/react-shared@npm%3A0.3.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.3.0-5890d91edb.patch"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"
     "@testing-library/jest-dom": "npm:^7.0.1"
