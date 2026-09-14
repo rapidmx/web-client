@@ -22,6 +22,7 @@ import TasksSidebar, { TasksView } from "../../shared/components/tasks/TasksSide
 import TasksToolbar, { TasksViewMode } from "../../shared/components/tasks/TasksToolbar.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { findWellKnownFolderUid } from "../../shared/mail/findWellKnownFolderUid.js";
 
 const INPUT_CLASS =
     "text-sm py-1.5 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -63,7 +64,11 @@ const PRIORITY_CLASS: Record<TaskPriority, string> = {
 };
 
 function TasksContent() {
-    const { folderUid, mailboxUid, userUid } = useTasksShell();
+    const { folderUid, mailboxUid, userUid, mailboxes } = useTasksShell();
+    // The quick-add form's chosen mailbox - `undefined` means "the mailbox being viewed".
+    const [targetMailboxUid, setTargetMailboxUid] = useState<string | undefined>(undefined);
+    // Set after a task is added to a different mailbox than the one this list shows.
+    const [addedElsewhere, setAddedElsewhere] = useState<{ mailboxUid: string; title: string } | null>(null);
     const [tasks, setTasks] = useState<Task[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -98,6 +103,11 @@ function TasksContent() {
     }, [folderUid]);
 
     useEffect(() => {
+        setTargetMailboxUid(undefined);
+        setAddedElsewhere(null);
+    }, [mailboxUid]);
+
+    useEffect(() => {
         if (view.type !== "flagged" || !mailboxUid) {
             return;
         }
@@ -119,16 +129,28 @@ function TasksContent() {
         if (!mailboxUid || !folderUid) {
             return;
         }
+        const target = targetMailboxUid ?? mailboxUid;
         setCreating(true);
         try {
+            const targetFolderUid = target === mailboxUid ? folderUid : await findWellKnownFolderUid(target, "tasks");
+            if (!targetFolderUid) {
+                setCreateError("That mailbox has no Tasks folder.");
+                return;
+            }
             const created = await createTask({
-                mailboxUid,
-                folderUid,
+                mailboxUid: target,
+                folderUid: targetFolderUid,
                 title: title.trim(),
                 dueDate: dueDate ? new Date(dueDate).toISOString() : undefined,
                 priority,
             });
-            setTasks((prev) => [...prev, created]);
+            if (target === mailboxUid) {
+                setAddedElsewhere(null);
+                setTasks((prev) => [...prev, created]);
+            } else {
+                // Created in another mailbox - it doesn't belong in this mailbox's list.
+                setAddedElsewhere({ mailboxUid: target, title: created.title });
+            }
             setTitle("");
             setDueDate("");
             setPriority("normal");
@@ -303,11 +325,38 @@ function TasksContent() {
                                     <option value="normal">Normal</option>
                                     <option value="high">High</option>
                                 </select>
+                                {mailboxes.length > 1 && (
+                                    <select
+                                        aria-label="Task mailbox"
+                                        className={`${INPUT_CLASS} max-w-40`}
+                                        value={targetMailboxUid ?? mailboxUid ?? ""}
+                                        onChange={(e) => setTargetMailboxUid(e.target.value)}
+                                    >
+                                        {mailboxes.map((mb) => (
+                                            <option key={mb.uid} value={mb.uid}>
+                                                {mb.displayName}
+                                                {mb.ownerUserUid === userUid ? "" : " (shared)"}
+                                            </option>
+                                        ))}
+                                    </select>
+                                )}
                                 <Button type="submit" loading={creating} disabled={creating} className="!w-auto shrink-0">
                                     Add
                                 </Button>
                             </form>
                             {createError && <Alert>{createError}</Alert>}
+                            {addedElsewhere && (
+                                <p role="status" className="text-sm py-2 px-3 rounded-sm bg-surface-alt text-text">
+                                    &ldquo;{addedElsewhere.title}&rdquo; was added to{" "}
+                                    {mailboxes.find((mb) => mb.uid === addedElsewhere.mailboxUid)?.displayName ?? "another mailbox"}.{" "}
+                                    <a
+                                        href={`/tasks?mailboxUid=${encodeURIComponent(addedElsewhere.mailboxUid)}`}
+                                        className="font-medium text-primary-dark hover:underline"
+                                    >
+                                        View that mailbox&rsquo;s tasks
+                                    </a>
+                                </p>
+                            )}
 
                             {loading ? (
                                 <p className="text-sm text-text-muted">Loading&hellip;</p>

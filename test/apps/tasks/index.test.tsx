@@ -207,6 +207,44 @@ describe("TasksPage", () => {
         expect(screen.getByLabelText("Add a task")).toHaveValue("");
     });
 
+    it("hides the Task mailbox select with only one mailbox", async () => {
+        mockShellAndTasks([]);
+        render(<TasksPage userUid="u1" />);
+        await screen.findByText("No tasks yet.");
+        expect(screen.queryByLabelText("Task mailbox")).not.toBeInTheDocument();
+    });
+
+    it("creates a task in another mailbox's Tasks folder and links to it instead of listing it", async () => {
+        const shared = { ...mailbox, uid: "mb2", ownerUserUid: "u9", primarySmtpAddress: "team@example.com", displayName: "Team" };
+        const sharedTasksFolder = { ...tasksFolder, uid: "f-team-tasks", mailboxUid: "mb2" };
+        const created = task({ uid: "t-team", mailboxUid: "mb2", folderUid: "f-team-tasks", title: "Team chore" });
+        const fetchMock = mockShellAndTasks([], (url, init) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, shared]);
+            if (url.startsWith("/api/mail/folders") && url.includes("mb2")) return jsonResponse(200, [sharedTasksFolder]);
+            if (url === "/api/mail/tasks" && init?.method === "POST") return jsonResponse(200, created);
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+
+        await screen.findByText("No tasks yet.");
+        const select = screen.getByLabelText("Task mailbox");
+        expect(select).toHaveValue("mb1");
+        expect(within(select).getByRole("option", { name: "Team (shared)" })).toBeInTheDocument();
+        await user.selectOptions(select, "mb2");
+        await user.type(screen.getByLabelText("Add a task"), "Team chore");
+        await user.click(screen.getByRole("button", { name: "Add" }));
+
+        const status = await screen.findByRole("status");
+        expect(status).toHaveTextContent("“Team chore” was added to Team.");
+        expect(within(status).getByRole("link", { name: "View that mailbox’s tasks" })).toHaveAttribute("href", "/tasks?mailboxUid=mb2");
+        const post = fetchMock.mock.calls.find((c) => c[0] === "/api/mail/tasks" && (c[1] as RequestInit).method === "POST")!;
+        expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual(
+            expect.objectContaining({ mailboxUid: "mb2", folderUid: "f-team-tasks", title: "Team chore" }),
+        );
+        expect(screen.getByText("No tasks yet.")).toBeInTheDocument();
+    });
+
     it("shows a validation error and does not submit when the title is blank", async () => {
         const fetchMock = mockShellAndTasks([]);
         const user = userEvent.setup();
