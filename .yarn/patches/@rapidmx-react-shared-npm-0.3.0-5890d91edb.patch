@@ -44,6 +44,36 @@ index d99b18431c7de8b3df461962a6aca06536820942..0b3d19adbcb2e63ca195bb8cee55329a
 +    }
 +    return choices[hash % choices.length];
  }
+diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
+index 8261e09318c4d07619b79e12df0968ba9917dd17..6210243d49fef06808114567464c199e117ca3af 100644
+--- a/dist/mail/mailApi.d.ts
++++ b/dist/mail/mailApi.d.ts
+@@ -431,6 +431,9 @@ export interface AssembleDraftInput {
+ }
+ /** Creates a blank draft `Message` in the given folder (normally the mailbox's Drafts folder) to compose into. */
+ export declare function createDraft(mailboxUid: string, folderUid: string): Promise<Message>;
++/** Deletes a message - e.g. an unsent draft that's no longer needed because compose switched to a different
++ * sending mailbox. */
++export declare function deleteMessage(uid: string, version: number): Promise<void>;
+ /**
+  * Assembles a draft's structured compose input (recipients/subject/HTML body, plus whatever attachments have
+  * already been `uploadAttachment()`-ed onto it) into RFC 5322 MIME and stores it as the draft's `bodyBlobKey`
+diff --git a/dist/mail/mailApi.js b/dist/mail/mailApi.js
+index 8b2444bc24d50b3514140a8026f546639b6ddccb..db8dc3e8586d76f658fe6bb90274ae5d3962ebeb 100644
+--- a/dist/mail/mailApi.js
++++ b/dist/mail/mailApi.js
+@@ -265,6 +265,11 @@ export function createDraft(mailboxUid, folderUid) {
+         body: JSON.stringify({ mailboxUid, folderUid, messageId: `${crypto.randomUUID()}@webmail` }),
+     });
+ }
++/** Deletes a message - e.g. an unsent draft that's no longer needed because compose switched to a different
++ * sending mailbox. */
++export function deleteMessage(uid, version) {
++    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
++}
+ /**
+  * Assembles a draft's structured compose input (recipients/subject/HTML body, plus whatever attachments have
+  * already been `uploadAttachment()`-ed onto it) into RFC 5322 MIME and stores it as the draft's `bodyBlobKey`
 diff --git a/dist/mail/mailboxAccessApi.d.ts b/dist/mail/mailboxAccessApi.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..e0d05d30172c848527f600d7943cc7a00c8ccd73

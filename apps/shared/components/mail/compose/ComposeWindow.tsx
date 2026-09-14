@@ -23,8 +23,10 @@ import {
     assembleDraftRaw,
     attachmentContentUrl,
     createDraft,
+    deleteMessage,
     getMailbox,
     listFolders,
+    listMailboxes,
     sendMessage,
     setMessageRequestReceipt,
     setMessageScheduledSendTime,
@@ -48,6 +50,9 @@ export interface ComposeWindowProps {
     session: ComposeSession;
     onClose: () => void;
     onToggleMinimize: () => void;
+    /** The signed-in user - identifies their own ("primary") mailbox, the default From when the session
+     * doesn't name a mailbox. */
+    userUid?: string;
 }
 
 const FIELD_ROW = "flex items-center gap-2 px-3 py-1.5 border-b border-border";
@@ -106,8 +111,17 @@ function HeaderButton({ label, onClick, icon: Icon }: { label: string; onClick: 
  * see `ComposeContext.tsx`'s own doc comment for how that interacts with several sessions being open at
  * once.
  */
-export default function ComposeWindow({ session, onClose, onToggleMinimize }: ComposeWindowProps) {
-    const { id, mailboxUid, initialTo, initialCc, initialSubject, initialQuotedHtml, signatureContext, suppressSigning, minimized } = session;
+export default function ComposeWindow({ session, onClose, onToggleMinimize, userUid }: ComposeWindowProps) {
+    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, signatureContext, suppressSigning, minimized } = session;
+    // The sending ("From") mailbox. A reply/forward session names the original message's mailbox; a fresh
+    // compose leaves it unset and defaults to the caller's own mailbox once `listMailboxes()` resolves.
+    // Everything mailbox-scoped below (Drafts folder, draft, signatures, crypto context) keys off this.
+    const [fromMailboxUid, setFromMailboxUid] = useState<string | undefined>(session.mailboxUid);
+    const mailboxUid = fromMailboxUid;
+    const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
+    // Attachments and inline images upload onto the current draft's uid, which lives in one mailbox's
+    // Drafts folder - so once anything has been uploaded the sender can no longer be switched.
+    const [hasUploads, setHasUploads] = useState(false);
     const isMobile = useIsMobile();
     const { requestUnlock } = useUnlockPrompt();
     // Bumped after a successful on-demand unlock to force a re-render - `getUnlockedKeys()` below is a
@@ -156,7 +170,34 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
     // `cryptoContextReady` (below) gates Send/Send-later until both calls have settled either way, so a
     // send that happens to race this fetch can't silently skip encryption the spec says should apply.
     const [cryptoContextReady, setCryptoContextReady] = useState(false);
+
     useEffect(() => {
+        let cancelled = false;
+        listMailboxes({ limit: 100 })
+            .then((result) => {
+                if (cancelled) {
+                    return;
+                }
+                setMailboxes(result);
+                setFromMailboxUid((current) => current ?? (result.find((mb) => mb.ownerUserUid === userUid) ?? result[0])?.uid);
+            })
+            .catch((err) => {
+                // Only fatal when there's no mailbox to fall back on - a session that already names one just
+                // loses the From picker.
+                if (!cancelled && !session.mailboxUid) {
+                    setFolderError(err instanceof ApiRequestError ? err.message : "Could not load your mailboxes.");
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (!mailboxUid) {
+            return;
+        }
         let cancelled = false;
         setCryptoContextReady(false);
         let mailboxSettled = false;
@@ -194,9 +235,26 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
     }, [mailboxUid]);
 
     useEffect(() => {
+        if (!mailboxUid) {
+            return;
+        }
+        // Cancellable so a slow response for a mailbox the user has since switched away from can't point
+        // the new draft at the wrong mailbox's Drafts folder.
+        let cancelled = false;
         listFolders(mailboxUid)
-            .then((folders) => setDraftsFolderUid(folders.find((f) => f.type === "drafts")?.uid))
-            .catch((err) => setFolderError(err instanceof ApiRequestError ? err.message : "Could not load your Drafts folder."));
+            .then((folders) => {
+                if (!cancelled) {
+                    setDraftsFolderUid(folders.find((f) => f.type === "drafts")?.uid);
+                }
+            })
+            .catch((err) => {
+                if (!cancelled) {
+                    setFolderError(err instanceof ApiRequestError ? err.message : "Could not load your Drafts folder.");
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [mailboxUid]);
 
     /**
@@ -215,7 +273,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
         const unchecked = addresses.filter((r) => !(r.address in recipientStatuses));
         for (const recipient of unchecked) {
-            lookupKeys(mailboxUid, recipient.address)
+            lookupKeys(mailbox.uid, recipient.address)
                 .catch(() => undefined)
                 .then((lookup) => {
                     const status = resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, recipient.address, lookup);
@@ -233,6 +291,11 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
     // signature is a completely legitimate outcome, so this falls back to just the quoted content
     // (if any) rather than surfacing an error over what's a cosmetic nicety.
     useEffect(() => {
+        // Seeds the body once, from whichever mailbox is the sender when compose opens - switching From
+        // later must not overwrite what the user has already written (the editor itself never re-syncs).
+        if (!mailboxUid || contentReady) {
+            return;
+        }
         listMailSignatures(mailboxUid)
             .then((signatures) => {
                 const signature = signatures.find((s) =>
@@ -246,13 +309,49 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
     }, [mailboxUid, signatureContext, initialQuotedHtml]);
 
     useEffect(() => {
-        if (!draftsFolderUid || draft) {
+        if (!mailboxUid || !draftsFolderUid || draft) {
             return;
         }
+        let cancelled = false;
         createDraft(mailboxUid, draftsFolderUid)
-            .then(setDraft)
-            .catch((err) => setDraftError(err instanceof ApiRequestError ? err.message : "Could not start a new draft."));
+            .then((created) => {
+                if (cancelled) {
+                    // The sender changed while this was in flight - discard the now-orphaned draft.
+                    void deleteMessage(created.uid, created.version).catch(() => undefined);
+                    return;
+                }
+                setDraft(created);
+            })
+            .catch((err) => {
+                if (!cancelled) {
+                    setDraftError(err instanceof ApiRequestError ? err.message : "Could not start a new draft.");
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [mailboxUid, draftsFolderUid, draft]);
+
+    /** Switches the sending mailbox: discards the current (unsent, upload-free) draft and resets the
+     * per-mailbox state, so the effects above start a fresh draft and crypto context in the new mailbox.
+     * Recipients, subject, and body are kept. */
+    function handleFromChange(nextMailboxUid: string) {
+        if (nextMailboxUid === mailboxUid || hasUploads) {
+            return;
+        }
+        if (draft) {
+            void deleteMessage(draft.uid, draft.version).catch(() => undefined);
+        }
+        setDraft(null);
+        setDraftsFolderUid(undefined);
+        setDraftError(null);
+        setFolderError(null);
+        setMailbox(null);
+        setRecipientStatuses({});
+        setEncryptRequested(false);
+        setEncryptionBlocked(null);
+        setFromMailboxUid(nextMailboxUid);
+    }
 
     /**
      * Click-and-drag resize, from the window's own top/left edges (and the top-left corner, for both
@@ -310,6 +409,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         }
         try {
             const attachment = await uploadAttachment(draft.uid, file);
+            setHasUploads(true);
             return attachmentContentUrl(attachment.uid);
         } catch (err) {
             setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload image.");
@@ -329,6 +429,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         for (const file of files) {
             try {
                 const attachment = await uploadAttachment(draft!.uid, file);
+                setHasUploads(true);
                 setAttachments((prev) => [...prev, attachment]);
             } catch (err) {
                 setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload attachment.");
@@ -359,7 +460,8 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         bccRecipients: ComposeRecipientInput[],
         forcePlaintext: boolean,
     ): Promise<Message | "blocked"> {
-        const unlocked = getUnlockedKeys(mailboxUid);
+        // Only reachable once a draft exists, which itself requires `mailboxUid` to have resolved.
+        const unlocked = getUnlockedKeys(mailboxUid!);
         // `mailbox` is required to build protected headers (own From address) whenever signing or
         // encrypting - not just guarded on the encryption branch below, since a signed-only message
         // needs it too. A mailbox fetch failure just means no crypto for this send, never a crash.
@@ -371,7 +473,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
         let recipientCertDers: Uint8Array[] = [];
         if (!forcePlaintext && canEncryptSelf && mailbox && encryptionPolicy && allRecipients.length > 0) {
             const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
-            const lookups = await Promise.all(allRecipients.map((r) => lookupKeys(mailboxUid, r.address).catch(() => undefined)));
+            const lookups = await Promise.all(allRecipients.map((r) => lookupKeys(mailboxUid!, r.address).catch(() => undefined)));
             const statuses = allRecipients.map((r, i) =>
                 resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, r.address, lookups[i]),
             );
@@ -483,7 +585,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
             // Only reachable via the button below, which never renders unless needsUnlockForCrypto is
             // true - which itself requires mailbox.keys to already contain a real enrolled key (see
             // hasEnrolledSigningKey/hasEnrolledEncryptionKey), so it's never empty/undefined here either.
-            await requestUnlock(mailboxUid, mailbox!.keys!);
+            await requestUnlock(mailbox!.uid, mailbox!.keys!);
             setUnlockRefresh((n) => n + 1);
         } catch {
             // User dismissed the unlock dialog - nothing to do, the toggles below simply stay hidden.
@@ -492,7 +594,7 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
 
     // A plain read from keySession.ts's module-level session store, not React state - see that module's
     // own doc comment. Cheap enough to read fresh on every render rather than caching in state.
-    const unlockedKeys = getUnlockedKeys(mailboxUid);
+    const unlockedKeys = mailboxUid ? getUnlockedKeys(mailboxUid) : undefined;
     const hasEnrolledSigningKey = !!findActivePublicKey(mailbox?.keys ?? [], "sign");
     const hasEnrolledEncryptionKey = !!findActivePublicKey(mailbox?.keys ?? [], "encrypt");
     // This mailbox has a real signing/encryption key on file, but this session hasn't unlocked it yet -
@@ -610,6 +712,29 @@ export default function ComposeWindow({ session, onClose, onToggleMinimize }: Co
                                 Send without encryption
                             </Button>
                         </Alert>
+                    </div>
+                )}
+
+                {mailboxes.length > 1 && (
+                    <div className={FIELD_ROW}>
+                        <label htmlFor={`compose-from-${id}`} className="text-xs text-text-muted shrink-0">
+                            From
+                        </label>
+                        <select
+                            id={`compose-from-${id}`}
+                            className={`${FIELD_INPUT} disabled:opacity-55`}
+                            value={mailboxUid ?? ""}
+                            disabled={hasUploads || sending}
+                            title={hasUploads ? "The sender can't be changed after adding attachments or images." : undefined}
+                            onChange={(e) => handleFromChange(e.target.value)}
+                        >
+                            {mailboxes.map((mb) => (
+                                <option key={mb.uid} value={mb.uid}>
+                                    {mb.displayName ? `${mb.displayName} <${mb.primarySmtpAddress}>` : mb.primarySmtpAddress}
+                                    {mb.ownerUserUid ? "" : " (shared)"}
+                                </option>
+                            ))}
+                        </select>
                     </div>
                 )}
 

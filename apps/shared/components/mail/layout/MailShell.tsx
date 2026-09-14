@@ -107,51 +107,19 @@ type Status = "checking" | "error" | "ready";
  * its own descendants creates. This button, rendered as part of `AppShell`'s `children`, sits correctly
  * inside that subtree.
  *
- * `mailboxes.length > 1` adds a small "compose from" picker next to the button - there's no longer one
- * ambient "selected mailbox" once every mailbox's folders render simultaneously, so Compose needs its own
- * explicit choice, defaulting to `defaultMailboxUid` (the caller's own owned mailbox, if any).
+ * Opens with no mailbox: a fresh message defaults to the caller's own mailbox, and the compose window's
+ * own From field is where the sender is chosen.
  */
-function ComposeButton({ mailboxes, defaultMailboxUid }: { mailboxes: Mailbox[]; defaultMailboxUid?: string }) {
+function ComposeButton() {
     const { openCompose } = useCompose();
-    const [selected, setSelected] = useState(defaultMailboxUid);
-    const activeUid = selected && mailboxes.some((mb) => mb.uid === selected) ? selected : defaultMailboxUid;
-
-    if (mailboxes.length <= 1) {
-        return (
-            <button
-                type="button"
-                onClick={() => openCompose({ mailboxUid: defaultMailboxUid! })}
-                className="block text-center w-full py-2.5 px-4 rounded-sm font-semibold text-sm bg-primary text-white hover:bg-primary-dark"
-            >
-                Compose
-            </button>
-        );
-    }
-
     return (
-        <div className="flex flex-col gap-1.5">
-            <button
-                type="button"
-                onClick={() => openCompose({ mailboxUid: activeUid! })}
-                disabled={!activeUid}
-                className="block text-center w-full py-2.5 px-4 rounded-sm font-semibold text-sm bg-primary text-white hover:bg-primary-dark disabled:opacity-55"
-            >
-                Compose
-            </button>
-            <select
-                aria-label="Compose from"
-                className="w-full text-xs border border-border rounded-sm py-1 px-2 bg-surface"
-                value={activeUid ?? ""}
-                onChange={(e) => setSelected(e.target.value)}
-            >
-                {mailboxes.map((mb) => (
-                    <option key={mb.uid} value={mb.uid}>
-                        {mb.displayName}
-                        {mb.ownerUserUid ? "" : " (shared)"}
-                    </option>
-                ))}
-            </select>
-        </div>
+        <button
+            type="button"
+            onClick={() => openCompose({})}
+            className="block text-center w-full py-2.5 px-4 rounded-sm font-semibold text-sm bg-primary text-white hover:bg-primary-dark"
+        >
+            Compose
+        </button>
     );
 }
 
@@ -302,7 +270,7 @@ export default function MailShell({
         const sidebarContent = () => (
             <>
                 <div className="p-3">
-                    <ComposeButton mailboxes={mailboxes} defaultMailboxUid={defaultMailboxUid} />
+                    <ComposeButton />
                 </div>
                 {foldersLoading ? (
                     <div className="flex-1 overflow-y-auto px-3 pb-3">

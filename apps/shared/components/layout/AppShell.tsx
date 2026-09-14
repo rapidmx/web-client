@@ -123,7 +123,7 @@ export default function AppShell({
         // ComposeWindow's sign/encrypt toggles and MessageDetailPane's encrypted-message view (both Mail)
         // are today's only useUnlockPrompt() callers, but this needs to be available to any app shell.
         <UnlockPromptProvider>
-            <ComposeProvider>
+            <ComposeProvider userUid={userUid}>
             <div className="min-h-screen flex flex-col bg-surface-alt">
                 <BrandingHeader branding={branding} />
                 {impersonating && (

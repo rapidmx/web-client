@@ -275,11 +275,10 @@ describe("MailShell", () => {
         mockPerMailboxFolders([mailboxA, mailboxB]);
         render(<MailShell userUid="u1">content</MailShell>);
 
-        // "All Mailboxes" only renders once every mailbox's folders have loaded - the mailbox names alone
-        // also appear in the Compose-from picker's options, hence the tagName filters below.
+        // "All Mailboxes" only renders once every mailbox's folders have loaded.
         await screen.findByText("All Mailboxes");
-        expect(screen.getAllByText("Mailbox A").some((el) => el.tagName !== "OPTION")).toBe(true);
-        expect(screen.getAllByText("Mailbox B (shared)").some((el) => el.tagName !== "OPTION")).toBe(true);
+        expect(screen.getByText("Mailbox A")).toBeInTheDocument();
+        expect(screen.getByText("Mailbox B (shared)")).toBeInTheDocument();
         expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
         const folderLinks = screen.getAllByRole("link").filter((el) => el.getAttribute("href")?.includes("folderUid="));
         expect(folderLinks.map((el) => el.getAttribute("href"))).toEqual([
@@ -351,12 +350,12 @@ describe("MailShell", () => {
         expect(inboxLink.className).toContain("bg-primary/10");
     });
 
-    it("offers a compose-from mailbox picker with more than one mailbox, defaulting to the caller's own", async () => {
+    it("has no sidebar sender picker - the sender is chosen in the compose window's own From field", async () => {
         mockPerMailboxFolders([mailboxB, mailboxA]);
         render(<MailShell userUid="u1">content</MailShell>);
 
-        const picker = await screen.findByLabelText("Compose from");
-        expect(picker).toHaveValue("mb-a");
+        await screen.findByText("All Mailboxes");
+        expect(screen.queryByLabelText("Compose from")).not.toBeInTheDocument();
     });
 
     it("shows an error message when loading folders fails", async () => {

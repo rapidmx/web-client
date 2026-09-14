@@ -8,7 +8,8 @@ import ComposeWindow from "./ComposeWindow.js";
 
 export interface ComposeSession {
     id: string;
-    mailboxUid: string;
+    /** The initial sending mailbox - absent means "the caller's own mailbox" (see `ComposeWindow`). */
+    mailboxUid?: string;
     initialTo?: string;
     initialCc?: string;
     initialSubject?: string;
@@ -24,7 +25,10 @@ export interface ComposeSession {
 }
 
 export interface OpenComposeInput {
-    mailboxUid: string;
+    /** The sending mailbox to start with. Omit for a fresh message (defaults to the caller's own mailbox);
+     * a reply/forward passes the original message's mailbox so a shared mailbox's mail replies from it.
+     * Either way the user can change it via the compose window's From field. */
+    mailboxUid?: string;
     /** Prefills the To field — e.g. Contacts' "Email" toolbar action, or Reply/Reply All/Forward. */
     to?: string;
     /** Prefills the Cc field and reveals the Cc/Bcc row — Reply All only. */
@@ -63,7 +67,7 @@ export function useCompose(): ComposeContextValue {
  * opening Compose from Contacts' "Email" action, for instance, overlays the window on top of whatever
  * app is currently showing, exactly like opening it from Mail's own sidebar button.
  */
-export default function ComposeProvider({ children }: PropsWithChildren) {
+export default function ComposeProvider({ children, userUid }: PropsWithChildren<{ userUid?: string }>) {
     const [sessions, setSessions] = useState<ComposeSession[]>([]);
     const isMobile = useIsMobile();
 
@@ -112,6 +116,7 @@ export default function ComposeProvider({ children }: PropsWithChildren) {
                         <ComposeWindow
                             key={session.id}
                             session={session}
+                            userUid={userUid}
                             onClose={() => closeCompose(session.id)}
                             onToggleMinimize={() => toggleMinimize(session.id)}
                         />

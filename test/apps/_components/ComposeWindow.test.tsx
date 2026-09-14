@@ -154,6 +154,98 @@ afterEach(() => {
 });
 
 describe("ComposeWindow", () => {
+    describe("From (sending mailbox)", () => {
+        const ownMailbox = { uid: "mb-own", ownerUserUid: "u1", displayName: "Me", primarySmtpAddress: "me@example.com", aliasAddresses: [] };
+        const sharedMailbox = { uid: "mb-shared", displayName: "Support", primarySmtpAddress: "support@example.com", aliasAddresses: [] };
+
+        /** Two mailboxes (shared listed first), each with its own Drafts folder; a created draft echoes the
+         * mailbox it was created in. */
+        function mockTwoMailboxes(extra?: (url: string, init?: RequestInit) => Response | undefined) {
+            let draftCount = 0;
+            return mockFetch((url, init) => {
+                const custom = extra?.(url, init);
+                if (custom) return custom;
+                const method = init?.method ?? "GET";
+                if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, [sharedMailbox, ownMailbox]);
+                if (url.startsWith("/api/mail/folders")) {
+                    const mailboxUid = new URLSearchParams(url.split("?")[1]).get("mailboxUid")!;
+                    return jsonResponse(200, [{ ...draftsFolder, uid: `drafts-${mailboxUid}`, mailboxUid }]);
+                }
+                if (url.startsWith("/api/mail/mail-signatures")) return jsonResponse(200, []);
+                if (url === "/api/mail/messages" && method === "POST") {
+                    const body = JSON.parse(init!.body as string);
+                    draftCount += 1;
+                    return jsonResponse(200, { ...draft, uid: `m-${draftCount}`, mailboxUid: body.mailboxUid, folderUid: body.folderUid });
+                }
+                if (url.startsWith("/api/mail/messages/") && method === "DELETE") return new Response(null, { status: 204 });
+                throw new Error(`unexpected ${method} ${url}`);
+            });
+        }
+
+        function draftCreates(fetchMock: ReturnType<typeof mockFetch>) {
+            return fetchMock.mock.calls
+                .filter(([url, init]) => url === "/api/mail/messages" && (init as RequestInit | undefined)?.method === "POST")
+                .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        }
+
+        it("defaults a fresh message to the caller's own mailbox, even when it isn't listed first", async () => {
+            const fetchMock = mockTwoMailboxes();
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            expect(await screen.findByLabelText("From")).toHaveValue("mb-own");
+            await waitFor(() => expect(draftCreates(fetchMock)).toEqual([expect.objectContaining({ mailboxUid: "mb-own", folderUid: "drafts-mb-own" })]));
+        });
+
+        it("keeps the session's mailbox (e.g. a reply to a shared mailbox's message) as the default", async () => {
+            mockTwoMailboxes();
+            render(<ComposeWindow session={session({ mailboxUid: "mb-shared" })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            expect(await screen.findByLabelText("From")).toHaveValue("mb-shared");
+            expect(screen.getByRole("option", { name: "Support <support@example.com> (shared)" })).toBeInTheDocument();
+        });
+
+        it("switching From discards the current draft and starts a new one in the new mailbox's Drafts, keeping what was typed", async () => {
+            const fetchMock = mockTwoMailboxes();
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            const from = await screen.findByLabelText("From");
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(1));
+            await user.type(screen.getByLabelText("To"), "jane@example.com");
+
+            await user.selectOptions(from, "mb-shared");
+
+            await waitFor(() =>
+                expect(draftCreates(fetchMock)[1]).toEqual(expect.objectContaining({ mailboxUid: "mb-shared", folderUid: "drafts-mb-shared" })),
+            );
+            expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m-1?version=0", expect.objectContaining({ method: "DELETE" }));
+            expect(screen.getByLabelText("To")).toHaveValue("jane@example.com");
+        });
+
+        it("locks From once an attachment has been uploaded onto the draft", async () => {
+            mockTwoMailboxes((url, init) =>
+                url.startsWith("/api/mail/attachments/upload") && (init?.method ?? "GET") === "POST"
+                    ? jsonResponse(200, { uid: "a1", messageUid: "m-1", filename: "photo.png", contentType: "image/png", sizeBytes: 6 })
+                    : undefined,
+            );
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            const from = await screen.findByLabelText("From");
+            await waitFor(() => expect(screen.getByLabelText("Attach files")).not.toBeDisabled());
+
+            await user.click(screen.getByRole("button", { name: "fake-upload-image" }));
+
+            await waitFor(() => expect(from).toBeDisabled());
+        });
+
+        it("shows no From field for a caller with only one mailbox", async () => {
+            mockCompose((url) => (url.startsWith("/api/mail/mailboxes?") ? jsonResponse(200, [ownMailbox]) : undefined));
+            render(<ComposeWindow session={session()} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            await screen.findByLabelText("Attach files");
+            expect(screen.queryByLabelText("From")).not.toBeInTheDocument();
+        });
+    });
+
     it("resolves the Drafts folder for the given mailbox and starts a blank draft", async () => {
         const fetchMock = mockCompose();
         render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);

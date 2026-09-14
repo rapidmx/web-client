@@ -237,9 +237,9 @@ function ContactsContent() {
 
     function handleEmail() {
         const addresses = checkedContacts.map((c) => c.emails[0]?.address).filter((a): a is string => Boolean(a));
-        // `ContactsShell` only ever renders this component once `mailboxUid` is resolved (see its own
-        // invariant comment) — same non-null pattern as `organizerAddress` in the calendar page.
-        openCompose({ mailboxUid: mailboxUid!, to: addresses.join(", ") });
+        // No mailboxUid: a fresh message defaults to the caller's own mailbox, not whichever mailbox's
+        // contacts happen to be open - the compose window's From field can still change it.
+        openCompose({ to: addresses.join(", ") });
     }
 
     async function handleToggleFavorite() {
