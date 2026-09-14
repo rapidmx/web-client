@@ -8,6 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import MailShell, { MAILBOX_LIST_LIMIT, useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
+import { getKeyVault } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 
 // MailShell now wraps its content in KeyEnrollmentGate (see that component), which checks
 // getKeyVault() once mailboxUid resolves. Mocked at the module level rather than via the shared
@@ -570,6 +572,29 @@ describe("MailShell", () => {
 
         await user.click(await screen.findByRole("button", { name: "Return to admin" }));
         await waitFor(() => expect(location.href).toBe("/admin"));
+    });
+
+    it("never offers first-time key setup while impersonating, even for the impersonated user's own mailbox", async () => {
+        vi.mocked(getUnlockedKeys).mockReturnValue(undefined);
+        vi.mocked(getKeyVault).mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        try {
+            mockMailboxesAndFolders([mailboxA], [inboxFolder]);
+            const { unmount } = render(
+                <MailShell userUid="u1" impersonating>
+                    content
+                </MailShell>,
+            );
+            await waitFor(() => expect(getKeyVault).toHaveBeenCalledWith("mb-a"));
+            expect(await screen.findByText("content")).toBeInTheDocument();
+            expect(screen.queryByText("Protect your mailbox")).not.toBeInTheDocument();
+            unmount();
+
+            render(<MailShell userUid="u1">content</MailShell>);
+            expect(await screen.findByText("Protect your mailbox")).toBeInTheDocument();
+        } finally {
+            vi.mocked(getUnlockedKeys).mockReturnValue({ masterKey: new Uint8Array(32) });
+            vi.mocked(getKeyVault).mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] } as never);
+        }
     });
 
     it("opens the folder drawer via the mobile hamburger button, and closes it via the drawer's own close button", async () => {

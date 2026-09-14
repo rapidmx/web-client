@@ -1221,3 +1221,139 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     decrypted body. Inner component keyed by `message.uid`; label toggles build on the newest version.
   - **ConversationThreadPane**: generation counter drops stale loads/errors/mark-read results; mark-read and
     attachment fetches once per message uid with the current version.
+
+- **2026-09-14 — Round-4 review fixes, W3 (admin + escrow consoles).** Not committed.
+  - **Escrow scope edit** (`apps/admin/escrow-scopes/[uid].tsx`): `buildPublicKeyUpdate()` sends `publicKey` only when a
+    key field changed (the form shows dates to the minute - re-sending always truncated them). An untouched date keeps
+    its stored epoch-ms; `revokedAt` is carried over when only the validity window changed and dropped when the key
+    material/type/fingerprint is replaced (a new key isn't revoked - judgment call). Server compares keys semantically
+    anyway (fingerprint case-insensitive, seconds, revokedAt). The confirm diff now lists `notifySubjectOnAccess`; a
+    cleared description sends `null` (update is a merge - omitted = unchanged).
+  - **Matter detail**: closed matters hide export Download (server refuses) and Approve/Deny. Search has a `searchSeq`
+    guard bumped by close, so an in-flight search's results/error never render after closing.
+  - **AdminShell/EscrowShell sign-out** -> `apps/shared/components/admin/signOut.ts` `signOutOfConsole()`: broadcasts
+    `{type:"sign-out"}` on `CONSOLE_SIGN_OUT_CHANNEL`, awaits auth-server logout (3s abort, errors ignored), navigates.
+    Channel name is **duplicated** from `apps/shared/search/localIndexRpcClient.ts` `SIGN_OUT_CHANNEL`
+    ("rapidmx-localsearch") to keep the Worker client out of the console bundles; `signOut.test.ts` asserts they match.
+    Consoles don't listen for other tabs' sign-out (no keys/indexes live there) - possible follow-up.
+  - **PluginsManager**: enabling never falls back to an unplanned enable when the preview fails; the error Alert shows a
+    "Try again" (re-runs `toggle` on the currently listed plugin; hidden once it's enabled or another row action runs).
+  - **EscrowScopeCard**: assign/clear goes through a "Change escrow scope" confirm showing From/To scope name, holders
+    and M-of-N (or "No escrow" / "Unknown scope (uid)").
+  - **RetentionPolicyForm**: starting/lowering audit-log retention is confirmed too; modal is now "Delete older data?" /
+    "Save and delete older data" with one paragraph per shortened period.
+  - **Busy modals**: data-requests approve/deny, mailbox access/delete and escrow-scope delete ignore Escape/Close while
+    their request runs (matter close modal still closable while closing - left as is).
+  - **usePagedList.loadMore** re-reads page N-1 with page N and appends after the last shown row's uid (deletions shift
+    rows back a page; repeats still deduped). If that uid isn't in the two pages it `reload()`s from page 0 (drops
+    extra loaded pages). Costs one extra request per Load more.
+  - **Transport rules list**: `listTransportRules()` has no sort param (server supports `sort=`, wrapper doesn't pass it),
+    so the page fetches every server page (limit 1000) once, sorts by sequence then name, and pages 25 client-side.
+  - **Escrow audit verify**: `describeVerificationFailure()` maps `reason` (hmac_key_unavailable -> "Audit key not
+    configured...", truncated -> "Entries missing at the end...", head_missing/head_mismatch/head_mac_mismatch,
+    link/hash_mismatch, unknown_algorithm, algorithm_downgrade) plus "(at sequence N)"; unknown reason -> generic.
+  - **BrandingForm GIF**: kept; tests now assert both accept lists include image/gif and upload a GIF logo.
+
+- **2026-09-14 — Round-4 review fixes, W1 (www inbox, Settings > Encryption/Privacy, contacts/tasks lists).** Not committed.
+  - **Encryption: unlock methods.** The app can only unlock with a password: react-shared's `unlockWithPassword()`
+    tries only the *first* password wrap. So `canRemoveWrap()` never offers Remove on the last password wrap
+    ("Needed to unlock", or "Your only unlock method" when nothing else is on file). Recovery codes and passkeys
+    don't count toward that. Other non-escrow wraps keep the old rule (removable while more than one exists).
+    "Add a password" only renders while the vault has **no** password wrap. Otherwise a note points to Rotate
+    keys. A change-password flow (add new, remove old) can't work yet: password wraps have no `methodId`, and
+    restapi's remove without `methodId` is ambiguous (400) once two exist.
+  - **Encryption: rotation** no longer uses react-shared's `rewrapPrivateKeysUnderNewMasterKey()`. It only
+    re-wraps the session's imported active keys, so `rekey()` would silently drop inactive keys. Instead, the local
+    `rewrapVaultPrivateKeys()` fetches a fresh `getKeyVault()` and opens EVERY `wrappedKeys` entry with the current
+    MK (AAD purpose by `useType`). If any entry fails to open, rotation is refused (`UncoveredVaultKeysError`,
+    message names the fingerprints) and nothing is written. Otherwise it re-seals each entry under
+    `generateMasterKey()` and zeroes the plaintext. `keys` comes from a fresh `getMailbox()`, which also feeds
+    `unlockWithPassword()` and `refreshedKeys`. Whether to re-wrap escrow is decided from the fresh vault.
+  - **Encryption: escrow after rotation.** A failed re-wrap sets `escrowRewrapFailed`, which keeps "Add escrow
+    protection" visible (with "no longer covers them" copy) even though the stale escrow wrap is still on file.
+    restapi's `rekey()` preserves that wrap verbatim. A successful add clears the flag.
+  - **Encryption: recovery regeneration** re-fetches the vault and checks capacity against `MAX_MASTER_KEY_WRAPS`
+    (20, mirrored from restapi, escrow counts). If `new - (free + oldRecovery) > 0`, nothing is written and the
+    error says how many other methods to remove. When the new set only fits after removing old codes, an old code
+    is removed just before each add that has no free slot, so working codes never drop below the original count.
+    The partial-failure copy says how many old codes were already removed.
+  - **Encryption: keys at action time.** Every write handler calls `currentUnlockedKeys()`, which uses
+    `getUnlockedKeys()` unless the object is missing or `destroyed`, and otherwise falls back to
+    `useUnlockPrompt().requestUnlock()` (AppShell mounts the provider). `KeysLockedError` maps to "were locked before
+    this could finish. Unlock them and try again." The page no longer reads keys at render time.
+  - **Encryption: owner-only.** The page passes `userUid` and `impersonating` to `EncryptionGate`, and
+    `isOwner = ownerUserUid === userUid && !impersonating` feeds `KeyEnrollmentGate canProvision` and
+    `canManageKeys`. Non-owners get a notice and no Remove, add password, regenerate, rotate, enable signing ("Not
+    enabled.") or add escrow. Session timeout, index size and "Destroy keys" stay.
+  - **Privacy**: export, import and erasure all resolve "own mailbox" server-side (import ignores `mailboxUid`
+    unless trusted). All three render only when the caller owns **exactly one** mailbox and it's the one selected.
+    Otherwise the notice says to switch, or that more than one is owned, or that none is.
+  - **Inbox load-more**: a failure sets `loadMoreError` and shows it in the sentinel with a Retry button, and it is
+    never auto-retried (the observer ignores reports while an error is showing). The continuation effect keys on
+    `appendedPageCount`, bumped only when a page added unseen rows. `loadingMore` isn't used as the key because a
+    fast response can flip it true and back before React renders, so the effect never re-ran (seen in jsdom). The
+    effect only continues if the sentinel's `getBoundingClientRect()` is within 200px of the scroll container. A
+    synchronous `loadMoreInFlightRef` replaces the `loadingMore` guard, so two same-tick calls issue one request.
+  - **Inbox lock race**: `lockGenerationRef` is bumped on a "locked" event, and both the auto-decrypt effect and
+    `handleUnlockList()` drop results if it changed while decrypting.
+  - **Search all mail** is stored as the `mailboxUid/folderUid/query` key it was requested for. It's derived in
+    the same render, so a new query never runs once with the old unbounded window.
+  - **`listAllPages()`** now returns `{items, truncated}` (truncated = stopped at `maxPages` with a full last page).
+    Contacts (main and Deleted views separately) and tasks (not the Flagged view) show "only the first 20000 are
+    listed". Their tests wrap the real module via `vi.mock(importOriginal)` with a `truncateNextLists` queue.
+  - **Test gotchas**: the encryption test's `masterKey.js` mock must export `KeysLockedError`, `openWithKey` and
+    `generateMasterKey`. `mockShell` now serves `/api/mail/mailboxes/mb1` as the object (rotation calls
+    `getMailbox`), and `mailboxRoutes(mb)` covers both routes for per-test mailboxes. `expect.any(Uint8Array)` fails
+    for `TextEncoder` output in jsdom (cross-realm), so use `expect.anything()`.
+- **2026-09-14 — Round-4 review fixes, W2 (compose, message pane, calendar, AppShell/MailShell/KeyEnrollmentGate).** Not
+  committed.
+  - **All-day series west of UTC**: react-shared now expands all-day series in UTC and moves all-day drags by UTC
+    date, so the month grid (`occursOnDay` on local grid days vs UTC date keys) needed no change. The one UI bug
+    left was the recurrence "Ends on" date: stored as the end of the *local* day, which west of UTC is already the
+    next UTC day and added one more occurrence. `allDay.ts` `recurrenceUntilInstant(key, allDay)` /
+    `recurrenceUntilDateKey(until, allDay)`: all-day = `YYYY-MM-DDT23:59:59.999Z` (read back by rounding to the
+    next UTC midnight, so old local-end-of-day values show the intended date); timed = end of local day as before.
+    `RecurrenceEditor` takes `allDay`; toggling All day in `EventModal` re-stores the same chosen date in the new
+    frame. Tests in `EventModal.round4`/`MonthView.round4` set `process.env.TZ = "America/New_York"` at runtime
+    (works in Node, restore in `afterEach`).
+  - **EventModal series edits**: `toSeriesFields` compares start/end rounded to the minute (stored `...:00Z` vs the
+    form's `.000Z` never matched, so every series save refetched and rewrote dates). Time-of-day deltas are read on
+    the event's own timezone wall clock (`toEventWallClock`/`fromEventWallClock` from react-shared `recurrence.js`),
+    normalized to the smallest signed change modulo 24h (19:00 -> 21:00 NY is +2h even across UTC midnight), and the
+    master's new start is converted back from its wall clock (DST-safe). Timed->all-day takes the master's date on
+    the event's wall clock. `saveEventSeries()` now GETs the master, PUTs, lists the folder and re-points detached
+    occurrences - **test mocks must answer `/api/mail/calendar-events?...` with an array**, else it reports
+    `detachedOccurrenceSyncFailed`, which the modal now shows as a "Series saved" notice (OK -> `onSaved`).
+  - **Organizer aliases**: new `organizerAliases` prop; defaults to the `mailboxOptions` entry for `mailboxUid`'s
+    `aliasAddresses`. Organizer/isOrganizer-attendee/`canRespond` lookups match primary + aliases case-insensitively.
+    **Follow-up for W1**: `apps/www/calendar/index.tsx` could pass `organizerAliases={modalMailbox.aliasAddresses}`
+    so a view-only (not in `mailboxOptions`) mailbox's aliases count too.
+  - **RecurrenceEditor**: the last ticked weekday of a weekly rule can't be unticked (rrule would go daily).
+  - **KeyEnrollmentGate `canProvision` now defaults to `false`**; MailShell passes `!impersonating && owner`. Tests
+    that expect setup must pass `canProvision`.
+  - **ComposeWindow**:
+    - Close / Discard (header, minimized bar, trash, discard-modal button) are disabled while `sending`.
+    - Discovery: an effect looks up every current To/Cc/Bcc recipient once `mailbox` + `encryptionPolicy` load
+      (reply prefills, and blurs that happened before they loaded); in-flight lookups are deduped
+      (`lookupsInFlightRef`) and dropped after a From switch (`discoveryGenerationRef`).
+    - `autosaveSuppressed` = `encryptRequested`, or - when encryption is possible at all (unlocked encryption key,
+      enrolled encryption key, or offered earlier) - policy missing, any current recipient without a status yet
+      (pending or never looked up), or `decideMessageEncryption(current).autoEncrypt`. Autosave also waits for
+      `cryptoContextReady`.
+    - `assembleForSend` enters the encryption decision when the mailbox has an enrolled encryption key even if this
+      session never unlocked it (auto-encrypt then blocks with `KEYS_LOCKED_ENCRYPT_MESSAGE` + unlock prompt). Keys
+      are re-read after the lookup await (`readKeys()`, `destroyed` counts as locked) and the Sign check repeats.
+    - Superseded drafts (From switch) are deleted via `deleteSupersededDraft`: awaits the in-flight save, uses its
+      version (the object is already spliced out of `supersededDraftsRef`, so the save can't update it), and on
+      failure retries once with `getMessage()`'s version.
+    - Leaving: `beforeunload` starts the pending save and asks to confirm while an edit is pending or a save is
+      "saving" (not after finish/while sending). No `fetch keepalive` - react-shared's `assembleDraft` can't pass it.
+    - Sign-out flush: `compose/composeFlushRegistry.ts` (module-level, since AppShell renders the ComposeProvider)
+      - each window registers `flushPendingSave`; `AppShell.handleSignOut` does `destroyUnlockedKeys()`, then
+      `await flushComposeDrafts(LOGOUT_TIMEOUT_MS)`, then indexes + logout.
+    - Remaining uncovered branch besides the known `e.target.files ?? []`: `value={mailboxUid ?? ""}` on the From
+      select (From only renders with >1 option, by which time `mailboxUid` is set) - ComposeWindow is 99.41% branches.
+  - **MessageDetailPane**: passes the viewing mailbox's primary address as `readerAddress` and, while
+    `notAddressedToReader` stays true, re-evaluates with each alias (the API takes one address); shows an
+    informational `role=status` "don't include this mailbox" notice. `header_mismatch` text mentions repeated
+    From/To/Cc/Sender headers. The raw byte string is only handed to `evaluateMessageSecurity()`.

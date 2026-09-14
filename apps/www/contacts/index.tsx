@@ -26,7 +26,7 @@ import { useWritableMailboxes } from "../../shared/components/mail/writableMailb
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import { LIST_PAGE_SIZE, listAllPages } from "../../shared/mail/listAllPages.js";
+import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/listAllPages.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -74,6 +74,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     const [deletedError, setDeletedError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    // Set when `listAllPages()` stopped at its page cap - the list shown isn't every contact.
+    const [truncated, setTruncated] = useState(false);
+    const [deletedTruncated, setDeletedTruncated] = useState(false);
     const [query, setQuery] = useState("");
     const [view, setView] = useState<ContactsView>({ type: "all" });
     const [sortColumn, setSortColumn] = useState<SortColumn>("name");
@@ -92,13 +95,17 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     function reload(): Promise<void> {
         if (!folderUid) {
             setContacts([]);
+            setTruncated(false);
             setLoading(false);
             return Promise.resolve();
         }
         setLoading(true);
         setError(null);
         return listAllPages((page) => listContacts(folderUid, { limit: LIST_PAGE_SIZE, page }))
-            .then(setContacts)
+            .then((result) => {
+                setContacts(result.items);
+                setTruncated(result.truncated);
+            })
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load contacts."))
             .finally(() => setLoading(false));
     }
@@ -114,7 +121,10 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         setDeletedLoading(true);
         setDeletedError(null);
         listAllPages((page) => listDeletedContacts(folderUid, { limit: LIST_PAGE_SIZE, page }))
-            .then(setDeletedContacts)
+            .then((result) => {
+                setDeletedContacts(result.items);
+                setDeletedTruncated(result.truncated);
+            })
             .catch((err) => setDeletedError(err instanceof ApiRequestError ? err.message : "Could not load deleted contacts."))
             .finally(() => setDeletedLoading(false));
         // Re-fetches every time the Deleted view is (re-)selected, matching this page's own `reload()`
@@ -361,6 +371,14 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 {error && (
                     <div className="p-3">
                         <Alert>{error}</Alert>
+                    </div>
+                )}
+                {(isDeletedView ? deletedTruncated : truncated) && (
+                    <div className="p-3">
+                        <Alert>
+                            This folder has more contacts than can be shown at once - only the first {LIST_PAGE_SIZE * MAX_LIST_PAGES} are
+                            listed.
+                        </Alert>
                     </div>
                 )}
                 {deletedError && isDeletedView && (

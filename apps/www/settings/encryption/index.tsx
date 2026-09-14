@@ -8,6 +8,7 @@ import {
     KeyVault,
     MasterKeyWrap,
     PublicKey,
+    WrappedPrivateKey,
     addMasterKeyWrap,
     checkSignEnrollmentStatus,
     findActivePublicKey,
@@ -18,7 +19,9 @@ import {
     startSignEnrollment,
 } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import {
+    ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
     SIGNING_PRIVATE_KEY_AAD_PURPOSE,
+    UnlockedKeys,
     destroyUnlockedKeys,
     getUnlockedKeys,
     unlockWithPassword,
@@ -31,19 +34,82 @@ import {
     setLocalIndexByteBudget,
 } from "../../../shared/search/localIndexSizePreference.js";
 import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
-import { buildAad, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
+import { KeysLockedError, buildAad, generateMasterKey, openWithKey, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
 import { buildEscrowWrap, buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
-import { rewrapPrivateKeysUnderNewMasterKey } from "@rapidmx/react-shared/crypto/keyRotation.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
 import { getMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import KeyEnrollmentGate from "../../../shared/components/layout/KeyEnrollmentGate.js";
+import { useUnlockPrompt } from "../../../shared/components/layout/UnlockPromptProvider.js";
 import { destroyLocalIndex } from "../../../shared/search/localIndexRpcClient.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const MIN_PASSWORD_LENGTH = 8;
+
+/** Mirrors restapi's `BaseKeyVaultRoute` `MAX_MASTER_KEY_WRAPS` - `addMasterKeyWrap()` refuses a vault
+ * already holding this many wraps (escrow included). */
+export const MAX_MASTER_KEY_WRAPS = 20;
+
+const KEYS_LOCKED_MESSAGE = "Your encryption keys were locked before this could finish. Unlock them and try again.";
+
+/** Thrown by `rewrapVaultPrivateKeys()` when a vault entry can't be opened with the current master key. */
+class UncoveredVaultKeysError extends Error {
+    constructor(readonly fingerprints: string[]) {
+        super(`Could not open ${fingerprints.length} wrapped private key(s).`);
+    }
+}
+
+/**
+ * Re-seals EVERY private key in the vault (not just the ones this session imported - an inactive or
+ * newly issued key would otherwise be silently dropped by `rekey()`, which replaces `wrappedKeys`
+ * wholesale) under a brand new master key. Opens each entry with `currentMasterKey` first and refuses
+ * (`UncoveredVaultKeysError`) if any can't be opened, before generating anything. Plaintext key bytes
+ * are zeroed as soon as they've been re-sealed. `KeysLockedError` (a destroyed master key) propagates.
+ */
+async function rewrapVaultPrivateKeys(
+    mailboxUid: string,
+    currentMasterKey: Uint8Array,
+    wrappedKeys: WrappedPrivateKey[],
+): Promise<{ mk: Uint8Array; wrappedKeys: WrappedPrivateKey[] }> {
+    const aadFor = (entry: WrappedPrivateKey) =>
+        buildAad(mailboxUid, entry.useType === "sign" ? SIGNING_PRIVATE_KEY_AAD_PURPOSE : ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
+    const opened: { entry: WrappedPrivateKey; raw: Uint8Array }[] = [];
+    try {
+        const failed: string[] = [];
+        for (const entry of wrappedKeys) {
+            try {
+                opened.push({ entry, raw: await openWithKey(currentMasterKey, entry, aadFor(entry)) });
+            } catch (err) {
+                if (err instanceof KeysLockedError) {
+                    throw err;
+                }
+                failed.push(entry.fingerprint);
+            }
+        }
+        if (failed.length > 0) {
+            throw new UncoveredVaultKeysError(failed);
+        }
+        const mk = generateMasterKey();
+        const rewrapped: WrappedPrivateKey[] = [];
+        for (const { entry, raw } of opened) {
+            const sealed = await sealWithKey(mk, raw, aadFor(entry));
+            rewrapped.push({
+                ciphertext: sealed.ciphertext,
+                nonce: sealed.nonce,
+                algorithm: "AES-256-GCM",
+                fingerprint: entry.fingerprint,
+                useType: entry.useType,
+            });
+        }
+        return { mk, wrappedKeys: rewrapped };
+    } finally {
+        for (const { raw } of opened) {
+            raw.fill(0);
+        }
+    }
+}
 
 // RFC 8823 ACME issuance is a real email round-trip with a public CA - "likely minutes," not seconds -
 // so this polls infrequently rather than hammering the endpoint.
@@ -71,7 +137,7 @@ export type SettingsEncryptionPageProps = Omit<SettingsShellProps, "active">;
 export default function SettingsEncryptionPage(props: SettingsEncryptionPageProps) {
     return (
         <SettingsShell {...props} active="encryption">
-            <EncryptionGate />
+            <EncryptionGate userUid={props.userUid} impersonating={props.impersonating} />
         </SettingsShell>
     );
 }
@@ -83,19 +149,28 @@ export default function SettingsEncryptionPage(props: SettingsEncryptionPageProp
  * it renders. See `KeyEnrollmentGate`'s own doc comment for why it's safe to mount more than once (it
  * short-circuits to `children` immediately for a mailbox already unlocked elsewhere this session).
  */
-function EncryptionGate() {
+function EncryptionGate({ userUid, impersonating }: { userUid?: string; impersonating?: boolean }) {
     const { mailboxUid, mailboxes } = useSettingsShell();
     const mailbox = mailboxes.find((mb) => mb.uid === mailboxUid)!;
+    // restapi only lets the mailbox's actual owner write its key vault (`requireMailboxOwner()`), so a
+    // delegate (or an admin impersonating the owner) never provisions keys here, and sees no write actions.
+    const isOwner = mailbox.ownerUserUid !== undefined && mailbox.ownerUserUid === userUid && !impersonating;
     return (
-        <KeyEnrollmentGate mailboxUid={mailboxUid} mailboxAddress={mailbox.primarySmtpAddress} mailboxKeys={mailbox.keys}>
-            <EncryptionContent />
+        <KeyEnrollmentGate
+            mailboxUid={mailboxUid}
+            mailboxAddress={mailbox.primarySmtpAddress}
+            mailboxKeys={mailbox.keys}
+            canProvision={isOwner}
+        >
+            <EncryptionContent canManageKeys={isOwner} />
         </KeyEnrollmentGate>
     );
 }
 
-function EncryptionContent() {
+function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     const { mailboxUid, mailboxes } = useSettingsShell();
     const mailbox = mailboxes.find((mb) => mb.uid === mailboxUid)!;
+    const { requestUnlock } = useUnlockPrompt();
 
     const [vault, setVault] = useState<KeyVault | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -147,19 +222,44 @@ function EncryptionContent() {
     const hasEscrowWrap = vault?.masterKeyWraps.some((w) => w.method === "escrow") ?? false;
     const [wrappingEscrow, setWrappingEscrow] = useState(false);
     const [escrowError, setEscrowError] = useState<string | null>(null);
+    // Set when a rotation's escrow re-wrap failed - the vault still holds the old escrow wrap (restapi's
+    // rekey() preserves it verbatim), but it encrypts a master key that no longer exists, so
+    // `hasEscrowWrap` alone must not hide "Add escrow protection".
+    const [escrowRewrapFailed, setEscrowRewrapFailed] = useState(false);
+
+    /**
+     * This mailbox's unlocked keys *right now* - never a copy read at render time, which a lock (idle
+     * timeout, another tab's sign-out) may since have destroyed. Prompts for the password when locked;
+     * rejects if the prompt is dismissed.
+     */
+    async function currentUnlockedKeys(): Promise<UnlockedKeys> {
+        const current = getUnlockedKeys(mailboxUid!);
+        if (current && !current.destroyed) {
+            return current;
+        }
+        return requestUnlock(mailboxUid!, displayedKeys);
+    }
+
+    function errorMessage(err: unknown, fallback: string): string {
+        if (err instanceof KeysLockedError) {
+            return KEYS_LOCKED_MESSAGE;
+        }
+        return err instanceof ApiRequestError ? err.message : fallback;
+    }
 
     async function handleWrapEscrow() {
         setEscrowError(null);
         setWrappingEscrow(true);
         try {
-            // Only reachable when mailbox.escrowScopeId is set (see the render guard below) and
-            // `unlocked` is defined - see `handleAddPassword`'s identical note on the latter.
+            // Only reachable when mailbox.escrowScopeId is set (see the render guard below).
+            const current = await currentUnlockedKeys();
             const escrowInfo = await getEscrowInfo(mailboxUid!);
-            const wrap = await buildEscrowWrap(unlocked!.masterKey, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
+            const wrap = await buildEscrowWrap(current.masterKey, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
             await addMasterKeyWrap(mailboxUid!, wrap);
+            setEscrowRewrapFailed(false);
             await loadVault();
         } catch (err) {
-            setEscrowError(err instanceof ApiRequestError ? err.message : "Could not add escrow protection for this mailbox.");
+            setEscrowError(errorMessage(err, "Could not add escrow protection for this mailbox."));
         } finally {
             setWrappingEscrow(false);
         }
@@ -203,11 +303,11 @@ function EncryptionContent() {
         setSigningError(null);
         setSigningStatus("enrolling");
         try {
-            // Only reachable once `unlocked` is defined - see `handleAddPassword`'s identical note.
+            const current = await currentUnlockedKeys();
             const { keyPair, csrPem } = await generateKeyPairWithCsr(mailbox.primarySmtpAddress, "sign");
             const privateKeyRaw = await exportPrivateKeyPkcs8(keyPair.privateKey);
             const wrappedKeySealed = await sealWithKey(
-                unlocked!.masterKey,
+                current.masterKey,
                 privateKeyRaw,
                 buildAad(mailboxUid!, SIGNING_PRIVATE_KEY_AAD_PURPOSE),
             );
@@ -218,7 +318,7 @@ function EncryptionContent() {
             setSigningEnrollmentId(enrollmentId);
             setSigningStatus("pending");
         } catch (err) {
-            setSigningError(err instanceof ApiRequestError ? err.message : "Could not start signing certificate enrollment.");
+            setSigningError(errorMessage(err, "Could not start signing certificate enrollment."));
             setSigningStatus("idle");
         }
     }
@@ -245,15 +345,18 @@ function EncryptionContent() {
         void loadVault();
     }, [mailboxUid]);
 
-    const unlocked = getUnlockedKeys(mailboxUid!);
     const passwordWraps = vault?.masterKeyWraps.filter((w) => w.method === "password") ?? [];
     const recoveryWraps = vault?.masterKeyWraps.filter((w) => w.method === "recovery") ?? [];
     const otherWraps = vault?.masterKeyWraps.filter((w) => w.method !== "password" && w.method !== "recovery") ?? [];
 
     // The owner's own unlock methods are every non-escrow wrap - restapi refuses (409) to remove the last
-    // one, since that would leave the master key recoverable only through escrow (or not at all). Mirrored
-    // here so the button simply isn't offered rather than failing after a confirmation.
+    // one. But the app can only actually *unlock* with a password today (react-shared's
+    // `unlockWithPassword()` - recovery codes and passkeys have no unlock path yet), so the last password
+    // wrap is never offered for removal either: without it the mailbox would be locked for good in practice.
     const ownUnlockWrapCount = vault?.masterKeyWraps.filter((w) => w.method !== "escrow").length ?? 0;
+    function canRemoveWrap(wrap: MasterKeyWrap): boolean {
+        return wrap.method === "password" ? passwordWraps.length > 1 : ownUnlockWrapCount > 1;
+    }
 
     async function handleRemove(wrap: MasterKeyWrap) {
         setPendingRemoval(null);
@@ -270,6 +373,8 @@ function EncryptionContent() {
         }
     }
 
+    /** Only offered while the vault has no password wrap at all - `unlockWithPassword()` only ever tries
+     * the first one, so a second password would be accepted here but never unlock anything. */
     async function handleAddPassword(e: FormEvent) {
         e.preventDefault();
         if (newPassword.length < MIN_PASSWORD_LENGTH) {
@@ -283,15 +388,14 @@ function EncryptionContent() {
         setActionError(null);
         setAddingPassword(true);
         try {
-            // Only reachable once `unlocked` is defined - `EncryptionGate` guarantees this mailbox is
-            // unlocked before `EncryptionContent` ever mounts.
-            const wrap = await buildPasswordWrap(mailboxUid!, unlocked!.masterKey, newPassword);
+            const current = await currentUnlockedKeys();
+            const wrap = await buildPasswordWrap(mailboxUid!, current.masterKey, newPassword);
             await addMasterKeyWrap(mailboxUid!, wrap);
             setNewPassword("");
             setConfirmNewPassword("");
             await loadVault();
         } catch (err) {
-            setActionError(err instanceof ApiRequestError ? err.message : "Could not add this password.");
+            setActionError(errorMessage(err, "Could not add this password."));
         } finally {
             setAddingPassword(false);
         }
@@ -304,27 +408,58 @@ function EncryptionContent() {
      * `removeMasterKeyWrap()` removes every wrap matching a `methodId` - so each new wrap gets a
      * batch-unique label first, letting the old ones be removed by their own `methodId` without touching
      * the new ones.
+     *
+     * The vault holds at most `MAX_MASTER_KEY_WRAPS` wraps. Checked against a fresh copy of the vault before
+     * anything is written: when the new set only fits once old recovery codes are gone, an old code is
+     * removed just before each new one that has no room yet (the working-code count never drops below the
+     * original set's), and when it can't fit even then, nothing is written and the user is told how many
+     * other methods to remove.
      */
     async function handleRegenerateRecoveryCodes() {
-        // Only reachable once the vault has loaded (the button is disabled until then) - otherwise
-        // `recoveryWraps` would be empty and the old codes would silently survive a "regeneration".
+        // Only reachable once the vault has loaded (the button is disabled until then).
         setActionError(null);
-        const oldRecoveryWraps = recoveryWraps;
         setRegenerating(true);
         let built: { wraps: MasterKeyWrap[]; codes: string[] };
+        let oldRecoveryWraps: MasterKeyWrap[];
+        let free: number;
         try {
-            built = await buildRecoveryWraps(mailboxUid!, unlocked!.masterKey);
+            const current = await currentUnlockedKeys();
+            const freshVault = await getKeyVault(mailboxUid!);
+            oldRecoveryWraps = freshVault.masterKeyWraps.filter((w) => w.method === "recovery");
+            free = MAX_MASTER_KEY_WRAPS - freshVault.masterKeyWraps.length;
+            built = await buildRecoveryWraps(mailboxUid!, current.masterKey);
+            const shortfall = built.wraps.length - (free + oldRecoveryWraps.length);
+            if (shortfall > 0) {
+                setVault(freshVault);
+                setActionError(
+                    `Your key vault can hold at most ${MAX_MASTER_KEY_WRAPS} unlock methods and already has ${freshVault.masterKeyWraps.length}. ` +
+                        `Regenerating needs room for ${built.wraps.length} new recovery codes, so remove ${shortfall} other unlock ` +
+                        `method${shortfall === 1 ? "" : "s"} (such as an extra password or passkey) below first.`,
+                );
+                setRegenerating(false);
+                return;
+            }
         } catch (err) {
-            setActionError(err instanceof ApiRequestError ? err.message : "Could not regenerate recovery codes.");
+            setActionError(errorMessage(err, "Could not regenerate recovery codes."));
             setRegenerating(false);
             return;
         }
         const batch = Date.now().toString(36);
+        const pendingOld = [...oldRecoveryWraps];
+        let removedEarly = 0;
         const savedCodes: string[] = [];
         let addError: unknown = null;
         for (let i = 0; i < built.wraps.length; i++) {
             try {
+                if (free <= 0) {
+                    // Guaranteed non-empty by the shortfall check above.
+                    const old = pendingOld.shift()!;
+                    await removeMasterKeyWrap(mailboxUid!, "recovery", old.methodId);
+                    removedEarly++;
+                    free++;
+                }
                 await addMasterKeyWrap(mailboxUid!, { ...built.wraps[i], methodId: `recovery-${batch}-${i + 1}` });
+                free--;
                 savedCodes.push(built.codes[i]);
             } catch (err) {
                 addError = err;
@@ -332,8 +467,14 @@ function EncryptionContent() {
             }
         }
 
+        const removedEarlyNote =
+            removedEarly > 0
+                ? `${removedEarly} of your old recovery codes had to be removed to make room; the rest were kept and still work`
+                : "Your old recovery codes were kept and still work";
+
         if (savedCodes.length === 0) {
-            setActionError(addError instanceof ApiRequestError ? addError.message : "Could not regenerate recovery codes.");
+            const message = addError instanceof ApiRequestError ? addError.message : "Could not regenerate recovery codes.";
+            setActionError(removedEarly > 0 ? `${message} ${removedEarlyNote}.` : message);
             setRegenerating(false);
             await loadVault();
             return;
@@ -341,14 +482,14 @@ function EncryptionContent() {
 
         let warning: string | null = null;
         if (savedCodes.length < built.wraps.length) {
-            // Old codes are deliberately left in place - the new set is incomplete, so the old one is
-            // still the user's full recovery safety net.
+            // Remaining old codes are deliberately left in place - the new set is incomplete, so the old one
+            // is still part of the user's recovery safety net.
             warning = `Only ${savedCodes.length} of ${built.wraps.length} new recovery codes could be saved${
                 addError instanceof ApiRequestError ? ` (${addError.message})` : ""
-            }. Your old recovery codes were kept and still work - save the codes below, then try regenerating again.`;
+            }. ${removedEarlyNote} - save the codes below, then try regenerating again.`;
         } else {
             let notRemoved = 0;
-            for (const wrap of oldRecoveryWraps) {
+            for (const wrap of pendingOld) {
                 try {
                     await removeMasterKeyWrap(mailboxUid!, "recovery", wrap.methodId);
                 } catch {
@@ -382,13 +523,14 @@ function EncryptionContent() {
 
     /**
      * Real revocation for a captured wrap (`keyvaultApi.ts`'s `rekey()` - see that function's own doc
-     * comment): re-wraps this mailbox's already-unlocked private keys under a brand new master key
-     * (`rewrapPrivateKeysUnderNewMasterKey()`), wraps that new MK under a freshly entered password and a
-     * fresh set of recovery codes, and atomically replaces the vault - the enrolled keypair/certificate
-     * itself is unchanged (restapi's own `rekey()` rejects anything else), only how it's protected.
-     * Every *other* unlock method this mailbox had (a second password, a passkey, an old set of recovery
-     * codes) stops working the instant this succeeds, since `rekey()` replaces `masterKeyWraps` wholesale
-     * - the whole point, for a captured-wrap scenario where it's unclear which method was compromised.
+     * comment): re-wraps every private key in a freshly fetched vault under a brand new master key
+     * (`rewrapVaultPrivateKeys()` - all of them, active or not, since `rekey()` replaces `wrappedKeys`
+     * wholesale), wraps that new MK under a freshly entered password and a fresh set of recovery codes,
+     * and atomically replaces the vault - the enrolled keypair/certificate itself is unchanged (restapi's
+     * own `rekey()` rejects anything else, so `keys` is a fresh copy of the mailbox's, not this page's
+     * possibly stale list), only how it's protected. Every *other* unlock method this mailbox had stops
+     * working the instant this succeeds, since `rekey()` replaces `masterKeyWraps` wholesale - the whole
+     * point, for a captured-wrap scenario where it's unclear which method was compromised.
      */
     async function handleRotateKeys(e: FormEvent) {
         e.preventDefault();
@@ -400,36 +542,32 @@ function EncryptionContent() {
             setActionError("Passwords do not match.");
             return;
         }
-        // `rekey()` replaces the vault's wrapped private keys wholesale with whatever this session re-wraps -
-        // a key this session never decrypted (e.g. a signing key issued after this session unlocked) would
-        // be silently dropped from the vault, and its private key lost for good.
-        const uncoveredKeys = ["encrypt", "sign"].flatMap((useType) => {
-            const active = findActivePublicKey(displayedKeys, useType as "encrypt" | "sign");
-            const unlockedFingerprint = useType === "encrypt" ? unlocked!.encryptionFingerprint : unlocked!.signingFingerprint;
-            return active && active.fingerprint !== unlockedFingerprint ? [active] : [];
-        });
-        if (uncoveredKeys.length > 0) {
-            setActionError(
-                "This session hasn't unlocked every active key for this mailbox (e.g. a signing key issued after you unlocked), so rotating now would lose it. Reload the page, unlock again, then rotate.",
-            );
-            return;
-        }
         setActionError(null);
         setEscrowError(null);
         setRotating(true);
-        const keys = displayedKeys;
+        let keys: PublicKey[];
         let mk: Uint8Array;
         let codes: string[];
+        let hadEscrowWrap: boolean;
         try {
-            // Only reachable once `unlocked` is defined - see `handleAddPassword`'s identical note.
-            const rewrapped = await rewrapPrivateKeysUnderNewMasterKey(mailboxUid!, unlocked!);
+            const current = await currentUnlockedKeys();
+            const [freshVault, freshMailbox] = await Promise.all([getKeyVault(mailboxUid!), getMailbox(mailboxUid!)]);
+            keys = freshMailbox.keys ?? [];
+            hadEscrowWrap = freshVault.masterKeyWraps.some((w) => w.method === "escrow");
+            const rewrapped = await rewrapVaultPrivateKeys(mailboxUid!, current.masterKey, freshVault.wrappedKeys);
             mk = rewrapped.mk;
             const passwordWrap = await buildPasswordWrap(mailboxUid!, mk, rotationPassword);
             const recovery = await buildRecoveryWraps(mailboxUid!, mk);
             codes = recovery.codes;
             await rekey(mailboxUid!, { wrappedKeys: rewrapped.wrappedKeys, masterKeyWraps: [passwordWrap, ...recovery.wraps], keys });
         } catch (err) {
-            setActionError(err instanceof ApiRequestError ? err.message : "Could not rotate your encryption keys.");
+            if (err instanceof UncoveredVaultKeysError) {
+                setActionError(
+                    `Your key vault holds ${err.fingerprints.length === 1 ? "a private key" : `${err.fingerprints.length} private keys`} this session can't open (${err.fingerprints.join(", ")}), so rotating now would lose ${err.fingerprints.length === 1 ? "it" : "them"}. Nothing was changed.`,
+                );
+            } else {
+                setActionError(errorMessage(err, "Could not rotate your encryption keys."));
+            }
             setRotating(false);
             return;
         }
@@ -443,22 +581,24 @@ function EncryptionContent() {
         setCodesWarning(null);
         setNewRecoveryCodes(codes);
         setCodesSaved(false);
+        setRefreshedKeys(keys);
         try {
             // restapi's own rekey() can never accept a fresh escrow wrap (its validateMasterKeyWrap()
             // always passes allowEscrow: false there) - it preserves this mailbox's existing escrow wrap
             // verbatim instead, which now encrypts a master key nobody has any longer. Re-wrap it
             // separately, via the same addMasterKeyWrap() path "Add escrow protection" above already
             // uses, so rotating keys for an unrelated reason (lost device, password hygiene) doesn't
-            // silently drop real escrow coverage while this page keeps claiming it's still active. A
-            // failure here is reported via escrowError, not as a rotation failure - the rotation itself
-            // (password/recovery codes) already succeeded by this point and must not be rolled back for
-            // an escrow-specific hiccup the user can retry independently.
-            if (hasEscrowWrap) {
+            // silently drop real escrow coverage. A failure here is reported via escrowError (and keeps
+            // "Add escrow protection" offered), not as a rotation failure - the rotation itself already
+            // succeeded by this point and must not be rolled back for an escrow-specific hiccup.
+            if (hadEscrowWrap) {
                 try {
                     const escrowInfo = await getEscrowInfo(mailboxUid!);
                     const escrowWrap = await buildEscrowWrap(mk, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
                     await addMasterKeyWrap(mailboxUid!, escrowWrap);
+                    setEscrowRewrapFailed(false);
                 } catch (err) {
+                    setEscrowRewrapFailed(true);
                     setEscrowError(
                         err instanceof ApiRequestError
                             ? err.message
@@ -469,8 +609,7 @@ function EncryptionContent() {
 
             // Refreshes this session's own cached keys against the new MK, via the password we just set -
             // the underlying private key material didn't change, but the stale MK in memory would silently
-            // build wrong future wraps (e.g. a second "Add a password") if left as-is. If that fails, the
-            // stale keys are destroyed instead of kept around.
+            // build wrong future wraps if left as-is. If that fails, the stale keys are destroyed instead.
             try {
                 await unlockWithPassword(mailboxUid!, keys, newPassword);
             } catch {
@@ -562,6 +701,12 @@ function EncryptionContent() {
 
                 {loadError && <Alert>{loadError}</Alert>}
                 {actionError && <Alert>{actionError}</Alert>}
+                {!canManageKeys && (
+                    <p className="text-sm text-text-muted">
+                        Only this mailbox&rsquo;s owner, signed in as themselves, can change its encryption keys and
+                        unlock methods.
+                    </p>
+                )}
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">Encryption keys</h2>
@@ -592,6 +737,8 @@ function EncryptionContent() {
                             exchange, which can take a few minutes. You can leave this page; it finishes in
                             the background and takes effect automatically once issued.
                         </p>
+                    ) : !canManageKeys ? (
+                        <p className="text-sm text-text-muted">Not enabled.</p>
                     ) : (
                         <div className="flex flex-col gap-2">
                             <p className="text-xs text-text-muted">
@@ -620,7 +767,7 @@ function EncryptionContent() {
                             (see handleRotateKeys) leaves the mailbox's old, now-stale escrow wrap in place,
                             so hasEscrowWrap alone can't be trusted to hide this. */}
                         {escrowError && <Alert>{escrowError}</Alert>}
-                        {hasEscrowWrap ? (
+                        {hasEscrowWrap && !escrowRewrapFailed ? (
                             <p className="text-sm text-text-muted">
                                 This mailbox is under legal/compliance escrow — an authorized holder in your
                                 organization can recover its encrypted mail if needed. This does not weaken
@@ -629,21 +776,23 @@ function EncryptionContent() {
                         ) : (
                             <div className="flex flex-col gap-2">
                                 <p className="text-xs text-text-muted">
-                                    Your organization has assigned this mailbox to an escrow scope, but nothing
-                                    has been protected yet — an authorized holder cannot recover this mailbox's
-                                    encrypted mail until you complete this step. This does not weaken protection
-                                    against anyone else.
+                                    {escrowRewrapFailed
+                                        ? "Your keys were rotated, so this mailbox's escrow protection no longer covers them — an authorized holder cannot recover this mailbox's encrypted mail until you re-establish it."
+                                        : "Your organization has assigned this mailbox to an escrow scope, but nothing has been protected yet — an authorized holder cannot recover this mailbox's encrypted mail until you complete this step."}{" "}
+                                    This does not weaken protection against anyone else.
                                 </p>
-                                <Button
-                                    type="button"
-                                    variant="secondary"
-                                    className="!w-auto"
-                                    loading={wrappingEscrow}
-                                    disabled={wrappingEscrow}
-                                    onClick={handleWrapEscrow}
-                                >
-                                    Add escrow protection
-                                </Button>
+                                {canManageKeys && (
+                                    <Button
+                                        type="button"
+                                        variant="secondary"
+                                        className="!w-auto"
+                                        loading={wrappingEscrow}
+                                        disabled={wrappingEscrow}
+                                        onClick={handleWrapEscrow}
+                                    >
+                                        Add escrow protection
+                                    </Button>
+                                )}
                             </div>
                         )}
                     </div>
@@ -665,7 +814,8 @@ function EncryptionContent() {
                                     <li key={key} className="flex items-center justify-between gap-3 text-sm py-1.5 px-3 bg-surface-alt rounded-sm">
                                         <span>{METHOD_LABELS[wrap.method] ?? wrap.method}</span>
                                         {wrap.method !== "escrow" &&
-                                            (ownUnlockWrapCount > 1 ? (
+                                            canManageKeys &&
+                                            (canRemoveWrap(wrap) ? (
                                                 <Button
                                                     type="button"
                                                     variant="text"
@@ -677,7 +827,9 @@ function EncryptionContent() {
                                                     Remove
                                                 </Button>
                                             ) : (
-                                                <span className="text-xs text-text-muted">Your only unlock method</span>
+                                                <span className="text-xs text-text-muted">
+                                                    {ownUnlockWrapCount > 1 ? "Needed to unlock" : "Your only unlock method"}
+                                                </span>
                                             ))}
                                     </li>
                                 );
@@ -705,89 +857,104 @@ function EncryptionContent() {
                     </Modal>
                 </div>
 
-                <form onSubmit={handleAddPassword} className="flex flex-col gap-2">
-                    <h2 className="text-sm font-semibold">Add a password</h2>
-                    <input
-                        type="password"
-                        aria-label="New password"
-                        placeholder="New password"
-                        className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                        value={newPassword}
-                        onChange={(e) => setNewPassword(e.target.value)}
-                        disabled={addingPassword}
-                        autoComplete="new-password"
-                    />
-                    <input
-                        type="password"
-                        aria-label="Confirm new password"
-                        placeholder="Confirm new password"
-                        className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                        value={confirmNewPassword}
-                        onChange={(e) => setConfirmNewPassword(e.target.value)}
-                        disabled={addingPassword}
-                        autoComplete="new-password"
-                    />
-                    <div>
-                        <Button type="submit" loading={addingPassword} disabled={addingPassword} className="!w-auto">
-                            Add password
-                        </Button>
-                    </div>
-                </form>
+                {canManageKeys && (
+                    <>
+                        {passwordWraps.length === 0 ? (
+                            vault && (
+                                <form onSubmit={handleAddPassword} className="flex flex-col gap-2">
+                                    <h2 className="text-sm font-semibold">Add a password</h2>
+                                    <input
+                                        type="password"
+                                        aria-label="New password"
+                                        placeholder="New password"
+                                        className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                        value={newPassword}
+                                        onChange={(e) => setNewPassword(e.target.value)}
+                                        disabled={addingPassword}
+                                        autoComplete="new-password"
+                                    />
+                                    <input
+                                        type="password"
+                                        aria-label="Confirm new password"
+                                        placeholder="Confirm new password"
+                                        className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                        value={confirmNewPassword}
+                                        onChange={(e) => setConfirmNewPassword(e.target.value)}
+                                        disabled={addingPassword}
+                                        autoComplete="new-password"
+                                    />
+                                    <div>
+                                        <Button type="submit" loading={addingPassword} disabled={addingPassword} className="!w-auto">
+                                            Add password
+                                        </Button>
+                                    </div>
+                                </form>
+                            )
+                        ) : (
+                            <div>
+                                <h2 className="text-sm font-semibold mb-2">Changing your password</h2>
+                                <p className="text-xs text-text-muted">
+                                    Only one password can unlock this mailbox. To change it, rotate your keys below
+                                    - that sets a new password and replaces every other unlock method.
+                                </p>
+                            </div>
+                        )}
+                        <div>
+                            <h2 className="text-sm font-semibold mb-2">Recovery codes</h2>
+                            <p className="text-xs text-text-muted mb-3">
+                                Regenerating replaces all of your existing recovery codes — old ones stop working
+                                immediately.
+                            </p>
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                loading={regenerating}
+                                disabled={regenerating || !vault}
+                                onClick={handleRegenerateRecoveryCodes}
+                                className="!w-auto"
+                            >
+                                Regenerate recovery codes
+                            </Button>
+                        </div>
 
-                <div>
-                    <h2 className="text-sm font-semibold mb-2">Recovery codes</h2>
-                    <p className="text-xs text-text-muted mb-3">
-                        Regenerating replaces all of your existing recovery codes — old ones stop working
-                        immediately.
-                    </p>
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        loading={regenerating}
-                        disabled={regenerating || !vault}
-                        onClick={handleRegenerateRecoveryCodes}
-                        className="!w-auto"
-                    >
-                        Regenerate recovery codes
-                    </Button>
-                </div>
-
-                <form onSubmit={handleRotateKeys} className="flex flex-col gap-2 border-t border-border pt-6">
-                    <h2 className="text-sm font-semibold">Rotate keys</h2>
-                    <p className="text-xs text-text-muted mb-1">
-                        Real revocation, for when a device or an unlock method may have been compromised.
-                        Re-protects your existing encryption key under a brand new master key - your signing/
-                        encryption keypair itself doesn&rsquo;t change, so mail you&rsquo;ve already sent or
-                        received still decrypts normally. Every current unlock method (password, recovery codes,
-                        and anything else on file) stops working immediately; you&rsquo;ll set a new password and
-                        get new recovery codes below.
-                    </p>
-                    <input
-                        type="password"
-                        aria-label="New password for rotated keys"
-                        placeholder="New password"
-                        className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                        value={rotationPassword}
-                        onChange={(e) => setRotationPassword(e.target.value)}
-                        disabled={rotating}
-                        autoComplete="new-password"
-                    />
-                    <input
-                        type="password"
-                        aria-label="Confirm new password for rotated keys"
-                        placeholder="Confirm new password"
-                        className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                        value={rotationConfirmPassword}
-                        onChange={(e) => setRotationConfirmPassword(e.target.value)}
-                        disabled={rotating}
-                        autoComplete="new-password"
-                    />
-                    <div>
-                        <Button type="submit" variant="secondary" className="!w-auto text-danger" loading={rotating} disabled={rotating}>
-                            Rotate keys now
-                        </Button>
-                    </div>
-                </form>
+                        <form onSubmit={handleRotateKeys} className="flex flex-col gap-2 border-t border-border pt-6">
+                            <h2 className="text-sm font-semibold">Rotate keys</h2>
+                            <p className="text-xs text-text-muted mb-1">
+                                Real revocation, for when a device or an unlock method may have been compromised.
+                                Re-protects your existing encryption key under a brand new master key - your signing/
+                                encryption keypair itself doesn&rsquo;t change, so mail you&rsquo;ve already sent or
+                                received still decrypts normally. Every current unlock method (password, recovery codes,
+                                and anything else on file) stops working immediately; you&rsquo;ll set a new password and
+                                get new recovery codes below.
+                            </p>
+                            <input
+                                type="password"
+                                aria-label="New password for rotated keys"
+                                placeholder="New password"
+                                className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                value={rotationPassword}
+                                onChange={(e) => setRotationPassword(e.target.value)}
+                                disabled={rotating}
+                                autoComplete="new-password"
+                            />
+                            <input
+                                type="password"
+                                aria-label="Confirm new password for rotated keys"
+                                placeholder="Confirm new password"
+                                className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                value={rotationConfirmPassword}
+                                onChange={(e) => setRotationConfirmPassword(e.target.value)}
+                                disabled={rotating}
+                                autoComplete="new-password"
+                            />
+                            <div>
+                                <Button type="submit" variant="secondary" className="!w-auto text-danger" loading={rotating} disabled={rotating}>
+                                    Rotate keys now
+                                </Button>
+                            </div>
+                        </form>
+                    </>
+                )}
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">Session timeout</h2>

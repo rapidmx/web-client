@@ -324,6 +324,23 @@ async function resolveHitsToMessages(
     return { messages, snippets };
 }
 
+/** How far outside the scroll container's visible area the load-more sentinel still counts as "in view". */
+const LOAD_MORE_ROOT_MARGIN_PX = 200;
+
+/** `true` when `more` has at least one uid `shown` doesn't - i.e. appending it actually adds rows. */
+function hasUnseenMessages(shown: Message[], more: Message[]): boolean {
+    const seen = new Set(shown.map((m) => m.uid));
+    return more.some((m) => !seen.has(m.uid));
+}
+
+/** The load-more sentinel's actual current geometry against its scroll container, with the same margin the
+ * IntersectionObserver uses. */
+function isWithinLoadMoreRange(sentinel: HTMLElement, root: HTMLElement): boolean {
+    const rect = sentinel.getBoundingClientRect();
+    const rootRect = root.getBoundingClientRect();
+    return rect.top <= rootRect.bottom + LOAD_MORE_ROOT_MARGIN_PX && rect.bottom >= rootRect.top - LOAD_MORE_ROOT_MARGIN_PX;
+}
+
 /** Appends `more` to `shown`, skipping any uid already shown - a later page can repeat rows (Tier 1 and
  * Tier 2/3 cursors advance independently, so the same message can come back from a different tier on a
  * later page; a plain folder listing's pages shift when new mail arrives between fetches). */
@@ -425,8 +442,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const [tier3Done, setTier3Done] = useState(false);
     // Toggled by the "Search all mail" action next to the results count - removes Tier 3's own default
     // bound (tightened to Tier 2's coverage window otherwise - see tightenBeforeToCoverage()) for one
-    // re-run. Reset to false whenever the query itself changes (see the search effect's own dependency).
-    const [searchAllMail, setSearchAllMail] = useState(false);
+    // re-run. Stored as the mailbox/folder/query it was requested for, not a plain flag, so it resets the
+    // moment any of those change - derived in the same render, so the search effect never runs a new
+    // query with a previous query's unbounded Tier 3 window first.
+    const [searchAllMailKey, setSearchAllMailKey] = useState<string | null>(null);
+    const searchAllMailScope = `${mailboxUid ?? ""}\n${folderUid ?? ""}\n${searchQuery}`;
+    const searchAllMail = searchAllMailKey === searchAllMailScope;
     // Search stays real-folder-only - Tier 1/2/3 are all deeply mailbox/folder-scoped, and extending them
     // to span an arbitrary number of mailboxes is out of scope for this pass (see the aggregate-fetch
     // branch below, which the search effect never reaches while `folderUid` is unset).
@@ -440,7 +461,16 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // State (via a callback ref), not a plain ref: the sentinel mounts and unmounts as the list loads,
     // filters, and empties, and the observer effect below must re-attach to whichever node is current.
     const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
-    const sentinelVisibleRef = useRef(false);
+    const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+    const loadMoreErrorRef = useRef<string | null>(null);
+    loadMoreErrorRef.current = loadMoreError;
+    const loadMoreInFlightRef = useRef(false);
+    // Bumped by `loadMore()` for each page that added at least one row - the only event the continuation
+    // effect below keeps loading after. A counter rather than watching `loadingMore` flip back to false: a
+    // fast response can settle before React ever renders the `true`, so that flip isn't reliably observable.
+    const [appendedPageCount, setAppendedPageCount] = useState(0);
+    const messagesRef = useRef(messages);
+    messagesRef.current = messages;
     // The mailbox unlock/decrypt call sites below treat as "the" mailbox when there's no single selected
     // one (aggregate mode) - mirrors `MailShell`'s own identical `defaultMailboxUid` fallback. An
     // aggregate-view row from a *different*, not-yet-unlocked mailbox stays locked until that mailbox's
@@ -464,6 +494,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // `settings/privacy/index.tsx`'s `ExportSection`), generalized here across three independently-timed
     // async stages instead of one.
     const searchRunIdRef = useRef(0);
+    // Bumped whenever `activeMailboxUid`'s keys are locked (see the `subscribeKeySession()` effect below) - a
+    // decrypt that started before the lock checks it before storing its now-stale plaintext rows.
+    const lockGenerationRef = useRef(0);
     // `messages` themselves aren't a dependency here on purpose - a message uid, once decrypted, is
     // never re-decrypted just because the list re-renders with the same rows (e.g. a folder-unrelated
     // state update elsewhere). New rows (a fresh page load, load-more, or a completed search) each
@@ -490,11 +523,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return;
         }
         let cancelled = false;
+        const lockGeneration = lockGenerationRef.current;
         void decryptEncryptedRows(
             messages.filter((m) => undecryptedEncryptedUids.includes(m.uid)),
             unlocked,
         ).then((decrypted) => {
-            if (!cancelled && Object.keys(decrypted).length > 0) {
+            // A lock while this was in flight already cleared `decryptedRows` - never put them back.
+            if (!cancelled && lockGeneration === lockGenerationRef.current && Object.keys(decrypted).length > 0) {
                 setDecryptedRows((prev) => ({ ...prev, ...decrypted }));
             }
         });
@@ -517,6 +552,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 if (state !== "locked" || changedMailboxUid !== current.activeMailboxUid) {
                     return;
                 }
+                lockGenerationRef.current += 1;
                 setDecryptedRows({});
                 setSnippets({});
                 tier3CacheRef.current.clear();
@@ -530,11 +566,14 @@ function InboxContent({ userUid }: { userUid?: string }) {
     async function handleUnlockList() {
         try {
             const unlocked = await requestUnlock(activeMailboxUid, mailboxKeys);
+            const lockGeneration = lockGenerationRef.current;
             const decrypted = await decryptEncryptedRows(
                 messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && m.mailboxUid === activeMailboxUid),
                 unlocked,
             );
-            setDecryptedRows((prev) => ({ ...prev, ...decrypted }));
+            if (lockGeneration === lockGenerationRef.current) {
+                setDecryptedRows((prev) => ({ ...prev, ...decrypted }));
+            }
         } catch {
             // User dismissed the unlock dialog - rows stay exactly as they were.
         }
@@ -590,6 +629,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         listedOffsetRef.current = 0;
         compositeCursorRef.current = undefined;
         setHasMore(false);
+        setLoadMoreError(null);
         // Every run - search or not - supersedes whatever an earlier run (or a `loadMore()` it started)
         // still has in flight; each async callback below checks this before touching state.
         searchRunIdRef.current += 1;
@@ -770,7 +810,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }, [viewMode, folderUid, mailboxUid, isSearching, searchQuery, unlockRefresh, searchAllMail, aggregateFolderType, mailboxFolders, activeMailboxUid]);
 
     function handleSearchAllMail() {
-        setSearchAllMail(true);
+        setSearchAllMailKey(searchAllMailScope);
     }
 
     const loadMore = useCallback(async () => {
@@ -780,9 +820,20 @@ function InboxContent({ userUid }: { userUid?: string }) {
         // has fully finished (the ref may still hold an earlier query's), in which case there's nowhere to
         // continue from yet.
         const searchCursor = decodeCursor(compositeCursorRef.current, fingerprint);
-        if (loadingMore || !hasMore || loading || viewMode !== "date" || !folderUid || (isSearching && !searchCursor)) {
+        if (
+            loadMoreInFlightRef.current ||
+            !hasMore ||
+            loading ||
+            viewMode !== "date" ||
+            !folderUid ||
+            (isSearching && !searchCursor)
+        ) {
             return;
         }
+        // A ref, not `loadingMore` state: the observer and the continuation effect below can both call in the
+        // same tick, each closing over a render where `loadingMore` was still false.
+        loadMoreInFlightRef.current = true;
+        setLoadMoreError(null);
         setLoadingMore(true);
         // A query/folder/view change while this page is in flight bumps the run id (see the effect above) -
         // its rows then belong to a list that's no longer on screen and must not be appended to the new one.
@@ -813,6 +864,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 if (!isCurrentRun()) {
                     return;
                 }
+                if (hasUnseenMessages(messagesRef.current, more)) {
+                    setAppendedPageCount((n) => n + 1);
+                }
                 setMessages((prev) => appendUnseenMessages(prev, more));
                 setSnippets((prev) => ({ ...prev, ...moreSnippets }));
 
@@ -834,18 +888,24 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 if (!isCurrentRun()) {
                     return;
                 }
+                if (hasUnseenMessages(messagesRef.current, more)) {
+                    setAppendedPageCount((n) => n + 1);
+                }
                 setMessages((prev) => appendUnseenMessages(prev, more));
                 setHasMore(more.length === MESSAGE_PAGE_SIZE);
                 listedOffsetRef.current = page * MESSAGE_PAGE_SIZE + more.length;
             }
         } catch (err) {
+            // Shown next to the sentinel with a Retry button - never auto-retried (see the continuation
+            // effect below), so a failing server isn't hammered while the sentinel stays in view.
             if (isCurrentRun()) {
-                setError(err instanceof ApiRequestError ? err.message : "Could not load more messages.");
+                setLoadMoreError(err instanceof ApiRequestError ? err.message : "Could not load more messages.");
             }
         } finally {
+            loadMoreInFlightRef.current = false;
             setLoadingMore(false);
         }
-    }, [loadingMore, hasMore, loading, viewMode, folderUid, isSearching, searchQuery, mailboxUid]);
+    }, [hasMore, loading, viewMode, folderUid, isSearching, searchQuery, mailboxUid]);
 
     // Always calls the latest `loadMore` closure so the effect below doesn't need `loadMore` itself in its
     // dependency array (it changes on every keystroke/page load, which would otherwise mean nothing here).
@@ -857,17 +917,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // detached element forever. Only ever rendered in "By date" mode, so no view-mode check is needed.
     useEffect(() => {
         if (!sentinel) {
-            sentinelVisibleRef.current = false;
             return;
         }
         const observer = new IntersectionObserver(
             (entries) => {
-                sentinelVisibleRef.current = entries.some((entry) => entry.isIntersecting);
-                if (sentinelVisibleRef.current) {
+                if (entries.some((entry) => entry.isIntersecting) && !loadMoreErrorRef.current) {
                     void loadMoreRef.current();
                 }
             },
-            { root: scrollContainerRef.current, rootMargin: "200px" },
+            { root: scrollContainerRef.current, rootMargin: `${LOAD_MORE_ROOT_MARGIN_PX}px` },
         );
         observer.observe(sentinel);
         return () => observer.disconnect();
@@ -875,12 +933,18 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     // An observer only reports *changes* - a sentinel still in view after a page lands (the new rows didn't
     // push it out of view, e.g. the Focused/Other filter hid every one of them) never reports again, so
-    // keep loading until it leaves the view or there's nothing more to load.
+    // keep loading while it's still in view. Only after a page that actually appended rows (never after a
+    // failure, or a page of rows already shown - either would loop), and only when the sentinel's real
+    // geometry says it's still in view (the observer's last report may predate the rows that just landed).
     useEffect(() => {
-        if (!loadingMore && sentinelVisibleRef.current) {
+        if (appendedPageCount === 0) {
+            return;
+        }
+        // The scroll container is always mounted whenever a sentinel is (the sentinel lives inside it).
+        if (sentinel && isWithinLoadMoreRange(sentinel, scrollContainerRef.current!)) {
             void loadMoreRef.current();
         }
-    }, [loadingMore]);
+    }, [appendedPageCount]);
 
     function removeListedMessage(uid: string) {
         setMessages((prev) => prev.filter((m) => m.uid !== uid));
@@ -918,6 +982,19 @@ function InboxContent({ userUid }: { userUid?: string }) {
                       : m.inferenceClassification !== "other",
               )
             : messages;
+
+    const loadMoreStatus = loadingMore ? (
+        "Loading more…"
+    ) : loadMoreError ? (
+        <span className="inline-flex items-center gap-2">
+            <span role="alert" className="text-danger">
+                {loadMoreError}
+            </span>
+            <button type="button" onClick={() => void loadMoreRef.current()} className="text-primary-dark hover:underline font-medium">
+                Retry
+            </button>
+        </span>
+    ) : null;
 
     function handleSelect(message: Message) {
         if (isMobile) {
@@ -1093,7 +1170,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         </p>
                         {/* Still offered while a filter hides every loaded row - what it's looking for may be
                             on a later page. */}
-                        {hasMore && <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4" />}
+                        {hasMore && (
+                            <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
+                                {loadMoreStatus}
+                            </div>
+                        )}
                     </>
                 ) : (
                     <>
@@ -1150,7 +1231,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         </ul>
                         {hasMore && (
                             <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
-                                {loadingMore ? "Loading more…" : ""}
+                                {loadMoreStatus}
                             </div>
                         )}
                         {aggregateFolderType && (

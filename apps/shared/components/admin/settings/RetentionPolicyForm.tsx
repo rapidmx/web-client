@@ -12,6 +12,11 @@ import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
+/** Whether saving `next` days newly starts purging (nothing was configured) or purges sooner than `saved` days. */
+function shortensRetention(next: number | null | undefined, saved: number | null | undefined): boolean {
+    return next != null && (saved == null || next < saved);
+}
+
 /** The retention policy editor, shared by the Retention Policy page and the setup wizard. */
 export default function RetentionPolicyForm({
     policy,
@@ -35,9 +40,10 @@ export default function RetentionPolicyForm({
     const dirty: boolean = snapshot !== savedSnapshot;
     useEffect(() => onDirtyChange?.(dirty), [dirty]);
 
-    // The message retention currently in effect, and a pending save that would newly start or shorten it - which
-    // permanently deletes existing mail on the next purge run, so it's confirmed first.
+    // The retention currently in effect, and a pending save that would newly start or shorten either period - which
+    // permanently deletes existing mail or audit-log entries on the next purge run, so it's confirmed first.
     const [savedMessageDays, setSavedMessageDays] = useState(policy.messageRetentionDays);
+    const [savedAuditDays, setSavedAuditDays] = useState(policy.auditLogRetentionDays);
     const [pendingPatch, setPendingPatch] = useState<RetentionPolicyUpdate | null>(null);
 
     function handleSubmit(e: FormEvent) {
@@ -47,8 +53,10 @@ export default function RetentionPolicyForm({
             messageRetentionDays: messageRetentionDays.trim() === "" ? null : Number(messageRetentionDays),
             auditLogRetentionDays: auditLogRetentionDays.trim() === "" ? null : Number(auditLogRetentionDays),
         };
-        const nextDays = patch.messageRetentionDays;
-        if (nextDays != null && (savedMessageDays === undefined || nextDays < savedMessageDays)) {
+        if (
+            shortensRetention(patch.messageRetentionDays, savedMessageDays) ||
+            shortensRetention(patch.auditLogRetentionDays, savedAuditDays)
+        ) {
             setPendingPatch(patch);
             return;
         }
@@ -63,6 +71,7 @@ export default function RetentionPolicyForm({
         try {
             const updated = await updateRetentionPolicy(patch);
             setSavedMessageDays(updated.messageRetentionDays);
+            setSavedAuditDays(updated.auditLogRetentionDays);
             onChange(updated);
             setSavedSnapshot(snapshot);
             setSaved(true);
@@ -125,17 +134,28 @@ export default function RetentionPolicyForm({
                 </div>
             </form>
 
-            <Modal open={pendingPatch !== null} onClose={() => setPendingPatch(null)} title="Delete older mail?">
-                <p className="text-sm mb-3">
-                    {savedMessageDays === undefined
-                        ? "Mail isn't deleted automatically today."
-                        : `Mail is currently kept for ${savedMessageDays} days.`}{" "}
-                    With this change, every message older than <strong>{pendingPatch?.messageRetentionDays} days</strong>, in
-                    every mailbox and folder, is permanently deleted on the next purge run - and so on from then on.
-                </p>
-                <p className="text-sm font-semibold text-danger mb-4">
-                    Deleted mail can&rsquo;t be recovered. Mailboxes on an active legal hold are skipped.
-                </p>
+            <Modal open={pendingPatch !== null} onClose={() => setPendingPatch(null)} title="Delete older data?">
+                {shortensRetention(pendingPatch?.messageRetentionDays, savedMessageDays) && (
+                    <p className="text-sm mb-3">
+                        {savedMessageDays == null
+                            ? "Mail isn't deleted automatically today."
+                            : `Mail is currently kept for ${savedMessageDays} days.`}{" "}
+                        With this change, every message older than <strong>{pendingPatch?.messageRetentionDays} days</strong>,
+                        in every mailbox and folder, is permanently deleted on the next purge run - and so on from then on.
+                        Mailboxes on an active legal hold are skipped.
+                    </p>
+                )}
+                {shortensRetention(pendingPatch?.auditLogRetentionDays, savedAuditDays) && (
+                    <p className="text-sm mb-3">
+                        {savedAuditDays == null
+                            ? "Audit-log entries are kept forever today."
+                            : `Audit-log entries are currently kept for ${savedAuditDays} days.`}{" "}
+                        With this change, every audit-log entry older than{" "}
+                        <strong>{pendingPatch?.auditLogRetentionDays} days</strong> is permanently deleted on the next purge
+                        run. The escrow audit chain is never purged.
+                    </p>
+                )}
+                <p className="text-sm font-semibold text-danger mb-4">Deleted data can&rsquo;t be recovered.</p>
                 <div className="flex gap-3 justify-end">
                     <Button type="button" variant="secondary" className="!w-auto" onClick={() => setPendingPatch(null)}>
                         Cancel
@@ -145,7 +165,7 @@ export default function RetentionPolicyForm({
                         className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger"
                         onClick={() => void save(pendingPatch!)}
                     >
-                        Save and delete older mail
+                        Save and delete older data
                     </Button>
                 </div>
             </Modal>

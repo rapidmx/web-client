@@ -10,23 +10,30 @@ export const LIST_PAGE_SIZE = 500;
  * page) from looping forever. 40 pages x 500 = 20,000 items. */
 export const MAX_LIST_PAGES = 40;
 
+export interface ListAllPagesResult<T> {
+    items: T[];
+    /** `true` when fetching stopped at `maxPages` with the last page still full - there may be more items
+     * the caller isn't showing, so it should say so rather than presenting `items` as the whole list. */
+    truncated: boolean;
+}
+
 /**
  * Fetches every page of a zero-based `limit`/`page` list endpoint, stopping at the first short page
  * (fewer than `pageSize` items) - so a folder with more items than one page holds is shown in full
- * rather than silently cut off at the first page.
+ * rather than silently cut off at the first page. Stops at `maxPages` regardless, reporting `truncated`.
  */
 export async function listAllPages<T>(
     fetchPage: (page: number) => Promise<T[]>,
     pageSize: number = LIST_PAGE_SIZE,
     maxPages: number = MAX_LIST_PAGES,
-): Promise<T[]> {
-    const all: T[] = [];
+): Promise<ListAllPagesResult<T>> {
+    const items: T[] = [];
     for (let page = 0; page < maxPages; page++) {
         const batch = await fetchPage(page);
-        all.push(...batch);
+        items.push(...batch);
         if (batch.length < pageSize) {
-            break;
+            return { items, truncated: false };
         }
     }
-    return all;
+    return { items, truncated: true };
 }

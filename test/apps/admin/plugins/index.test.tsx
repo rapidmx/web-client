@@ -1032,38 +1032,57 @@ describe("PluginsPage", () => {
             expect(screen.queryByText(/may be out of date/)).not.toBeInTheDocument();
         });
 
-        it("enables without a preview when the change can't be planned, and shows why the server refuses it", async () => {
+        it("never enables without a preview when the change can't be planned, and offers a retry", async () => {
+            let planStatus = 502;
             let putStatus = 200;
-            let listed: unknown[] = [eas, { ...autodiscover, enabled: false }];
             const fetchMock = mockPlugins({
+                plugins: [eas, { ...autodiscover, enabled: false }],
                 extra: (url, init) => {
-                    if (url === "/api/system/plugins" && (init?.method ?? "GET") === "GET") return jsonResponse(200, listed);
-                    if (url.startsWith("/api/system/plugins/plan?")) return jsonResponse(502, { message: "Registry unreachable" });
+                    if (url.startsWith("/api/system/plugins/plan?") && planStatus !== 200) {
+                        return jsonResponse(planStatus, { message: "Registry unreachable" });
+                    }
                     if (url === "/api/system/plugins/p-ad" && init?.method === "PUT") {
                         if (putStatus !== 200) return jsonResponse(409, { message: "MAPI over HTTP isn't installed." });
-                        listed = [eas, { ...autodiscover, version: 4 }];
                         return jsonResponse(200, { ...autodiscover, version: 4 });
                     }
                     return undefined;
                 },
             });
-            const listCalls = () => fetchMock.mock.calls.filter((c) => c[0] === "/api/system/plugins" && !(c[1] as RequestInit)?.method).length;
+            const puts = () => fetchMock.mock.calls.filter((c) => c[0] === "/api/system/plugins/p-ad" && (c[1] as RequestInit)?.method === "PUT");
             const user = userEvent.setup();
-            const { unmount } = renderPage();
-            await user.click(await screen.findByRole("button", { name: "Enable Autodiscover" }));
-            expect(await screen.findByRole("button", { name: "Disable Autodiscover" })).toBeInTheDocument();
-            expect(requestBody(fetchMock, "/api/system/plugins/p-ad", "PUT")).toEqual({ version: 3, enabled: true });
-            expect(screen.queryByText("Registry unreachable")).not.toBeInTheDocument();
-            // The server may have enabled what it requires too.
-            await waitFor(() => expect(listCalls()).toBe(2));
-            unmount();
-
-            putStatus = 409;
-            listed = [eas, { ...autodiscover, enabled: false }];
             renderPage();
             await user.click(await screen.findByRole("button", { name: "Enable Autodiscover" }));
-            expect(await screen.findByText("MAPI over HTTP isn't installed.")).toBeInTheDocument();
+            expect(await screen.findByText(/Registry unreachable/)).toBeInTheDocument();
+            expect(puts()).toHaveLength(0);
             expect(screen.getByRole("button", { name: "Enable Autodiscover" })).toBeEnabled();
+
+            // Still failing: the retry shows the error again, still without enabling.
+            await user.click(screen.getByRole("button", { name: "Try again" }));
+            expect(await screen.findByText(/Registry unreachable/)).toBeInTheDocument();
+            expect(puts()).toHaveLength(0);
+
+            // A server refusal after a successful preview is retryable too.
+            planStatus = 200;
+            putStatus = 409;
+            await user.click(screen.getByRole("button", { name: "Try again" }));
+            expect(await screen.findByText(/MAPI over HTTP isn't installed\./)).toBeInTheDocument();
+            expect(requestBody(fetchMock, "/api/system/plugins/p-ad", "PUT")).toEqual({ version: 3, enabled: true, expectedPlan: noExtras("1.0.0") });
+
+            putStatus = 200;
+            await user.click(screen.getByRole("button", { name: "Try again" }));
+            expect(await screen.findByRole("button", { name: "Disable Autodiscover" })).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+        });
+
+        it("doesn't offer an enable retry for other failures", async () => {
+            mockPlugins({
+                extra: (url, init) => (url === "/api/system/plugins/p-eas" && init?.method === "PUT" ? jsonResponse(409, { message: "Version conflict" }) : undefined),
+            });
+            const user = userEvent.setup();
+            renderPage();
+            await user.click(await screen.findByRole("button", { name: "Disable Exchange ActiveSync" }));
+            expect(await screen.findByText("Version conflict")).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
         });
 
         it("changes a disabled plugin's version without previewing it", async () => {

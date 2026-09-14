@@ -391,8 +391,9 @@ export default function MailShell({
             // prop's own doc comment on KeyEnrollmentGateProps.
             blocking={false}
             // A shared/delegated mailbox the caller doesn't own is never provisioned from here - its keys
-            // belong to its owner (or its admins), not to whoever happens to open it first.
-            canProvision={activeMailbox?.ownerUserUid === userUid}
+            // belong to its owner (or its admins), not to whoever happens to open it first - and neither is
+            // the impersonated user's own mailbox: an administrator must never choose its password/recovery codes.
+            canProvision={!impersonating && activeMailbox?.ownerUserUid === userUid}
         >
             <LocalIndexLifecycle
                 mailboxUid={activeMailboxUid}

@@ -6,6 +6,7 @@ import React from "react";
 import { format } from "date-fns";
 import { RecurrenceFrequency, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import { WEEKDAY_CODES, WEEKDAY_LABELS, describeRecurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { recurrenceUntilDateKey, recurrenceUntilInstant } from "./allDay.js";
 
 const SELECT_CLASS =
     "text-sm py-2 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -21,14 +22,6 @@ const FREQ_LABEL: Record<RecurrenceFrequency, { unit: string; unitPlural: string
 
 type EndCondition = "never" | "count" | "until";
 
-/** The "Ends on" date is inclusive and picked as a local calendar date, so it's stored as the end of that
- * local day — `new Date("YYYY-MM-DD")` would be UTC midnight, which is the previous day west of UTC and
- * would drop that day's own occurrence. */
-function endOfLocalDay(dateKey: string): string {
-    const [y, m, d] = dateKey.split("-").map(Number);
-    return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
-}
-
 function endConditionOf(rule: RecurrenceRule): EndCondition {
     if (rule.count) return "count";
     if (rule.until) return "until";
@@ -39,6 +32,9 @@ export interface RecurrenceEditorProps {
     /** `null` means "does not repeat". */
     value: RecurrenceRule | null;
     onChange: (value: RecurrenceRule | null) => void;
+    /** Whether the event is all-day - its series expands in UTC, so the inclusive "Ends on" date is stored as
+     * the end of that UTC day rather than the local one (see `allDay.ts`'s `recurrenceUntilInstant()`). */
+    allDay?: boolean;
 }
 
 /**
@@ -47,7 +43,7 @@ export interface RecurrenceEditorProps {
  * live "every ... until/for ..." summary comes from `describeRecurrence()` (built on `rrule`'s own
  * `.toText()`), so it never drifts out of sync with what will actually be submitted.
  */
-export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorProps) {
+export default function RecurrenceEditor({ value, onChange, allDay = false }: RecurrenceEditorProps) {
     function handleEnable(enabled: boolean) {
         onChange(enabled ? { freq: "weekly", interval: 1, byDay: ["MO"], exceptions: [] } : null);
     }
@@ -58,8 +54,12 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
         onChange({ ...(value as RecurrenceRule), ...patch });
     }
 
+    // A weekly rule always keeps at least one weekday: with none left, rrule would repeat every day instead.
     function toggleDay(day: WeekdayCode) {
         const current = (value as RecurrenceRule).byDay ?? [];
+        if (current.length === 1 && current[0] === day) {
+            return;
+        }
         const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
         update({ byDay: next });
     }
@@ -70,7 +70,7 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
         } else if (condition === "count") {
             update({ count: 10, until: undefined });
         } else {
-            update({ until: endOfLocalDay(format(new Date(), "yyyy-MM-dd")), count: undefined });
+            update({ until: recurrenceUntilInstant(format(new Date(), "yyyy-MM-dd"), allDay), count: undefined });
         }
     }
 
@@ -94,7 +94,7 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
 
     function handleUntil(raw: string) {
         // A cleared (or partially typed) date input reports "" — keep the previous end date.
-        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) update({ until: endOfLocalDay(raw) });
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) update({ until: recurrenceUntilInstant(raw, allDay) });
     }
 
     return (
@@ -194,7 +194,7 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
                             <input
                                 type="date"
                                 className={INPUT_CLASS}
-                                value={value.until ? format(new Date(value.until), "yyyy-MM-dd") : ""}
+                                value={value.until ? recurrenceUntilDateKey(value.until, allDay) : ""}
                                 disabled={endConditionOf(value) !== "until"}
                                 onChange={(e) => handleUntil(e.target.value)}
                                 aria-label="End date"
@@ -202,7 +202,7 @@ export default function RecurrenceEditor({ value, onChange }: RecurrenceEditorPr
                         </label>
                     </fieldset>
 
-                    {((value.freq !== "weekly" || (value.byDay ?? []).length > 0)) && (
+                    {(value.freq !== "weekly" || (value.byDay ?? []).length > 0) && (
                         <p className="text-xs text-text-muted">Repeats {describeRecurrence(value)}.</p>
                     )}
                 </div>

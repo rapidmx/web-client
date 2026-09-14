@@ -82,25 +82,48 @@ describe("TransportRulesPage", () => {
         expect(await screen.findByText("Could not load transport rules.")).toBeInTheDocument();
     });
 
-    it("paginates: Next fetches the following page, Previous returns to the first", async () => {
-        const fullPage = Array.from({ length: 25 }, (_, i) => rule(i, i));
+    it("fetches every server page, sorts across all of them, and pages through the sorted list", async () => {
+        // Server pages are in creation order, not sequence order: the lowest sequences arrive on the last page.
+        const firstServerPage = Array.from({ length: 1000 }, (_, i) => rule(i, i + 10));
+        const fetchMock = mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/transport-rules?limit=1000&page=0") return jsonResponse(200, firstServerPage);
+            if (url === "/api/mail/transport-rules?limit=1000&page=1") return jsonResponse(200, [rule(2000, 5), { ...rule(1999, 5), name: "A rule" }]);
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<TransportRulesPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        const rows = await screen.findAllByRole("row");
+        expect(rows).toHaveLength(26);
+        // Equal sequences are ordered by name.
+        expect(rows[1]).toHaveTextContent("A rule");
+        expect(rows[2]).toHaveTextContent("Rule 2000");
+        expect(rows[3]).toHaveTextContent("Rule 0");
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/mail/transport-rules"))).toHaveLength(2);
+        expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        expect(await screen.findByText("Rule 23")).toBeInTheDocument();
+        expect(screen.getByText("Page 2")).toBeInTheDocument();
+        expect(screen.queryByText("Rule 0")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Previous" }));
+        expect(await screen.findByText("Rule 0")).toBeInTheDocument();
+    });
+
+    it("disables Next on the last page", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url.includes("page=0")) return jsonResponse(200, fullPage);
-            if (url.includes("page=1")) return jsonResponse(200, [rule(99, 99)]);
+            if (url.startsWith("/api/mail/transport-rules")) return jsonResponse(200, Array.from({ length: 26 }, (_, i) => rule(i, i)));
             throw new Error(`unexpected ${url}`);
         });
         const user = userEvent.setup();
         render(<TransportRulesPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
 
         await screen.findByText("Rule 0");
-        expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
-
         await user.click(screen.getByRole("button", { name: "Next" }));
-        expect(await screen.findByText("Rule 99")).toBeInTheDocument();
+        expect(await screen.findByText("Rule 25")).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
-
-        await user.click(screen.getByRole("button", { name: "Previous" }));
-        expect(await screen.findByText("Rule 0")).toBeInTheDocument();
     });
 });

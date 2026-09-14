@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -23,7 +23,7 @@ const mailbox = {
     usedBytes: 0,
 };
 
-const scope = (uid: string, name: string) => ({ uid, name, holderUserUids: ["h1"], requiredHolders: 1 });
+const scope = (uid: string, name: string) => ({ uid, name, holderUserUids: ["h1", "h2"], requiredHolders: 2 });
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -51,6 +51,22 @@ describe("EscrowScopeCard", () => {
         await user.selectOptions(select, "es2");
         await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
 
+        // Confirmed first, showing the old and new scope with their holders and approvals.
+        let dialog = await screen.findByRole("dialog", { name: "Change escrow scope" });
+        expect(within(dialog).getByText(/No escrow - nobody can recover/)).toBeInTheDocument();
+        expect(within(dialog).getByText("HR")).toBeInTheDocument();
+        expect(within(dialog).getByText(/holders h1, h2; 2 of 2 must approve/)).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog", { name: "Change escrow scope" })).not.toBeInTheDocument();
+        expect(bodies).toHaveLength(0);
+
+        await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
+        dialog = await screen.findByRole("dialog", { name: "Change escrow scope" });
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(bodies).toHaveLength(0);
+
+        await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Change escrow scope" })).getByRole("button", { name: "Confirm and save" }));
         expect(await screen.findByText("Saved.")).toBeInTheDocument();
         expect(bodies[0]).toEqual({ uid: "mb1", version: 3, escrowScopeId: "es2" });
         const updated = onUpdate.mock.calls[0][0];
@@ -60,16 +76,27 @@ describe("EscrowScopeCard", () => {
         await user.selectOptions(screen.getByLabelText("Escrow scope"), "");
         expect(screen.queryByText("Saved.")).not.toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
+        dialog = await screen.findByRole("dialog", { name: "Change escrow scope" });
+        expect(within(dialog).getByText("HR")).toBeInTheDocument();
+        expect(within(dialog).getByText(/No escrow/)).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Confirm and save" }));
         await vi.waitFor(() => expect(bodies).toHaveLength(2));
         expect(bodies[1]).toEqual({ uid: "mb1", version: 4, escrowScopeId: null });
     });
 
-    it("keeps an assigned scope that isn't in the list selectable", async () => {
+    it("keeps an assigned scope that isn't in the list selectable, and names it in the confirmation", async () => {
         mockFetch(() => jsonResponse(200, [scope("es1", "Legal")]));
+        const user = userEvent.setup();
         render(<EscrowScopeCard mailbox={{ ...mailbox, escrowScopeId: "es-gone" }} onUpdate={vi.fn()} />);
 
         expect(await screen.findByRole("option", { name: "Unknown scope (es-gone)" })).toBeInTheDocument();
         expect(screen.getByLabelText("Escrow scope")).toHaveValue("es-gone");
+
+        await user.selectOptions(screen.getByLabelText("Escrow scope"), "es1");
+        await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
+        const dialog = await screen.findByRole("dialog", { name: "Change escrow scope" });
+        expect(within(dialog).getByText("Unknown scope (es-gone)")).toBeInTheDocument();
+        expect(within(dialog).getByText("Legal")).toBeInTheDocument();
     });
 
     it("shows load failures", async () => {
@@ -97,12 +124,14 @@ describe("EscrowScopeCard", () => {
 
         await user.selectOptions(await screen.findByLabelText("Escrow scope"), "es1");
         await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
+        await user.click(await screen.findByRole("button", { name: "Confirm and save" }));
         expect(await screen.findByText("no such scope")).toBeInTheDocument();
 
         failure = () => {
             throw new TypeError("network down");
         };
         await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
+        await user.click(await screen.findByRole("button", { name: "Confirm and save" }));
         expect(await screen.findByText("Could not save the escrow scope.")).toBeInTheDocument();
     });
 });

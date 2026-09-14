@@ -424,6 +424,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                         calendars={calendarFolders.filter((f) => f.mailboxUid === modalMailbox.uid).map((f) => ({ uid: f.uid, name: f.name }))}
                         mailboxOptions={mailboxOptions}
                         organizerAddress={modalMailbox.primarySmtpAddress}
+                        organizerAliases={modalMailbox.aliasAddresses}
                         occurrence={modal.occurrence}
                         initialStart={modal.initialStart}
                         initialEnd={modal.initialEnd}

@@ -811,4 +811,80 @@ describe("MatterDetailPage", () => {
         expect(screen.queryByRole("button", { name: "+ New export" })).not.toBeInTheDocument();
         expect(screen.queryByLabelText("Search this matter")).not.toBeInTheDocument();
     });
+
+    it("hides Approve/Deny and export Download links on a closed matter", async () => {
+        const readyExport = {
+            uid: "mer2",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            matterId: "m1",
+            requestedByUserUid: "u1",
+            status: "ready" as const,
+            blobKey: "blob1",
+        };
+        mockMatterFetch({
+            "GET /api/escrow/matters/m1": () => jsonResponse(200, { ...matter, closedAt: "2026-02-01T00:00:00.000Z" }),
+            "/api/escrow/matter-export-requests": () => jsonResponse(200, [readyExport]),
+        });
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        expect(await screen.findByText("ready")).toBeInTheDocument();
+        expect(await screen.findByText("pending")).toBeInTheDocument();
+        expect(screen.queryByRole("link", { name: "Download" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Deny" })).not.toBeInTheDocument();
+    });
+
+    it("drops a search result (or failure) that arrives after the matter was closed", async () => {
+        const pending: ((response: Response) => void)[] = [];
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, []),
+            "/api/escrow/matter-search": () => new Promise<Response>((resolve) => pending.push(resolve)) as unknown as Response,
+            "POST /api/escrow/matters/m1/close": () => jsonResponse(200, { ...matter, closedAt: "2026-02-01T00:00:00.000Z" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.type(screen.getByLabelText("Search this matter"), "budget");
+        await user.click(screen.getByRole("button", { name: "Search" }));
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+
+        await user.click(screen.getByRole("button", { name: "Close matter" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Close matter" })).getByRole("button", { name: "Close matter" }));
+        expect(await screen.findByText(/^Closed/)).toBeInTheDocument();
+
+        pending[0](
+            jsonResponse(200, { mb1: { results: [{ entityType: "message", entityUid: "msg1", score: 1, snippet: "leaked" }] } }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(screen.queryByText(/leaked/)).not.toBeInTheDocument();
+        expect(screen.queryByRole("heading", { name: "mb1", level: 3 })).not.toBeInTheDocument();
+    });
+
+    it("drops a search failure that arrives after the matter was closed", async () => {
+        const pending: ((response: Response) => void)[] = [];
+        mockMatterFetch({
+            "/api/escrow/access-requests": () => jsonResponse(200, []),
+            "/api/escrow/matter-search": () => new Promise<Response>((resolve) => pending.push(resolve)) as unknown as Response,
+            "POST /api/escrow/matters/m1/close": () => jsonResponse(200, { ...matter, closedAt: "2026-02-01T00:00:00.000Z" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.type(screen.getByLabelText("Search this matter"), "budget");
+        await user.click(screen.getByRole("button", { name: "Search" }));
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+
+        await user.click(screen.getByRole("button", { name: "Close matter" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Close matter" })).getByRole("button", { name: "Close matter" }));
+        expect(await screen.findByText(/^Closed/)).toBeInTheDocument();
+
+        pending[0](jsonResponse(403, { message: "matter closed" }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(screen.queryByText("matter closed")).not.toBeInTheDocument();
+    });
 });

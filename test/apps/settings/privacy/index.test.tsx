@@ -651,10 +651,26 @@ describe("SettingsPrivacyPage", () => {
             render(<SettingsPrivacyPage userUid="u1" />);
 
             expect(await screen.findByText(/Switch to My Mail \(u1@example.com\) to manage them\./)).toBeInTheDocument();
-            expect(await screen.findByText("No import requests yet.")).toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Request export" })).not.toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Request account erasure" })).not.toBeInTheDocument();
-            expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/mail/data-export-requests"))).toBe(false);
+            // Import always lands in the caller's own mailbox server-side, so it's hidden here too.
+            expect(screen.queryByRole("button", { name: "Upload Mbox or PST file" })).not.toBeInTheDocument();
+            expect(
+                fetchMock.mock.calls.some(([url]) =>
+                    ["/api/mail/data-export-requests", "/api/mail/mailbox-import-requests", "/api/mail/folders"].some((prefix) => String(url).startsWith(prefix)),
+                ),
+            ).toBe(false);
+        });
+
+        it("hides export, import, and erasure when the caller owns more than one mailbox, since the server can't tell which is meant", async () => {
+            const secondOwned = { ...mailbox, uid: "mb3", displayName: "Side Mail", primarySmtpAddress: "side@example.com" };
+            mockShell((url) => (url.startsWith("/api/mail/mailboxes?") || url === "/api/mail/mailboxes" ? jsonResponse(200, [mailbox, secondOwned]) : undefined));
+            render(<SettingsPrivacyPage userUid="u1" />);
+
+            expect(await screen.findByText(/You own more than one mailbox/)).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Request export" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Upload Mbox or PST file" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Request account erasure" })).not.toBeInTheDocument();
         });
 
         it("explains there's nothing to manage when the caller has no mailbox of their own", async () => {

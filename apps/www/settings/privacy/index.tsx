@@ -52,12 +52,15 @@ export default function SettingsPrivacyPage(props: SettingsPrivacyPageProps) {
 
 function PrivacyContent({ userUid }: { userUid?: string }) {
     const { mailboxUid, mailboxes } = useSettingsShell();
-    // Data export and account erasure always act on the *caller's own* mailbox server-side (neither
-    // request carries a mailbox), whatever the switcher shows - so both are only offered while the
-    // switcher is on that mailbox, and name it explicitly. Import targets the selected mailbox's own
-    // folders, so it stays available for any selected mailbox.
+    // Data export, account erasure, and (for a non-admin) mail import all act on the *caller's own*
+    // mailbox server-side - none of these requests carries a mailbox a regular user may choose, so
+    // restapi resolves "own mailbox" itself with an unordered lookup by owner. That is only unambiguous
+    // when the caller owns exactly one mailbox, so all three are only offered while the switcher is on
+    // that single owned mailbox, and name it explicitly. (Import on any other mailbox would always be
+    // rejected: its destination folder wouldn't belong to the mailbox the server resolved.)
     const selected = mailboxes.find((mb) => mb.uid === mailboxUid)!;
-    const ownMailbox = mailboxes.find((mb) => mb.ownerUserUid !== undefined && mb.ownerUserUid === userUid);
+    const ownedMailboxes = mailboxes.filter((mb) => mb.ownerUserUid !== undefined && mb.ownerUserUid === userUid);
+    const ownMailbox = ownedMailboxes.length === 1 ? ownedMailboxes[0] : undefined;
     const selectedIsOwn = selected.uid === ownMailbox?.uid;
 
     return (
@@ -69,27 +72,38 @@ function PrivacyContent({ userUid }: { userUid?: string }) {
                 </div>
 
                 {selectedIsOwn ? (
-                    <ExportSection mailboxUid={mailboxUid} mailboxLabel={`${selected.displayName} (${selected.primarySmtpAddress})`} />
+                    <>
+                        <ExportSection mailboxUid={mailboxUid} mailboxLabel={`${selected.displayName} (${selected.primarySmtpAddress})`} />
+                        <ImportSection mailboxUid={mailboxUid} />
+                        <ErasureSection mailboxLabel={`${selected.displayName} (${selected.primarySmtpAddress})`} />
+                    </>
                 ) : (
-                    <OwnMailboxOnlyNotice ownMailboxLabel={ownMailbox && `${ownMailbox.displayName} (${ownMailbox.primarySmtpAddress})`} />
+                    <OwnMailboxOnlyNotice
+                        ownedMailboxCount={ownedMailboxes.length}
+                        ownMailboxLabel={ownMailbox && `${ownMailbox.displayName} (${ownMailbox.primarySmtpAddress})`}
+                    />
                 )}
-                <ImportSection mailboxUid={mailboxUid} />
-                {selectedIsOwn && <ErasureSection mailboxLabel={`${selected.displayName} (${selected.primarySmtpAddress})`} />}
             </div>
         </div>
     );
 }
 
-function OwnMailboxOnlyNotice({ ownMailboxLabel }: { ownMailboxLabel?: string }) {
+function OwnMailboxOnlyNotice({ ownedMailboxCount, ownMailboxLabel }: { ownedMailboxCount: number; ownMailboxLabel?: string }) {
+    let detail: string;
+    if (ownMailboxLabel) {
+        detail = `Switch to ${ownMailboxLabel} to manage them.`;
+    } else if (ownedMailboxCount > 1) {
+        detail =
+            "You own more than one mailbox, so which one these would apply to can't be determined here. Ask an administrator to export, import, or erase data for a specific mailbox.";
+    } else {
+        detail = "You don't have a mailbox of your own to manage here.";
+    }
     return (
         <div>
-            <h2 className="text-sm font-semibold mb-2">Export or delete my data</h2>
+            <h2 className="text-sm font-semibold mb-2">Export, import, or delete my data</h2>
             <p className="text-xs text-text-muted">
-                Exporting your data and deleting your account only apply to your own mailbox, not one shared with
-                you.{" "}
-                {ownMailboxLabel
-                    ? `Switch to ${ownMailboxLabel} to manage them.`
-                    : "You don't have a mailbox of your own to manage here."}
+                Exporting your data, importing mail, and deleting your account only apply to your own mailbox, not
+                one shared with you. {detail}
             </p>
         </div>
     );

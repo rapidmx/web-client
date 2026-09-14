@@ -20,13 +20,13 @@ import {
 import { deleteEventOccurrence, deleteEventSeries, detachOccurrence, saveEventSeries } from "@rapidmx/react-shared/calendar/calendarMutations.js";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { CalendarOccurrence, fromEventWallClock, toEventWallClock } from "@rapidmx/react-shared/calendar/recurrence.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
-import { addDaysToKey, allDayDateKey, allDayInstant, localDateKey } from "./allDay.js";
+import { addDaysToKey, allDayDateKey, allDayInstant, recurrenceUntilDateKey, recurrenceUntilInstant } from "./allDay.js";
 import ResourcePicker from "./ResourcePicker.js";
 
 const INPUT_CLASS =
@@ -61,6 +61,9 @@ export interface EventModalProps {
      * and the organizer address; `mailboxUid`/`folderUid` are the initial selection. */
     mailboxOptions?: { mailbox: Mailbox; calendars: { uid: string; name: string }[] }[];
     organizerAddress: string;
+    /** The viewing mailbox's alias addresses - an event it organizes (or an invitation to it) may name any of
+     * them instead of `organizerAddress`. Defaults to that mailbox's `aliasAddresses` from `mailboxOptions`. */
+    organizerAliases?: string[];
     /** `null` when creating a new event. */
     occurrence: CalendarOccurrence | null;
     /** Prefilled start/end for create mode (e.g. the day/slot the user clicked). */
@@ -76,11 +79,19 @@ type EditScope = "occurrence" | "series";
  * omitted (`undefined`) field is dropped by `JSON.stringify` and would leave the stored value in place. */
 type EventFields = { [K in keyof CalendarEventInput]?: CalendarEventInput[K] | null };
 
+const MS_PER_MINUTE = 60_000;
 const MS_PER_DAY = 86_400_000;
 
-/** Milliseconds since local midnight. */
-function timeOfDayMs(date: Date): number {
-    return date.getTime() - new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+/** Whether two ISO instants fall in the same minute - a stored `...T15:00:00Z` and the form's re-serialized
+ * `...T15:00:00.000Z` name the same time without being equal strings. */
+function sameMinute(a: string, b: string): boolean {
+    return Math.round(new Date(a).getTime() / MS_PER_MINUTE) === Math.round(new Date(b).getTime() / MS_PER_MINUTE);
+}
+
+/** Milliseconds since midnight of an instant's wall clock in `timezone` (a timed event's own zone). */
+function wallTimeOfDayMs(instantMs: number, timezone: string | undefined): number {
+    const wall = toEventWallClock(instantMs, timezone, false);
+    return ((wall % MS_PER_DAY) + MS_PER_DAY) % MS_PER_DAY;
 }
 
 /**
@@ -89,24 +100,37 @@ function timeOfDayMs(date: Date): number {
  * at the first occurrence - sending the occurrence's dates as-is would move the whole series' start to
  * this occurrence. So only the change in time-of-day (and the new duration) is applied to the master's own
  * start; the series keeps its original first date. Unchanged times aren't sent at all.
+ *
+ * Times of day are read on the event's own timezone wall clock (the series expands there), not the
+ * browser's, and the change is the smallest signed difference modulo 24h - moving 23:00 to 01:00 is two
+ * hours later (into the next day), never 22 hours earlier. The master's new start is converted back from
+ * that wall clock, so a master on the other side of a DST change keeps the chosen local time.
  */
 async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventFields): Promise<EventFields> {
     const { startDate, endDate, ...rest } = fields;
-    if (startDate === occurrence.startDate && endDate === occurrence.endDate) {
+    if (sameMinute(startDate as string, occurrence.startDate) && sameMinute(endDate as string, occurrence.endDate)) {
         return rest;
     }
     const master = await getCalendarEvent(occurrence.uid);
-    const newStart = new Date(startDate as string);
-    const durationMs = new Date(endDate as string).getTime() - newStart.getTime();
+    const timezone = fields.timezone as string;
+    const newStart = new Date(startDate as string).getTime();
+    const durationMs = new Date(endDate as string).getTime() - newStart;
     let masterStart: number;
     if (fields.allDay) {
-        masterStart = new Date(allDayInstant(master.allDay ? allDayDateKey(master.startDate) : localDateKey(new Date(master.startDate)))).getTime();
+        // Timed -> all-day keeps the master's own date on its wall clock.
+        const masterDateKey = master.allDay
+            ? allDayDateKey(master.startDate)
+            : new Date(toEventWallClock(new Date(master.startDate).getTime(), timezone, false)).toISOString().slice(0, 10);
+        masterStart = new Date(allDayInstant(masterDateKey)).getTime();
     } else if (master.allDay) {
-        // All-day -> timed: the master's own date at the newly chosen local time.
-        const [y, m, d] = allDayDateKey(master.startDate).split("-").map(Number);
-        masterStart = new Date(y, m - 1, d).getTime() + timeOfDayMs(newStart);
+        // All-day -> timed: the master's own date at the newly chosen wall-clock time.
+        const masterDateWall = new Date(allDayInstant(allDayDateKey(master.startDate))).getTime();
+        masterStart = fromEventWallClock(masterDateWall + wallTimeOfDayMs(newStart, timezone), timezone, false);
     } else {
-        masterStart = new Date(master.startDate).getTime() + (timeOfDayMs(newStart) - timeOfDayMs(new Date(occurrence.startDate)));
+        const rawDelta = wallTimeOfDayMs(newStart, timezone) - wallTimeOfDayMs(new Date(occurrence.startDate).getTime(), timezone);
+        const delta = ((((rawDelta + MS_PER_DAY / 2) % MS_PER_DAY) + MS_PER_DAY) % MS_PER_DAY) - MS_PER_DAY / 2;
+        const masterWall = toEventWallClock(new Date(master.startDate).getTime(), timezone, false);
+        masterStart = fromEventWallClock(masterWall + delta, timezone, false);
     }
     return {
         ...rest,
@@ -128,6 +152,7 @@ export default function EventModal({
     calendars,
     mailboxOptions,
     organizerAddress,
+    organizerAliases,
     occurrence,
     initialStart,
     initialEnd,
@@ -140,13 +165,18 @@ export default function EventModal({
     // Create mode follows the chosen mailbox; editing an existing event always keeps the passed-in values.
     const calendarChoices = !occurrence && targetMailboxOption ? targetMailboxOption.calendars : calendars;
     const effectiveOrganizerAddress = !occurrence && targetMailboxOption ? targetMailboxOption.mailbox.primarySmtpAddress : organizerAddress;
+    // Every address the viewing mailbox receives at - its primary address and its aliases, case-insensitively.
+    const ownAddresses = new Set(
+        [organizerAddress, ...(organizerAliases ?? mailboxOptions?.find((option) => option.mailbox.uid === mailboxUid)?.mailbox.aliasAddresses ?? [])].map(
+            (address) => address.toLowerCase(),
+        ),
+    );
+    const isOwnAddress = (address: string) => ownAddresses.has(address.toLowerCase());
     // An existing event organized by someone else is the viewing mailbox's copy of an invitation: only the
     // organizer can change it (their next update would overwrite local edits anyway), so it's read-only
     // apart from the RSVP controls.
     const isInvited =
-        !!occurrence &&
-        occurrence.organizer.address.toLowerCase() !== organizerAddress.toLowerCase() &&
-        !occurrence.attendees.some((a) => a.isOrganizer && a.address.toLowerCase() === organizerAddress.toLowerCase());
+        !!occurrence && !isOwnAddress(occurrence.organizer.address) && !occurrence.attendees.some((a) => a.isOrganizer && isOwnAddress(a.address));
 
     function handleMailboxChange(nextMailboxUid: string) {
         setTargetMailboxUid(nextMailboxUid);
@@ -184,17 +214,19 @@ export default function EventModal({
     const [confirmingDelete, setConfirmingDelete] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    // A series save that moved the series but couldn't move every separately edited occurrence with it.
+    const [syncWarning, setSyncWarning] = useState(false);
     const [responding, setResponding] = useState(false);
     const [resourcePickerOpen, setResourcePickerOpen] = useState(false);
     const addResourceButtonRef = useRef<HTMLButtonElement>(null);
 
     // The viewing mailbox can respond to an *existing* event it's invited to but doesn't organize —
-    // `organizerAddress` is always this mailbox's own primary SMTP address (see `EventModalProps`), so
-    // finding it among `attendees` (and not as that attendee's own organizer flag) identifies exactly
+    // `organizerAddress` (plus the aliases) are this mailbox's own addresses (see `EventModalProps`), so
+    // finding one among `attendees` (and not as that attendee's own organizer flag) identifies exactly
     // that case. `@rapidmx/restapi`'s `respond()` route has no occurrence-vs-series scope of its own
     // (see `calendarApi.ts`'s `respondToEvent` doc comment) — it always acts on `occurrence.uid` as a
     // single event document, so this deliberately does not consult `editScope`.
-    const myAttendeeIndex = occurrence ? attendees.findIndex((a) => a.address.toLowerCase() === organizerAddress.toLowerCase()) : -1;
+    const myAttendeeIndex = occurrence ? attendees.findIndex((a) => isOwnAddress(a.address)) : -1;
     const canRespond = myAttendeeIndex !== -1 && !attendees[myAttendeeIndex].isOrganizer;
     // "This event only" detaches a standalone, non-repeating copy - the series' rule doesn't apply to it.
     const editingSingleOccurrence = !!occurrence?.isRecurringOccurrence && editScope === "occurrence";
@@ -273,7 +305,12 @@ export default function EventModal({
             } else if (editingSingleOccurrence) {
                 await detachOccurrence(occurrence, fields as Partial<CalendarEventInput>);
             } else if (occurrence.isRecurringOccurrence) {
-                await saveEventSeries(occurrence, (await toSeriesFields(occurrence, fields)) as Partial<CalendarEventInput>);
+                const saved = await saveEventSeries(occurrence, (await toSeriesFields(occurrence, fields)) as Partial<CalendarEventInput>);
+                if (saved.detachedOccurrenceSyncFailed) {
+                    // The series itself was saved - say so, and leave closing to the user once they've read it.
+                    setSyncWarning(true);
+                    return;
+                }
             } else {
                 await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) });
             }
@@ -322,6 +359,29 @@ export default function EventModal({
             setError(err instanceof ApiRequestError ? err.message : "Could not send your response.");
             setResponding(false);
         }
+    }
+
+    // The recurrence end date is stored in the frame the series expands in (UTC for all-day, local otherwise),
+    // so toggling All day re-stores the same chosen date in the new frame.
+    function handleAllDayChange(nextAllDay: boolean) {
+        setAllDay(nextAllDay);
+        setRecurrenceRule((rule) =>
+            rule?.until ? { ...rule, until: recurrenceUntilInstant(recurrenceUntilDateKey(rule.until, allDay), nextAllDay) } : rule,
+        );
+    }
+
+    if (syncWarning) {
+        return (
+            <Modal open={open} onClose={onSaved} title="Series saved">
+                <p role="alert" className="text-sm mb-4">
+                    The series was saved, but some occurrences you had changed individually couldn&rsquo;t be moved with it. They
+                    may now appear twice - check the calendar and delete any duplicate.
+                </p>
+                <Button type="button" className="!w-auto" onClick={onSaved}>
+                    OK
+                </Button>
+            </Modal>
+        );
     }
 
     return (
@@ -419,7 +479,7 @@ export default function EventModal({
                 </FormField>
 
                 <label className="flex items-center gap-2 text-sm font-medium mb-3">
-                    <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
+                    <input type="checkbox" checked={allDay} onChange={(e) => handleAllDayChange(e.target.checked)} />
                     All day
                 </label>
 
@@ -563,7 +623,7 @@ export default function EventModal({
 
                 {!editingSingleOccurrence && (
                     <FormField label="Recurrence" htmlFor="event-recurrence">
-                        <RecurrenceEditor value={recurrenceRule} onChange={setRecurrenceRule} />
+                        <RecurrenceEditor value={recurrenceRule} onChange={setRecurrenceRule} allDay={allDay} />
                     </FormField>
                 )}
 

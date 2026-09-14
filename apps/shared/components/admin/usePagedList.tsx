@@ -19,7 +19,7 @@ export interface PagedList<T> {
     loadingMore: boolean;
     /** Re-fetches from the first page, dropping anything loaded beyond it. */
     reload: () => Promise<void>;
-    /** Fetches the next page and appends it. */
+    /** Fetches the next page and appends what's new in it. */
     loadMore: () => Promise<void>;
     /** Replaces one already-loaded item in place (e.g. with an action's response). */
     replaceItem: (item: T) => void;
@@ -29,6 +29,11 @@ export interface PagedList<T> {
  * A newest-first list fetched a page at a time with "Load more". Only the most recently started `reload()`'s
  * responses are applied, so a slow earlier fetch (e.g. the mount fetch racing a reload after a create) can't
  * overwrite a newer list, and a "Load more" that was in flight during a reload is dropped.
+ *
+ * Paging is by offset, so "Load more" re-reads the previous page alongside the next one and continues after the last
+ * row already shown: rows created since shift older rows onto later pages (repeats are skipped), and rows deleted
+ * since shift them onto earlier pages (which a plain next-page fetch would silently skip). If that row can't be found
+ * in the two pages at all (it was deleted, or more than a page of rows came or went), the list reloads from the start.
  */
 export function usePagedList<T extends { uid: string }>(
     fetchPage: (params: { limit: number; page: number }) => Promise<T[]>,
@@ -42,6 +47,8 @@ export function usePagedList<T extends { uid: string }>(
     const [loadingMore, setLoadingMore] = useState(false);
     const generation = useRef(0);
     const nextPage = useRef(0);
+    const loaded = useRef<T[]>(items);
+    loaded.current = items;
 
     function describe(err: unknown): string {
         return err instanceof ApiRequestError ? err.message : errorMessage;
@@ -68,10 +75,21 @@ export function usePagedList<T extends { uid: string }>(
         const page = nextPage.current;
         setLoadingMore(true);
         try {
-            const data = await fetchPage({ limit: pageSize, page });
+            const [previous, data] = await Promise.all([
+                fetchPage({ limit: pageSize, page: page - 1 }),
+                fetchPage({ limit: pageSize, page }),
+            ]);
             if (current !== generation.current) return;
-            // Something created since the first page was fetched shifts older items onto later pages - skip repeats.
-            setItems((prev) => [...prev, ...data.filter((item) => !prev.some((existing) => existing.uid === item.uid))]);
+            const window: T[] = [...previous, ...data];
+            // "Load more" is only offered after a full page, so at least one row is shown.
+            const lastShown: string = loaded.current[loaded.current.length - 1].uid;
+            const boundary: number = window.map((item) => item.uid).lastIndexOf(lastShown);
+            if (boundary === -1) {
+                await reload();
+                return;
+            }
+            const after: T[] = window.slice(boundary + 1);
+            setItems((prev) => [...prev, ...after.filter((item) => !prev.some((existing) => existing.uid === item.uid))]);
             setHasMore(data.length === pageSize);
             setLoadError(null);
             nextPage.current = page + 1;

@@ -122,7 +122,10 @@ describe("EventModal (round-3 fixes)", () => {
 
         it("applies only the time-of-day change and new duration to the master's own start", async () => {
             const master = recurring({ startDate: "2026-05-06T15:00:00.000Z", endDate: "2026-05-06T15:30:00.000Z", isRecurringOccurrence: false });
-            const fetchMock = mockFetch((url, init) => (init?.method === "PUT" ? jsonResponse(200, master) : jsonResponse(200, master)));
+            // saveEventSeries() also lists the folder to re-point detached occurrences - none here.
+            const fetchMock = mockFetch((url, init) =>
+                url.startsWith("/api/mail/calendar-events?") ? jsonResponse(200, []) : init?.method === "PUT" ? jsonResponse(200, master) : jsonResponse(200, master),
+            );
             const user = userEvent.setup();
             const { onSaved } = renderModal(recurring());
 
@@ -140,7 +143,7 @@ describe("EventModal (round-3 fixes)", () => {
 
         it("turning a timed series all-day keeps the master's first date", async () => {
             const master = recurring({ startDate: "2026-05-06T15:00:00.000Z", endDate: "2026-05-06T15:30:00.000Z" });
-            const fetchMock = mockFetch(() => jsonResponse(200, master));
+            const fetchMock = mockFetch((url) => (url.startsWith("/api/mail/calendar-events?") ? jsonResponse(200, []) : jsonResponse(200, master)));
             const user = userEvent.setup();
             const { onSaved } = renderModal(recurring());
 
@@ -175,7 +178,7 @@ describe("EventModal (round-3 fixes)", () => {
         it("turning an all-day series timed uses the master's date at the new time", async () => {
             const allDayOcc = recurring({ allDay: true, startDate: "2026-06-03T00:00:00.000Z", endDate: "2026-06-04T00:00:00.000Z" });
             const master = recurring({ allDay: true, startDate: "2026-05-06T00:00:00.000Z", endDate: "2026-05-07T00:00:00.000Z" });
-            const fetchMock = mockFetch(() => jsonResponse(200, master));
+            const fetchMock = mockFetch((url) => (url.startsWith("/api/mail/calendar-events?") ? jsonResponse(200, []) : jsonResponse(200, master)));
             const user = userEvent.setup();
             const { onSaved } = renderModal(allDayOcc);
 

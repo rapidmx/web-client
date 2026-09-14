@@ -30,6 +30,26 @@ export function actionLabel(action: string): string {
     return (ACTION_LABELS as Record<string, string>)[action] ?? action;
 }
 
+const VERIFICATION_FAILURES: Record<string, string> = {
+    link_mismatch: "An entry was deleted, inserted or reordered.",
+    hash_mismatch: "An entry was edited after it was written.",
+    unknown_algorithm: "An entry uses a hash algorithm this server doesn't recognize.",
+    algorithm_downgrade: "An unkeyed entry follows keyed ones, which suggests a forged entry.",
+    hmac_key_unavailable: "Audit key not configured: this server can't check keyed entries, so the chain couldn't be verified.",
+    truncated: "Entries missing at the end: entries were deleted from the end of the chain.",
+    head_mismatch: "The chain's head record doesn't match its last entry.",
+    head_mac_mismatch: "The chain's head record was forged or edited.",
+    head_missing: "The chain's head record is missing.",
+};
+
+/** Explains a failed chain verification by its `reason` (plus where it broke, when known). An unrecognized or missing
+ * reason (a newer or older server) reads as a generic failure. */
+export function describeVerificationFailure(result: EscrowAuditVerificationResult): string {
+    const where: string = result.brokenAtSequence === undefined ? "" : ` (at sequence ${result.brokenAtSequence})`;
+    const known: string | undefined = result.reason === undefined ? undefined : VERIFICATION_FAILURES[result.reason];
+    return known ? `Chain integrity check failed${where}. ${known}` : `Chain integrity check failed${where}.`;
+}
+
 export default function EscrowAuditLogPage(props: Omit<EscrowShellProps, "active">) {
     return (
         <EscrowShell {...props} active="auditLog">
@@ -109,7 +129,7 @@ function EscrowAuditLogContent() {
                         Chain verified — no tampering detected.
                     </div>
                 ) : (
-                    <Alert>Chain integrity broken at sequence {verifyResult.brokenAtSequence}.</Alert>
+                    <Alert>{describeVerificationFailure(verifyResult)}</Alert>
                 ))}
 
             {error && <Alert>{error}</Alert>}

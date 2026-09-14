@@ -16,6 +16,20 @@ vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => 
     default: () => <textarea data-testid="html-editor" />,
 }));
 
+// Lets a test mark specific `listAllPages()` results as truncated (one entry per call, in call order)
+// without fetching 20,000 fixtures; every other call passes through to the real implementation.
+const { truncateNextLists } = vi.hoisted(() => ({ truncateNextLists: [] as boolean[] }));
+vi.mock("../../../apps/shared/mail/listAllPages.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../apps/shared/mail/listAllPages.js")>();
+    return {
+        ...actual,
+        listAllPages: async (...args: Parameters<typeof actual.listAllPages>) => {
+            const result = await actual.listAllPages(...args);
+            return truncateNextLists.shift() ? { ...result, truncated: true } : result;
+        },
+    };
+});
+
 const mailbox = {
     uid: "mb1",
     version: 0,
@@ -90,6 +104,7 @@ function mockShellAndContacts(
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    truncateNextLists.length = 0;
 });
 
 describe("ContactsPage", () => {
@@ -730,6 +745,32 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
 
         expect(await screen.findByText("VIP Person")).toBeInTheDocument();
         expect(screen.queryByText("Jane Doe")).not.toBeInTheDocument();
+    });
+
+    it("says so when the contact list (or the Deleted view) stopped at the page cap", async () => {
+        truncateNextLists.push(true, false);
+        mockShellAndContactsWithLists([bob]);
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Bob Smith");
+        expect(screen.getByText(/more contacts than can be shown at once - only the first 20000 are/)).toBeInTheDocument();
+
+        await user.click(screen.getByText("Deleted"));
+        expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
+        expect(screen.queryByText(/more contacts than can be shown at once/)).not.toBeInTheDocument();
+    });
+
+    it("shows the truncation notice in the Deleted view when only that list was cut off", async () => {
+        truncateNextLists.push(false, true);
+        mockShellAndContactsWithLists([bob]);
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Bob Smith");
+        expect(screen.queryByText(/more contacts than can be shown at once/)).not.toBeInTheDocument();
+        await user.click(screen.getByText("Deleted"));
+        expect(await screen.findByText(/more contacts than can be shown at once/)).toBeInTheDocument();
     });
 
     it("the Deleted view fetches and shows soft-deleted contacts, with no checkbox column.", async () => {

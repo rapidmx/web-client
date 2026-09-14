@@ -11,6 +11,7 @@ import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import ComposeWindow from "../../../apps/shared/components/mail/compose/ComposeWindow.js";
 import type { ComposeSession } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
 import { clearMailboxWritabilityCache } from "../../../apps/shared/components/mail/writableMailboxes.js";
+import { flushComposeDrafts } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
 
 // subscribeKeySession keeps a real listener set, so tests can fire lock/unlock events via emitKeySession().
 const { getUnlockedKeys, keySessionListeners } = vi.hoisted(() => ({
@@ -1137,14 +1138,10 @@ describe("ComposeWindow", () => {
             expect(screen.queryByLabelText("Send at")).not.toBeInTheDocument();
         });
 
-        it("assembles the draft, sets scheduledSendTime, sends it, and closes the window", async () => {
+        it("assembles the draft, sends it with scheduledSendTime, and closes the window", async () => {
             const fetchMock = mockCompose((url, init) => {
                 const method = init?.method ?? "GET";
                 if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
-                if (url === "/api/mail/messages/m1" && method === "PUT") {
-                    const body = JSON.parse(init!.body as string);
-                    return jsonResponse(200, { ...draft, scheduledSendTime: body.scheduledSendTime });
-                }
                 if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
                 return undefined;
             });
@@ -1161,14 +1158,10 @@ describe("ComposeWindow", () => {
             await waitFor(() =>
                 expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })),
             );
-            const putCall = fetchMock.mock.calls.find((call) => call[0] === "/api/mail/messages/m1" && (call[1] as RequestInit)?.method === "PUT")!;
-            const putBody = JSON.parse((putCall[1] as RequestInit).body as string);
-            expect(putBody.uid).toBe("m1");
-            expect(new Date(putBody.scheduledSendTime).getTime()).toBeGreaterThan(Date.now());
-            await waitFor(() =>
-                expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1/send", expect.objectContaining({ method: "POST" })),
-            );
             await waitFor(() => expect(onClose).toHaveBeenCalled());
+            expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/mail/messages/m1" && (init as RequestInit)?.method === "PUT")).toBe(false);
+            const sendCall = fetchMock.mock.calls.find(([url, init]) => url === "/api/mail/messages/m1/send" && (init as RequestInit)?.method === "POST")!;
+            expect(new Date(JSON.parse((sendCall[1] as RequestInit).body as string).scheduledSendTime).getTime()).toBeGreaterThan(Date.now());
         });
 
         it("also sets requestReceipt before scheduling when the checkbox is checked", async () => {
@@ -1218,11 +1211,11 @@ describe("ComposeWindow", () => {
             expect(await screen.findByText("assemble failed")).toBeInTheDocument();
         });
 
-        it("shows a generic error message when setting scheduledSendTime fails with a non-API error", async () => {
+        it("shows a generic error message when scheduling fails with a non-API error", async () => {
             mockCompose((url, init) => {
                 const method = init?.method ?? "GET";
                 if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
-                if (url === "/api/mail/messages/m1" && method === "PUT") throw new TypeError("network down");
+                if (url === "/api/mail/messages/m1/send" && method === "POST") throw new TypeError("network down");
                 return undefined;
             });
             const user = userEvent.setup();
@@ -2308,9 +2301,7 @@ describe("ComposeWindow", () => {
                 const method = init?.method ?? "GET";
                 if (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup")) return jsonResponse(200, { keys: [] });
                 if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
-                if (url === "/api/mail/messages/m1" && method === "PUT") {
-                    return jsonResponse(200, { ...draft, scheduledSendTime: JSON.parse(init!.body as string).scheduledSendTime });
-                }
+                if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
                 return undefined;
             });
             const onClose = vi.fn();
@@ -2328,10 +2319,378 @@ describe("ComposeWindow", () => {
             await user.click(screen.getByRole("button", { name: "Send without encryption" }));
 
             await waitFor(() => expect(onClose).toHaveBeenCalled());
-            const putCall = fetchMock.mock.calls.find(([url, init]) => url === "/api/mail/messages/m1" && (init as RequestInit).method === "PUT")!;
-            expect(new Date(JSON.parse((putCall[1] as RequestInit).body as string).scheduledSendTime).getTime()).toBeGreaterThan(Date.now());
-            const calls = fetchMock.mock.calls.map(([url, init]) => `${(init as RequestInit | undefined)?.method ?? "GET"} ${url}`);
-            expect(calls.indexOf("PUT /api/mail/messages/m1")).toBeLessThan(calls.indexOf("POST /api/mail/messages/m1/send"));
+            const sendCall = fetchMock.mock.calls.find(([url, init]) => url === "/api/mail/messages/m1/send" && (init as RequestInit | undefined)?.method === "POST")!;
+            expect(new Date(JSON.parse((sendCall[1] as RequestInit).body as string).scheduledSendTime).getTime()).toBeGreaterThan(Date.now());
+        });
+    });
+});
+
+describe("ComposeWindow (round-4 fixes)", () => {
+    const encryptKey = {
+        publicKey: "base64cert",
+        type: "x509",
+        useType: "encrypt",
+        fingerprint: "fp-encrypt",
+        notBefore: Date.now() - 1000,
+        notAfter: Date.now() + 1_000_000,
+    };
+    const signKey = { ...encryptKey, useType: "sign", fingerprint: "fp-sign" };
+    const mailboxFixture = {
+        uid: "mb1",
+        version: 0,
+        dateCreated: "2026-01-01T00:00:00.000Z",
+        dateModified: "2026-01-01T00:00:00.000Z",
+        ownerUserUid: "u1",
+        primarySmtpAddress: "u1@example.com",
+        aliasAddresses: [],
+        displayName: "User One",
+        timezone: "UTC",
+        quotaBytes: 1_000_000_000,
+        usedBytes: 0,
+        encryptPreference: { preferEncrypt: "mutual" as const },
+    };
+    const automaticPolicy = { encryptSameOrg: "automatic", encryptFederated: "automatic", encryptExternal: "automatic" };
+    const mutualLookup = {
+        keys: [{ ...encryptKey, publicKey: toBase64(fakeCertDer("bob-encrypt")), fingerprint: "fp-bob" }],
+        encryptPreference: { preferEncrypt: "mutual" },
+    };
+
+    function deferred<T>() {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>((res) => {
+            resolve = res;
+        });
+        return { promise, resolve };
+    }
+
+    function callsTo(fetchMock: ReturnType<typeof mockFetch>, match: (url: string, method: string) => boolean) {
+        return fetchMock.mock.calls.filter(([url, init]) => match(String(url), (init as RequestInit | undefined)?.method ?? "GET"));
+    }
+    const isAssemble = (url: string) => /^\/api\/mail\/compose\/[^/]+\/assemble$/.test(url);
+    const isLookup = (url: string) => url.includes("/keys/lookup");
+
+    /** mockCompose plus the mailbox/policy/send endpoints, an assemble that bumps the draft version, and DELETE. */
+    function mockRound4(
+        extra?: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined,
+        mailbox: Record<string, unknown> = mailboxFixture,
+    ) {
+        let version = 0;
+        return mockCompose((url, init) => {
+            const custom = extra?.(url, init);
+            if (custom) return custom as Response;
+            const method = init?.method ?? "GET";
+            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
+            if (url === "/api/system/encryption-policy") return jsonResponse(200, automaticPolicy);
+            if (isLookup(url)) return jsonResponse(200, { keys: [] });
+            if (url === "/api/mail/compose/m1/assemble" && method === "POST") {
+                version += 1;
+                return jsonResponse(200, { ...draft, version });
+            }
+            if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
+            if (url.startsWith("/api/mail/messages/m1?") && method === "DELETE") return new Response(null, { status: 204 });
+            return undefined;
+        });
+    }
+
+    async function renderReady(props: Partial<React.ComponentProps<typeof ComposeWindow>> = {}) {
+        const onClose = vi.fn();
+        const utils = render(<ComposeWindow session={session()} onClose={onClose} onToggleMinimize={vi.fn()} autosaveDelayMs={60_000} {...props} />);
+        await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+        await screen.findByTestId("html-editor");
+        return { ...utils, onClose };
+    }
+
+    it("disables Close and Discard (also on the minimized bar) while a send is in progress", async () => {
+        const send = deferred<Response>();
+        const fetchMock = mockRound4((url, init) => (url === "/api/mail/messages/m1/send" && init?.method === "POST" ? send.promise : undefined), {
+            ...mailboxFixture,
+            keys: [],
+        });
+        getUnlockedKeys.mockReturnValue(undefined);
+        const { onClose, rerender } = await renderReady();
+
+        fireEvent.change(screen.getByLabelText("To"), { target: { value: "bob@example.com" } });
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+        await waitFor(() => expect(screen.getByRole("button", { name: "Sending…" })).toBeDisabled());
+        expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Discard draft" })).toBeDisabled();
+        rerender(<ComposeWindow session={session({ minimized: true })} onClose={onClose} onToggleMinimize={vi.fn()} autosaveDelayMs={60_000} />);
+        expect(screen.getByRole("button", { name: "Discard draft" })).toBeDisabled();
+
+        send.resolve(jsonResponse(200, draft));
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+        expect(callsTo(fetchMock, (_url, method) => method === "DELETE")).toHaveLength(0);
+    });
+
+    describe("recipient discovery and autosave", () => {
+        it("looks up a reply's prefilled recipients without a blur, and never autosaves a message policy will encrypt", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const fetchMock = mockRound4((url) => (isLookup(url) ? jsonResponse(200, mutualLookup) : undefined), { ...mailboxFixture, keys: [encryptKey] });
+            const { onClose } = await renderReady({ session: session({ initialTo: "bob@example.com" }), autosaveDelayMs: 5 });
+
+            expect(await screen.findByText(/bob@example\.com supports encryption/)).toBeInTheDocument();
+            expect(callsTo(fetchMock, isLookup)).toHaveLength(1);
+            fireEvent.change(screen.getByTestId("html-editor"), { target: { value: "<p>the secret</p>" } });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(callsTo(fetchMock, isAssemble)).toHaveLength(0);
+
+            fireEvent.click(screen.getByRole("button", { name: "Close" }));
+            expect(await screen.findByText(/Encrypted messages aren't saved as drafts/)).toBeInTheDocument();
+            expect(onClose).not.toHaveBeenCalled();
+        });
+
+        it("holds autosave while a recipient's lookup is pending (or not yet run), then saves once the message is known to stay plaintext", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const lookup = deferred<Response>();
+            const fetchMock = mockRound4((url) => (isLookup(url) && url.includes("nokey") ? lookup.promise : undefined), {
+                ...mailboxFixture,
+                keys: [encryptKey],
+            });
+            await renderReady({ session: session({ initialTo: "nokey@example.com" }), autosaveDelayMs: 5 });
+
+            await waitFor(() => expect(callsTo(fetchMock, isLookup)).toHaveLength(1));
+            fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Plain" } });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(callsTo(fetchMock, isAssemble)).toHaveLength(0);
+
+            lookup.resolve(jsonResponse(200, { keys: [] }));
+            await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(1));
+
+            // A typed, never-blurred recipient is just as unknown as a pending lookup.
+            fireEvent.change(screen.getByLabelText("To"), { target: { value: "nokey@example.com, other@example.com" } });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(callsTo(fetchMock, isAssemble)).toHaveLength(1);
+            fireEvent.blur(screen.getByLabelText("To"));
+            await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(2));
+        });
+
+        it("never autosaves while the encryption policy is unavailable for a mailbox with an encryption key", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const fetchMock = mockRound4((url) => (url === "/api/system/encryption-policy" ? jsonResponse(500, { message: "down" }) : undefined), {
+                ...mailboxFixture,
+                keys: [encryptKey],
+            });
+            await renderReady({ autosaveDelayMs: 5 });
+
+            fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Maybe secret" } });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(callsTo(fetchMock, isAssemble)).toHaveLength(0);
+        });
+
+        it("looks up a recipient blurred before the mailbox had loaded as soon as it does, and never twice while on the wire", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const mailbox = deferred<Response>();
+            const lookup = deferred<Response>();
+            const fetchMock = mockRound4((url) => {
+                if (url === "/api/mail/mailboxes/mb1") return mailbox.promise;
+                if (isLookup(url)) return lookup.promise;
+                return undefined;
+            });
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} autosaveDelayMs={60_000} />);
+            const to = await screen.findByLabelText("To");
+
+            fireEvent.change(to, { target: { value: "late@example.com" } });
+            fireEvent.blur(to);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            expect(callsTo(fetchMock, isLookup)).toHaveLength(0);
+
+            mailbox.resolve(jsonResponse(200, mailboxFixture));
+            await waitFor(() => expect(callsTo(fetchMock, isLookup)).toHaveLength(1));
+            fireEvent.blur(to);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            expect(callsTo(fetchMock, isLookup)).toHaveLength(1);
+
+            lookup.resolve(jsonResponse(200, { keys: [] }));
+            expect(await screen.findByText(/late@example\.com no encryption key found/)).toBeInTheDocument();
+        });
+
+        it("drops a lookup made for the previous sender once From has changed", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const oldLookup = deferred<Response>();
+            let created = 0;
+            mockRound4((url, init) => {
+                const method = init?.method ?? "GET";
+                if (url.startsWith("/api/mail/mailboxes?")) {
+                    return jsonResponse(200, [mailboxFixture, { ...mailboxFixture, uid: "mb2", primarySmtpAddress: "two@example.com", displayName: "Two" }]);
+                }
+                if (url === "/api/mail/mailboxes/mb2") return jsonResponse(200, { ...mailboxFixture, uid: "mb2", primarySmtpAddress: "two@example.com" });
+                if (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup")) return oldLookup.promise;
+                if (url.startsWith("/api/mail/mailboxes/mb2/keys/lookup")) return jsonResponse(200, { keys: [] });
+                if (url === "/api/mail/messages" && method === "POST") {
+                    created += 1;
+                    return jsonResponse(200, { ...draft, uid: created === 1 ? "m1" : "m2" });
+                }
+                return undefined;
+            });
+            render(<ComposeWindow session={session()} trusted onClose={vi.fn()} onToggleMinimize={vi.fn()} autosaveDelayMs={60_000} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+            fireEvent.change(screen.getByLabelText("To"), { target: { value: "bob@example.com" } });
+            fireEvent.blur(screen.getByLabelText("To"));
+
+            fireEvent.change(await screen.findByLabelText("From"), { target: { value: "mb2" } });
+            expect(await screen.findByText(/bob@example\.com no encryption key found/)).toBeInTheDocument();
+            oldLookup.resolve(jsonResponse(200, mutualLookup));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(screen.queryByText(/supports encryption/)).not.toBeInTheDocument();
+        });
+    });
+
+    describe("keys read at send time", () => {
+        it("blocks an auto-encrypted send when the mailbox's encryption key was never unlocked this session, prompting unlock", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            requestUnlock.mockReset();
+            requestUnlock.mockRejectedValue(new Error("Unlock cancelled."));
+            const fetchMock = mockRound4((url) => (isLookup(url) ? jsonResponse(200, mutualLookup) : undefined), { ...mailboxFixture, keys: [encryptKey] });
+            await renderReady();
+
+            fireEvent.change(screen.getByLabelText("To"), { target: { value: "bob@example.com" } });
+            fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+            expect(await screen.findByText(/can't be encrypted right now - your encryption key is locked/)).toBeInTheDocument();
+            expect(requestUnlock).toHaveBeenCalledWith("mb1", [expect.objectContaining({ useType: "encrypt" })]);
+            expect(callsTo(fetchMock, (url) => url.startsWith("/api/mail/compose/"))).toHaveLength(0);
+            expect(buildEncryptedMessage).not.toHaveBeenCalled();
+        });
+
+        it("re-reads the keys after the recipient lookups: a key object destroyed meanwhile blocks the signed send", async () => {
+            const bothKeys = {
+                masterKey: new Uint8Array(32),
+                signingPrivateKey: fakeSigningKey,
+                signingCertDer: fakeCertDer("alice-sign"),
+                encryptionPrivateKey: fakeEncryptionKey,
+                encryptionCertDer: fakeCertDer("alice-encrypt"),
+            };
+            getUnlockedKeys.mockReturnValue(bothKeys);
+            requestUnlock.mockReset();
+            requestUnlock.mockRejectedValue(new Error("Unlock cancelled."));
+            const fetchMock = mockRound4(
+                (url) => {
+                    if (!isLookup(url)) return undefined;
+                    // The session locks (destroying this key object) while the lookup is on the wire.
+                    getUnlockedKeys.mockReturnValue({ ...bothKeys, destroyed: true });
+                    return jsonResponse(200, { keys: [] });
+                },
+                { ...mailboxFixture, keys: [signKey, encryptKey] },
+            );
+            await renderReady();
+            expect(await screen.findByLabelText("Digitally sign this message")).toBeChecked();
+
+            fireEvent.change(screen.getByLabelText("To"), { target: { value: "bob@example.com" } });
+            fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+            expect(await screen.findByText(/can't be signed right now/)).toBeInTheDocument();
+            expect(requestUnlock).toHaveBeenCalled();
+            expect(buildSignedOnlyMessage).not.toHaveBeenCalled();
+            expect(callsTo(fetchMock, (url) => url.startsWith("/api/mail/compose/"))).toHaveLength(0);
+        });
+    });
+
+    it("deletes a draft superseded by a From switch only after its in-flight autosave, retrying with the stored version", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        const save = deferred<Response>();
+        let created = 0;
+        const fetchMock = mockRound4((url, init) => {
+            const method = init?.method ?? "GET";
+            if (url.startsWith("/api/mail/mailboxes?")) {
+                return jsonResponse(200, [mailboxFixture, { ...mailboxFixture, uid: "mb2", primarySmtpAddress: "two@example.com", displayName: "Two" }]);
+            }
+            if (url === "/api/mail/mailboxes/mb2") return jsonResponse(200, { ...mailboxFixture, uid: "mb2" });
+            if (url === "/api/mail/messages" && method === "POST") {
+                created += 1;
+                return jsonResponse(200, { ...draft, uid: created === 1 ? "m1" : "m2" });
+            }
+            if (url === "/api/mail/compose/m1/assemble" && method === "POST") return save.promise;
+            if (url === "/api/mail/messages/m1?version=5" && method === "DELETE") return jsonResponse(409, { message: "version conflict" });
+            if (url === "/api/mail/messages/m1" && method === "GET") return jsonResponse(200, { ...draft, version: 7 });
+            return undefined;
+        }, { ...mailboxFixture, keys: [] });
+        render(<ComposeWindow session={session()} trusted onClose={vi.fn()} onToggleMinimize={vi.fn()} autosaveDelayMs={5} />);
+        await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+        await screen.findByTestId("html-editor");
+
+        fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Switching" } });
+        await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(1));
+        fireEvent.change(await screen.findByLabelText("From"), { target: { value: "mb2" } });
+        await waitFor(() => expect(created).toBe(2));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(callsTo(fetchMock, (_url, method) => method === "DELETE")).toHaveLength(0);
+
+        save.resolve(jsonResponse(200, { ...draft, version: 5 }));
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1?version=7", expect.objectContaining({ method: "DELETE" })));
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1?version=5", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    describe("leaving with unsaved edits", () => {
+        function beforeUnload(): Event {
+            const event = new Event("beforeunload", { cancelable: true });
+            window.dispatchEvent(event);
+            return event;
+        }
+
+        it("saves a pending edit straight away and asks the browser to confirm leaving; nothing to confirm once saved", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const fetchMock = mockRound4(undefined, { ...mailboxFixture, keys: [] });
+            await renderReady();
+
+            expect(beforeUnload().defaultPrevented).toBe(false);
+            fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Almost lost" } });
+            expect(beforeUnload().defaultPrevented).toBe(true);
+            await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Draft saved"));
+            expect(callsTo(fetchMock, isAssemble)).toHaveLength(1);
+            expect(beforeUnload().defaultPrevented).toBe(false);
+        });
+
+        it("confirms while a save is still on the wire, but not while sending", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const save = deferred<Response>();
+            const send = deferred<Response>();
+            mockRound4(
+                (url, init) => {
+                    if (url === "/api/mail/compose/m1/assemble" && init?.method === "POST") return save.promise;
+                    if (url === "/api/mail/messages/m1/send") return send.promise;
+                    return undefined;
+                },
+                { ...mailboxFixture, keys: [] },
+            );
+            await renderReady({ autosaveDelayMs: 5 });
+
+            fireEvent.change(screen.getByLabelText("To"), { target: { value: "bob@example.com" } });
+            await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Saving…"));
+            expect(beforeUnload().defaultPrevented).toBe(true);
+
+            fireEvent.click(screen.getByRole("button", { name: "Send" }));
+            await waitFor(() => expect(screen.getByRole("button", { name: "Sending…" })).toBeInTheDocument());
+            expect(beforeUnload().defaultPrevented).toBe(false);
+        });
+
+        it("doesn't confirm after Discard, even with a save still on the wire", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const save = deferred<Response>();
+            mockRound4((url, init) => (url === "/api/mail/compose/m1/assemble" && init?.method === "POST" ? save.promise : undefined), {
+                ...mailboxFixture,
+                keys: [],
+            });
+            await renderReady({ autosaveDelayMs: 5 });
+
+            fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Throwaway" } });
+            await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Saving…"));
+            fireEvent.click(screen.getByRole("button", { name: "Discard draft" }));
+            fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+
+            expect(beforeUnload().defaultPrevented).toBe(false);
+        });
+
+        it("Sign Out's flush saves an edit still waiting on the debounce, and doesn't save it twice", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const fetchMock = mockRound4(undefined, { ...mailboxFixture, keys: [] });
+            await renderReady();
+
+            fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Signing out" } });
+            await act(() => flushComposeDrafts(1_000));
+            expect(callsTo(fetchMock, isAssemble)).toHaveLength(1);
+            await act(() => flushComposeDrafts(1_000));
+            expect(callsTo(fetchMock, isAssemble)).toHaveLength(1);
         });
     });
 });

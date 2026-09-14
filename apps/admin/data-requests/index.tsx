@@ -321,6 +321,12 @@ function ErasureRequestsSection() {
         setApproveError(null);
     }
 
+    // Escape/Close are ignored while a decision is being sent, so its result (or error) can't land on a modal
+    // reopened for a different request.
+    function dismissApproveModal() {
+        if (!approving) closeApproveModal();
+    }
+
     async function handleApprove() {
         setApproveError(null);
         setApproving(true);
@@ -340,6 +346,10 @@ function ErasureRequestsSection() {
         setDenyTarget(null);
         setDenyReason("");
         setDenyError(null);
+    }
+
+    function dismissDenyModal() {
+        if (!denying) closeDenyModal();
     }
 
     async function handleDeny() {
@@ -407,7 +417,7 @@ function ErasureRequestsSection() {
             )}
             <LoadMoreButton list={list} label="Load more erasure requests" />
 
-            <Modal open={approveTarget !== null} onClose={closeApproveModal} title="Approve erasure request">
+            <Modal open={approveTarget !== null} onClose={dismissApproveModal} title="Approve erasure request">
                 <p className="text-sm mb-3">
                     Approving permanently erases the mailbox <strong className="break-all">{approveTarget?.mailboxUid}</strong>{" "}
                     and everything in it - mail, contacts, calendars, tasks, and notes.
@@ -430,7 +440,7 @@ function ErasureRequestsSection() {
                 </div>
             </Modal>
 
-            <Modal open={denyTarget !== null} onClose={closeDenyModal} title="Deny erasure request">
+            <Modal open={denyTarget !== null} onClose={dismissDenyModal} title="Deny erasure request">
                 <label className="flex flex-col gap-1.5 text-sm mb-4">
                     <span className="font-semibold">Reason</span>
                     <input

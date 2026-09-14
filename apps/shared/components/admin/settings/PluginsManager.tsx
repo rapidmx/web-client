@@ -79,6 +79,8 @@ export default function PluginsManager() {
     const [updates, setUpdates] = useState<Map<string, PluginUpdateInfo>>(new Map());
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    /** The installed plugin whose enable just failed, offered a retry next to `error`. */
+    const [retryEnableUid, setRetryEnableUid] = useState<string | null>(null);
     const [adding, setAdding] = useState(false);
     const [upgrading, setUpgrading] = useState<Plugin | null>(null);
     const [configuring, setConfiguring] = useState<Plugin | null>(null);
@@ -196,6 +198,7 @@ export default function PluginsManager() {
     async function onRow(plugin: Plugin, action: () => Promise<string | null>) {
         setBusy(plugin.uid, true);
         setError(null);
+        setRetryEnableUid(null);
         const problem = await action();
         if (problem) {
             setError(problem);
@@ -212,9 +215,11 @@ export default function PluginsManager() {
             );
         }
         // Enabling a plugin also installs or enables the plugins it requires, so it's previewed like any other change.
-        // The installed version is planned from its stored manifest, so this doesn't need the registry.
-        return onRow(plugin, () =>
-            planned(
+        // The installed version is planned from its stored manifest, so this doesn't need the registry. A preview that
+        // fails is never skipped - enabling without one could install or enable other plugins the administrator never
+        // saw - so the failure is shown with a retry instead.
+        return onRow(plugin, async () => {
+            const problem = await planned(
                 plugin.name,
                 plugin.packageVersion,
                 displayName,
@@ -225,22 +230,18 @@ export default function PluginsManager() {
                     }
                 },
                 `Could not enable ${displayName}.`,
-                {
-                    uid: plugin.uid,
-                    // If it can't be previewed at all, the server still checks the change itself and says why it can't.
-                    unplanned: async () => {
-                        applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: true }));
-                        void reload();
-                    },
-                },
-            ),
-        );
+                { uid: plugin.uid },
+            );
+            if (problem) {
+                setRetryEnableUid(plugin.uid);
+            }
+            return problem;
+        });
     }
 
     /**
      * Checks what installing or changing a plugin also takes before doing it. Resolves why it can't be done, or `null`
      * once it's done - or, when it also installs or enables other plugins, once they're shown for confirmation.
-     * `unplanned`, when given, makes the change instead if the check itself fails.
      */
     async function planned(
         name: string,
@@ -248,13 +249,13 @@ export default function PluginsManager() {
         displayName: string,
         apply: (plan: PluginChangePlan) => Promise<void>,
         failure: string,
-        options: { uid?: string; unplanned?: () => Promise<void> } = {},
+        options: { uid?: string } = {},
     ): Promise<string | null> {
         let plan: PluginChangePlan;
         try {
             plan = await planPluginChange(name, packageVersion);
         } catch (err) {
-            return options.unplanned ? attempt(options.unplanned, failure) : errorMessage(err, failure);
+            return errorMessage(err, failure);
         }
         if (plan.conflicts.length > 0) {
             return `${displayName} ${plan.plugin.version} can't be installed. ${plan.conflicts.join(" ")}`;
@@ -304,6 +305,9 @@ export default function PluginsManager() {
         return onRow(plugin, () => changeVersion(plugin, packageVersion));
     }
 
+    // Retried against the plugin as it's listed now (a newer version, or already enabled elsewhere, hides the retry).
+    const retryEnable: Plugin | undefined = plugins.find((plugin) => plugin.uid === retryEnableUid && !plugin.enabled);
+
     const displayNameOf = (name: string): string => plugins.find((plugin) => plugin.name === name)?.manifest.displayName ?? name;
 
     return (
@@ -320,7 +324,24 @@ export default function PluginsManager() {
                 you trust.
             </p>
 
-            {error && <Alert>{error}</Alert>}
+            {error && (
+                <Alert>
+                    {error}
+                    {retryEnable && (
+                        <>
+                            {" "}
+                            <Button
+                                type="button"
+                                variant="text"
+                                className="!w-auto !p-0"
+                                onClick={() => void toggle(retryEnable)}
+                            >
+                                Try again
+                            </Button>
+                        </>
+                    )}
+                </Alert>
+            )}
             <RolloutBanner status={status} />
             {statusStale && status && (
                 <p className="mb-4 text-xs text-text-muted">Couldn&apos;t refresh server status. Showing the last status reported.</p>

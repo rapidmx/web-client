@@ -36,9 +36,6 @@ vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) =>
     return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus, getEscrowInfo };
 });
 
-const { rewrapPrivateKeysUnderNewMasterKey } = vi.hoisted(() => ({ rewrapPrivateKeysUnderNewMasterKey: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keyRotation.js", () => ({ rewrapPrivateKeysUnderNewMasterKey }));
-
 const { getUnlockedKeys, destroyUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
     getUnlockedKeys: vi.fn(),
     destroyUnlockedKeys: vi.fn(),
@@ -66,11 +63,14 @@ const { generateKeyPairWithCsr, exportPrivateKeyPkcs8 } = vi.hoisted(() => ({
 }));
 vi.mock("@rapidmx/react-shared/crypto/keys.js", () => ({ generateKeyPairWithCsr, exportPrivateKeyPkcs8 }));
 
-const { sealWithKey, buildAad } = vi.hoisted(() => ({
+const { sealWithKey, buildAad, openWithKey, generateMasterKey, KeysLockedError } = vi.hoisted(() => ({
     sealWithKey: vi.fn(),
     buildAad: vi.fn(),
+    openWithKey: vi.fn(),
+    generateMasterKey: vi.fn(),
+    KeysLockedError: class KeysLockedError extends Error {},
 }));
-vi.mock("@rapidmx/react-shared/crypto/masterKey.js", () => ({ sealWithKey, buildAad }));
+vi.mock("@rapidmx/react-shared/crypto/masterKey.js", () => ({ sealWithKey, buildAad, openWithKey, generateMasterKey, KeysLockedError }));
 
 // jsdom's `navigator.clipboard` is a getter-only property — `Object.assign` throws against it, so
 // `writeText` must be installed via `defineProperty` instead (matches admin/domains/[uid].test.tsx's
@@ -121,11 +121,24 @@ const vault = {
     ],
 };
 
+/** Serves `mb` for both the shell's mailbox list and this page's own `getMailbox()` refetch. */
+function mailboxRoutes(mb: Record<string, unknown>) {
+    return (url: string) => {
+        if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mb);
+        if (url.startsWith("/api/mail/mailboxes") && !url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(200, [mb]);
+        return undefined;
+    };
+}
+
+/** A vault with no password wrap - the only state that offers "Add a password". */
+const noPasswordVault = { wrappedKeys: vault.wrappedKeys, masterKeyWraps: [vault.masterKeyWraps[1], { ...vault.masterKeyWraps[1], methodId: "recovery-2" }] };
+
 function mockShell(extra?: (url: string, init?: RequestInit) => Response | undefined) {
     return mockFetch((url, init) => {
         const custom = extra?.(url, init);
         if (custom) return custom;
         if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+        if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
         if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
         throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
     });
@@ -148,7 +161,8 @@ afterEach(() => {
     buildPasswordWrap.mockReset();
     buildRecoveryWraps.mockReset();
     buildEscrowWrap.mockReset();
-    rewrapPrivateKeysUnderNewMasterKey.mockReset();
+    openWithKey.mockReset();
+    generateMasterKey.mockReset();
     generateKeyPairWithCsr.mockReset();
     exportPrivateKeyPkcs8.mockReset();
     sealWithKey.mockReset();
@@ -256,10 +270,10 @@ describe("SettingsEncryptionPage", () => {
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
+        await screen.findByText("Recovery code");
 
-        const passwordRow = screen.getByText("Password").closest("li")!;
-        await user.click(within(passwordRow).getByRole("button", { name: "Remove" }));
+        const recoveryRow = screen.getByText("Recovery code").closest("li")!;
+        await user.click(within(recoveryRow).getByRole("button", { name: "Remove" }));
         await user.click(await screen.findByRole("button", { name: "Remove method" }));
 
         expect(await screen.findByText("cannot remove your last unlock method")).toBeInTheDocument();
@@ -272,18 +286,59 @@ describe("SettingsEncryptionPage", () => {
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
+        await screen.findByText("Recovery code");
 
-        const passwordRow = screen.getByText("Password").closest("li")!;
-        await user.click(within(passwordRow).getByRole("button", { name: "Remove" }));
+        const recoveryRow = screen.getByText("Recovery code").closest("li")!;
+        await user.click(within(recoveryRow).getByRole("button", { name: "Remove" }));
         await user.click(await screen.findByRole("button", { name: "Remove method" }));
 
         expect(await screen.findByText("Could not remove this unlock method.")).toBeInTheDocument();
     });
 
-    it("adds a new password wrap and reloads the vault", async () => {
+    it("never offers removing the last password wrap, even alongside other unlock methods, but does when there are two", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValueOnce(vault);
+        mockShell();
+        const { unmount } = render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        const passwordRow = screen.getByText("Password").closest("li")!;
+        expect(within(passwordRow).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+        expect(within(passwordRow).getByText("Needed to unlock")).toBeInTheDocument();
+        const recoveryRow = screen.getByText("Recovery code").closest("li")!;
+        expect(within(recoveryRow).getByRole("button", { name: "Remove" })).toBeInTheDocument();
+        unmount();
+
+        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [vault.masterKeyWraps[0], { ...vault.masterKeyWraps[0], methodId: "pw-2" }] });
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await waitFor(() => expect(screen.getAllByText("Password")).toHaveLength(2));
+        for (const row of screen.getAllByText("Password")) {
+            expect(within(row.closest("li")!).getByRole("button", { name: "Remove" })).toBeInTheDocument();
+        }
+
+        removeMasterKeyWrap.mockResolvedValue(undefined);
+        const user = userEvent.setup();
+        await user.click(within(screen.getAllByText("Password")[0].closest("li")!).getByRole("button", { name: "Remove" }));
+        await user.click(await screen.findByRole("button", { name: "Remove method" }));
+        await waitFor(() => expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "password", undefined));
+    });
+
+    it("doesn't offer adding a second password while one exists, pointing at key rotation instead", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue(vault);
+        mockShell();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Add password" })).not.toBeInTheDocument();
+        expect(screen.getByText(/Only one password can unlock this mailbox/)).toBeInTheDocument();
+    });
+
+    it("adds a new password wrap and reloads the vault", async () => {
+        const unlockedFixture = { masterKey: new Uint8Array(32) };
+        getUnlockedKeys.mockReturnValue(unlockedFixture);
+        getKeyVault.mockResolvedValue(noPasswordVault);
         buildPasswordWrap.mockResolvedValue({
             method: "password",
             ciphertext: "ct2",
@@ -297,24 +352,24 @@ describe("SettingsEncryptionPage", () => {
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
+        await screen.findByLabelText("New password");
 
         await user.type(screen.getByLabelText("New password"), "a good password");
         await user.type(screen.getByLabelText("Confirm new password"), "a good password");
         await user.click(screen.getByRole("button", { name: "Add password" }));
 
-        await waitFor(() => expect(buildPasswordWrap).toHaveBeenCalledWith("mb1", expect.any(Uint8Array), "a good password"));
+        await waitFor(() => expect(buildPasswordWrap).toHaveBeenCalledWith("mb1", unlockedFixture.masterKey, "a good password"));
         expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", expect.objectContaining({ method: "password" }));
-        expect(screen.getByLabelText("New password")).toHaveValue("");
+        await waitFor(() => expect(screen.getByLabelText("New password")).toHaveValue(""));
     });
 
     it("rejects a too-short new password without calling the API", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
-        getKeyVault.mockResolvedValue(vault);
+        getKeyVault.mockResolvedValue(noPasswordVault);
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
+        await screen.findByLabelText("New password");
 
         await user.type(screen.getByLabelText("New password"), "short");
         await user.type(screen.getByLabelText("Confirm new password"), "short");
@@ -326,11 +381,11 @@ describe("SettingsEncryptionPage", () => {
 
     it("rejects mismatched new passwords", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
-        getKeyVault.mockResolvedValue(vault);
+        getKeyVault.mockResolvedValue(noPasswordVault);
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
+        await screen.findByLabelText("New password");
 
         await user.type(screen.getByLabelText("New password"), "a good password");
         await user.type(screen.getByLabelText("Confirm new password"), "a different password");
@@ -342,12 +397,12 @@ describe("SettingsEncryptionPage", () => {
 
     it("shows an error when adding a password fails", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
-        getKeyVault.mockResolvedValue(vault);
+        getKeyVault.mockResolvedValue(noPasswordVault);
         buildPasswordWrap.mockRejectedValue(new Error("boom"));
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
+        await screen.findByLabelText("New password");
 
         await user.type(screen.getByLabelText("New password"), "a good password");
         await user.type(screen.getByLabelText("Confirm new password"), "a good password");
@@ -358,18 +413,77 @@ describe("SettingsEncryptionPage", () => {
 
     it("shows the server's own message when adding a password fails with an ApiRequestError", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
-        getKeyVault.mockResolvedValue(vault);
+        getKeyVault.mockResolvedValue(noPasswordVault);
         buildPasswordWrap.mockRejectedValue(new ApiRequestError("password too weak", 400));
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
+        await screen.findByLabelText("New password");
 
         await user.type(screen.getByLabelText("New password"), "a good password");
         await user.type(screen.getByLabelText("Confirm new password"), "a good password");
         await user.click(screen.getByRole("button", { name: "Add password" }));
 
         expect(await screen.findByText("password too weak")).toBeInTheDocument();
+    });
+
+    it("tells the user to unlock again when the keys were locked while adding a password", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(noPasswordVault);
+        buildPasswordWrap.mockRejectedValue(new KeysLockedError("locked"));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByLabelText("New password");
+
+        await user.type(screen.getByLabelText("New password"), "a good password");
+        await user.type(screen.getByLabelText("Confirm new password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Add password" }));
+
+        expect(await screen.findByText(/were locked before this could finish/)).toBeInTheDocument();
+    });
+
+    it("re-reads the session keys at action time and prompts to unlock when they've since been locked", async () => {
+        const liveKeys = { masterKey: new Uint8Array(32).fill(1) };
+        let locked = false;
+        getUnlockedKeys.mockImplementation(() => (locked ? undefined : liveKeys));
+        getKeyVault.mockResolvedValue(noPasswordVault);
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByLabelText("New password");
+
+        locked = true;
+        await user.type(screen.getByLabelText("New password"), "a good password");
+        await user.type(screen.getByLabelText("Confirm new password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Add password" }));
+
+        expect(await screen.findByText("Unlock your mailbox")).toBeInTheDocument();
+        await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+        expect(await screen.findByText("Could not add this password.")).toBeInTheDocument();
+        expect(buildPasswordWrap).not.toHaveBeenCalled();
+    });
+
+    it("treats a destroyed session keys object as locked", async () => {
+        const destroyedKeys = { masterKey: new Uint8Array(32), destroyed: true };
+        const freshKeys = { masterKey: new Uint8Array(32).fill(2) };
+        // The page's own read sees the destroyed object; the unlock prompt's read sees fresh keys (as if the
+        // user had just unlocked in another tab), so it resolves without a dialog.
+        getUnlockedKeys.mockReturnValue(destroyedKeys);
+        getKeyVault.mockResolvedValue(noPasswordVault);
+        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        addMasterKeyWrap.mockResolvedValue(vault);
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByLabelText("New password");
+
+        await user.type(screen.getByLabelText("New password"), "a good password");
+        await user.type(screen.getByLabelText("Confirm new password"), "a good password");
+        getUnlockedKeys.mockReturnValueOnce(destroyedKeys).mockReturnValueOnce(freshKeys);
+        await user.click(screen.getByRole("button", { name: "Add password" }));
+
+        await waitFor(() => expect(buildPasswordWrap).toHaveBeenCalledWith("mb1", freshKeys.masterKey, "a good password"));
     });
 
     it("regenerates recovery codes: removes the old ones, adds the new ones, and shows them once", async () => {
@@ -618,23 +732,148 @@ describe("SettingsEncryptionPage", () => {
         expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-2");
     });
 
+    /** A vault holding `total` wraps: one password, `recovery` old recovery codes, the rest passkeys. */
+    function vaultWithWraps(total: number, recovery: number) {
+        const passkeys = total - 1 - recovery;
+        return {
+            wrappedKeys: vault.wrappedKeys,
+            masterKeyWraps: [
+                vault.masterKeyWraps[0],
+                ...Array.from({ length: recovery }, (_, i) => ({ ...vault.masterKeyWraps[1], methodId: `old-recovery-${i + 1}` })),
+                ...Array.from({ length: passkeys }, (_, i) => ({ ...vault.masterKeyWraps[1], method: "passkey" as const, methodId: `passkey-${i + 1}` })),
+            ],
+        };
+    }
+
+    it("refuses to regenerate, writing nothing, when the new codes can't fit under the vault's wrap cap even after removing the old ones", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        // 20 wraps, only 2 of them old recovery codes: 8 new codes need 6 more free slots.
+        getKeyVault.mockResolvedValueOnce(vault).mockResolvedValue(vaultWithWraps(20, 2));
+        buildRecoveryWraps.mockResolvedValue(recoveryFixture(8));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+
+        expect(
+            await screen.findByText(/can hold at most 20 unlock methods and already has 20\. Regenerating needs room for 8 new recovery codes, so remove 6 other unlock methods/),
+        ).toBeInTheDocument();
+        expect(addMasterKeyWrap).not.toHaveBeenCalled();
+        expect(removeMasterKeyWrap).not.toHaveBeenCalled();
+        // The list reflects the fresh vault the check used.
+        expect(screen.getAllByText("Passkey")).toHaveLength(17);
+    });
+
+    it("uses singular wording when one more unlock method must be removed", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vaultWithWraps(19, 0));
+        buildRecoveryWraps.mockResolvedValue(recoveryFixture(2));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+
+        expect(await screen.findByText(/so remove 1 other unlock method \(/)).toBeInTheDocument();
+    });
+
+    it("near the wrap cap, removes an old recovery code just before each new one that has no room, never dropping below a full set", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        // 20 wraps with 3 old recovery codes and 2 new ones: no free slot, so each add is preceded by one removal.
+        getKeyVault.mockResolvedValue(vaultWithWraps(20, 3));
+        buildRecoveryWraps.mockResolvedValue(recoveryFixture(2));
+        addMasterKeyWrap.mockResolvedValue(vault);
+        removeMasterKeyWrap.mockResolvedValue(vault);
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+
+        expect(await screen.findByText("Save your new recovery codes")).toBeInTheDocument();
+        expect(screen.getByText(/Your old recovery codes no longer work/)).toBeInTheDocument();
+        const calls = [
+            ...removeMasterKeyWrap.mock.calls.map((c, i) => ({ order: removeMasterKeyWrap.mock.invocationCallOrder[i], what: `remove ${c[2]}` })),
+            ...addMasterKeyWrap.mock.calls.map((c, i) => ({ order: addMasterKeyWrap.mock.invocationCallOrder[i], what: `add ${c[1].methodId.replace(/-[0-9a-z]+-/, "-N-")}` })),
+        ]
+            .sort((x, y) => x.order - y.order)
+            .map((c) => c.what);
+        expect(calls).toEqual(["remove old-recovery-1", "add recovery-N-1", "remove old-recovery-2", "add recovery-N-2", "remove old-recovery-3"]);
+    });
+
+    it("explains which old codes were already removed to make room when a later new code fails to save", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vaultWithWraps(20, 3));
+        buildRecoveryWraps.mockResolvedValue(recoveryFixture(3));
+        addMasterKeyWrap.mockResolvedValueOnce(vault).mockRejectedValueOnce(new ApiRequestError("conflict", 409));
+        removeMasterKeyWrap.mockResolvedValue(vault);
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+
+        expect(
+            await screen.findByText(/Only 1 of 3 new recovery codes could be saved \(conflict\)\. 2 of your old recovery codes had to be removed to make room; the rest were kept and still work/),
+        ).toBeInTheDocument();
+        expect(removeMasterKeyWrap).toHaveBeenCalledTimes(2);
+    });
+
+    it("reports a first new code that fails to save after an old code was already removed to make room", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vaultWithWraps(20, 3));
+        buildRecoveryWraps.mockResolvedValue(recoveryFixture(2));
+        removeMasterKeyWrap.mockResolvedValueOnce(vault);
+        addMasterKeyWrap.mockRejectedValueOnce(new Error("network down"));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+
+        expect(
+            await screen.findByText("Could not regenerate recovery codes. 1 of your old recovery codes had to be removed to make room; the rest were kept and still work."),
+        ).toBeInTheDocument();
+        expect(screen.queryByText("Save your new recovery codes")).not.toBeInTheDocument();
+    });
+
+    it("shows an error when the fresh vault can't be fetched before regenerating", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValueOnce(vault).mockRejectedValueOnce(new ApiRequestError("vault busy", 503));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.click(screen.getByRole("button", { name: "Regenerate recovery codes" }));
+
+        expect(await screen.findByText("vault busy")).toBeInTheDocument();
+        expect(buildRecoveryWraps).not.toHaveBeenCalled();
+    });
+
     it("asks for confirmation before removing an unlock method, and does nothing when cancelled", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue(vault);
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
-        await screen.findByText("Password");
+        await screen.findByText("Recovery code");
 
-        const passwordRow = screen.getByText("Password").closest("li")!;
-        await user.click(within(passwordRow).getByRole("button", { name: "Remove" }));
+        const recoveryRow = screen.getByText("Recovery code").closest("li")!;
+        await user.click(within(recoveryRow).getByRole("button", { name: "Remove" }));
         expect(await screen.findByText(/Remove this unlock method\?/)).toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Cancel" }));
 
         await waitFor(() => expect(screen.queryByText(/Remove this unlock method\?/)).not.toBeInTheDocument());
         expect(removeMasterKeyWrap).not.toHaveBeenCalled();
 
-        await user.click(within(passwordRow).getByRole("button", { name: "Remove" }));
+        await user.click(within(recoveryRow).getByRole("button", { name: "Remove" }));
         expect(await screen.findByText(/Remove this unlock method\?/)).toBeInTheDocument();
         await user.keyboard("{Escape}");
         await waitFor(() => expect(screen.queryByText(/Remove this unlock method\?/)).not.toBeInTheDocument());
@@ -659,51 +898,123 @@ describe("SettingsEncryptionPage", () => {
         expect(within(passwordRow).getByText("Your only unlock method")).toBeInTheDocument();
     });
 
-    it("refuses to rotate when this session hasn't unlocked every active key", async () => {
-        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32), encryptionFingerprint: mailbox.keys[0].fingerprint });
-        getKeyVault.mockResolvedValue(vault);
-        const signedMailbox = { ...mailbox, keys: [...mailbox.keys, { ...mailbox.keys[0], useType: "sign" as const, fingerprint: "sign-fp" }] };
-        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [signedMailbox]) : undefined));
+    it("doesn't offer removing a lone recovery code when it's the only non-escrow unlock method", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [vault.masterKeyWraps[1]] });
+        mockShell();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Recovery code");
+
+        const recoveryRow = screen.getByText("Recovery code").closest("li")!;
+        expect(within(recoveryRow).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+        expect(within(recoveryRow).getByText("Your only unlock method")).toBeInTheDocument();
+    });
+
+    function passwordWrapFixture() {
+        return { method: "password" as const, ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 };
+    }
+
+    async function submitRotation(user: ReturnType<typeof userEvent.setup>, password = "a good new password") {
+        await user.type(screen.getByLabelText("New password for rotated keys"), password);
+        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), password);
+        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+    }
+
+    /** Default crypto mocks for a rotation: every vault entry opens, and re-seals to a recognizable ciphertext. */
+    function mockRotationCrypto(newMk = new Uint8Array(32).fill(9)) {
+        openWithKey.mockImplementation(async () => new Uint8Array([7, 7, 7]));
+        generateMasterKey.mockReturnValue(newMk);
+        buildAad.mockImplementation((mailboxUid: string, purpose: string) => new TextEncoder().encode(`${mailboxUid}:${purpose}`));
+        sealWithKey.mockImplementation(async (_key: Uint8Array, _plain: Uint8Array, aad: Uint8Array) => ({
+            ciphertext: `sealed:${new TextDecoder().decode(aad)}`,
+            nonce: "fresh-nonce",
+        }));
+        return newMk;
+    }
+
+    it("refuses to rotate, changing nothing, when any vault entry can't be opened with the current master key", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        const staleEntry = { ...vault.wrappedKeys[0], fingerprint: "old-fp", ciphertext: "old-ct" };
+        getKeyVault.mockResolvedValue({ wrappedKeys: [...vault.wrappedKeys, staleEntry], masterKeyWraps: vault.masterKeyWraps });
+        mockRotationCrypto();
+        openWithKey.mockImplementation(async (_key: Uint8Array, sealed: { ciphertext: string }) => {
+            if (sealed.ciphertext === "old-ct") throw new DOMException("OperationError");
+            return new Uint8Array([1]);
+        });
+        mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user);
 
-        expect(await screen.findByText(/hasn't unlocked every active key/)).toBeInTheDocument();
-        expect(rewrapPrivateKeysUnderNewMasterKey).not.toHaveBeenCalled();
+        expect(await screen.findByText(/a private key this session can't open \(old-fp\), so rotating now would lose it/)).toBeInTheDocument();
+        expect(generateMasterKey).not.toHaveBeenCalled();
+        expect(rekey).not.toHaveBeenCalled();
+    });
+
+    it("names every vault entry it can't open", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue({
+            wrappedKeys: [
+                { ...vault.wrappedKeys[0], fingerprint: "fp-a" },
+                { ...vault.wrappedKeys[0], fingerprint: "fp-b", useType: "sign" as const },
+            ],
+            masterKeyWraps: vault.masterKeyWraps,
+        });
+        openWithKey.mockRejectedValue(new Error("bad tag"));
+        buildAad.mockReturnValue(new Uint8Array([1]));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await submitRotation(user);
+
+        expect(await screen.findByText(/2 private keys this session can't open \(fp-a, fp-b\), so rotating now would lose them/)).toBeInTheDocument();
+    });
+
+    it("tells the user to unlock again when the master key was destroyed mid-rotation", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        openWithKey.mockRejectedValue(new KeysLockedError("locked"));
+        buildAad.mockReturnValue(new Uint8Array([1]));
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await submitRotation(user);
+
+        expect(await screen.findByText(/were locked before this could finish/)).toBeInTheDocument();
+        expect(rekey).not.toHaveBeenCalled();
     });
 
     it("shows the new recovery codes as soon as the rekey commits, before escrow re-wrapping finishes", async () => {
-        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32), encryptionFingerprint: mailbox.keys[0].fingerprint });
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         const escrowWrap = { method: "escrow" as const, escrowScopeId: "scope-1", ciphertext: "ct", nonce: "n/a", salt: "n/a", kdf: "cms-enveloped-data", schemeVersion: 1, createdAt: 0 };
         getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, escrowWrap] });
-        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: new Uint8Array(32), wrappedKeys: [] });
-        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        mockRotationCrypto();
+        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
         buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: ["EARLY-CODE"] });
         rekey.mockResolvedValue(vault);
         getEscrowInfo.mockReturnValue(new Promise(() => undefined));
-        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
-        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user);
 
         expect(await screen.findByText("EARLY-CODE")).toBeInTheDocument();
         expect(unlockWithPassword).not.toHaveBeenCalled();
     });
 
     it("destroys this session's stale keys when re-unlocking after a rotation fails, after the codes are acknowledged", async () => {
-        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32), encryptionFingerprint: mailbox.keys[0].fingerprint });
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue(vault);
-        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: new Uint8Array(32), wrappedKeys: [] });
-        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        mockRotationCrypto();
+        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
         buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: ["ROTATED-1"] });
         rekey.mockResolvedValue(vault);
         unlockWithPassword.mockRejectedValue(new Error("wrong password"));
@@ -712,9 +1023,7 @@ describe("SettingsEncryptionPage", () => {
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user);
 
         expect(await screen.findByText("ROTATED-1")).toBeInTheDocument();
         await waitFor(() => expect(destroyUnlockedKeys).toHaveBeenCalledWith("mb1"));
@@ -724,64 +1033,65 @@ describe("SettingsEncryptionPage", () => {
         expect(await screen.findByText(/couldn't unlock them again with your new password/)).toBeInTheDocument();
     });
 
-    it("rotates keys: re-wraps under a new MK, rekeys the vault, re-unlocks with the new password, and shows the new codes", async () => {
-        const unlockedFixture = { masterKey: new Uint8Array(32), encryptionPrivateKey: {} as CryptoKey, encryptionFingerprint: mailbox.keys[0].fingerprint };
+    it("rotates keys: re-wraps every vault entry (inactive ones too) under a new MK, rekeys with fresh mailbox keys, re-unlocks, and shows the new codes", async () => {
+        const unlockedFixture = { masterKey: new Uint8Array(32).fill(3), encryptionFingerprint: mailbox.keys[0].fingerprint };
         getUnlockedKeys.mockReturnValue(unlockedFixture);
-        getKeyVault.mockResolvedValue(vault);
-        const newMk = new Uint8Array(32).fill(9);
-        const rewrappedKeys = [{ ciphertext: "ct2", nonce: "n2", algorithm: "AES-256-GCM", fingerprint: mailbox.keys[0].fingerprint, useType: "encrypt" as const }];
-        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: newMk, wrappedKeys: rewrappedKeys });
-        buildPasswordWrap.mockResolvedValue({
-            method: "password",
-            ciphertext: "ct3",
-            nonce: "n3",
-            salt: "salt3",
-            kdf: "argon2id:m=1,t=1,p=1",
-            schemeVersion: 1,
-            createdAt: 0,
+        const inactiveSigning = { ciphertext: "old-sign-ct", nonce: "n0", algorithm: "AES-256-GCM", fingerprint: "old-sign-fp", useType: "sign" as const };
+        // The page loads with the stale single-entry vault; the rotation must fetch the vault again and see both.
+        getKeyVault.mockResolvedValueOnce(vault).mockResolvedValue({ wrappedKeys: [...vault.wrappedKeys, inactiveSigning], masterKeyWraps: vault.masterKeyWraps });
+        const newMk = mockRotationCrypto();
+        const openedBuffers: Uint8Array[] = [];
+        openWithKey.mockImplementation(async () => {
+            const buf = new Uint8Array([5, 5, 5]);
+            openedBuffers.push(buf);
+            return buf;
         });
+        buildPasswordWrap.mockResolvedValue({ ...passwordWrapFixture(), ciphertext: "ct3" });
         const newCodes = Array.from({ length: 8 }, (_, i) => `ROTATED-${i + 1}`);
-        const newRecoveryWraps = newCodes.map((_, i) => ({
-            method: "recovery" as const,
-            methodId: `recovery-${i + 1}`,
-            ciphertext: "ct",
-            nonce: "n",
-            salt: "salt",
-            kdf: "hkdf-sha256",
-            schemeVersion: 1,
-            createdAt: 0,
-        }));
+        const newRecoveryWraps = recoveryFixture(8).wraps;
         buildRecoveryWraps.mockResolvedValue({ wraps: newRecoveryWraps, codes: newCodes });
         rekey.mockResolvedValue(vault);
         unlockWithPassword.mockResolvedValue(undefined);
-        mockShell();
+        // A signing key the shell's one-time mailbox list never saw - only the page's fresh getMailbox() has it.
+        const freshKeys = [...mailbox.keys, { ...mailbox.keys[0], useType: "sign" as const, fingerprint: "new-sign-fp" }];
+        mockShell((url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(200, { ...mailbox, keys: freshKeys }) : undefined));
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user);
 
         expect(await screen.findByText("Save your new recovery codes")).toBeInTheDocument();
         expect(screen.getByText(/every previous unlock method/)).toBeInTheDocument();
         for (const code of newCodes) {
             expect(screen.getByText(code)).toBeInTheDocument();
         }
-        expect(rewrapPrivateKeysUnderNewMasterKey).toHaveBeenCalledWith("mb1", unlockedFixture);
+        expect(openWithKey).toHaveBeenCalledWith(unlockedFixture.masterKey, vault.wrappedKeys[0], expect.anything());
+        expect(openWithKey).toHaveBeenCalledWith(unlockedFixture.masterKey, inactiveSigning, expect.anything());
+        expect(buildAad).toHaveBeenCalledWith("mb1", "encrypt-private-key");
+        expect(buildAad).toHaveBeenCalledWith("mb1", "sign-private-key");
+        for (const buf of openedBuffers) {
+            expect(Array.from(buf)).toEqual([0, 0, 0]);
+        }
         expect(buildPasswordWrap).toHaveBeenCalledWith("mb1", newMk, "a good new password");
         expect(buildRecoveryWraps).toHaveBeenCalledWith("mb1", newMk);
         expect(rekey).toHaveBeenCalledWith("mb1", {
-            wrappedKeys: rewrappedKeys,
+            wrappedKeys: [
+                { ciphertext: "sealed:mb1:encrypt-private-key", nonce: "fresh-nonce", algorithm: "AES-256-GCM", fingerprint: mailbox.keys[0].fingerprint, useType: "encrypt" },
+                { ciphertext: "sealed:mb1:sign-private-key", nonce: "fresh-nonce", algorithm: "AES-256-GCM", fingerprint: "old-sign-fp", useType: "sign" },
+            ],
             masterKeyWraps: [expect.objectContaining({ method: "password" }), ...newRecoveryWraps],
-            keys: mailbox.keys,
+            keys: freshKeys,
         });
-        expect(unlockWithPassword).toHaveBeenCalledWith("mb1", mailbox.keys, "a good new password");
+        expect(unlockWithPassword).toHaveBeenCalledWith("mb1", freshKeys, "a good new password");
+
+        await user.click(screen.getByRole("checkbox"));
+        await user.click(screen.getByRole("button", { name: "Done" }));
+        expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
     });
 
-    it("re-wraps escrow under the new MK during rotation, when the mailbox already had escrow protection", async () => {
-        const unlockedFixture = { masterKey: new Uint8Array(32), encryptionFingerprint: mailbox.keys[0].fingerprint };
-        getUnlockedKeys.mockReturnValue(unlockedFixture);
+    it("re-wraps escrow under the new MK during rotation, when the freshly fetched vault had escrow protection", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         const staleEscrowWrap = {
             method: "escrow" as const,
             escrowScopeId: "scope-1",
@@ -793,9 +1103,8 @@ describe("SettingsEncryptionPage", () => {
             createdAt: 0,
         };
         getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
-        const newMk = new Uint8Array(32).fill(9);
-        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: newMk, wrappedKeys: [] });
-        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        const newMk = mockRotationCrypto();
+        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
         buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
         rekey.mockResolvedValue(vault);
         unlockWithPassword.mockResolvedValue(undefined);
@@ -803,25 +1112,27 @@ describe("SettingsEncryptionPage", () => {
         const freshEscrowWrap = { ...staleEscrowWrap, ciphertext: "fresh-ct" };
         buildEscrowWrap.mockResolvedValue(freshEscrowWrap);
         addMasterKeyWrap.mockResolvedValue(vault);
-        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
-        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user);
 
         await screen.findByText("Save your new recovery codes");
+        await waitFor(() => expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", freshEscrowWrap));
         expect(getEscrowInfo).toHaveBeenCalledWith("mb1");
         expect(buildEscrowWrap).toHaveBeenCalledWith(newMk, "scope-1", expect.any(Uint8Array));
-        expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", freshEscrowWrap);
+
+        await user.click(screen.getByRole("checkbox"));
+        await user.click(screen.getByRole("button", { name: "Done" }));
+        expect(await screen.findByText(/under legal\/compliance escrow/)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Add escrow protection" })).not.toBeInTheDocument();
     });
 
-    it("reports an escrow re-wrap failure during rotation separately, without blocking the rest of the rotation", async () => {
-        const unlockedFixture = { masterKey: new Uint8Array(32), encryptionFingerprint: mailbox.keys[0].fingerprint };
-        getUnlockedKeys.mockReturnValue(unlockedFixture);
+    it("reports an escrow re-wrap failure during rotation separately, and offers 'Add escrow protection' even though the stale escrow wrap is still on file", async () => {
+        const liveKeys = { masterKey: new Uint8Array(32).fill(4) };
+        getUnlockedKeys.mockReturnValue(liveKeys);
         const staleEscrowWrap = {
             method: "escrow" as const,
             escrowScopeId: "scope-1",
@@ -833,38 +1144,43 @@ describe("SettingsEncryptionPage", () => {
             createdAt: 0,
         };
         getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
-        const newMk = new Uint8Array(32).fill(9);
-        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: newMk, wrappedKeys: [] });
-        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        mockRotationCrypto();
+        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
         buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
         rekey.mockResolvedValue(vault);
         unlockWithPassword.mockResolvedValue(undefined);
-        getEscrowInfo.mockRejectedValue(new ApiRequestError("escrow scope no longer exists", 404));
-        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
-        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        getEscrowInfo.mockRejectedValueOnce(new ApiRequestError("escrow scope no longer exists", 404));
+        mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user);
 
         // The rotation itself still succeeds - the recovery-codes screen appears and unlockWithPassword ran -
         // even though re-establishing escrow protection failed.
         expect(await screen.findByText("Save your new recovery codes")).toBeInTheDocument();
-        expect(unlockWithPassword).toHaveBeenCalledWith("mb1", mailbox.keys, "a good new password");
+        await waitFor(() => expect(unlockWithPassword).toHaveBeenCalledWith("mb1", mailbox.keys, "a good new password"));
         expect(addMasterKeyWrap).not.toHaveBeenCalled();
 
         await user.click(screen.getByRole("checkbox"));
         await user.click(screen.getByRole("button", { name: "Done" }));
 
         expect(await screen.findByText("escrow scope no longer exists")).toBeInTheDocument();
+        expect(screen.queryByText(/under legal\/compliance escrow/)).not.toBeInTheDocument();
+        expect(screen.getByText(/no longer covers them/)).toBeInTheDocument();
+
+        // Retrying succeeds and returns the section to its protected state.
+        getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } });
+        buildEscrowWrap.mockResolvedValue({ ...staleEscrowWrap, ciphertext: "fresh-ct" });
+        addMasterKeyWrap.mockResolvedValue(vault);
+        await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
+        expect(await screen.findByText(/under legal\/compliance escrow/)).toBeInTheDocument();
+        expect(buildEscrowWrap).toHaveBeenCalledWith(liveKeys.masterKey, "scope-1", expect.any(Uint8Array));
     });
 
     it("shows a generic message when an escrow re-wrap failure during rotation isn't an ApiRequestError", async () => {
-        const unlockedFixture = { masterKey: new Uint8Array(32), encryptionFingerprint: mailbox.keys[0].fingerprint };
-        getUnlockedKeys.mockReturnValue(unlockedFixture);
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         const staleEscrowWrap = {
             method: "escrow" as const,
             escrowScopeId: "scope-1",
@@ -876,21 +1192,18 @@ describe("SettingsEncryptionPage", () => {
             createdAt: 0,
         };
         getKeyVault.mockResolvedValue({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, staleEscrowWrap] });
-        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: new Uint8Array(32).fill(9), wrappedKeys: [] });
-        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        mockRotationCrypto();
+        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
         buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
         rekey.mockResolvedValue(vault);
         unlockWithPassword.mockResolvedValue(undefined);
         getEscrowInfo.mockRejectedValue(new Error("network down"));
-        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
-        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        mockShell(mailboxRoutes({ ...mailbox, escrowScopeId: "scope-1" }));
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user);
 
         await screen.findByText("Save your new recovery codes");
         await user.click(screen.getByRole("checkbox"));
@@ -902,25 +1215,24 @@ describe("SettingsEncryptionPage", () => {
     it("passes an empty keys array to rekey()/unlockWithPassword() when the mailbox has none", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
-        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: new Uint8Array(32), wrappedKeys: [] });
-        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        mockRotationCrypto();
+        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
         buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
         rekey.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
         unlockWithPassword.mockResolvedValue(undefined);
-        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [{ ...mailbox, keys: undefined }]) : undefined));
+        mockShell(mailboxRoutes({ ...mailbox, keys: undefined }));
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("No keys enrolled yet.");
+        await screen.findByText("No unlock methods on file.");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user, "a good password");
 
-        await waitFor(() => expect(rekey).toHaveBeenCalledWith("mb1", expect.objectContaining({ keys: [] })));
-        expect(unlockWithPassword).toHaveBeenCalledWith("mb1", [], "a good password");
+        await waitFor(() => expect(rekey).toHaveBeenCalledWith("mb1", expect.objectContaining({ keys: [], wrappedKeys: [] })));
+        await waitFor(() => expect(unlockWithPassword).toHaveBeenCalledWith("mb1", [], "a good password"));
     });
 
-    it("rejects a too-short rotation password without calling rewrapPrivateKeysUnderNewMasterKey", async () => {
+    it("rejects a too-short rotation password without touching the vault", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue(vault);
         mockShell();
@@ -928,12 +1240,11 @@ describe("SettingsEncryptionPage", () => {
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "short");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "short");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user, "short");
 
         expect(await screen.findByText(/at least 8 characters/)).toBeInTheDocument();
-        expect(rewrapPrivateKeysUnderNewMasterKey).not.toHaveBeenCalled();
+        expect(openWithKey).not.toHaveBeenCalled();
+        expect(getKeyVault).toHaveBeenCalledTimes(1);
     });
 
     it("rejects mismatched rotation passwords", async () => {
@@ -949,30 +1260,29 @@ describe("SettingsEncryptionPage", () => {
         await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
 
         expect(await screen.findByText("Passwords do not match.")).toBeInTheDocument();
-        expect(rewrapPrivateKeysUnderNewMasterKey).not.toHaveBeenCalled();
+        expect(openWithKey).not.toHaveBeenCalled();
     });
 
     it("shows an error when rotation fails with a non-API error", async () => {
-        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32), encryptionFingerprint: mailbox.keys[0].fingerprint });
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue(vault);
-        rewrapPrivateKeysUnderNewMasterKey.mockRejectedValue(new Error("boom"));
+        mockRotationCrypto();
+        buildPasswordWrap.mockRejectedValue(new Error("boom"));
         mockShell();
         const user = userEvent.setup();
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user, "a good password");
 
         expect(await screen.findByText("Could not rotate your encryption keys.")).toBeInTheDocument();
     });
 
     it("shows the server's own message when rotation fails with an ApiRequestError", async () => {
-        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32), encryptionFingerprint: mailbox.keys[0].fingerprint });
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue(vault);
-        rewrapPrivateKeysUnderNewMasterKey.mockResolvedValue({ mk: new Uint8Array(32), wrappedKeys: [] });
-        buildPasswordWrap.mockResolvedValue({ method: "password", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 0 });
+        mockRotationCrypto();
+        buildPasswordWrap.mockResolvedValue(passwordWrapFixture());
         buildRecoveryWraps.mockResolvedValue({ wraps: [], codes: [] });
         rekey.mockRejectedValue(new ApiRequestError("mailbox is not owned by this user", 403));
         mockShell();
@@ -980,11 +1290,40 @@ describe("SettingsEncryptionPage", () => {
         render(<SettingsEncryptionPage userUid="u1" />);
         await screen.findByText("Password");
 
-        await user.type(screen.getByLabelText("New password for rotated keys"), "a good password");
-        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good password");
-        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await submitRotation(user, "a good password");
 
         expect(await screen.findByText("mailbox is not owned by this user")).toBeInTheDocument();
+    });
+
+    it("hides every key-vault write action from a non-owner, and never provisions a vault for them", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [vault.masterKeyWraps[1], { ...vault.masterKeyWraps[1], methodId: "recovery-2" }] });
+        mockShell(mailboxRoutes({ ...mailbox, ownerUserUid: "someone-else", escrowScopeId: "scope-1" }));
+        render(<SettingsEncryptionPage userUid="u1" />);
+
+        expect(await screen.findByText(/Only this mailbox.s owner, signed in as themselves/)).toBeInTheDocument();
+        expect(screen.queryByText("Protect your mailbox")).not.toBeInTheDocument();
+        await screen.findAllByText("Recovery code");
+        expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Add password" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Regenerate recovery codes" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Rotate keys now" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Enable digital signatures" })).not.toBeInTheDocument();
+        expect(screen.getByText("Not enabled.")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Add escrow protection" })).not.toBeInTheDocument();
+        // Session-local actions still apply to a delegate.
+        expect(screen.getByRole("button", { name: "Destroy keys on this device now" })).toBeInTheDocument();
+    });
+
+    it("treats an impersonated session as a non-owner", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        mockShell();
+        render(<SettingsEncryptionPage userUid="u1" impersonating />);
+
+        expect(await screen.findByText(/Only this mailbox.s owner, signed in as themselves/)).toBeInTheDocument();
+        await screen.findByText("Password");
+        expect(screen.queryByRole("button", { name: "Rotate keys now" })).not.toBeInTheDocument();
     });
 
     it("shows the default session timeout (30 minutes) when nothing has been configured", async () => {

@@ -66,7 +66,7 @@ const SIGNATURE_FAILURE_MESSAGE: Record<SignatureFailureReason, string> = {
     signer_identity_mismatch:
         "This message's signing certificate doesn't belong to the sender shown in From. Treat it as unverified.",
     header_mismatch:
-        "The sender/recipients this message was signed with don't match its visible From/To. Treat it as unverified.",
+        "The sender/recipients this message was signed with don't match its visible From/To, or it repeats a From, To, Cc or Sender header. Treat it as unverified.",
 };
 const GENERIC_SIGNATURE_FAILURE_MESSAGE = "This message's digital signature couldn't be verified. Treat it as unverified.";
 
@@ -273,6 +273,10 @@ function MessageDetailContent({
     const currentLabelsMessage = message.version >= labelsMessage.version ? message : labelsMessage;
     const latestLabelsMessageRef = useRef<Message>(message);
     const rawEvaluationNeeded = needsRawSecurityEvaluation(message);
+    // Every address the viewing mailbox receives at (primary first), as one string so the effect below only
+    // re-runs when they actually change.
+    const readerMailbox = mailboxes.find((mb) => mb.uid === message.mailboxUid);
+    const readerAddressesKey = readerMailbox ? [readerMailbox.primarySmtpAddress, ...(readerMailbox.aliasAddresses ?? [])].join(" ") : "";
 
     // Evaluates a message's security state from its raw MIME - only for a message that can actually be
     // encrypted or signed (see `needsRawSecurityEvaluation()`); anything else is "Unprotected" without a
@@ -295,7 +299,19 @@ function MessageDetailContent({
                 if (cancelled) {
                     return;
                 }
-                const result = await evaluateMessageSecurity(rawMime, getUnlockedKeys(message.mailboxUid));
+                // The raw content is a byte string - only ever handed to evaluateMessageSecurity(), never shown.
+                const unlocked = getUnlockedKeys(message.mailboxUid);
+                const [primaryAddress, ...aliasAddresses] = readerAddressesKey ? readerAddressesKey.split(" ") : [];
+                let result = await evaluateMessageSecurity(rawMime, unlocked, undefined, primaryAddress);
+                // Only one reader address can be checked per evaluation: a message sent to one of this mailbox's
+                // aliases isn't "not addressed to you", so each alias is tried before saying so.
+                for (const alias of aliasAddresses) {
+                    if (!result.notAddressedToReader) {
+                        break;
+                    }
+                    const viaAlias = await evaluateMessageSecurity(rawMime, unlocked, undefined, alias);
+                    result = { ...result, notAddressedToReader: viaAlias.notAddressedToReader };
+                }
                 if (!cancelled) {
                     setSecurity(result);
                 }
@@ -310,7 +326,7 @@ function MessageDetailContent({
         return () => {
             cancelled = true;
         };
-    }, [message.uid, message.mailboxUid, message.encrypted, rawEvaluationNeeded, unlockRefresh]);
+    }, [message.uid, message.mailboxUid, message.encrypted, rawEvaluationNeeded, unlockRefresh, readerAddressesKey]);
 
     // Decrypted plaintext must not outlive the key session that produced it: the moment this mailbox's
     // keys are destroyed (logout, idle timeout, explicit lock), drop the recovered html/text and
@@ -559,6 +575,13 @@ function MessageDetailContent({
                         {security.signatureFailureReason
                             ? SIGNATURE_FAILURE_MESSAGE[security.signatureFailureReason]
                             : GENERIC_SIGNATURE_FAILURE_MESSAGE}
+                    </p>
+                )}
+                {security?.notAddressedToReader && (
+                    // Informational, like the notice above: a Bcc recipient legitimately sees this too.
+                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        The recipients this message was signed or encrypted for don&rsquo;t include this mailbox - it may have
+                        been forwarded or re-sent to you unchanged, or you were Bcc&rsquo;d.
                     </p>
                 )}
                 <p className="text-sm text-text-muted mt-1">

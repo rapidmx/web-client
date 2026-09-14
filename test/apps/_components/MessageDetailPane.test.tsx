@@ -1006,6 +1006,49 @@ describe("MessageDetailPane", () => {
             return mockFetch((url) => (url.endsWith("/raw") ? new Response(raw) : jsonResponse(200, {})));
         }
 
+        describe("not addressed to the reader (round 4)", () => {
+            const readerMailbox = { uid: "mb1", keys: [], primarySmtpAddress: "me@example.com", aliasAddresses: ["alias1@example.com", "alias2@example.com"] };
+
+            it("passes the viewing mailbox's address and says so when the protected recipients don't include any of its addresses", async () => {
+                mailShellOverride.current = { mailboxes: [readerMailbox], mailboxFolders: [] };
+                const unlocked = { masterKey: new Uint8Array(32) };
+                getUnlockedKeys.mockReturnValue(unlocked);
+                evaluateMessageSecurity.mockResolvedValue({ state: "signed_verified", html: "<p>Hi</p>", notAddressedToReader: true });
+                mockRawContent("signed mime");
+                render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={[]} />);
+
+                expect(await screen.findByText(/don.t include this mailbox/)).toBeInTheDocument();
+                expect(evaluateMessageSecurity.mock.calls.map((call) => call[3])).toEqual(["me@example.com", "alias1@example.com", "alias2@example.com"]);
+                expect(evaluateMessageSecurity).toHaveBeenCalledWith("signed mime", unlocked, undefined, "me@example.com");
+            });
+
+            it("shows nothing once one of the mailbox's aliases is among the recipients, without trying the rest", async () => {
+                mailShellOverride.current = { mailboxes: [readerMailbox], mailboxFolders: [] };
+                evaluateMessageSecurity.mockImplementation(async (_raw: string, _keys: unknown, _pin: unknown, reader: string) => ({
+                    state: "signed_verified",
+                    html: "<p>Hi</p>",
+                    notAddressedToReader: reader !== "alias1@example.com",
+                }));
+                mockRawContent();
+                render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={[]} />);
+
+                expect(await screen.findByText("Signed & verified")).toBeInTheDocument();
+                await waitFor(() => expect(evaluateMessageSecurity).toHaveBeenCalledTimes(2));
+                expect(screen.queryByText(/don.t include this mailbox/)).not.toBeInTheDocument();
+            });
+
+            it("checks just the primary address of a mailbox listed without aliases", async () => {
+                mailShellOverride.current = { mailboxes: [{ uid: "mb1", keys: [], primarySmtpAddress: "me@example.com" }], mailboxFolders: [] };
+                evaluateMessageSecurity.mockResolvedValue({ state: "signed_verified", html: "<p>Hi</p>", notAddressedToReader: false });
+                mockRawContent();
+                render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={[]} />);
+
+                expect(await screen.findByText("Signed & verified")).toBeInTheDocument();
+                expect(evaluateMessageSecurity).toHaveBeenCalledTimes(1);
+                expect(screen.queryByText(/don.t include this mailbox/)).not.toBeInTheDocument();
+            });
+        });
+
         it("shows no indicator until evaluateMessageSecurity resolves", async () => {
             let resolveSecurity: ((result: { state: string }) => void) | undefined;
             evaluateMessageSecurity.mockImplementation(() => new Promise((resolve) => (resolveSecurity = resolve)));
@@ -1035,7 +1078,7 @@ describe("MessageDetailPane", () => {
 
             expect(await screen.findByText("Signed & verified")).toBeInTheDocument();
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1/raw", expect.anything());
-            expect(evaluateMessageSecurity).toHaveBeenCalledWith("signed mime", undefined);
+            expect(evaluateMessageSecurity).toHaveBeenCalledWith("signed mime", undefined, undefined, undefined);
         });
 
         it.each([
@@ -1194,7 +1237,7 @@ describe("MessageDetailPane", () => {
                 ["invalid_signature", /digital signature couldn't be verified - it may be malformed/],
                 ["untrusted_signer", /doesn't match the sender's known key/],
                 ["signer_identity_mismatch", /doesn't belong to the sender shown in From/],
-                ["header_mismatch", /don't match its visible From\/To/],
+                ["header_mismatch", /don't match its visible From\/To, or it repeats a From, To, Cc or Sender header/],
             ] as const)("explains a %s failure as unverified while keeping the body visible", async (reason, text) => {
                 evaluateMessageSecurity.mockResolvedValue({ state: "signature_failed", signatureFailureReason: reason });
                 mockRawContent();

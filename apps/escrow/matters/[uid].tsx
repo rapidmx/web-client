@@ -93,6 +93,9 @@ function MatterDetailContent({ uid }: { uid: string }) {
     const [searching, setSearching] = useState(false);
     const [searchError, setSearchError] = useState<string | null>(null);
     const [searchResults, setSearchResults] = useState<Record<string, SearchResultPage> | null>(null);
+    // Bumped by every search and by closing the matter, so a search still in flight when the matter closes (or
+    // superseded by a newer search) never shows its results.
+    const searchSeq = useRef(0);
 
     useEffect(() => {
         setLoading(true);
@@ -115,9 +118,12 @@ function MatterDetailContent({ uid }: { uid: string }) {
             const updated = await closeMatter(matter!.uid);
             setMatter(updated);
             setConfirmingClose(false);
-            // Nothing more may be read under a closed matter - drop any material already on screen.
+            // Nothing more may be read under a closed matter - drop any material or search results already on
+            // screen, including a search still in flight, and any approval still being confirmed.
             closeMaterialModal();
+            searchSeq.current++;
             setSearchResults(null);
+            setSearching(false);
         } catch (err) {
             setCloseError(err instanceof ApiRequestError ? err.message : "Could not close this matter.");
         } finally {
@@ -226,6 +232,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
 
     async function handleSearch(e: FormEvent) {
         e.preventDefault();
+        const seq = ++searchSeq.current;
         setSearchError(null);
         setSearching(true);
         try {
@@ -249,11 +256,13 @@ function MatterDetailContent({ uid }: { uid: string }) {
                 flags: parsed.flags,
                 labels: parsed.labels,
             });
-            setSearchResults(results);
+            if (seq === searchSeq.current) setSearchResults(results);
         } catch (err) {
-            setSearchError(err instanceof ApiRequestError ? err.message : "Could not search this matter.");
+            if (seq === searchSeq.current) {
+                setSearchError(err instanceof ApiRequestError ? err.message : "Could not search this matter.");
+            }
         } finally {
-            setSearching(false);
+            if (seq === searchSeq.current) setSearching(false);
         }
     }
 
@@ -345,7 +354,8 @@ function MatterDetailContent({ uid }: { uid: string }) {
                                 {actionErrors[request.uid] && <Alert>{actionErrors[request.uid]}</Alert>}
 
                                 <div className="flex gap-3 mt-3">
-                                    {request.status === "pending" && (
+                                    {/* A closed matter refuses approvals and denials - don't offer them. */}
+                                    {!matter.closedAt && request.status === "pending" && (
                                         <>
                                             <Button
                                                 type="button"
@@ -423,7 +433,8 @@ function MatterDetailContent({ uid }: { uid: string }) {
                                     >
                                         {request.status}
                                     </span>
-                                    {request.status === "ready" && (
+                                    {/* The server refuses downloads once the matter is closed. */}
+                                    {!matter.closedAt && request.status === "ready" && (
                                         <a
                                             href={matterExportRequestDownloadUrl(request.uid)}
                                             className="text-primary-dark hover:underline font-medium"

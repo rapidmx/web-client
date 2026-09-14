@@ -345,4 +345,40 @@ describe("MailboxDetailPage", () => {
         await user.click(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Access mailbox" }));
         await vi.waitFor(() => expect(location.href).toBe("/"));
     });
+
+    it("keeps the access and delete confirmations open while their action is under way", async () => {
+        const pending: ((response: Response) => void)[] = [];
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
+            if (init?.method === "POST" || init?.method === "DELETE") {
+                return new Promise<Response>((resolve) => pending.push(resolve));
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxDetailPage userUid="admin-1" impersonationBaseUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
+
+        await user.click(await screen.findByRole("button", { name: "Access this mailbox" }));
+        let dialog = await screen.findByRole("dialog", { name: "Access this mailbox" });
+        await user.click(within(dialog).getByRole("button", { name: "Access mailbox" }));
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+        await user.keyboard("{Escape}");
+        expect(screen.getByRole("dialog", { name: "Access this mailbox" })).toBeInTheDocument();
+        pending[0](jsonResponse(403, { message: "no trusted role" }));
+        expect(await within(dialog).findByText("no trusted role")).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Delete mailbox" }));
+        dialog = await screen.findByRole("dialog", { name: "Delete mailbox" });
+        await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+        await vi.waitFor(() => expect(pending).toHaveLength(2));
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(screen.getByRole("dialog", { name: "Delete mailbox" })).toBeInTheDocument();
+        pending[1](jsonResponse(409, { message: "on legal hold" }));
+        expect(await within(dialog).findByText("on legal hold")).toBeInTheDocument();
+    });
 });

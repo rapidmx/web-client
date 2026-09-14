@@ -200,7 +200,7 @@ describe("AdminShell", () => {
     });
 
     it("shows the header with the active section's label and renders children, and signs out to auth-server", async () => {
-        mockFetch((url) => {
+        const fetchMock = mockFetch((url) => {
             if (url === "/api/admin/release-notes") {
                 return jsonResponse(200, {});
             }
@@ -220,7 +220,12 @@ describe("AdminShell", () => {
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         expect(screen.getByText("admin-1")).toBeInTheDocument();
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
-        expect(location.href).toBe(AUTH_SERVER_URL);
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
+        // Ends the auth-server session too (the mock throws for it - sign-out still completes).
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${AUTH_SERVER_URL}/api/auth/logout`,
+            expect.objectContaining({ method: "POST", credentials: "include" }),
+        );
     });
 
     it("signs out to '/' when authServerUrl is not configured", async () => {
@@ -236,6 +241,6 @@ describe("AdminShell", () => {
         await screen.findByText("content");
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
-        expect(location.href).toBe("/");
+        await waitFor(() => expect(location.href).toBe("/"));
     });
 });

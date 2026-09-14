@@ -11,10 +11,11 @@ import { RecurrenceRule } from "@rapidmx/react-shared/calendar/calendarApi.js";
 
 /** A thin stateful wrapper so interactions can be chained realistically (each onChange re-renders
  * with the new value), rather than asserting only the first onChange call in isolation. */
-function Controlled({ initial, onChange }: { initial: RecurrenceRule | null; onChange: (v: RecurrenceRule | null) => void }) {
+function Controlled({ initial, onChange, allDay }: { initial: RecurrenceRule | null; onChange: (v: RecurrenceRule | null) => void; allDay?: boolean }) {
     const [value, setValue] = useState(initial);
     return (
         <RecurrenceEditor
+            allDay={allDay}
             value={value}
             onChange={(v) => {
                 setValue(v);
@@ -200,6 +201,39 @@ describe("RecurrenceEditor", () => {
         expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ interval: 1 }));
         fireEvent.change(screen.getByLabelText("Number of occurrences"), { target: { value: "-3" } });
         expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ count: 1 }));
+    });
+
+    it("never unticks a weekly rule's last weekday (which would turn it into a daily rule)", async () => {
+        const onChange = vi.fn();
+        const user = userEvent.setup();
+        render(<Controlled initial={{ freq: "weekly", interval: 1, byDay: ["MO"], exceptions: [] }} onChange={onChange} />);
+
+        await user.click(screen.getByRole("button", { name: "Mon" }));
+
+        expect(onChange).not.toHaveBeenCalled();
+        expect(screen.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "true");
+        expect(screen.getByText("Repeats every week on Monday.")).toBeInTheDocument();
+    });
+
+    it("stores and shows an all-day series' end date as that UTC day, west of UTC", async () => {
+        const originalTz = process.env.TZ;
+        process.env.TZ = "America/New_York";
+        try {
+            const onChange = vi.fn();
+            const user = userEvent.setup();
+            render(<Controlled initial={{ freq: "daily", interval: 1, until: "2026-09-28T23:59:59.999Z", exceptions: [] }} onChange={onChange} allDay />);
+
+            const dateInput = screen.getByLabelText("End date");
+            expect(dateInput).toHaveValue("2026-09-28");
+            fireEvent.change(dateInput, { target: { value: "2026-12-25" } });
+            expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ until: "2026-12-25T23:59:59.999Z" }));
+
+            await user.click(screen.getByRole("radio", { name: "After" }));
+            await user.click(screen.getByRole("radio", { name: "On" }));
+            expect(onChange.mock.lastCall![0].until).toMatch(/T23:59:59\.999Z$/);
+        } finally {
+            process.env.TZ = originalTz;
+        }
     });
 
     it("shows a pluralized unit label when the interval is greater than 1", () => {

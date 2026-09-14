@@ -7,7 +7,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import EscrowAuditLogPage from "../../../../apps/escrow/audit-log/index.js";
+import EscrowAuditLogPage, { describeVerificationFailure } from "../../../../apps/escrow/audit-log/index.js";
 
 const entry = (n: number) => ({
     uid: `eal${n}`,
@@ -145,8 +145,22 @@ describe("EscrowAuditLogPage", () => {
         render(<EscrowAuditLogPage userUid="u1" authServerUrl="https://auth.example.com" />);
 
         await user.click(await screen.findByRole("button", { name: "Verify chain integrity" }));
-        expect(await screen.findByText("Chain integrity broken at sequence 4.")).toBeInTheDocument();
+        expect(await screen.findByText("Chain integrity check failed (at sequence 4).")).toBeInTheDocument();
     });
+
+    it("explains why the chain failed verification", async () => {
+        mockAuditLogFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/escrow/audit-log/verify") return jsonResponse(200, { valid: false, reason: "hmac_key_unavailable" });
+            if (url.startsWith("/api/escrow/audit-log")) return jsonResponse(200, [entry(1)]);
+        });
+        const user = userEvent.setup();
+        render(<EscrowAuditLogPage userUid="u1" authServerUrl="https://auth.example.com" />);
+
+        await user.click(await screen.findByRole("button", { name: "Verify chain integrity" }));
+        expect(await screen.findByText(/^Chain integrity check failed\. Audit key not configured/)).toBeInTheDocument();
+    });
+
 
     it("shows an error message when verification fails", async () => {
         mockAuditLogFetch((url) => {
@@ -172,5 +186,22 @@ describe("EscrowAuditLogPage", () => {
 
         await user.click(await screen.findByRole("button", { name: "Verify chain integrity" }));
         expect(await screen.findByText("Could not verify the audit chain.")).toBeInTheDocument();
+    });
+});
+
+describe("describeVerificationFailure", () => {
+    it("names each known reason, where it broke, and falls back for an unknown or missing reason", () => {
+        expect(describeVerificationFailure({ valid: false, reason: "truncated", brokenAtSequence: 9 })).toBe(
+            "Chain integrity check failed (at sequence 9). Entries missing at the end: entries were deleted from the end of the chain.",
+        );
+        expect(describeVerificationFailure({ valid: false, reason: "hash_mismatch", brokenAtSequence: 3 })).toMatch(/edited/);
+        expect(describeVerificationFailure({ valid: false, reason: "head_missing" })).toBe(
+            "Chain integrity check failed. The chain's head record is missing.",
+        );
+        expect(describeVerificationFailure({ valid: false, reason: "head_mac_mismatch" })).toMatch(/forged or edited/);
+        expect(describeVerificationFailure({ valid: false, reason: "something_new", brokenAtSequence: 2 })).toBe(
+            "Chain integrity check failed (at sequence 2).",
+        );
+        expect(describeVerificationFailure({ valid: false })).toBe("Chain integrity check failed.");
     });
 });

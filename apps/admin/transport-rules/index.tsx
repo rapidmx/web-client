@@ -11,6 +11,26 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 const PAGE_SIZE = 25;
 
+/** The server's largest page (`limit` is capped at 1000). */
+const FETCH_PAGE_SIZE = 1000;
+
+/**
+ * Every transport rule, in evaluation order. `listTransportRules()` can't ask the server to sort, and sorting one
+ * server page at a time would order rules only within that page - so every page is fetched and sorted here (an
+ * organisation has few transport rules). Ties keep a stable order by name.
+ */
+async function listAllTransportRules(): Promise<TransportRule[]> {
+    const all: TransportRule[] = [];
+    for (let page = 0; ; page++) {
+        const batch = await listTransportRules({ page, limit: FETCH_PAGE_SIZE });
+        all.push(...batch);
+        if (batch.length < FETCH_PAGE_SIZE) {
+            break;
+        }
+    }
+    return all.sort((a, b) => a.sequence - b.sequence || a.name.localeCompare(b.name));
+}
+
 export default function TransportRulesPage(props: Omit<AdminShellProps, "active">) {
     return (
         <AdminShell {...props} active="transportRules">
@@ -26,16 +46,14 @@ function TransportRulesContent() {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        setLoading(true);
-        setError(null);
-        listTransportRules({ page, limit: PAGE_SIZE })
+        listAllTransportRules()
             .then(setRules)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load transport rules."))
             .finally(() => setLoading(false));
-    }, [page]);
+    }, []);
 
-    const hasNextPage = rules.length === PAGE_SIZE;
-    const sorted = [...rules].sort((a, b) => a.sequence - b.sequence);
+    const hasNextPage = (page + 1) * PAGE_SIZE < rules.length;
+    const sorted = rules.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
     return (
         <>

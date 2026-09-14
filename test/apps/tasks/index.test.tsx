@@ -10,6 +10,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import TasksPage from "../../../apps/www/tasks/index.js";
 
+// Lets a test mark specific `listAllPages()` results as truncated (one entry per call, in call order)
+// without fetching 20,000 fixtures; every other call passes through to the real implementation.
+const { truncateNextLists } = vi.hoisted(() => ({ truncateNextLists: [] as boolean[] }));
+vi.mock("../../../apps/shared/mail/listAllPages.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../apps/shared/mail/listAllPages.js")>();
+    return {
+        ...actual,
+        listAllPages: async (...args: Parameters<typeof actual.listAllPages>) => {
+            const result = await actual.listAllPages(...args);
+            return truncateNextLists.shift() ? { ...result, truncated: true } : result;
+        },
+    };
+});
+
 const mailbox = {
     uid: "mb1",
     version: 0,
@@ -86,6 +100,7 @@ function mockShellAndTasks(
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    truncateNextLists.length = 0;
     vi.useRealTimers();
 });
 
@@ -152,6 +167,15 @@ describe("TasksPage", () => {
         rerender(<TasksPage userUid="u1" key="reload" />);
         expect(await screen.findByRole("heading", { name: "Completed" })).toBeInTheDocument();
         expect(screen.getByText("Done task")).toBeInTheDocument();
+    });
+
+    it("says so when the task list stopped at the page cap", async () => {
+        truncateNextLists.push(true);
+        mockShellAndTasks([todayTask]);
+        render(<TasksPage userUid="u1" />);
+
+        await screen.findByText("Today task");
+        expect(screen.getByText(/more tasks than can be shown at once - only the first 20000 are listed/)).toBeInTheDocument();
     });
 
     it("shows 'No tasks yet.' when the list is empty", async () => {

@@ -72,8 +72,9 @@ export interface KeyEnrollmentGateProps {
      */
     blocking?: boolean;
     /**
-     * `true` (default) when the caller may provision this mailbox's first encryption key - i.e. they own
-     * it. `false` for a shared/delegated mailbox the caller doesn't own: a mailbox with no vault yet then
+     * `true` when the caller may provision this mailbox's first encryption key - i.e. they own it and aren't
+     * an administrator impersonating them. `false` (default, so a caller that forgets it never provisions) for
+     * a shared/delegated mailbox the caller doesn't own, or an impersonated session: a mailbox with no vault yet then
      * renders `children` instead of the "Protect your mailbox" setup, so a delegate never enrolls keys
      * (and recovery codes) for someone else's mailbox. Unlocking an existing vault is unaffected.
      */
@@ -101,7 +102,7 @@ export default function KeyEnrollmentGate({
     mailboxAddress,
     mailboxKeys,
     blocking = true,
-    canProvision = true,
+    canProvision = false,
     children,
 }: KeyEnrollmentGateProps) {
     const [status, setStatus] = useState<Status>(mailboxUid ? "checking" : "ready");

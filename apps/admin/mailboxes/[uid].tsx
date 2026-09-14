@@ -39,7 +39,10 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
 
+    // Ignored while the action is under way (Escape/Close; Cancel is disabled then too), so its result or error
+    // can't land on a modal reopened afterwards.
     function closeAccessModal() {
+        if (impersonating) return;
         setConfirmingAccess(false);
         setAccessError(null);
     }
@@ -59,6 +62,7 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
     }
 
     function closeDeleteModal() {
+        if (deleting) return;
         setConfirmingDelete(false);
     }
 

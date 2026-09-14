@@ -8,6 +8,7 @@ import { EscrowScope, listEscrowScopes } from "@rapidmx/react-shared/admin/escro
 import { Mailbox, updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const SELECT_CLASS =
     "text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -32,6 +33,7 @@ export default function EscrowScopeCard({ mailbox, onUpdate }: EscrowScopeCardPr
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
     const [saved, setSaved] = useState(false);
+    const [confirming, setConfirming] = useState(false);
 
     useEffect(() => {
         listEscrowScopes({ limit: SCOPE_LIST_LIMIT })
@@ -39,8 +41,14 @@ export default function EscrowScopeCard({ mailbox, onUpdate }: EscrowScopeCardPr
             .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load escrow scopes."));
     }, []);
 
-    async function handleSubmit(e: FormEvent) {
+    // Changing the scope changes who can recover this mailbox's encrypted mail, so it's confirmed first.
+    function handleSubmit(e: FormEvent) {
         e.preventDefault();
+        setConfirming(true);
+    }
+
+    async function save() {
+        setConfirming(false);
         setSaveError(null);
         setSaved(false);
         setSaving(true);
@@ -97,6 +105,48 @@ export default function EscrowScopeCard({ mailbox, onUpdate }: EscrowScopeCardPr
                     </Button>
                 </form>
             )}
+
+            <Modal open={confirming} onClose={() => setConfirming(false)} title="Change escrow scope">
+                <p className="text-sm mb-3">
+                    This changes who can jointly recover <strong className="break-all">{mailbox.primarySmtpAddress}</strong>
+                    &rsquo;s encrypted mail.
+                </p>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm mb-4">
+                    <dt className="text-text-muted">From</dt>
+                    <dd className="break-all">
+                        <ScopeSummary uid={current} scopes={scopes ?? []} />
+                    </dd>
+                    <dt className="text-text-muted">To</dt>
+                    <dd className="break-all">
+                        <ScopeSummary uid={escrowScopeId} scopes={scopes ?? []} />
+                    </dd>
+                </dl>
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirming(false)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto" onClick={() => void save()}>
+                        Confirm and save
+                    </Button>
+                </div>
+            </Modal>
         </div>
+    );
+}
+
+/** A scope's name, holders and required approvals - or what having no (or an unlisted) scope means. */
+function ScopeSummary({ uid, scopes }: { uid: string; scopes: EscrowScope[] }) {
+    if (!uid) {
+        return <span>No escrow - nobody can recover this mailbox&rsquo;s encrypted mail</span>;
+    }
+    const scope = scopes.find((candidate) => candidate.uid === uid);
+    if (!scope) {
+        return <span>Unknown scope ({uid})</span>;
+    }
+    return (
+        <span>
+            <strong>{scope.name}</strong> - holders {scope.holderUserUids.join(", ")}; {scope.requiredHolders} of{" "}
+            {scope.holderUserUids.length} must approve
+        </span>
     );
 }

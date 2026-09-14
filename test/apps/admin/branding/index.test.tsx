@@ -121,7 +121,7 @@ describe("BrandingPage", () => {
         await screen.findByLabelText("Company name");
 
         await user.click(screen.getByRole("button", { name: "Upload logo" }));
-        const file = new File(["png"], "logo.png", { type: "image/png" });
+        const file = new File(["gif"], "logo.gif", { type: "image/gif" });
         await user.upload(screen.getByLabelText("Upload logo"), file);
         expect(await screen.findByRole("button", { name: "Remove logo" })).toBeInTheDocument();
         expect(screen.getByAltText("Current logo")).toHaveAttribute("src", "/api/system/branding/logo");
@@ -156,6 +156,9 @@ describe("BrandingPage", () => {
         await screen.findByLabelText("Company name");
 
         expect(screen.getByLabelText("Upload logo").getAttribute("accept")).not.toContain("svg");
+        // GIF is an accepted raster type (the server allows image/gif uploads).
+        expect(screen.getByLabelText("Upload logo").getAttribute("accept")).toContain("image/gif");
+        expect(screen.getByLabelText("Upload icon").getAttribute("accept")).toContain("image/gif");
         fireEvent.change(screen.getByLabelText("Upload logo"), {
             target: { files: [new File(["<svg/>"], "logo.svg", { type: "image/svg+xml" })] },
         });

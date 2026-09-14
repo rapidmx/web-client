@@ -162,6 +162,55 @@ describe("DataRequestsPage — paging", () => {
     });
 });
 
+describe("DataRequestsPage — paging after deletions", () => {
+    it("doesn't skip rows that moved onto the previous page because rows were deleted since", async () => {
+        const all = Array.from({ length: 60 }, (_, i) => exportRequest({ uid: `der${i}`, mailboxUid: `mb-${i}` }));
+        let rows = all;
+        const pageOf = (page: number) => rows.slice(page * 50, page * 50 + 50);
+        const fetchMock = mockShell((url) => {
+            const match = /^\/api\/mail\/data-export-requests\?limit=50&page=(\d+)$/.exec(url);
+            return match ? jsonResponse(200, pageOf(Number(match[1]))) : undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+        expect(await screen.findByText(/^mb-49 /)).toBeInTheDocument();
+
+        // Three rows already shown are deleted: der50-der52 now sit on page 0, and page 1 starts at der53.
+        rows = all.filter((row) => !["der1", "der2", "der3"].includes(row.uid));
+        await user.click(screen.getByRole("button", { name: "Load more export requests" }));
+
+        expect(await screen.findByText(/^mb-50 /)).toBeInTheDocument();
+        for (const i of [51, 52, 53, 59]) {
+            expect(screen.getByText(new RegExp(`^mb-${i} `))).toBeInTheDocument();
+        }
+        expect(screen.getAllByText(/^mb-49 /)).toHaveLength(1);
+        expect(fetchMock.mock.calls.map(([url]) => url)).toContain("/api/mail/data-export-requests?limit=50&page=1");
+        expect(screen.queryByRole("button", { name: "Load more export requests" })).not.toBeInTheDocument();
+    });
+
+    it("reloads from the start when the last row shown can't be found again", async () => {
+        const all = Array.from({ length: 60 }, (_, i) => exportRequest({ uid: `der${i}`, mailboxUid: `mb-${i}` }));
+        let rows = all;
+        const pageOf = (page: number) => rows.slice(page * 50, page * 50 + 50);
+        mockShell((url) => {
+            const match = /^\/api\/mail\/data-export-requests\?limit=50&page=(\d+)$/.exec(url);
+            return match ? jsonResponse(200, pageOf(Number(match[1]))) : undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+        expect(await screen.findByText(/^mb-49 /)).toBeInTheDocument();
+
+        // The last row shown was itself deleted.
+        rows = all.filter((row) => row.uid !== "der49");
+        await user.click(screen.getByRole("button", { name: "Load more export requests" }));
+
+        await vi.waitFor(() => expect(screen.queryByText(/^mb-49 /)).not.toBeInTheDocument());
+        expect(screen.getByText(/^mb-50 /)).toBeInTheDocument();
+        expect(screen.queryByText(/^mb-51 /)).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Load more export requests" })).toBeEnabled();
+    });
+});
+
 describe("DataRequestsPage — export requests", () => {
     it("shows an empty state and disables Create export until a mailbox UID is entered", async () => {
         mockShell();
@@ -840,5 +889,40 @@ describe("DataRequestsPage — erasure requests", () => {
         await user.click(within(dialog).getByRole("button", { name: "Deny" }));
 
         expect(await screen.findByText("Could not deny this request.")).toBeInTheDocument();
+    });
+
+    it("keeps the approve and deny confirmations open while their decision is being sent", async () => {
+        const pending: ((response: Response) => void)[] = [];
+        mockShell((url, init) => {
+            if ((url.endsWith("/approve") || url.endsWith("/deny")) && init?.method === "POST") {
+                return new Promise<Response>((resolve) => pending.push(resolve)) as unknown as Response;
+            }
+            if (url === "/api/mail/erasure-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        await user.click(await screen.findByRole("button", { name: "Approve" }));
+        let dialog = await screen.findByRole("dialog", { name: "Approve erasure request" });
+        await user.click(within(dialog).getByRole("button", { name: "Erase mailbox" }));
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+        await user.keyboard("{Escape}");
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(screen.getByRole("dialog", { name: "Approve erasure request" })).toBeInTheDocument();
+        pending[0](jsonResponse(409, { message: "blocked by a legal hold" }));
+        expect(await within(dialog).findByText("blocked by a legal hold")).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Deny" }));
+        dialog = await screen.findByRole("dialog", { name: "Deny erasure request" });
+        await user.type(within(dialog).getByLabelText("Denial reason"), "not verified");
+        await user.click(within(dialog).getByRole("button", { name: "Deny" }));
+        await vi.waitFor(() => expect(pending).toHaveLength(2));
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(screen.getByRole("dialog", { name: "Deny erasure request" })).toBeInTheDocument();
+        pending[1](jsonResponse(409, { message: "not pending" }));
+        expect(await within(dialog).findByText("not pending")).toBeInTheDocument();
     });
 });

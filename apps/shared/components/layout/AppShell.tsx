@@ -12,6 +12,7 @@ import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import { useIdleKeyTimeout } from "@rapidmx/react-shared/crypto/useIdleKeyTimeout.js";
 import ComposeProvider from "../mail/compose/ComposeContext.js";
+import { flushComposeDrafts } from "../mail/compose/composeFlushRegistry.js";
 import BottomTabBar from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { BrandingFooter, BrandingHeader } from "./BrandingChrome.js";
 import UserMenu from "./UserMenu.js";
@@ -157,6 +158,9 @@ export default function AppShell({
         signingOutRef.current = true;
         // Unlocked private keys never outlive an explicit sign-out.
         destroyUnlockedKeys();
+        // Open compose windows save edits still waiting on their autosave debounce while the session is still
+        // valid - logout invalidates it. Bounded the same way as logout itself, and never rejects.
+        await flushComposeDrafts(LOGOUT_TIMEOUT_MS);
         // The Tier 2 local index MUST be destroyed on explicit logout, the same as unlocked keys themselves
         // (spec §11). Destroys every index on this device (not only mailboxes opened this page load) and is
         // awaited before navigating - a navigation tears down the Worker mid-delete otherwise.

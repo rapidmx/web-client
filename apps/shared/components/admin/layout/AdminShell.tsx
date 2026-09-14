@@ -29,6 +29,7 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { BrandingFooter, BrandingHeader } from "../../layout/BrandingChrome.js";
 import UserMenu from "../../layout/UserMenu.js";
+import { signOutOfConsole } from "../signOut.js";
 
 export type AdminSection =
     | "mailboxes"
@@ -174,7 +175,8 @@ export default function AdminShell({ active, userUid, authServerUrl, children }:
     }, [userUid]);
 
     function handleSignOut() {
-        window.location.href = authServerUrl ?? "/";
+        // Ends the auth-server session and tells other tabs, not just navigates - see `signOutOfConsole()`.
+        void signOutOfConsole(authServerUrl);
     }
 
     let content: ReactNode;

@@ -8,6 +8,7 @@ import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import {
     deleteEscrowScope,
     EscrowScope,
+    EscrowScopePublicKey,
     getEscrowScope,
     updateEscrowScope,
 } from "@rapidmx/react-shared/admin/escrowScopesApi.js";
@@ -54,6 +55,10 @@ export function describeSecurityChanges(original: EscrowScope, next: EscrowScope
     if (next.requiredHolders !== original.requiredHolders) {
         changes.push(`Required approvals: ${original.requiredHolders} → ${next.requiredHolders}`);
     }
+    if (next.notifySubjectOnAccess !== original.notifySubjectOnAccess) {
+        const onOff = (value: boolean) => (value ? "on" : "off");
+        changes.push(`Notify subject on access: ${onOff(original.notifySubjectOnAccess)} → ${onOff(next.notifySubjectOnAccess)}`);
+    }
     const originalKey = toFieldsValue(original);
     if (next.publicKey.trim() !== originalKey.publicKey || next.keyType.trim() !== originalKey.keyType) {
         changes.push("Replace the public key");
@@ -61,10 +66,47 @@ export function describeSecurityChanges(original: EscrowScope, next: EscrowScope
     if (next.fingerprint.trim() !== originalKey.fingerprint) {
         changes.push(`Fingerprint: ${originalKey.fingerprint} → ${next.fingerprint.trim()}`);
     }
-    if (next.notBefore !== originalKey.notBefore || next.notAfter !== originalKey.notAfter) {
+    if (validityChanged(originalKey, next)) {
         changes.push(`Key validity: ${originalKey.notBefore} – ${originalKey.notAfter} → ${next.notBefore} – ${next.notAfter}`);
     }
     return changes;
+}
+
+function keyMaterialChanged(originalKey: EscrowScopeKeyAndHoldersValue, next: EscrowScopeKeyAndHoldersValue): boolean {
+    return (
+        next.publicKey.trim() !== originalKey.publicKey ||
+        next.keyType.trim() !== originalKey.keyType ||
+        next.fingerprint.trim() !== originalKey.fingerprint
+    );
+}
+
+function validityChanged(originalKey: EscrowScopeKeyAndHoldersValue, next: EscrowScopeKeyAndHoldersValue): boolean {
+    return next.notBefore !== originalKey.notBefore || next.notAfter !== originalKey.notAfter;
+}
+
+/**
+ * The `publicKey` to send with an update, or `undefined` when the admin didn't touch any key field - the form only
+ * shows dates to the minute, so re-sending a rebuilt key would silently truncate the stored validity window. A date
+ * field left as loaded keeps its original epoch-ms value. `revokedAt` isn't editable here: it's carried over when
+ * only the validity window changed, and dropped when the key material itself is replaced (a new key isn't revoked).
+ */
+export function buildPublicKeyUpdate(original: EscrowScope, next: EscrowScopeKeyAndHoldersValue): EscrowScopePublicKey | undefined {
+    const originalKey = toFieldsValue(original);
+    const materialChanged = keyMaterialChanged(originalKey, next);
+    if (!materialChanged && !validityChanged(originalKey, next)) {
+        return undefined;
+    }
+    const key: EscrowScopePublicKey = {
+        publicKey: next.publicKey.trim(),
+        type: next.keyType.trim(),
+        fingerprint: next.fingerprint.trim(),
+        notBefore: next.notBefore === originalKey.notBefore ? original.publicKey.notBefore : new Date(next.notBefore).getTime(),
+        notAfter: next.notAfter === originalKey.notAfter ? original.publicKey.notAfter : new Date(next.notAfter).getTime(),
+    };
+    if (!materialChanged && original.publicKey.revokedAt !== undefined) {
+        key.revokedAt = original.publicKey.revokedAt;
+    }
+    return key;
 }
 
 export default function EscrowScopeDetailPage(props: Omit<AdminShellProps, "active"> & { params: { uid: string } }) {
@@ -152,14 +194,10 @@ function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: s
                 uid: original!.uid,
                 version: original!.version,
                 name: name.trim(),
-                description: description.trim() || undefined,
-                publicKey: {
-                    publicKey: fields!.publicKey.trim(),
-                    type: fields!.keyType.trim(),
-                    fingerprint: fields!.fingerprint.trim(),
-                    notBefore: new Date(fields!.notBefore).getTime(),
-                    notAfter: new Date(fields!.notAfter).getTime(),
-                },
+                // `null` (not omitted) so clearing the field actually clears the stored description - an update is
+                // a merge, and an absent field is left as it was.
+                description: (description.trim() || null) as string | undefined,
+                publicKey: buildPublicKeyUpdate(original!, fields!),
                 holderUserUids: fields!.holderUserUids,
                 requiredHolders: fields!.requiredHolders,
                 notifySubjectOnAccess: fields!.notifySubjectOnAccess,
@@ -174,7 +212,9 @@ function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: s
         }
     }
 
+    // Ignored while deleting (Escape/Close; Cancel is disabled then too).
     function closeDeleteModal() {
+        if (deleting) return;
         setConfirmingDelete(false);
     }
 

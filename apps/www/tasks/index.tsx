@@ -25,7 +25,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import { findWellKnownFolderUid } from "../../shared/mail/findWellKnownFolderUid.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
-import { LIST_PAGE_SIZE, listAllPages } from "../../shared/mail/listAllPages.js";
+import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/listAllPages.js";
 
 const INPUT_CLASS =
     "text-sm py-1.5 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -86,6 +86,8 @@ function TasksContent() {
     const [tasks, setTasks] = useState<Task[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    // Set when `listAllPages()` stopped at its page cap - the list shown isn't every task.
+    const [truncated, setTruncated] = useState(false);
     const [title, setTitle] = useState("");
     const [dueDate, setDueDate] = useState("");
     const [priority, setPriority] = useState<TaskPriority>("normal");
@@ -104,13 +106,17 @@ function TasksContent() {
     function reload(): Promise<void> {
         if (!folderUid) {
             setTasks([]);
+            setTruncated(false);
             setLoading(false);
             return Promise.resolve();
         }
         setLoading(true);
         setError(null);
         return listAllPages((page) => listTasks(folderUid, { limit: LIST_PAGE_SIZE, page }))
-            .then(setTasks)
+            .then((result) => {
+                setTasks(result.items);
+                setTruncated(result.truncated);
+            })
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load tasks."))
             .finally(() => setLoading(false));
     }
@@ -326,6 +332,11 @@ function TasksContent() {
                     <h1 className="text-xl font-bold uppercase tracking-wide">Tasks</h1>
 
                     {error && <Alert>{error}</Alert>}
+                    {truncated && view.type !== "flagged" && (
+                        <Alert>
+                            This folder has more tasks than can be shown at once - only the first {LIST_PAGE_SIZE * MAX_LIST_PAGES} are listed.
+                        </Alert>
+                    )}
 
                     {view.type === "flagged" ? (
                         <FlaggedEmailList loading={flaggedLoading} error={flaggedError} messages={flaggedMessages} />

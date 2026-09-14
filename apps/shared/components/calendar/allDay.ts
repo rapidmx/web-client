@@ -37,6 +37,27 @@ export function localDateKey(day: Date): string {
 }
 
 /**
+ * A recurrence rule's inclusive "Ends on" date -> its stored `until` instant: the end of that day in the
+ * frame the series expands in. A timed series expands in its own (normally the viewer's) timezone, so that's
+ * the end of the local day - `new Date("YYYY-MM-DD")` would be UTC midnight, the previous day west of UTC.
+ * An all-day series expands in UTC (react-shared's `expandOccurrences`), so it's the end of the UTC day: the
+ * local end of day is already the next UTC day west of UTC and would add one more occurrence.
+ */
+export function recurrenceUntilInstant(dateKey: string, allDay: boolean): string {
+    if (allDay) {
+        return `${dateKey}T23:59:59.999Z`;
+    }
+    const [y, m, d] = dateKey.split("-").map(Number);
+    return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+}
+
+/** Inverse of `recurrenceUntilInstant()`. An all-day series' value rounds to the nearest UTC midnight (the
+ * day after), so an older one stored as the creator's local end of day still reads as the intended date. */
+export function recurrenceUntilDateKey(until: string, allDay: boolean): string {
+    return allDay ? addDaysToKey(allDayDateKey(until), -1) : format(new Date(until), "yyyy-MM-dd");
+}
+
+/**
  * Whether `occurrence` should be shown on the grid's local calendar day `day`. All-day events cover every
  * date from their start date up to (not including) their exclusive end date — at least their start date.
  * Timed events cover every local day their [start, end) interval overlaps, so a multi-day event shows on

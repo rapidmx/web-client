@@ -73,7 +73,7 @@ describe("RetentionPolicyPage", () => {
         await user.type(screen.getByLabelText("Message retention (days)"), "30");
         await user.type(screen.getByLabelText("Audit log retention (days)"), "2190");
         await user.click(screen.getByRole("button", { name: "Save" }));
-        await user.click(within(await screen.findByRole("dialog", { name: "Delete older mail?" })).getByRole("button", { name: "Save and delete older mail" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older data?" })).getByRole("button", { name: "Save and delete older data" }));
 
         expect(await screen.findByText("Saved.")).toBeInTheDocument();
         const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
@@ -92,6 +92,11 @@ describe("RetentionPolicyPage", () => {
 
         await user.type(screen.getByLabelText("Audit log retention (days)"), "2190");
         await user.click(screen.getByRole("button", { name: "Save" }));
+        // Starting audit-log retention deletes existing entries too, so it's confirmed - without the mail warning.
+        const dialog = await screen.findByRole("dialog", { name: "Delete older data?" });
+        expect(within(dialog).getByText(/Audit-log entries are kept forever today/)).toBeInTheDocument();
+        expect(within(dialog).queryByText(/Mail isn.t deleted automatically/)).not.toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Save and delete older data" }));
 
         await vi.waitFor(() => expect(screen.getByText("Saved.")).toBeInTheDocument());
         const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
@@ -110,7 +115,7 @@ describe("RetentionPolicyPage", () => {
 
         await user.type(screen.getByLabelText("Message retention (days)"), "30");
         await user.click(screen.getByRole("button", { name: "Save" }));
-        await user.click(within(await screen.findByRole("dialog", { name: "Delete older mail?" })).getByRole("button", { name: "Save and delete older mail" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older data?" })).getByRole("button", { name: "Save and delete older data" }));
 
         await vi.waitFor(() => expect(screen.getByText("Saved.")).toBeInTheDocument());
         const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
@@ -151,7 +156,7 @@ describe("RetentionPolicyPage", () => {
 
         await user.type(screen.getByLabelText("Message retention (days)"), "30");
         await user.click(screen.getByRole("button", { name: "Save" }));
-        await user.click(within(await screen.findByRole("dialog", { name: "Delete older mail?" })).getByRole("button", { name: "Save and delete older mail" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older data?" })).getByRole("button", { name: "Save and delete older data" }));
 
         expect(await screen.findByText("'messageRetentionDays' must be a positive integer number of days.")).toBeInTheDocument();
     });
@@ -168,7 +173,7 @@ describe("RetentionPolicyPage", () => {
 
         await user.type(screen.getByLabelText("Message retention (days)"), "30");
         await user.click(screen.getByRole("button", { name: "Save" }));
-        await user.click(within(await screen.findByRole("dialog", { name: "Delete older mail?" })).getByRole("button", { name: "Save and delete older mail" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older data?" })).getByRole("button", { name: "Save and delete older data" }));
 
         expect(await screen.findByText("Could not save the retention policy.")).toBeInTheDocument();
     });
@@ -180,7 +185,7 @@ describe("RetentionPolicyPage", () => {
 
         await user.type(await screen.findByLabelText("Message retention (days)"), "30");
         await user.click(screen.getByRole("button", { name: "Save" }));
-        const dialog = await screen.findByRole("dialog", { name: "Delete older mail?" });
+        const dialog = await screen.findByRole("dialog", { name: "Delete older data?" });
         expect(within(dialog).getByText(/Mail isn.t deleted automatically today/)).toBeInTheDocument();
         expect(within(dialog).getByText("30 days")).toBeInTheDocument();
         await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -213,9 +218,54 @@ describe("RetentionPolicyPage", () => {
         await user.clear(message);
         await user.type(message, "100");
         await user.click(screen.getByRole("button", { name: "Save" }));
-        const dialog = await screen.findByRole("dialog", { name: "Delete older mail?" });
+        const dialog = await screen.findByRole("dialog", { name: "Delete older data?" });
         expect(within(dialog).getByText(/Mail is currently kept for 120 days/)).toBeInTheDocument();
         await user.click(within(dialog).getByRole("button", { name: "Close" }));
         expect(puts).toHaveLength(1);
+    });
+
+    it("confirms lowering audit-log retention but not raising it, and lists both periods when both shorten", async () => {
+        const puts: any[] = [];
+        mockShell((url, init) => {
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, { messageRetentionDays: 90, auditLogRetentionDays: 2555 });
+            }
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") {
+                const body = JSON.parse(init.body as string);
+                puts.push(body);
+                return jsonResponse(200, body);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<RetentionPolicyPage userUid="admin-1" />);
+        const message = await screen.findByLabelText("Message retention (days)");
+        const audit = screen.getByLabelText("Audit log retention (days)");
+
+        await user.clear(audit);
+        await user.type(audit, "3000");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await vi.waitFor(() => expect(puts).toHaveLength(1));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        await user.clear(audit);
+        await user.type(audit, "2200");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        let dialog = await screen.findByRole("dialog", { name: "Delete older data?" });
+        expect(within(dialog).getByText(/Audit-log entries are currently kept for 3000 days/)).toBeInTheDocument();
+        expect(within(dialog).getByText("2200 days")).toBeInTheDocument();
+        expect(within(dialog).queryByText(/Mail is currently kept/)).not.toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        expect(puts).toHaveLength(1);
+
+        await user.clear(message);
+        await user.type(message, "30");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        dialog = await screen.findByRole("dialog", { name: "Delete older data?" });
+        expect(within(dialog).getByText(/Mail is currently kept for 90 days/)).toBeInTheDocument();
+        expect(within(dialog).getByText(/Audit-log entries are currently kept for 3000 days/)).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Save and delete older data" }));
+        await vi.waitFor(() => expect(puts).toHaveLength(2));
+        expect(puts[1]).toEqual({ messageRetentionDays: 30, auditLogRetentionDays: 2200 });
     });
 });

@@ -93,7 +93,7 @@ describe("EscrowShell", () => {
     });
 
     it("shows the header with the active section's label and renders children, and signs out to auth-server", async () => {
-        mockFetch(() => jsonResponse(200, []));
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
         const location = mockLocation();
         const user = userEvent.setup();
         render(
@@ -108,7 +108,11 @@ describe("EscrowShell", () => {
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         expect(screen.getByText("u1")).toBeInTheDocument();
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
-        expect(location.href).toBe(AUTH_SERVER_URL);
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${AUTH_SERVER_URL}/api/auth/logout`,
+            expect.objectContaining({ method: "POST", credentials: "include" }),
+        );
     });
 
     it("signs out to '/' when authServerUrl is not configured", async () => {
@@ -124,7 +128,7 @@ describe("EscrowShell", () => {
         await screen.findByText("content");
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
-        expect(location.href).toBe("/");
+        await waitFor(() => expect(location.href).toBe("/"));
     });
 
     it("uses the branding icon but never renders branding header/footer HTML or injects the custom stylesheet", async () => {

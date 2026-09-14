@@ -102,6 +102,18 @@ describe("KeyEnrollmentGate", () => {
         expect(enrollKey).not.toHaveBeenCalled();
     });
 
+    it("never offers first-time setup unless canProvision is passed (round-4: defaults to false)", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        expect(await screen.findByText("Mail content")).toBeInTheDocument();
+        expect(screen.queryByText("Protect your mailbox")).not.toBeInTheDocument();
+    });
+
     it("does not update state after unmounting before the key-vault check settles (avoids a set-state-after-unmount warning)", async () => {
         let resolveVault: ((vault: { wrappedKeys: unknown[]; masterKeyWraps: unknown[] }) => void) | undefined;
         getKeyVault.mockImplementation(
@@ -111,7 +123,7 @@ describe("KeyEnrollmentGate", () => {
                 }),
         );
         const { unmount } = render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -133,7 +145,7 @@ describe("KeyEnrollmentGate", () => {
                 }),
         );
         const { unmount } = render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -148,7 +160,7 @@ describe("KeyEnrollmentGate", () => {
         enrollKey.mockRejectedValue(new ApiRequestError("mailbox quota exceeded", 400));
         const user = userEvent.setup();
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -163,7 +175,7 @@ describe("KeyEnrollmentGate", () => {
     it("renders children immediately when this mailbox was already unlocked earlier this session", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -174,7 +186,7 @@ describe("KeyEnrollmentGate", () => {
     it("shows the unlock password form when the mailbox already has enrolled keys but isn't unlocked yet this session", async () => {
         getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -189,7 +201,7 @@ describe("KeyEnrollmentGate", () => {
         const mailboxKeys = [{ fingerprint: "a", useType: "encrypt" }];
         const user = userEvent.setup();
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com" mailboxKeys={mailboxKeys as never}>
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com" mailboxKeys={mailboxKeys as never}>
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -206,7 +218,7 @@ describe("KeyEnrollmentGate", () => {
         unlockWithPassword.mockRejectedValue(new Error("AEAD authentication failure"));
         const user = userEvent.setup();
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -221,7 +233,7 @@ describe("KeyEnrollmentGate", () => {
     it("renders children (fails open) when the key-vault check errors", async () => {
         getKeyVault.mockRejectedValue(new Error("network error"));
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -231,7 +243,7 @@ describe("KeyEnrollmentGate", () => {
     it("shows the password setup form when no keys are enrolled yet", async () => {
         getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -243,7 +255,7 @@ describe("KeyEnrollmentGate", () => {
         getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
         const user = userEvent.setup();
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -259,7 +271,7 @@ describe("KeyEnrollmentGate", () => {
         getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
         const user = userEvent.setup();
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -276,7 +288,7 @@ describe("KeyEnrollmentGate", () => {
         enrollKey.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
         const user = userEvent.setup();
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -321,7 +333,7 @@ describe("KeyEnrollmentGate", () => {
         const user = userEvent.setup();
         mockClipboard(writeText);
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -344,7 +356,7 @@ describe("KeyEnrollmentGate", () => {
         const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
         mockClipboard(vi.fn().mockResolvedValue(undefined));
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -369,7 +381,7 @@ describe("KeyEnrollmentGate", () => {
         const user = userEvent.setup();
         mockClipboard(writeText);
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -388,7 +400,7 @@ describe("KeyEnrollmentGate", () => {
     it("renders children immediately (does not block) when blocking=false and the mailbox has enrolled keys but isn't unlocked yet", async () => {
         getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com" blocking={false}>
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com" blocking={false}>
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -399,7 +411,7 @@ describe("KeyEnrollmentGate", () => {
     it("still blocks on first-time provisioning (setup_password) even when blocking=false - only the unlock step is skippable", async () => {
         getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com" blocking={false}>
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com" blocking={false}>
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );
@@ -412,7 +424,7 @@ describe("KeyEnrollmentGate", () => {
         enrollKey.mockRejectedValue(new Error("server exploded"));
         const user = userEvent.setup();
         render(
-            <KeyEnrollmentGate mailboxUid="mb1" mailboxAddress="alice@example.com">
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
                 <div>Mail content</div>
             </KeyEnrollmentGate>,
         );

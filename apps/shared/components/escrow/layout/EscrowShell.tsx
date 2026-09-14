@@ -12,6 +12,7 @@ import { getBranding } from "@rapidmx/react-shared/branding/brandingApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import UserMenu from "../../layout/UserMenu.js";
+import { signOutOfConsole } from "../../admin/signOut.js";
 
 export type EscrowSection = "matters" | "auditLog";
 
@@ -85,7 +86,8 @@ export default function EscrowShell({ active, userUid, authServerUrl, children }
     }, [userUid]);
 
     function handleSignOut() {
-        window.location.href = authServerUrl ?? "/";
+        // Ends the auth-server session and tells other tabs, not just navigates - see `signOutOfConsole()`.
+        void signOutOfConsole(authServerUrl);
     }
 
     let content: ReactNode;

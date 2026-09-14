@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
@@ -1143,6 +1143,30 @@ describe("InboxPage", () => {
                 expect(screen.queryByText("Search all mail")).not.toBeInTheDocument();
             });
 
+            it('resets "Search all mail" when the query changes, so the next search is bounded again', async () => {
+                mockSearch([], () => jsonResponse(200, { results: [] }));
+                searchLocalIndex.mockResolvedValue({ results: [], coverage: COMPLETE_COVERAGE, hasMore: false });
+                searchEncryptedCandidates.mockResolvedValue([]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+                await user.click(await screen.findByText("Search all mail"));
+                await waitFor(() => expect(searchEncryptedCandidates).toHaveBeenCalledTimes(3));
+                expect(screen.queryByText("Search all mail")).not.toBeInTheDocument();
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "x");
+
+                expect(await screen.findByText("Search all mail")).toBeInTheDocument();
+                const later = tier3Windows().slice(3);
+                // Every Tier 3 call after the unbounded one is bounded by coverage again - never a second
+                // unbounded pass for the new query.
+                expect(later.length).toBeGreaterThan(0);
+                expect(later.every((w) => w.before !== undefined || w.after !== undefined)).toBe(true);
+            });
+
+
             it.each([
                 ["keeps a query's own earlier before: bound", "before:2025-01-01 budget", [{ before: "2025-01-01T00:00:00.000Z", after: undefined }]],
                 [
@@ -1633,6 +1657,38 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Second hit")).toBeInTheDocument();
         });
 
+        it("doesn't keep loading search results after a page that only repeated hits already shown", async () => {
+            const hit = messageFixture({ uid: "m1", subject: "First hit" });
+            const io = mockIntersectionObserver();
+            let searchRequests = 0;
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/search")) {
+                    searchRequests += 1;
+                    // Every page (including the cursor continuation) repeats the same hit and claims more.
+                    return jsonResponse(200, { results: [{ entityType: "message", entityUid: "m1", score: 1 }], nextCursor: `c${searchRequests}` });
+                }
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url === "/api/mail/messages/m1") return jsonResponse(200, hit);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("No messages in this folder.");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "hit");
+            await screen.findByText("First hit");
+            const before = searchRequests;
+
+            io.trigger();
+
+            await waitFor(() => expect(searchRequests).toBe(before + 1));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect(searchRequests).toBe(before + 1);
+            expect(screen.getAllByText("First hit")).toHaveLength(1);
+        });
+
         it("threads Tier 2's own offset and reuses Tier 3's cached candidate set (§8's composite cursor) across a loadMore continuation", async () => {
             const io = mockIntersectionObserver();
             searchLocalIndex.mockImplementation(async (_mailboxUid: string, _parsed: unknown, _unlocked: unknown, _limit: number, offset = 0) => ({
@@ -1668,6 +1724,123 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Local two")).toBeInTheDocument();
             expect(searchLocalIndex).toHaveBeenLastCalledWith("mb1", expect.objectContaining({ text: "budget" }), undefined, 50, 1);
             expect(searchEncryptedCandidates).toHaveBeenCalledTimes(1);
+        });
+
+        it("doesn't auto-retry a failed page while the sentinel stays in view, and retries on demand", async () => {
+            const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Message ${i}` }));
+            const io = mockIntersectionObserver();
+            let pageOneRequests = 0;
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    if (url.includes("page=1")) {
+                        pageOneRequests += 1;
+                        return pageOneRequests === 1
+                            ? jsonResponse(500, { message: "boom" })
+                            : jsonResponse(200, [messageFixture({ uid: "m99", subject: "Message 99" })]);
+                    }
+                    return jsonResponse(200, firstPage);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Message 0");
+
+            io.trigger();
+            expect(await screen.findByText("boom")).toBeInTheDocument();
+            // The sentinel is still in view (jsdom geometry) and reports again - nothing may re-request on its own.
+            io.trigger();
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect(pageOneRequests).toBe(1);
+
+            await user.click(within(screen.getByTestId("load-more-sentinel")).getByRole("button", { name: "Retry" }));
+
+            expect(await screen.findByText("Message 99")).toBeInTheDocument();
+            expect(pageOneRequests).toBe(2);
+            expect(screen.queryByText("boom")).not.toBeInTheDocument();
+        });
+
+        function pagedFolder(pages: Record<number, unknown[]>) {
+            const requests: number[] = [];
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    const page = Number(new URL(url, "http://localhost").searchParams.get("page") ?? "0");
+                    requests.push(page);
+                    return jsonResponse(200, pages[page] ?? []);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            return requests;
+        }
+
+        const fullPage = (page: number) =>
+            Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `p${page}-m${i}`, subject: `Page ${page} message ${i}` }));
+
+        it("keeps loading after a page that added rows while the sentinel is still in view", async () => {
+            const io = mockIntersectionObserver();
+            const requests = pagedFolder({ 0: fullPage(0), 1: fullPage(1), 2: [messageFixture({ uid: "last", subject: "Last message" })] });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 message 0");
+
+            io.trigger();
+
+            expect(await screen.findByText("Last message")).toBeInTheDocument();
+            expect(requests.filter((p) => p > 0)).toEqual([1, 2]);
+        });
+
+        it.each([
+            ["below", 5000],
+            ["above", -5000],
+        ])("stops after a page lands if the sentinel's real position is now %s the view", async (_label, top) => {
+            const io = mockIntersectionObserver();
+            const requests = pagedFolder({ 0: fullPage(0), 1: fullPage(1), 2: fullPage(2) });
+            const rect = (y: number) => ({ top: y, bottom: y + 10, left: 0, right: 0, width: 0, height: 10, x: 0, y, toJSON: () => ({}) }) as DOMRect;
+            const spy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+                return this.getAttribute("data-testid") === "load-more-sentinel" ? rect(top) : rect(0);
+            });
+            try {
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("Page 0 message 0");
+
+                io.trigger();
+
+                expect(await screen.findByText("Page 1 message 0")).toBeInTheDocument();
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                expect(requests.filter((p) => p > 0)).toEqual([1]);
+            } finally {
+                spy.mockRestore();
+            }
+        });
+
+        it("doesn't continue after a page that only repeated rows already shown", async () => {
+            const io = mockIntersectionObserver();
+            const first = fullPage(0);
+            const requests = pagedFolder({ 0: first, 1: first });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 message 0");
+
+            io.trigger();
+
+            await waitFor(() => expect(requests.filter((p) => p > 0)).toEqual([1]));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect(requests.filter((p) => p > 0)).toEqual([1]);
+        });
+
+        it("issues one request for two sentinel reports in the same tick", async () => {
+            const io = mockIntersectionObserver();
+            const requests = pagedFolder({ 0: fullPage(0), 1: [messageFixture({ uid: "last", subject: "Last message" })] });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 message 0");
+
+            io.trigger();
+            io.trigger();
+
+            expect(await screen.findByText("Last message")).toBeInTheDocument();
+            expect(requests.filter((p) => p > 0)).toEqual([1]);
         });
     });
 
@@ -1769,6 +1942,49 @@ describe("InboxPage", () => {
             render(<InboxPage userUid="u1" />);
 
             expect(await screen.findByText("Encrypted message")).toBeInTheDocument();
+        });
+
+        it("never shows rows an in-flight auto-decrypt finishes after the keys were locked", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([encryptedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            let resolveDecrypt!: (value: unknown) => void;
+            evaluateMessageSecurity.mockReturnValue(new Promise((resolve) => (resolveDecrypt = resolve)));
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Encrypted message");
+            await waitFor(() => expect(evaluateMessageSecurity).toHaveBeenCalled());
+
+            act(() => emitKeySession({ mailboxUid: "mb1", state: "locked" }));
+            resolveDecrypt({ state: "encrypted_verified", subject: "Leaked subject", html: "<p>Leaked body</p>" });
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            expect(screen.queryByText("Leaked subject")).not.toBeInTheDocument();
+            expect(screen.getByText("Encrypted message")).toBeInTheDocument();
+        });
+
+        it("never shows rows an unlock-banner decrypt finishes after the keys were locked again", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([encryptedMsg]);
+            getUnlockedKeys.mockReturnValue(undefined);
+            unlockWithPassword.mockImplementation(async () => {
+                getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            });
+            let resolveDecrypt!: (value: unknown) => void;
+            evaluateMessageSecurity.mockReturnValue(new Promise((resolve) => (resolveDecrypt = resolve)));
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+
+            await user.click(await screen.findByText("Unlock to show an encrypted message's subject"));
+            await screen.findByText("Unlock your mailbox");
+            await user.type(screen.getByLabelText("Encryption password"), "a good password");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+            await waitFor(() => expect(evaluateMessageSecurity).toHaveBeenCalled());
+
+            act(() => emitKeySession({ mailboxUid: "mb1", state: "locked" }));
+            resolveDecrypt({ state: "encrypted_verified", subject: "Leaked subject", html: "<p>Leaked body</p>" });
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            expect(screen.queryByText("Leaked subject")).not.toBeInTheDocument();
         });
     });
 

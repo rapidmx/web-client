@@ -61,8 +61,8 @@ describe("NewMatterPage", () => {
         await screen.findByText("New matter");
 
         await fillMinimalRequiredFields(user);
-        const start = screen.getByLabelText("Date range start") as HTMLInputElement;
-        const end = screen.getByLabelText("Date range end") as HTMLInputElement;
+        const start = screen.getByLabelText("Date range start");
+        const end = screen.getByLabelText("Date range end");
         await user.clear(start);
         await user.type(start, "2026-06-01T00:00");
         await user.clear(end);

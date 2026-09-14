@@ -25,11 +25,11 @@ import {
     createDraft,
     deleteMessage,
     getMailbox,
+    getMessage,
     listFolders,
     listMailboxes,
     sendMessage,
     setMessageRequestReceipt,
-    setMessageScheduledSendTime,
     uploadAttachment,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
@@ -42,6 +42,7 @@ import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
 import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } from "@rapidmx/react-shared/crypto/smimeMessage.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import type { ComposeSession } from "./ComposeContext.js";
+import { registerComposeFlush } from "./composeFlushRegistry.js";
 import RichTextEditor from "./RichTextEditor.js";
 import ScheduleSendPicker from "./ScheduleSendPicker.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -113,14 +114,25 @@ function parseAddresses(value: string): ComposeRecipientInput[] {
         .map((address) => ({ address }));
 }
 
-function HeaderButton({ label, onClick, icon: Icon }: { label: string; onClick: () => void; icon: React.ComponentType<{ size?: number }> }) {
+function HeaderButton({
+    label,
+    onClick,
+    icon: Icon,
+    disabled,
+}: {
+    label: string;
+    onClick: () => void;
+    icon: React.ComponentType<{ size?: number }>;
+    disabled?: boolean;
+}) {
     return (
         <button
             type="button"
             aria-label={label}
             title={label}
             onClick={onClick}
-            className="w-6 h-6 flex items-center justify-center rounded-sm text-white/80 hover:bg-white/15 hover:text-white"
+            disabled={disabled}
+            className="w-6 h-6 flex items-center justify-center rounded-sm text-white/80 hover:bg-white/15 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
         >
             <Icon size={14} />
         </button>
@@ -202,6 +214,10 @@ export default function ComposeWindow({
     // just because the user re-focuses the field. Only ever grows via `checkRecipientDiscovery()` below;
     // never cleared, so switching focus between To/Cc/Bcc repeatedly doesn't re-trigger lookups.
     const [recipientStatuses, setRecipientStatuses] = useState<Record<string, RecipientEncryptionStatus>>({});
+    // Addresses whose lookup is on the wire (so the blur handlers and the prefilled-recipient effect don't
+    // look one up twice), and a counter bumped by a From switch so a lookup for the previous sender is dropped.
+    const lookupsInFlightRef = useRef(new Set<string>());
+    const discoveryGenerationRef = useRef(0);
     // A send refused because signing/encryption was wanted but can't happen right now (keys locked, the
     // encryption policy/mailbox couldn't be loaded, or Bcc recipients on an encrypted message) - never a
     // silent downgrade to plaintext; the user has to explicitly pick the override.
@@ -221,6 +237,8 @@ export default function ComposeWindow({
     const lastSavedRef = useRef<string | null>(null);
     /** An edit is waiting on the autosave debounce - flushed if the window unmounts first. */
     const pendingSaveRef = useRef(false);
+    /** Mirrors `sending` for the page-leave/sign-out flushes, which run outside React's render cycle. */
+    const sendingRef = useRef(false);
     /** The latest autosave request, if any - always settles (never rejects). */
     const saveInFlightRef = useRef<Promise<Message | undefined> | null>(null);
     /** Set once the window has been sent/closed/discarded - nothing more gets autosaved after that. */
@@ -328,23 +346,40 @@ export default function ComposeWindow({
      * and not the same lookup `assembleForSend()` performs again at send time (deliberately: this is a
      * best-effort UI hint, not something a stale value here should be trusted to skip at send time).
      * A failed lookup or a mailbox/policy fetch that hasn't resolved yet just leaves that address with no
-     * indicator rather than surfacing an error over what's a cosmetic nicety.
+     * indicator rather than surfacing an error over what's a cosmetic nicety - the effect below runs it
+     * again for every current recipient once both have loaded.
+     *
+     * The statuses also drive autosave: a recipient without one yet (lookup pending or never run) or a
+     * decision that would auto-encrypt keeps the plaintext draft save off (see `autosaveSuppressed`).
      */
     function checkRecipientDiscovery(addresses: ComposeRecipientInput[]) {
         if (!mailbox || !encryptionPolicy) {
             return;
         }
         const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
-        const unchecked = addresses.filter((r) => !(r.address in recipientStatuses));
+        const generation = discoveryGenerationRef.current;
+        const inFlight = lookupsInFlightRef.current;
+        const unchecked = addresses.filter((r) => !(r.address in recipientStatuses) && !inFlight.has(r.address));
         for (const recipient of unchecked) {
+            inFlight.add(recipient.address);
             void lookupKeys(mailbox.uid, recipient.address)
                 .catch(() => undefined)
                 .then((lookup) => {
+                    inFlight.delete(recipient.address);
+                    if (generation !== discoveryGenerationRef.current) {
+                        return;
+                    }
                     const status = resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, recipient.address, lookup);
                     setRecipientStatuses((prev) => ({ ...prev, [recipient.address]: status }));
                 });
         }
     }
+
+    // Prefilled recipients (a reply's To/Cc) are never blurred, and a blur before the mailbox/policy loaded
+    // was ignored - look every current recipient up as soon as both are available.
+    useEffect(() => {
+        checkRecipientDiscovery([...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)]);
+    }, [mailbox, encryptionPolicy]);
 
     // Resolves the mailbox's default signature (if any) for `signatureContext` and seeds `html` with it
     // plus any quoted original message, before `RichTextEditor` ever mounts (gated by `contentReady`
@@ -393,7 +428,7 @@ export default function ComposeWindow({
                 // Only now that the replacement exists is it safe to discard the draft(s) a From switch
                 // superseded - if creating this one had failed, the earlier draft is still there.
                 for (const superseded of supersededDraftsRef.current.splice(0)) {
-                    void deleteMessage(superseded.uid, superseded.version).catch(() => undefined);
+                    void deleteSupersededDraft(superseded);
                 }
             })
             .catch((err) => {
@@ -411,11 +446,34 @@ export default function ComposeWindow({
     useEffect(
         () => () => {
             for (const superseded of supersededDraftsRef.current.splice(0)) {
-                void deleteMessage(superseded.uid, superseded.version).catch(() => undefined);
+                void deleteSupersededDraft(superseded);
             }
         },
         [],
     );
+
+    /**
+     * Deletes a draft a From switch replaced. An autosave of it may still be on the wire - it bumps the
+     * draft's version (see `saveDraftNow()`, which keeps `superseded.version` current while it's queued), so
+     * the delete waits for it and uses its version; a delete that still fails (e.g. another save of it landed
+     * meanwhile) is retried once with the version the server currently holds.
+     * Best-effort, never rejects.
+     */
+    async function deleteSupersededDraft(superseded: Message): Promise<void> {
+        const saved = await saveInFlightRef.current;
+        // Once it's out of `supersededDraftsRef` a landing save can't update `superseded.version` any more.
+        const version = saved?.uid === superseded.uid ? saved.version : superseded.version;
+        try {
+            await deleteMessage(superseded.uid, version);
+        } catch {
+            try {
+                const fresh = await getMessage(superseded.uid);
+                await deleteMessage(fresh.uid, fresh.version);
+            } catch {
+                // Already gone, or the server is unreachable - nothing more to do from here.
+            }
+        }
+    }
 
     // The From picker lists every mailbox straight away and drops view-only ones as each check answers - only
     // mailboxes the caller can create a draft in are worth offering.
@@ -453,6 +511,8 @@ export default function ComposeWindow({
         setFolderError(null);
         setMailbox(null);
         setRecipientStatuses({});
+        discoveryGenerationRef.current += 1;
+        lookupsInFlightRef.current = new Set();
         setEncryptRequested(false);
         setEncryptionBlocked(null);
         setSecurityBlock(null);
@@ -572,37 +632,54 @@ export default function ComposeWindow({
         bccRecipients: ComposeRecipientInput[],
         forcePlaintext: boolean,
     ): Promise<Message | "blocked"> {
+        // Keys are read at the moment they're needed, and again after any await: they can lock (idle
+        // timeout, sign-out elsewhere) mid-send, and a destroyed `UnlockedKeys` object must count as locked.
         // Only reachable once a draft exists, which itself requires `mailboxUid` to have resolved.
-        const unlocked = getUnlockedKeys(mailboxUid!);
-        // `mailbox` is required to build protected headers (own From address) whenever signing or
-        // encrypting - not just guarded on the encryption branch below, since a signed-only message
-        // needs it too.
-        const canSign = signEnabled && !!mailbox && !!unlocked?.signingPrivateKey && !!unlocked.signingCertDer;
-        const canEncryptSelf = !!unlocked?.encryptionPrivateKey && !!unlocked.encryptionCertDer;
+        function readKeys() {
+            const stored = getUnlockedKeys(mailboxUid!);
+            const unlocked = stored?.destroyed ? undefined : stored;
+            return {
+                unlocked,
+                // `mailbox` is required to build protected headers (own From address) whenever signing or
+                // encrypting - not just guarded on the encryption branch below, since a signed-only message
+                // needs it too.
+                canSign: signEnabled && !!mailbox && !!unlocked?.signingPrivateKey && !!unlocked.signingCertDer,
+                canEncryptSelf: !!unlocked?.encryptionPrivateKey && !!unlocked.encryptionCertDer,
+            };
+        }
+        let keys = readKeys();
         const allRecipients = [...toRecipients, ...ccRecipients, ...bccRecipients];
 
         // The Sign toggle was shown (and is still checked), but signing can't actually happen any more.
-        if (!forcePlaintext && signEnabled && offeredCryptoRef.current.sign && !canSign) {
-            return blockSend(KEYS_LOCKED_SIGN_MESSAGE, "Send without signing or encryption", !unlocked);
+        const signingLost = () => !forcePlaintext && signEnabled && offeredCryptoRef.current.sign && !keys.canSign;
+        if (signingLost()) {
+            return blockSend(KEYS_LOCKED_SIGN_MESSAGE, "Send without signing or encryption", !keys.unlocked);
         }
 
         let wantEncrypt = false;
         let recipientCertDers: Uint8Array[] = [];
-        if (!forcePlaintext && (canEncryptSelf || offeredCryptoRef.current.encrypt)) {
+        // Entered whenever this message could be encrypted at all - including a mailbox with an enrolled
+        // encryption key that this session never unlocked: policy may still auto-encrypt, and that must block
+        // (and prompt to unlock) rather than quietly send plaintext.
+        if (!forcePlaintext && (keys.canEncryptSelf || offeredCryptoRef.current.encrypt || hasEnrolledEncryptionKey)) {
             if (!mailbox || !encryptionPolicy) {
                 // Without both, there's no telling whether policy auto-encrypts this message.
                 return blockSend(POLICY_UNAVAILABLE_MESSAGE, "Send without encryption", false);
             }
             const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
             const lookups = await Promise.all(allRecipients.map((r) => lookupKeys(mailboxUid!, r.address).catch(() => undefined)));
+            keys = readKeys();
+            if (signingLost()) {
+                return blockSend(KEYS_LOCKED_SIGN_MESSAGE, "Send without signing or encryption", !keys.unlocked);
+            }
             const statuses = allRecipients.map((r, i) =>
                 resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, r.address, lookups[i]),
             );
             const decision = decideMessageEncryption(statuses);
             wantEncrypt = encryptRequested || decision.autoEncrypt;
             if (wantEncrypt) {
-                if (!canEncryptSelf) {
-                    return blockSend(KEYS_LOCKED_ENCRYPT_MESSAGE, "Send without encryption", !unlocked);
+                if (!keys.canEncryptSelf) {
+                    return blockSend(KEYS_LOCKED_ENCRYPT_MESSAGE, "Send without encryption", !keys.unlocked);
                 }
                 if (!decision.canEncryptAll) {
                     setEncryptionBlocked(decision.blockedRecipients);
@@ -611,10 +688,11 @@ export default function ComposeWindow({
                 if (bccRecipients.length > 0) {
                     return blockSend(BCC_ENCRYPTED_MESSAGE, "Send without encryption", false);
                 }
-                recipientCertDers = [unlocked.encryptionCertDer!, ...statuses.map((s) => fromBase64(s.encryptCert!.publicKey))];
+                recipientCertDers = [keys.unlocked!.encryptionCertDer!, ...statuses.map((s) => fromBase64(s.encryptCert!.publicKey))];
             }
         }
 
+        const { canSign } = keys;
         if ((wantEncrypt || canSign) && attachments.length > 0) {
             // Matches BaseMailComposeRoute.assembleRaw()'s own server-side rejection, surfaced here with a
             // clearer explanation than that route's generic 400 rather than via a round trip.
@@ -643,7 +721,7 @@ export default function ComposeWindow({
             messageId: `<${crypto.randomUUID()}@${domain}>`,
         };
         const bodyContentType = 'text/html; charset="utf-8"';
-        const signing = canSign ? { certDer: unlocked.signingCertDer!, privateKey: unlocked.signingPrivateKey! } : undefined;
+        const signing = canSign ? { certDer: keys.unlocked!.signingCertDer!, privateKey: keys.unlocked!.signingPrivateKey! } : undefined;
 
         const outerHeaders = wantEncrypt ? applyBaselineOuterHeaders(protectedHeaders) : protectedHeaders;
         const mimePart = wantEncrypt
@@ -680,6 +758,7 @@ export default function ComposeWindow({
         }
 
         setSending(true);
+        sendingRef.current = true;
         setSendError(null);
         setSecurityBlock(null);
         setEncryptionBlocked(null);
@@ -696,14 +775,14 @@ export default function ComposeWindow({
             // plaintext copy over it if the rest of the send fails.
             lastSavedRef.current = `${assembled.uid}:${contentKey}`;
             const withReceipt = requestReceipt ? await setMessageRequestReceipt(assembled, true) : assembled;
-            const ready = scheduledSendTimeIso ? await setMessageScheduledSendTime(withReceipt, scheduledSendTimeIso) : withReceipt;
-            await sendMessage(ready.uid);
+            await sendMessage(withReceipt.uid, scheduledSendTimeIso ? { scheduledSendTime: scheduledSendTimeIso } : undefined);
             finishedRef.current = true;
             onClose();
         } catch (err) {
             const fallback = scheduledSendTimeIso ? "Could not schedule this message." : "Could not send this message.";
             setSendError(err instanceof ApiRequestError ? err.message : fallback);
         } finally {
+            sendingRef.current = false;
             setSending(false);
         }
     }
@@ -790,8 +869,10 @@ export default function ComposeWindow({
     }
 
     /** "Close": keeps the draft (saving any unsaved edits first) - unless there's nothing in it worth keeping,
-     * or it can't be saved at all because it's headed for encryption, which needs the same confirmation as a
-     * discard. */
+     * or it can't be saved at all because it's (or may be) headed for encryption, which needs the same
+     * confirmation as a discard. Close and Discard are both disabled while a send is in progress: deleting
+     * the draft, or saving a plaintext copy over the message the send just assembled, mid-send would lose or
+     * leak it. */
     function handleClose() {
         if (!hasUserContent) {
             discardNow();
@@ -843,15 +924,25 @@ export default function ComposeWindow({
     const baselineKey = JSON.stringify([initialTo ?? "", initialCc ?? "", "", initialSubject ?? "", seededHtml ?? ""]);
     const hasUserContent = contentKey !== baselineKey || hasUploads;
     // A message headed for encryption is never autosaved: the draft would store its plaintext server-side,
-    // defeating end-to-end encryption.
-    const autosaveSuppressed = encryptRequested || Object.values(recipientStatuses).some((s) => s.autoEncrypt);
-    const latestRef = useRef({ draft, to, cc, bcc, subject, html, contentKey });
-    latestRef.current = { draft, to, cc, bcc, subject, html, contentKey };
+    // defeating end-to-end encryption. Whenever this message could be encrypted at all (an unlocked or
+    // enrolled encryption key), that holds until it's known not to be: while the policy is missing, while
+    // any current recipient's lookup is still pending (or hasn't run), and when policy would auto-encrypt.
+    const currentStatuses = [...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)].map((r) => recipientStatuses[r.address]);
+    const encryptionPossible = !!unlockedKeys?.encryptionPrivateKey || hasEnrolledEncryptionKey || offeredCryptoRef.current.encrypt;
+    const autosaveSuppressed =
+        encryptRequested ||
+        (encryptionPossible &&
+            (!encryptionPolicy ||
+                currentStatuses.some((s) => !s) ||
+                decideMessageEncryption(currentStatuses).autoEncrypt));
+    const latestRef = useRef({ draft, to, cc, bcc, subject, html, contentKey, saveStatus });
+    latestRef.current = { draft, to, cc, bcc, subject, html, contentKey, saveStatus };
 
     useEffect(() => {
         const due =
             !!draft &&
             contentReady &&
+            cryptoContextReady &&
             !sending &&
             !autosaveSuppressed &&
             hasUserContent &&
@@ -862,7 +953,7 @@ export default function ComposeWindow({
         }
         const timer = setTimeout(() => void saveDraftNow(), autosaveDelayMs);
         return () => clearTimeout(timer);
-    }, [draft, contentReady, sending, autosaveSuppressed, hasUserContent, contentKey]);
+    }, [draft, contentReady, cryptoContextReady, sending, autosaveSuppressed, hasUserContent, contentKey]);
 
     // Unmounting with an edit still waiting on the debounce (e.g. the whole app shell unmounting) saves it
     // right away rather than losing it.
@@ -875,6 +966,34 @@ export default function ComposeWindow({
         [],
     );
 
+    /** Saves an edit still waiting on the debounce now, and resolves once that save - or one already on the
+     * wire - has settled. A send clears `pendingSaveRef` before it starts, so this never saves mid-send. */
+    function flushPendingSave(): Promise<unknown> {
+        if (pendingSaveRef.current && !finishedRef.current) {
+            return saveDraftNow();
+        }
+        return Promise.resolve(saveInFlightRef.current);
+    }
+
+    // Sign Out (AppShell) waits for this before ending the session.
+    useEffect(() => registerComposeFlush(flushPendingSave), []);
+
+    // Leaving the page (reload, closing the tab, following a link) with an edit not yet saved: start the save
+    // straight away and ask the browser to confirm, so the last couple of seconds of typing aren't lost.
+    useEffect(() => {
+        function handleBeforeUnload(event: BeforeUnloadEvent) {
+            const unsaved = pendingSaveRef.current || latestRef.current.saveStatus === "saving";
+            if (!unsaved || finishedRef.current || sendingRef.current) {
+                return;
+            }
+            void flushPendingSave();
+            event.preventDefault();
+            event.returnValue = "";
+        }
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+    }, []);
+
     const title = subject.trim() || "New Message";
     const titleId = `compose-title-${id}`;
 
@@ -882,7 +1001,7 @@ export default function ComposeWindow({
         <Modal open={discardPrompt !== null} onClose={() => setDiscardPrompt(null)} title="Discard this draft?">
             <p className="text-sm text-text-muted mb-4">{discardPrompt}</p>
             <div className="flex gap-3">
-                <Button type="button" onClick={discardNow} className="!w-auto">
+                <Button type="button" onClick={discardNow} disabled={sending} className="!w-auto">
                     Discard
                 </Button>
                 <Button type="button" variant="secondary" onClick={() => setDiscardPrompt(null)} className="!w-auto">
@@ -903,11 +1022,7 @@ export default function ComposeWindow({
                     <span className="text-sm font-medium truncate">{title}</span>
                     <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
                         <HeaderButton label="Restore" onClick={onToggleMinimize} icon={HiOutlineArrowsPointingOut} />
-                        <HeaderButton
-                            label="Discard draft"
-                            onClick={handleDiscard}
-                            icon={HiOutlineXMark}
-                        />
+                        <HeaderButton label="Discard draft" onClick={handleDiscard} icon={HiOutlineXMark} disabled={sending} />
                     </div>
                 </div>
             </div>
@@ -967,7 +1082,7 @@ export default function ComposeWindow({
                             icon={expanded ? HiOutlineArrowsPointingIn : HiOutlineArrowsPointingOut}
                         />
                     )}
-                    <HeaderButton label="Close" onClick={handleClose} icon={HiOutlineXMark} />
+                    <HeaderButton label="Close" onClick={handleClose} icon={HiOutlineXMark} disabled={sending} />
                 </div>
             </div>
 
@@ -1216,7 +1331,8 @@ export default function ComposeWindow({
                         aria-label="Discard draft"
                         title="Discard draft"
                         onClick={handleDiscard}
-                        className="w-8 h-8 flex items-center justify-center rounded-full text-text-muted hover:bg-surface-alt hover:text-text"
+                        disabled={sending}
+                        className="w-8 h-8 flex items-center justify-center rounded-full text-text-muted hover:bg-surface-alt hover:text-text disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                         <HiOutlineTrash size={18} />
                     </button>

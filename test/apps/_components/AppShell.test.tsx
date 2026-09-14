@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import AppShell, { LOGOUT_TIMEOUT_MS } from "../../../apps/shared/components/layout/AppShell.js";
+import { registerComposeFlush } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
 
 // The hook's own behavior (activity resets the clock, disabled at 0, cleans up on unmount, ...) is
 // already exercised end to end in react-shared's own test suite - this file only needs to confirm
@@ -210,6 +211,34 @@ describe("AppShell", () => {
             `${AUTH_SERVER_URL}/api/auth/logout`,
             expect.objectContaining({ method: "POST", credentials: "include" }),
         );
+    });
+
+    it("lets open compose windows save their pending edits before logging out", async () => {
+        const location = mockLocation();
+        const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
+        let finishSave!: () => void;
+        const flush = vi.fn(() => new Promise<void>((resolve) => (finishSave = resolve)));
+        const unregister = registerComposeFlush(flush);
+        try {
+            const user = userEvent.setup();
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AppShell>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+            await waitFor(() => expect(flush).toHaveBeenCalled());
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            expect(fetchMock).not.toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/auth/logout`, expect.anything());
+
+            finishSave();
+            await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
+            expect(fetchMock).toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/auth/logout`, expect.anything());
+        } finally {
+            unregister();
+        }
     });
 
     it("still navigates when auth-server's logout fails, or times out", async () => {
