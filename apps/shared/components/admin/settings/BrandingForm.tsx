@@ -29,8 +29,17 @@ export function isSvgFile(file: File): boolean {
 
 const RASTER_IMAGE_ACCEPT = "image/png,image/jpeg,image/gif,image/webp,image/x-icon,image/vnd.microsoft.icon";
 
+export interface BrandingFormProps {
+    branding: Branding;
+    onChange: (b: Branding) => void;
+    /** Set when shown in a page that already introduces branding (the setup wizard): the title and introduction are
+     * left out, and the section headings sit one level lower. */
+    embedded?: boolean;
+}
+
 /** The branding editor, shared by the Branding page and the setup wizard. */
-export default function BrandingForm({ branding, onChange }: { branding: Branding; onChange: (b: Branding) => void }) {
+export default function BrandingForm({ branding, onChange, embedded = false }: BrandingFormProps) {
+    const SectionHeading = embedded ? "h3" : "h2";
     const [companyName, setCompanyName] = useState(branding.companyName);
     const [title, setTitle] = useState(branding.title);
     const [headerHtml, setHeaderHtml] = useState(branding.headerHtml ?? "");
@@ -117,18 +126,22 @@ export default function BrandingForm({ branding, onChange }: { branding: Brandin
 
     return (
         <div className="max-w-2xl">
-            <h1 className="text-xl font-bold uppercase tracking-wide mb-1">Branding</h1>
-            <p className="text-sm text-text-muted mb-5">
-                Customize the logo, nav-header icon, product name, and chrome shown to every visitor of the
-                webmail and admin console — including anonymous booking-page visitors.
-            </p>
+            {!embedded && (
+                <>
+                    <h1 className="text-xl font-bold uppercase tracking-wide mb-1">Branding</h1>
+                    <p className="text-sm text-text-muted mb-5">
+                        Customize the logo, nav-header icon, product name, and chrome shown to every visitor of the
+                        webmail and admin console — including anonymous booking-page visitors.
+                    </p>
+                </>
+            )}
 
             {error && <Alert>{error}</Alert>}
             {saved && !error && <div className="mb-4 text-sm text-success font-medium">Saved.</div>}
 
             <div className="flex flex-col gap-6">
                 <section className="flex flex-col gap-3">
-                    <h2 className="text-sm font-bold uppercase tracking-wide text-text-muted">Logo</h2>
+                    <SectionHeading className="text-sm font-bold uppercase tracking-wide text-text-muted">Logo</SectionHeading>
                     <div className="flex items-center gap-4">
                         <img
                             src={branding.logoUrl || "/images/logo.svg"}
@@ -196,7 +209,7 @@ export default function BrandingForm({ branding, onChange }: { branding: Brandin
                 </section>
 
                 <section className="flex flex-col gap-3">
-                    <h2 className="text-sm font-bold uppercase tracking-wide text-text-muted">Icon</h2>
+                    <SectionHeading className="text-sm font-bold uppercase tracking-wide text-text-muted">Icon</SectionHeading>
                     <p className="text-xs text-text-muted -mt-1">
                         A compact mark for navigation headers, independent of the full logo above. Falls back to
                         the logo, then a default asset, when not set.
@@ -268,7 +281,7 @@ export default function BrandingForm({ branding, onChange }: { branding: Brandin
                 </section>
 
                 <section className="flex flex-col gap-3">
-                    <h2 className="text-sm font-bold uppercase tracking-wide text-text-muted">Custom stylesheet</h2>
+                    <SectionHeading className="text-sm font-bold uppercase tracking-wide text-text-muted">Custom stylesheet</SectionHeading>
                     <div className="flex items-center gap-3">
                         <span className="text-sm text-text-muted truncate">
                             {branding.stylesheetUrl || "None configured"}

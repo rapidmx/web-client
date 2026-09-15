@@ -1,5 +1,28 @@
 # Release Notes
 
+## Unreleased
+
+### Fixes
+
+- **Styles for `@rapidmx/react-shared` components:** `app.css` told Tailwind to scan
+  `node_modules/@rapidmx/react-shared/src`, a path that doesn't exist relative to the stylesheet, and the published
+  package ships only `dist`. So Tailwind generated none of the classes react-shared's components use: dialogs had no
+  backdrop, position or width and couldn't be closed by clicking outside them, and buttons, alerts and form fields lost
+  their styling. The stylesheet now scans react-shared's `dist` in two places: under this package's own `node_modules`,
+  and beside this package in a consumer's `node_modules/@rapidmx`. The second is how the server installs both, plugin
+  pages included.
+- **Setup wizard and plugins:**
+  - Each step shows "Step N of 6" above its title, and completed steps show a check. The plugins, branding and escrow
+    steps no longer repeat the standalone page's title and introduction under the step heading. The server settings
+    step shows its three policies as separate panels.
+  - The installed plugins table merges the state and server columns into one Status column. Enable or Disable,
+    Settings and any Upgrade are buttons, with Change version and Uninstall as links below them. On narrow screens,
+    each plugin's details stack above its actions, so the actions no longer scroll out of view.
+  - The plugin settings dialog keeps Save and Cancel visible at the bottom while a long list of settings scrolls. It
+    places checkbox help beside the checkbox and uses the same input styling as the other admin forms.
+  - `PluginsManager`, `BrandingForm`, `EncryptionPolicyForm`, `RetentionPolicyForm` and `MailboxPolicyForm` take an
+    optional `embedded` prop for this. The standalone admin pages are unchanged.
+
 ## v0.6.0
 
 This release lets server plugins add their own pages to the webmail and admin console navigation. It needs a server

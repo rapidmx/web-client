@@ -100,6 +100,10 @@ describe("SetupPage", () => {
 
         expect(await screen.findByRole("heading", { name: "Step 1 of 6: Plugins" })).toBeInTheDocument();
         expect(await screen.findByText("No plugins installed.")).toBeInTheDocument();
+        // The plugins manager is embedded under the step's heading, without the Plugins page's own title.
+        expect(screen.queryByRole("heading", { level: 1, name: "Plugins" })).not.toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 3, name: "Installed plugins" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Add by name" })).toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
         // Steps after the domain can't be jumped to until a domain exists.
         expect(screen.getByRole("button", { name: "3. Server settings" })).toBeDisabled();
@@ -160,6 +164,8 @@ describe("SetupPage", () => {
         expect(await screen.findByRole("heading", { name: "Step 4 of 6: Escrow" })).toBeInTheDocument();
         expect(await screen.findByText("How do you want to set up escrow?")).toBeInTheDocument();
         expect(screen.queryByText(/End-to-end encryption is turned off/)).not.toBeInTheDocument();
+        // Only the step itself is headed "Escrow".
+        expect(screen.queryByRole("heading", { name: "Escrow" })).not.toBeInTheDocument();
     });
 
     it("resumes at the saved step, and shows every server setting on the settings step", async () => {
@@ -169,6 +175,15 @@ describe("SetupPage", () => {
         expect(await screen.findByLabelText("Mail within this server")).toBeInTheDocument();
         expect(await screen.findByText("Message retention (days)")).toBeInTheDocument();
         expect(await screen.findByLabelText("Default quota (GB)")).toHaveValue(2);
+        // Each policy form is a section of the step rather than a page of its own.
+        expect(screen.getByRole("heading", { level: 3, name: "End-to-end encryption" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 3, name: "Retention policy" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 3, name: "Mailboxes" })).toBeInTheDocument();
+        expect(screen.queryByRole("heading", { level: 1, name: "Retention Policy" })).not.toBeInTheDocument();
+        // The steps before it are marked done.
+        expect(screen.getByRole("button", { name: /^1\. Plugins\s*\(done\)$/ })).toBeEnabled();
+        expect(screen.getByRole("button", { name: /^2\. Domain\s*\(done\)$/ })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "4. Escrow" })).toBeEnabled();
     });
 
     it("falls back to the first step when the saved step is unknown or status can't load", async () => {
@@ -216,6 +231,10 @@ describe("SetupPage", () => {
         renderPage();
         expect(await screen.findByRole("heading", { name: "Step 5 of 6: Branding" })).toBeInTheDocument();
         expect(await screen.findByLabelText("Company name")).toBeInTheDocument();
+        // The step introduces branding, so the Branding page's title and introduction are left out.
+        expect(screen.queryByRole("heading", { level: 1, name: "Branding" })).not.toBeInTheDocument();
+        expect(screen.queryByText(/Customize the logo/)).not.toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 3, name: "Logo" })).toBeInTheDocument();
     });
 
     it("creates the admin's own mailbox first, then more, and finishes setup", async () => {

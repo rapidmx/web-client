@@ -1739,3 +1739,41 @@ repo, created from this repo at efe108c, which takes the pages, `AvailabilityEdi
   `localIndexWorker-*.js` chunk and the wa-sqlite wasm, while the same dist build with the old `.ts` literal restored
   fails. Full `yarn vitest run --coverage` 153 files / 2253 tests, 100 / 99.96 / 100 / 100; `tsc --noEmit -p
   tsconfig.json`, `yarn lint` clean.
+
+### 2026-09-15 — react-shared styles never generated; setup wizard and plugins UX
+
+- **Root cause:** `app.css` had `@source "../../node_modules/@rapidmx/react-shared/src"`. `@source` resolves from
+  `apps/shared/styles/`, so that's `apps/node_modules/...` (never exists), and published react-shared ships only `dist`.
+  No Modal/Button/Alert/FormField classes were generated: Modal had no `fixed inset-0 bg-black/50`, so no backdrop, no
+  position or width, and no backdrop to click. **Fix:** two `@source` lines, `../../../node_modules/@rapidmx/react-shared/dist`
+  (this checkout / nested install) and `../../../../react-shared/dist` (hoisted beside web-client in a consumer's
+  `node_modules/@rapidmx`, i.e. the server and its `plugin-ui.css`, which imports this file by path). Missing paths are
+  skipped silently. electron-client links web-client to this checkout, so one of the two matches either way. From a
+  checkout, the second can hit a sibling `react-shared` checkout's `dist` (harmless). Verified: the server's
+  `dist/public/assets/client-*.css` contains `bg-black\/50`, `max-w-\[440px\]` after overlaying this web-client.
+- **Modal limits (react-shared, not changed here):** fixed `max-w-[440px]`, no size prop, the title/× row scrolls with
+  the content. The settings dialog works around the scrolling with a sticky footer: `sticky -bottom-7 -mx-7 -mb-7 px-7`
+  cancels the dialog's `p-7`, since Chrome sticks at the scrollport edge. Button has no size variant, so `!w-auto` stays
+  the house convention.
+- **UX changes:** `embedded` prop on `PluginsManager` (no h1/intro, h3 section headings, Add by name beside
+  "Installed plugins", a short trust note), `BrandingForm` (no title/intro, h3 sub-headings), and the three policy forms
+  (h3 `text-base` title). The wizard wraps the settings forms and branding in `bg-surface border rounded-md p-6` cards
+  (`max-w-3xl`). The step heading is an eyebrow "Step N of 6" + uppercase title; its accessible name stays
+  "Step N of 6: Title" via an sr-only colon. Pills: `bg-surface`, a `HiCheck` on done steps, hover border. The domains
+  Retry is `variant="text"`. `EscrowSetupStep` (wizard-only) lost its h2. The plugins table has one Status column
+  (badge, plus "Loaded on…"/errors when enabled; "Server status unknown" with no status), secondary Settings/Upgrade,
+  a primary Enable or secondary Disable, and text Change version/Uninstall below. Below `lg` rows stack
+  (`flex flex-wrap` tr, `block` td, thead hidden) with explicit table roles. An overflow menu was rejected:
+  PopoverPortal is `role="dialog"` with a fixed height, and an absolute menu is clipped by `overflow-x-auto`.
+- **Browser screenshot workflow** (session scratchpad, not in the repo): `browsecheck.mjs` runs the server's compiled
+  `dist/src/server.js` (production, in-memory Mongo+Redis, port 38540) with an admin `jwt` cookie in Playwright headless
+  Chromium. `SHOTS=1 SHOTS_LABEL=x` runs `wizardshots.mjs`: full-page 1400px and 400px shots of every wizard step
+  (adds example.com on the domain step), the plugin settings dialog (plus scrolled), checks it closes via ×, Cancel,
+  Escape and backdrop, then finishes setup and shoots `/admin/plugins` (it redirects to setup until then). The default
+  plugins install from npm on first start, so it waits for a Settings button. Run from Git Bash with
+  `MSYS_NO_PATHCONV=1` (sandbox off for localhost). To test unpublished web-client: `yarn build`, copy `apps` + `dist`
+  over the server's `node_modules/@rapidmx/web-client`, `npx vite build` in the server, then restore with a reinstall.
+  Full-page shots at 400px show AdminShell's fixed bottom tab bar mid-page, which is a screenshot artifact.
+- **Tests:** plugins page heading vs embedded, settings dialog close via ×/Escape/backdrop (and a press inside doesn't
+  close), checkbox help, one Disabled badge. Setup: embedded headings on the plugins/settings/branding/escrow steps and
+  done pills. Full run 153 files / 2257 tests, 100 / 99.96 / 100 / 100; tsc, lint, build clean.

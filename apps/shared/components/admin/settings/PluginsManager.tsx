@@ -32,7 +32,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 const INPUT_CLASS =
-    "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
+    "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
 /** How often status is refreshed while server copies are still applying a change. */
 const PENDING_POLL_MS = 5000;
@@ -67,9 +67,32 @@ interface PendingChange {
     uid?: string;
 }
 
+/** Classes for a plugin table's header and body cells. */
+const TH_CLASS = "text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border";
+const TD_CLASS = "py-3 px-2.5 border-b border-border align-top";
+
+/**
+ * The installed plugins table stacks each row on narrow screens - name and description, then version and status side
+ * by side, then the actions - so the actions aren't scrolled off to the side. The explicit roles keep it a table for
+ * assistive technology while it isn't displayed as one.
+ */
+const INSTALLED_ROW_CLASS = "flex flex-wrap border-b border-border lg:table-row lg:border-b-0";
+const INSTALLED_TD_CLASS = "block px-2.5 align-top lg:table-cell lg:pt-3 lg:pb-3 lg:border-b lg:border-border";
+
+/** The small pill badge admin tables use for a state. */
+const BADGE_CLASS = "inline-block text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill";
+
+export interface PluginsManagerProps {
+    /**
+     * Set when shown inside another page that already has its own heading and introduction (the setup wizard): the
+     * page heading and introduction are left out, and the section headings sit one level lower.
+     */
+    embedded?: boolean;
+}
+
 /** Installed plugins with their rollout status, and every plugin action - shared by the Plugins page and the
  * setup wizard. */
-export default function PluginsManager() {
+export default function PluginsManager({ embedded = false }: PluginsManagerProps = {}) {
     const [plugins, setPlugins] = useState<Plugin[]>([]);
     const [status, setStatus] = useState<PluginStatus | null>(null);
     /** Set when the last status refresh failed, so what's shown may be out of date. */
@@ -310,19 +333,33 @@ export default function PluginsManager() {
 
     const displayNameOf = (name: string): string => plugins.find((plugin) => plugin.name === name)?.manifest.displayName ?? name;
 
+    const SectionHeading = embedded ? "h3" : "h2";
+    const addButton = (
+        <Button type="button" variant="secondary" className="!w-auto shrink-0" onClick={() => setAdding(true)}>
+            Add by name
+        </Button>
+    );
+
     return (
         <>
-            <div className="flex items-center justify-between mb-2">
-                <h1 className="text-xl font-bold uppercase tracking-wide">Plugins</h1>
-                <Button type="button" variant="secondary" className="!w-auto" onClick={() => setAdding(true)}>
-                    Add by name
-                </Button>
-            </div>
-            <p className="text-sm text-text-muted mb-5 max-w-3xl">
-                Plugins add protocols and features to every server. Changes are applied by restarting the servers
-                one at a time, so mail keeps flowing. Plugins run with full access to the server, so only add ones
-                you trust.
-            </p>
+            {embedded ? (
+                <p className="text-sm text-text-muted mb-5 max-w-3xl">
+                    Changes are applied by restarting the servers one at a time, so mail keeps flowing. Plugins run
+                    with full access to the server, so only add ones you trust.
+                </p>
+            ) : (
+                <>
+                    <div className="flex items-center justify-between gap-4 mb-2">
+                        <h1 className="text-xl font-bold uppercase tracking-wide">Plugins</h1>
+                        {addButton}
+                    </div>
+                    <p className="text-sm text-text-muted mb-6 max-w-3xl">
+                        Plugins add protocols and features to every server. Changes are applied by restarting the
+                        servers one at a time, so mail keeps flowing. Plugins run with full access to the server, so
+                        only add ones you trust.
+                    </p>
+                </>
+            )}
 
             {error && (
                 <Alert>
@@ -355,27 +392,34 @@ export default function PluginsManager() {
                 </p>
             )}
 
-            <h2 className="text-sm font-bold uppercase tracking-wide mb-2">Installed plugins</h2>
+            <div className="flex items-center justify-between gap-4 mb-2">
+                <SectionHeading className="text-sm font-bold uppercase tracking-wide">Installed plugins</SectionHeading>
+                {embedded && addButton}
+            </div>
             {loading ? (
                 <p className="text-sm text-text-muted">Loading&hellip;</p>
             ) : plugins.length === 0 ? (
                 <p className="text-sm text-text-muted">No plugins installed.</p>
             ) : (
                 <div className="overflow-x-auto">
-                    <table className="w-full text-sm border-collapse">
-                        <thead>
-                            <tr>
-                                {["Plugin", "Version", "State", "Servers", ""].map((h) => (
-                                    <th
-                                        key={h}
-                                        className="text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border"
-                                    >
-                                        {h}
-                                    </th>
-                                ))}
+                    <table role="table" className="w-full text-sm border-collapse block lg:table">
+                        <thead role="rowgroup" className="hidden lg:table-header-group">
+                            <tr role="row">
+                                <th role="columnheader" className={TH_CLASS}>
+                                    Plugin
+                                </th>
+                                <th role="columnheader" className={TH_CLASS}>
+                                    Version
+                                </th>
+                                <th role="columnheader" className={TH_CLASS}>
+                                    Status
+                                </th>
+                                <th role="columnheader" className={TH_CLASS}>
+                                    <span className="sr-only">Actions</span>
+                                </th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody role="rowgroup" className="block lg:table-row-group">
                             {plugins.map((plugin) => {
                                 const update: PluginUpdateInfo | undefined = updates.get(plugin.uid);
                                 const latest: string | undefined = update?.updateAvailable ? update.latestVersion : undefined;
@@ -385,8 +429,8 @@ export default function PluginsManager() {
                                     .filter((other) => other.uid !== plugin.uid && other.manifest.requires?.[plugin.name] !== undefined)
                                     .map((other) => other.manifest.displayName);
                                 return (
-                                    <tr key={plugin.uid}>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                    <tr key={plugin.uid} role="row" className={INSTALLED_ROW_CLASS}>
+                                        <td role="cell" className={`${INSTALLED_TD_CLASS} basis-full pt-3 pb-2`}>
                                             <div className="font-semibold">{plugin.manifest.displayName}</div>
                                             <div className="text-xs text-text-muted">{plugin.name}</div>
                                             {plugin.manifest.description && (
@@ -397,60 +441,53 @@ export default function PluginsManager() {
                                                 <div className="text-xs text-text-muted mt-1">Required by: {requiredBy.join(", ")}</div>
                                             )}
                                         </td>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                        <td role="cell" className={`${INSTALLED_TD_CLASS} pt-1 pb-1 whitespace-nowrap`}>
                                             <div>{plugin.packageVersion}</div>
-                                            {latest && (
-                                                <div className="mt-1 flex flex-col items-start gap-1">
-                                                    <span className="text-xs font-semibold text-primary-dark">Update available: {latest}</span>
-                                                    <Button
-                                                        type="button"
-                                                        variant="secondary"
-                                                        className="!w-auto !py-1 !px-2 !text-xs"
-                                                        aria-label={`Upgrade ${plugin.manifest.displayName} to ${latest}`}
-                                                        disabled={busy}
-                                                        onClick={() => void upgrade(plugin, latest)}
-                                                    >
-                                                        Upgrade
-                                                    </Button>
-                                                </div>
-                                            )}
+                                            {latest && <div className="mt-1 text-xs font-semibold text-primary-dark">Update available: {latest}</div>}
                                         </td>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
-                                            {plugin.enabled ? (
-                                                <span className="text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill bg-success text-white">
-                                                    Enabled
-                                                </span>
-                                            ) : (
-                                                <span className="text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill bg-surface-alt text-text-muted">
-                                                    Disabled
-                                                </span>
-                                            )}
-                                        </td>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                        <td role="cell" className={`${INSTALLED_TD_CLASS} pt-1 pb-1`}>
                                             <PluginStatusCell plugin={plugin} status={status} />
                                         </td>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top text-right whitespace-nowrap">
-                                            <Button
-                                                variant="text"
-                                                type="button"
-                                                className="!w-auto"
-                                                aria-label={`${plugin.enabled ? "Disable" : "Enable"} ${plugin.manifest.displayName}`}
-                                                disabled={busy}
-                                                onClick={() => void toggle(plugin)}
-                                            >
-                                                {plugin.enabled ? "Disable" : "Enable"}
-                                            </Button>
-                                            {(plugin.manifest.settings ?? []).length > 0 && (
-                                                <Button variant="text" type="button" className="!w-auto" onClick={() => setConfiguring(plugin)}>
-                                                    Settings
-                                                </Button>
-                                            )}
-                                            <Button variant="text" type="button" className="!w-auto" onClick={() => setUpgrading(plugin)}>
-                                                Change version
-                                            </Button>
-                                            <Button variant="text" type="button" className="!w-auto" onClick={() => setRemoving(plugin)}>
-                                                Uninstall
-                                            </Button>
+                                        <td role="cell" className={`${INSTALLED_TD_CLASS} basis-full pt-2 pb-3`}>
+                                            <div className="flex flex-col items-start gap-1.5 lg:items-end lg:min-w-[11rem]">
+                                                <div className="flex flex-wrap gap-2 lg:justify-end">
+                                                    {latest && (
+                                                        <Button
+                                                            type="button"
+                                                            variant="secondary"
+                                                            className="!w-auto"
+                                                            aria-label={`Upgrade ${plugin.manifest.displayName} to ${latest}`}
+                                                            disabled={busy}
+                                                            onClick={() => void upgrade(plugin, latest)}
+                                                        >
+                                                            Upgrade
+                                                        </Button>
+                                                    )}
+                                                    {(plugin.manifest.settings ?? []).length > 0 && (
+                                                        <Button variant="secondary" type="button" className="!w-auto" onClick={() => setConfiguring(plugin)}>
+                                                            Settings
+                                                        </Button>
+                                                    )}
+                                                    <Button
+                                                        variant={plugin.enabled ? "secondary" : "primary"}
+                                                        type="button"
+                                                        className="!w-auto min-w-[5.5rem]"
+                                                        aria-label={`${plugin.enabled ? "Disable" : "Enable"} ${plugin.manifest.displayName}`}
+                                                        disabled={busy}
+                                                        onClick={() => void toggle(plugin)}
+                                                    >
+                                                        {plugin.enabled ? "Disable" : "Enable"}
+                                                    </Button>
+                                                </div>
+                                                <div className="flex flex-wrap gap-x-4 lg:justify-end">
+                                                    <Button variant="text" type="button" onClick={() => setUpgrading(plugin)}>
+                                                        Change version
+                                                    </Button>
+                                                    <Button variant="text" type="button" onClick={() => setRemoving(plugin)}>
+                                                        Uninstall
+                                                    </Button>
+                                                </div>
+                                            </div>
                                         </td>
                                     </tr>
                                 );
@@ -461,6 +498,7 @@ export default function PluginsManager() {
             )}
 
             <PluginBrowser
+                headingLevel={SectionHeading}
                 plugins={plugins}
                 onInstall={(result) => install(result.name, result.version, result.name)}
                 // The browser only offers an upgrade for a result it matched to one of these same `plugins`.
@@ -529,10 +567,12 @@ const ALL_NAMESPACES = "";
 
 /** Searches the configured namespaces' registries for plugin packages, with install and upgrade actions. */
 function PluginBrowser({
+    headingLevel: Heading,
     plugins,
     onInstall,
     onUpgrade,
 }: {
+    headingLevel: "h2" | "h3";
     plugins: Plugin[];
     /** Resolves why the plugin couldn't be installed, or `null`. */
     onInstall: (result: PluginSearchResult) => Promise<string | null>;
@@ -594,9 +634,9 @@ function PluginBrowser({
 
     return (
         <section aria-labelledby="plugin-browser-title" className="mt-8">
-            <h2 id="plugin-browser-title" className="text-sm font-bold uppercase tracking-wide mb-2">
+            <Heading id="plugin-browser-title" className="text-sm font-bold uppercase tracking-wide mb-2">
                 Find plugins
-            </h2>
+            </Heading>
             <form onSubmit={(e) => void search(e)} className="flex flex-wrap gap-2 items-end mb-3">
                 <label className="flex flex-col gap-1.5 text-sm">
                     <span className="font-semibold">Namespace</span>
@@ -622,25 +662,23 @@ function PluginBrowser({
                         <table className="w-full text-sm border-collapse">
                             <thead>
                                 <tr>
-                                    {["Package", "Latest version", "Status", ""].map((h) => (
-                                        <th
-                                            key={h}
-                                            className="text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border"
-                                        >
-                                            {h}
-                                        </th>
-                                    ))}
+                                    <th className={TH_CLASS}>Package</th>
+                                    <th className={TH_CLASS}>Latest version</th>
+                                    <th className={TH_CLASS}>Status</th>
+                                    <th className={TH_CLASS}>
+                                        <span className="sr-only">Actions</span>
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {rows.map((result) => (
                                     <tr key={result.name}>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top">
+                                        <td className={TD_CLASS}>
                                             <div className="font-semibold">{result.name}</div>
                                             {result.description && <div className="text-xs text-text-muted max-w-md">{result.description}</div>}
                                         </td>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top">{result.version}</td>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top text-text-muted">
+                                        <td className={TD_CLASS}>{result.version}</td>
+                                        <td className={`${TD_CLASS} text-text-muted`}>
                                             {result.updateAvailable
                                                 ? `Installed ${result.installedVersion} - update available`
                                                 : result.installedUid
@@ -649,7 +687,7 @@ function PluginBrowser({
                                                     ? "Not installed"
                                                     : "Not allowed on this server"}
                                         </td>
-                                        <td className="py-2.5 px-2.5 border-b border-border align-top text-right">
+                                        <td className={`${TD_CLASS} text-right`}>
                                             {result.updateAvailable ? (
                                                 <Button
                                                     type="button"
@@ -735,12 +773,22 @@ function RolloutBanner({ status }: { status: PluginStatus | null }) {
     );
 }
 
+/** A plugin's enabled state and, for an enabled one, how many servers have loaded it and what went wrong. */
 function PluginStatusCell({ plugin, status }: { plugin: Plugin; status: PluginStatus | null }) {
     if (!plugin.enabled) {
-        return <span className="text-text-muted">Disabled</span>;
+        return <span className={`${BADGE_CLASS} bg-surface-alt text-text-muted`}>Disabled</span>;
     }
+    return (
+        <div className="flex flex-col items-start gap-1">
+            <span className={`${BADGE_CLASS} bg-success text-white`}>Enabled</span>
+            <PluginServers plugin={plugin} status={status} />
+        </div>
+    );
+}
+
+function PluginServers({ plugin, status }: { plugin: Plugin; status: PluginStatus | null }) {
     if (!status || status.instances.length === 0) {
-        return <span className="text-text-muted">Unknown</span>;
+        return <span className="text-xs text-text-muted">Server status unknown</span>;
     }
     const current: PluginInstanceStatus[] = status.instances.filter((instance) => instance.hash === status.hash);
     const loaded = current.filter((instance) =>
@@ -750,12 +798,12 @@ function PluginStatusCell({ plugin, status }: { plugin: Plugin; status: PluginSt
         instance.errors.filter((entry) => entry.name === plugin.name).map((entry) => `${instance.instance}: ${entry.message}`),
     );
     return (
-        <div>
+        <div className="text-xs">
             <span className={loaded === status.instances.length ? "text-success font-medium" : "text-text-muted"}>
                 Loaded on {loaded} of {status.instances.length} {status.instances.length === 1 ? "server" : "servers"}
             </span>
             {errors.map((message) => (
-                <div key={message} className="text-xs text-danger mt-1">
+                <div key={message} className="text-danger mt-1 break-words">
                     {message}
                 </div>
             ))}
@@ -1126,7 +1174,7 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
     return (
         <Modal open onClose={onClose} title={`${plugin.manifest.displayName} settings`}>
             {error && <Alert>{error}</Alert>}
-            <form onSubmit={save} className="flex flex-col gap-4">
+            <form onSubmit={save} className="flex flex-col gap-5">
                 {definitions.map((definition) => (
                     <SettingField
                         key={definition.key}
@@ -1135,14 +1183,18 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
                         onChange={(value) => setValues((prev) => ({ ...prev, [definition.key]: value }))}
                     />
                 ))}
-                <p className="text-xs text-text-muted">Saving restarts the servers one at a time to apply the new settings.</p>
-                <div className="flex gap-2 justify-end">
-                    <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
-                        Cancel
-                    </Button>
-                    <Button type="submit" className="!w-auto" loading={busy} disabled={busy}>
-                        Save
-                    </Button>
+                {/* Kept in view at the bottom of the dialog while a long list of settings scrolls. The dialog scrolls
+                    inside its padding, so the bar reaches past it to the dialog's edges. */}
+                <div className="sticky -bottom-7 -mx-7 -mb-7 px-7 py-4 bg-surface border-t border-border flex flex-col gap-3">
+                    <p className="text-xs text-text-muted">Saving restarts the servers one at a time to apply the new settings.</p>
+                    <div className="flex gap-2 justify-end">
+                        <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                            Cancel
+                        </Button>
+                        <Button type="submit" className="!w-auto" loading={busy} disabled={busy}>
+                            Save
+                        </Button>
+                    </div>
                 </div>
             </form>
         </Modal>
@@ -1160,13 +1212,14 @@ function SettingField({
 }) {
     const help = definition.help && <span className="text-xs text-text-muted">{definition.help}</span>;
     if (definition.type === "boolean") {
+        // Laid out like the admin policy forms' checkboxes: the help sits under the label, beside the box.
         return (
-            <label className="flex flex-col gap-1 text-sm">
-                <span className="inline-flex items-center gap-2 font-semibold">
-                    <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} />
-                    {definition.label}
+            <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="mt-1" checked={value === true} onChange={(e) => onChange(e.target.checked)} />
+                <span className="flex flex-col gap-0.5">
+                    <span className="font-semibold">{definition.label}</span>
+                    {help}
                 </span>
-                {help}
             </label>
         );
     }

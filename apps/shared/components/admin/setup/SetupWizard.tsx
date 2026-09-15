@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useRef, useState } from "react";
+import { HiCheck } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { getRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
 import { getMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
@@ -27,6 +28,9 @@ import EscrowSetupStep from "./EscrowSetupStep.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
+
+/** The bordered panel the wizard's forms sit in. */
+const CARD_CLASS = "bg-surface border border-border rounded-md p-6";
 
 export const SETUP_STEPS = [
     { id: "plugins", title: "Plugins", intro: "Choose which protocols and features this server runs. The recommended plugins are already installed." },
@@ -176,7 +180,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                     <p className="text-sm text-text-muted">You can change any of these settings later from the admin console.</p>
                 </div>
                 {status && !status.required && (
-                    <a href="/admin" className="text-sm text-primary-dark underline whitespace-nowrap">
+                    <a href="/admin" className="text-sm text-primary-dark font-medium hover:underline whitespace-nowrap">
                         Exit setup
                     </a>
                 )}
@@ -186,7 +190,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                 <Alert>
                     <span className="flex flex-wrap items-center gap-2">
                         {domainsError}
-                        <Button type="button" variant="secondary" className="!w-auto !py-1 !px-2 !text-xs" onClick={() => void loadDomains()}>
+                        <Button type="button" variant="text" onClick={() => void loadDomains()}>
                             Retry
                         </Button>
                     </span>
@@ -203,14 +207,16 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                             disabled={i > 1 && noDomain}
                             onClick={() => requestGoTo(s.id)}
                             className={[
-                                "text-sm py-1.5 px-3 rounded-pill border disabled:opacity-50",
+                                "inline-flex items-center gap-1.5 text-sm py-1.5 px-3 rounded-pill border transition-colors",
+                                "disabled:opacity-50 disabled:cursor-not-allowed",
                                 s.id === step
                                     ? "bg-primary/10 border-primary text-primary-dark font-semibold"
                                     : i < index
-                                      ? "border-border text-text"
-                                      : "border-border text-text-muted",
+                                      ? "bg-surface border-border text-text hover:not-disabled:border-primary"
+                                      : "bg-surface border-border text-text-muted hover:not-disabled:border-primary hover:not-disabled:text-text",
                             ].join(" ")}
                         >
+                            {i < index && <HiCheck aria-hidden="true" className="w-4 h-4 text-success" />}
                             {i + 1}. {s.title}
                             {i < index && <span className="sr-only"> (done)</span>}
                         </button>
@@ -219,40 +225,59 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
             </ol>
 
             <section aria-labelledby="setup-step-title" className="flex flex-col gap-5">
-                <div>
-                    <h2 id="setup-step-title" className="text-lg font-bold">
-                        Step {index + 1} of {SETUP_STEPS.length}: {current.title}
+                <div className="flex flex-col gap-1">
+                    <h2 id="setup-step-title" className="flex flex-col gap-0.5">
+                        <span className="text-xs font-bold uppercase tracking-wide text-text-muted">
+                            Step {index + 1} of {SETUP_STEPS.length}
+                            <span className="sr-only">:</span>
+                        </span>{" "}
+                        <span className="text-lg font-bold uppercase tracking-wide">{current.title}</span>
                     </h2>
-                    <p className="text-sm text-text-muted">{current.intro}</p>
+                    <p className="text-sm text-text-muted max-w-3xl">{current.intro}</p>
                 </div>
 
-                {step === "plugins" && <PluginsManager />}
+                {step === "plugins" && (
+                    <div>
+                        <PluginsManager embedded />
+                    </div>
+                )}
                 {step === "domain" && <DomainStep domains={domains} onCreated={(domain) => setDomains((prev) => [...prev, domain])} />}
                 {step === "settings" && (
-                    <div className="flex flex-col gap-10">
-                        <LoadedSettingsForm load={getEncryptionPolicy} loadErrorMessage="Could not load the encryption policy.">
-                            {(policy, onChange) => (
-                                <EncryptionPolicyForm
-                                    policy={policy}
-                                    onDirtyChange={trackUnsaved("encryption")}
-                                    onChange={(updated) => {
-                                        onChange(updated);
-                                        setEncryption(updated);
-                                    }}
-                                />
-                            )}
-                        </LoadedSettingsForm>
-                        <LoadedSettingsForm load={getRetentionPolicy} loadErrorMessage="Could not load the retention policy.">
-                            {(policy, onChange) => <RetentionPolicyForm policy={policy} onChange={onChange} onDirtyChange={trackUnsaved("retention")} />}
-                        </LoadedSettingsForm>
-                        <LoadedSettingsForm load={getMailboxPolicy} loadErrorMessage="Could not load the mailbox policy.">
-                            {(policy, onChange) => <MailboxPolicyForm policy={policy} onChange={onChange} onDirtyChange={trackUnsaved("mailbox")} />}
-                        </LoadedSettingsForm>
+                    <div className="flex flex-col gap-6 max-w-3xl">
+                        <div className={CARD_CLASS}>
+                            <LoadedSettingsForm load={getEncryptionPolicy} loadErrorMessage="Could not load the encryption policy.">
+                                {(policy, onChange) => (
+                                    <EncryptionPolicyForm
+                                        embedded
+                                        policy={policy}
+                                        onDirtyChange={trackUnsaved("encryption")}
+                                        onChange={(updated) => {
+                                            onChange(updated);
+                                            setEncryption(updated);
+                                        }}
+                                    />
+                                )}
+                            </LoadedSettingsForm>
+                        </div>
+                        <div className={CARD_CLASS}>
+                            <LoadedSettingsForm load={getRetentionPolicy} loadErrorMessage="Could not load the retention policy.">
+                                {(policy, onChange) => (
+                                    <RetentionPolicyForm embedded policy={policy} onChange={onChange} onDirtyChange={trackUnsaved("retention")} />
+                                )}
+                            </LoadedSettingsForm>
+                        </div>
+                        <div className={CARD_CLASS}>
+                            <LoadedSettingsForm load={getMailboxPolicy} loadErrorMessage="Could not load the mailbox policy.">
+                                {(policy, onChange) => (
+                                    <MailboxPolicyForm embedded policy={policy} onChange={onChange} onDirtyChange={trackUnsaved("mailbox")} />
+                                )}
+                            </LoadedSettingsForm>
+                        </div>
                     </div>
                 )}
                 {step === "escrow" &&
                     (encryption && !isEncryptionEnabled(encryption) ? (
-                        <p role="status" className="text-sm py-2 px-3 rounded-sm bg-surface-alt text-text">
+                        <p role="status" className="text-sm py-2 px-3 rounded-sm bg-surface-alt text-text max-w-3xl">
                             End-to-end encryption is turned off, so escrow isn&rsquo;t needed. You can set it up later if you
                             turn encryption on.
                         </p>
@@ -260,9 +285,11 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                         <EscrowSetupStep adminUid={userUid} />
                     ))}
                 {step === "branding" && (
-                    <LoadedSettingsForm load={getBranding} loadErrorMessage="Could not load branding.">
-                        {(branding, onChange) => <BrandingForm branding={branding} onChange={onChange} />}
-                    </LoadedSettingsForm>
+                    <div className={`${CARD_CLASS} max-w-3xl`}>
+                        <LoadedSettingsForm load={getBranding} loadErrorMessage="Could not load branding.">
+                            {(branding, onChange) => <BrandingForm embedded branding={branding} onChange={onChange} />}
+                        </LoadedSettingsForm>
+                    </div>
                 )}
                 {step === "mailboxes" && <MailboxesStep userUid={userUid} domain={domains.find((d) => d.verified)?.name ?? domains[0]?.name} />}
             </section>
@@ -338,7 +365,7 @@ function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (dom
                 </div>
             ))}
             {error && <Alert>{error}</Alert>}
-            <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-md p-6">
+            <form onSubmit={handleSubmit} className={CARD_CLASS}>
                 <FormField label={domains.length === 0 ? "Domain name" : "Add another domain"} htmlFor="setupDomainName">
                     <input
                         id="setupDomainName"

@@ -3,11 +3,12 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../../testUtils.js";
 import PluginsPage from "../../../../apps/admin/plugins/index.js";
+import PluginsManager from "../../../../apps/shared/components/admin/settings/PluginsManager.js";
 
 const eas = {
     uid: "p-eas",
@@ -87,6 +88,29 @@ describe("PluginsPage", () => {
         expect(await screen.findByText("No plugins installed.")).toBeInTheDocument();
     });
 
+    it("heads the Plugins page with its title and introduction", async () => {
+        mockPlugins();
+        renderPage();
+        expect(await screen.findByRole("heading", { level: 1, name: "Plugins" })).toBeInTheDocument();
+        expect(screen.getByText(/Plugins add protocols and features to every server/)).toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 2, name: "Installed plugins" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 2, name: "Find plugins" })).toBeInTheDocument();
+    });
+
+    it("leaves out the page title and introduction when embedded in another page, keeping Add by name", async () => {
+        mockPlugins();
+        const user = userEvent.setup();
+        render(<PluginsManager embedded />);
+        expect(await screen.findByText("Exchange ActiveSync")).toBeInTheDocument();
+        expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+        expect(screen.queryByText(/Plugins add protocols and features to every server/)).not.toBeInTheDocument();
+        expect(screen.getByText(/only add ones you trust/)).toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 3, name: "Installed plugins" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 3, name: "Find plugins" })).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Add by name" }));
+        expect(await screen.findByRole("dialog", { name: "Add plugin" })).toBeInTheDocument();
+    });
+
     it("lists plugins with their load status and errors", async () => {
         mockPlugins({
             status: {
@@ -105,8 +129,9 @@ describe("PluginsPage", () => {
         expect(within(row).getByRole("button", { name: "Uninstall" })).toBeInTheDocument();
 
         const mapiRow = screen.getByText("MAPI over HTTP").closest("tr") as HTMLElement;
-        // Both the state badge and the per-server status say so.
-        expect(within(mapiRow).getAllByText("Disabled")).toHaveLength(2);
+        // A disabled plugin shows its state once, with no per-server status.
+        expect(within(mapiRow).getAllByText("Disabled")).toHaveLength(1);
+        expect(within(mapiRow).queryByText(/Loaded on/)).not.toBeInTheDocument();
         expect(within(mapiRow).getByRole("button", { name: "Enable MAPI over HTTP" })).toBeInTheDocument();
         // No settings declared, so no Settings button.
         expect(within(mapiRow).queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
@@ -115,7 +140,7 @@ describe("PluginsPage", () => {
     it("shows unknown status when no server has reported, and still lists plugins when status can't load", async () => {
         mockPlugins({ plugins: [eas], extra: (url) => (url === "/api/system/plugins/status" ? jsonResponse(500, { message: "down" }) : undefined) });
         renderPage();
-        expect(await screen.findByText("Unknown")).toBeInTheDocument();
+        expect(await screen.findByText("Server status unknown")).toBeInTheDocument();
     });
 
     it("shows a load error", async () => {
@@ -236,7 +261,7 @@ describe("PluginsPage", () => {
             },
         });
         renderPage();
-        expect(await screen.findByText("Unknown")).toBeInTheDocument();
+        expect(await screen.findByText("Server status unknown")).toBeInTheDocument();
         expect(reads).toBe(1);
         await act(async () => {
             await vi.advanceTimersByTimeAsync(5000);
@@ -694,6 +719,48 @@ describe("PluginsPage", () => {
         await user.click(screen.getByRole("button", { name: "Add by name" }));
         await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Close" }));
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("closes the settings dialog with its close button, Escape or a click outside it, without saving", async () => {
+        const fetchMock = mockPlugins();
+        const user = userEvent.setup();
+        renderPage();
+        const row = (await screen.findByText("Exchange ActiveSync")).closest("tr") as HTMLElement;
+        const open = async () => {
+            await user.click(within(row).getByRole("button", { name: "Settings" }));
+            const dialog = await screen.findByRole("dialog", { name: "Exchange ActiveSync settings" });
+            // Save and Cancel stay in the dialog, below every setting.
+            expect(within(dialog).getByRole("button", { name: "Save" })).toBeInTheDocument();
+            expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+            return dialog;
+        };
+
+        await user.click(within(await open()).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        await open();
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        // A press inside the dialog doesn't close it; one on the backdrop around it does.
+        const dialog = await open();
+        fireEvent.mouseDown(within(dialog).getByLabelText("Sync batch size"));
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+        fireEvent.mouseDown(dialog.parentElement!);
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+        expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "PUT")).toBe(false);
+    });
+
+    it("shows a checkbox setting's help beside it", async () => {
+        const help = { ...eas, manifest: { ...eas.manifest, settings: [{ key: "x:flag", label: "Flag", type: "boolean", help: "Turns it on" }] } };
+        mockPlugins({ plugins: [help] });
+        const user = userEvent.setup();
+        renderPage();
+        const row = (await screen.findByText("Exchange ActiveSync")).closest("tr") as HTMLElement;
+        await user.click(within(row).getByRole("button", { name: "Settings" }));
+        const checkbox = within(await screen.findByRole("dialog")).getByRole("checkbox");
+        expect(checkbox.closest("label")).toHaveTextContent("FlagTurns it on");
     });
 
     it("shows errors when adding, loading versions or changing version fails", async () => {

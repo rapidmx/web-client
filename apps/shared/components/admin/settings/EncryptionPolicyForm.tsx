@@ -37,10 +37,13 @@ export interface EncryptionPolicyFormProps {
     onChange: (policy: EncryptionPolicy) => void;
     /** Told whether the form has edits that haven't been saved. */
     onDirtyChange?: (dirty: boolean) => void;
+    /** Set when shown as one section of a page with its own heading (the setup wizard), so the title is a smaller,
+     * lower-level heading. */
+    embedded?: boolean;
 }
 
 /** The end-to-end encryption policy editor, shared by the Encryption Policy page and the setup wizard. */
-export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange }: EncryptionPolicyFormProps) {
+export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, embedded = false }: EncryptionPolicyFormProps) {
     const [values, setValues] = useState<EncryptionPolicy>(policy);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
@@ -70,7 +73,11 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange }
 
     return (
         <div className="max-w-xl">
-            <h2 className="text-lg font-bold uppercase tracking-wide mb-1">End-to-end encryption</h2>
+            {embedded ? (
+                <h3 className="text-base font-bold uppercase tracking-wide mb-1">End-to-end encryption</h3>
+            ) : (
+                <h2 className="text-lg font-bold uppercase tracking-wide mb-1">End-to-end encryption</h2>
+            )}
             <p className="text-sm text-text-muted mb-5">
                 Encrypted messages can only be read by their senders and recipients - not by this server or its
                 administrators. Choose how encryption applies to each kind of mail.

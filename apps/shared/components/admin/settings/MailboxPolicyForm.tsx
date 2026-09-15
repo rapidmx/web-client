@@ -30,10 +30,13 @@ export interface MailboxPolicyFormProps {
     onChange: (policy: MailboxPolicy) => void;
     /** Told whether the form has edits that haven't been saved. */
     onDirtyChange?: (dirty: boolean) => void;
+    /** Set when shown as one section of a page with its own heading (the setup wizard), so the title is a smaller,
+     * lower-level heading. */
+    embedded?: boolean;
 }
 
 /** The mailbox defaults editor, shared by the Mailbox Policy page and the setup wizard. */
-export default function MailboxPolicyForm({ policy, onChange, onDirtyChange }: MailboxPolicyFormProps) {
+export default function MailboxPolicyForm({ policy, onChange, onDirtyChange, embedded = false }: MailboxPolicyFormProps) {
     const [defaultQuotaGb, setDefaultQuotaGb] = useState(toGb(policy.defaultQuotaBytes));
     const [autoProvisionEnabled, setAutoProvisionEnabled] = useState(policy.autoProvisionEnabled);
     const [autoProvisionQuotaGb, setAutoProvisionQuotaGb] = useState(toGb(policy.autoProvisionQuotaBytes));
@@ -92,7 +95,11 @@ export default function MailboxPolicyForm({ policy, onChange, onDirtyChange }: M
 
     return (
         <div className="max-w-xl">
-            <h2 className="text-lg font-bold uppercase tracking-wide mb-1">Mailboxes</h2>
+            {embedded ? (
+                <h3 className="text-base font-bold uppercase tracking-wide mb-1">Mailboxes</h3>
+            ) : (
+                <h2 className="text-lg font-bold uppercase tracking-wide mb-1">Mailboxes</h2>
+            )}
             <p className="text-sm text-text-muted mb-5">Defaults for new mailboxes on this server.</p>
 
             {error && <Alert>{error}</Alert>}

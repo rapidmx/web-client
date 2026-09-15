@@ -169,14 +169,12 @@ export default function EscrowSetupStep({ adminUid }: { adminUid?: string }) {
 
     return (
         <div className="flex flex-col gap-5 max-w-3xl">
-            <div>
-                <h2 className="text-lg font-bold uppercase tracking-wide mb-1">Escrow</h2>
-                <p className="text-sm text-text-muted">
-                    Escrow lets a group of trusted holders - for example your legal or compliance team - recover a
-                    mailbox&rsquo;s encrypted mail when they all agree to. It&rsquo;s optional. Without it, mail that
-                    someone encrypts can&rsquo;t be recovered if they lose their keys, by anyone.
-                </p>
-            </div>
+            {/* The setup wizard heads this step, so it only explains what escrow is. */}
+            <p className="text-sm text-text-muted">
+                Escrow lets a group of trusted holders - for example your legal or compliance team - recover a
+                mailbox&rsquo;s encrypted mail when they all agree to. It&rsquo;s optional. Without it, mail that someone
+                encrypts can&rsquo;t be recovered if they lose their keys, by anyone.
+            </p>
 
             {scopes && scopes.length > 0 && (
                 <div role="status" className="text-sm py-2 px-3 rounded-sm bg-surface-alt text-text">

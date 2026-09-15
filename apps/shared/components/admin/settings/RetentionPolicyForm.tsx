@@ -22,11 +22,15 @@ export default function RetentionPolicyForm({
     policy,
     onChange,
     onDirtyChange,
+    embedded = false,
 }: {
     policy: RetentionPolicy;
     onChange: (p: RetentionPolicy) => void;
     /** Told whether the form has edits that haven't been saved. */
     onDirtyChange?: (dirty: boolean) => void;
+    /** Set when shown as one section of a page with its own heading (the setup wizard), so the title is a smaller,
+     * lower-level heading. */
+    embedded?: boolean;
 }) {
     const [messageRetentionDays, setMessageRetentionDays] = useState(policy.messageRetentionDays?.toString() ?? "");
     const [auditLogRetentionDays, setAuditLogRetentionDays] = useState(policy.auditLogRetentionDays?.toString() ?? "");
@@ -84,7 +88,11 @@ export default function RetentionPolicyForm({
 
     return (
         <div className="max-w-xl">
-            <h1 className="text-xl font-bold uppercase tracking-wide mb-1">Retention Policy</h1>
+            {embedded ? (
+                <h3 className="text-base font-bold uppercase tracking-wide mb-1">Retention policy</h3>
+            ) : (
+                <h1 className="text-xl font-bold uppercase tracking-wide mb-1">Retention Policy</h1>
+            )}
             <p className="text-sm text-text-muted mb-5">
                 Automatically and permanently deletes mail/audit-log entries older than the configured age.
                 Leave a field blank for no automatic purge. This does not apply to a mailbox that is a
