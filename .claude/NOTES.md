@@ -1692,3 +1692,28 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   Contacts/Tasks shell tests and the auto-reply, admin branding and tasks page tests. `tsconfig.test.json` still reports its
   43 pre-existing errors (same count before and after). Full run: 158 files / 2288 tests, 100 / 99.96 (the two known
   branch gaps) / 100 / 100; tsc and lint clean.
+
+### 2026-09-15 — Removed the booking links UI (moved to `@rapidmx/booking-plugin`, plan phase 6)
+
+Not committed. The Calendly-style booking feature leaves core as `@rapidmx/booking-plugin` (new `D:/github/rapidmx/booking`
+repo, created from this repo at efe108c, which takes the pages, `AvailabilityEditor` and their tests).
+
+- **Removed:** `apps/www/settings/booking-types/**` (`index`, `[uid]`, `new/index`), `apps/shared/components/booking/
+  AvailabilityEditor.tsx`, `test/apps/settings/booking-types/**` (incl. `[uid].ssr`), `test/apps/_components/
+  AvailabilityEditor.test.tsx`, and the `booking-types` entry in `SettingsShell`'s `SETTINGS_SECTIONS`.
+- **Plugin nav:** the plugin contributes `{ id: "booking-types", label: "Booking Links", href: "/settings/booking-types" }`
+  through `pluginNav.settingsSections`. Before this change it collided with the core id and was skipped; now it is
+  appended after Privacy & Data. `settingsSections()` passes no `reservedIds` and `booking-types` was never reserved in
+  `appRailItems()`/`adminNavItems()`, so nothing else needed changing - the collision rule (core and reserved ids win,
+  first plugin item wins) still fits. New `SettingsShell` tests: the plugin's Booking Links is listed once, last, active
+  and mailbox-scoped; absent without the plugin.
+- **Kept:** resource mailbox booking settings (`ResourceSettingsCard`, `MailboxCreateForm`: `autoAcceptBookings`,
+  `bookingWindowDays`, ...), `BrandingForm`'s "anonymous booking-page visitors" hint (still true with the plugin), and
+  `pluginNav.test.ts`'s `/settings/booking-types` `isSafePluginHref` example. No calendar or other core UI linked to
+  booking links, so nothing needed making conditional.
+- **Dependencies untouched:** `.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch` and `package.json` are
+  unchanged (a separate dependency bump is pending); nothing in `apps/` or `test/` imports `booking/bookingApi.js` any more.
+- **Verification:** full `yarn vitest run --coverage` 153 files / 2253 tests, 100 / 99.96 (the two known branch gaps) /
+  100 / 100; `tsc --noEmit -p tsconfig.json`, `yarn lint`, `yarn build` clean. A first full run had
+  `settings/filters/new` "shows a loading state..." fail (`resolveFolders is not a function`) while tsc and lint ran
+  alongside it; it passed alone and in the clean rerun - a load-dependent flake, same family as the known ones.

@@ -185,6 +185,40 @@ describe("SettingsShell", () => {
             expect(within(screen.getByRole("navigation", { name: "Apps" })).getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
         });
 
+        it("takes Booking Links from the booking plugin, now that it isn't a core section", async () => {
+            mockMailboxes([mailboxA]);
+            render(
+                <SettingsShell
+                    active="booking-types"
+                    userUid="u1"
+                    pluginNav={{ settingsSections: [{ id: "booking-types", href: "/settings/booking-types", label: "Booking Links" }] }}
+                >
+                    content
+                </SettingsShell>,
+            );
+            await screen.findByText("content");
+
+            const nav = within(screen.getByRole("navigation", { name: "Settings sections" }));
+            const labels = nav.getAllByRole("link").map((link) => link.textContent);
+            expect(labels.filter((label) => label === "Booking Links")).toHaveLength(1);
+            expect(labels.slice(-2)).toEqual(["Privacy & Data", "Booking Links"]);
+            const link = nav.getByRole("link", { name: "Booking Links" });
+            expect(link).toHaveAttribute("href", "/settings/booking-types?mailboxUid=mb-a");
+            expect(link).toHaveAttribute("aria-current", "page");
+        });
+
+        it("has no Booking Links section without the booking plugin", async () => {
+            mockMailboxes([mailboxA]);
+            render(
+                <SettingsShell active="auto-reply" userUid="u1">
+                    content
+                </SettingsShell>,
+            );
+            await screen.findByText("content");
+
+            expect(screen.queryByRole("link", { name: "Booking Links" })).not.toBeInTheDocument();
+        });
+
         it("highlights an active plugin section, and switches mailbox onto its href", async () => {
             mockMailboxes([mailboxA, mailboxB]);
             const location = mockLocation();

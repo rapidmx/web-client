@@ -27,7 +27,6 @@ export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     { id: "labels", href: "/settings/labels", label: "Labels" },
     { id: "focused-inbox", href: "/settings/focused-inbox", label: "Focused Inbox" },
     { id: "read-receipts", href: "/settings/read-receipts", label: "Read Receipts" },
-    { id: "booking-types", href: "/settings/booking-types", label: "Booking Links" },
     { id: "encryption", href: "/settings/encryption", label: "Encryption" },
     { id: "sharing", href: "/settings/sharing", label: "Sharing" },
     { id: "privacy", href: "/settings/privacy", label: "Privacy & Data" },

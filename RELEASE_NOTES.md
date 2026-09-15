@@ -16,6 +16,13 @@ that builds plugin UI and sends plugin navigation; older servers send none and n
 - **Type declarations:** the package now ships `.d.ts` files next to the compiled `dist/apps` modules, so TypeScript
   plugin pages get types for these imports.
 
+### Breaking changes
+
+- **Booking links moved to a plugin:** the Settings → Booking Links pages (`apps/www/settings/booking-types`) and
+  `AvailabilityEditor` are removed from this package, and `booking-types` is no longer a built-in `SETTINGS_SECTIONS`
+  entry. They ship in `@rapidmx/booking-plugin`, whose `booking-types` settings section now appears through plugin
+  navigation when the plugin is enabled. Resource mailbox booking settings in the admin console are unchanged.
+
 ## v0.5.0
 
 This release adds recovery-code unlock, "trust this signer" and plugin search, updates and dependencies. It also
