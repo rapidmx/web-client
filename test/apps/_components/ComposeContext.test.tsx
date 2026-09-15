@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
@@ -71,6 +71,13 @@ function mockDraft() {
     });
 }
 
+/** The recipients a compose field shows as chips. */
+function recipientChips(label: string): (string | null)[] {
+    return within(screen.getByRole("list", { name: `${label} recipients` }))
+        .getAllByRole("listitem")
+        .map((item) => item.getAttribute("title"));
+}
+
 afterEach(() => {
     vi.unstubAllGlobals();
 });
@@ -99,7 +106,7 @@ describe("ComposeProvider / useCompose", () => {
 
         const dialog = await screen.findByRole("dialog", { name: "New Message" });
         expect(dialog).toBeInTheDocument();
-        expect(screen.getByLabelText("To")).toHaveValue("jane@example.com");
+        expect(recipientChips("To")).toEqual(["jane@example.com"]);
     });
 
     it("stacks multiple compose windows side by side when opened more than once", async () => {
@@ -194,11 +201,13 @@ describe("ComposeProvider / useCompose", () => {
             await user.click(screen.getByRole("button", { name: "Open mb2" }));
             // Both windows stay in the DOM; only the newest is exposed (the older one is `hidden`).
             await waitFor(() => expect(screen.getAllByLabelText("To")).toHaveLength(2));
-            expect(screen.getByRole("textbox", { name: "To" })).toHaveValue("");
+            expect(screen.getByRole("combobox", { name: "To" })).toHaveValue("");
+            expect(screen.queryByRole("list", { name: "To recipients" })).not.toBeInTheDocument();
 
             await user.click(screen.getByRole("button", { name: "Minimize" }));
 
-            expect(await screen.findByRole("textbox", { name: "To" })).toHaveValue("first@example.com");
+            await screen.findByRole("list", { name: "To recipients" });
+            expect(recipientChips("To")).toEqual(["first@example.com"]);
         });
 
         it("minimizing the visible session reveals the previous one, which was hidden until then", async () => {

@@ -1777,3 +1777,57 @@ repo, created from this repo at efe108c, which takes the pages, `AvailabilityEdi
 - **Tests:** plugins page heading vs embedded, settings dialog close via ×/Escape/backdrop (and a press inside doesn't
   close), checkbox help, one Disabled badge. Setup: embedded headings on the plugins/settings/branding/escrow steps and
   done pills. Full run 153 files / 2257 tests, 100 / 99.96 / 100 / 100; tsc, lint, build clean.
+
+### 2026-09-15 — Recipient autocomplete and chips in Compose (`RecipientInput`, `recipients.ts`)
+
+- **Backend contract:** restapi `BaseDirectoryRoute` at `/api/mail/directory` (server list + `GET /contacts`), wrapped
+  by react-shared `mail/directoryApi.ts` (`fetchRecipientSuggestions()` merges contacts first, dedupes by address,
+  tolerates one source failing, rethrows `AbortError`). Neither is published yet: for local work the new
+  `dist/mail/directoryApi.{js,d.ts}` from the react-shared checkout was copied into `node_modules/@rapidmx/react-shared`
+  (removed again afterwards with a reinstall). The web-client commit needs react-shared released and the dependency
+  bumped before it builds from a clean install.
+- **State stays a string.** `ComposeWindow` keeps `to`/`cc`/`bcc` as comma-joined text (drafts, autosave `contentKey`,
+  `initialTo`, discovery all unchanged). `RecipientInput` derives chips from the value and keeps only the text being
+  typed (`pending`) in state: the pending text is "active" only while it equals the value's last token, so a value set
+  from outside (reset, reply prefill) drops it. `emit()` writes `[...chips, pending.trim()].join(", ")`, so an
+  uncommitted address is still sent, as before.
+- **Parsing (`recipients.ts`):** split on `,`/`;` outside quotes (with `\` escapes) and `<...>`; `parseRecipient()`
+  handles `Name <addr>`, `"Quoted, Name" <addr>`, `<addr>`, bare text (kept whole as the address). `parseAddresses()` now
+  delegates to it, so discovery and send use bare addresses and `assembleDraft()` gets `displayName` when present (the
+  old parser sent `Name <addr>` as the address). `formatRecipient()` quotes names with `",;<>@()\`.
+  `isValidRecipientAddress()` only drives the red chip (+ sr-only "(not a valid email address)"); it doesn't block send.
+- **Commit rules:** separator typed/pasted → finished parts become chips, rest stays (leading whitespace dropped);
+  Enter (no open list) or blur commits; Backspace in an empty input removes the last chip; chip remove buttons are
+  `tabIndex -1` (Backspace is the keyboard path) and `preventDefault` on mousedown so the input keeps focus.
+  **Test impact:** typed text becomes a chip once focus leaves (e.g. picking From), and prefilled recipients are chips,
+  so assertions moved from `toHaveValue()` on the input to a `recipientChips(label)` helper (list `"<Label> recipients"`,
+  item `title` = raw token) in ComposeWindow/ComposeContext/MessageDetailPane/contacts tests. The input is now
+  `role="combobox"` (a `getByRole("textbox", { name: "To" })` no longer matches).
+- **Combobox:** `aria-expanded`, `aria-controls` (listbox `${id}-suggestions`, always set), `aria-activedescendant`
+  (`${id}-suggestion-N`) only while open, `aria-autocomplete="list"`, polite live count. The first option is
+  highlighted when results arrive; arrows wrap (and reopen a closed list), Enter/Tab pick (Tab keeps focus, Shift+Tab
+  doesn't pick), Escape closes and `stopPropagation`s only when open. Options/listbox `preventDefault` mousedown so a
+  click doesn't blur. Suggestions for addresses already chipped in the same field are hidden. Picking calls `onCommit`,
+  which runs `checkRecipientDiscovery()` immediately (discovery otherwise runs on blur).
+- **Fetching:** 150 ms debounce (`debounceMs` prop, 0 in tests), `< 2` chars clears suggestions and makes no request;
+  each query gets an `AbortController`, aborted by the effect cleanup on the next query/unmount, and results/errors of an
+  aborted request are ignored; errors show nothing. `fetchSuggestions` prop defaults to react-shared's function (tests
+  of other components hit their `mockFetch`, whose unknown-URL throw just means "no suggestions").
+- **Dropdown:** portal to `body`, `position: fixed` from the field wrapper's rect (width >= 260 px clamped to the
+  viewport with 8 px margins, under the field or above when < 160 px below and more room above, max-height 320),
+  recomputed on resize and capturing scroll; `z-[60]` above the compose container's `z-50`. A portal because the compose
+  window is `overflow-hidden`.
+- Tests: `RecipientInput.test.tsx`, `recipients.test.ts` (100% on both), ComposeWindow "recipient autocomplete"
+  (contacts-first dedupe, `mailboxUid` passed, keyboard pick sent with `displayName`, Cc mouse pick triggers key lookup,
+  Bcc Tab pick of a quoted name).
+- Verification: full `yarn vitest run --coverage` 155 files / 2280 tests, 100 / 99.96 / 100 / 100 (no flakes this run);
+  `tsc --noEmit -p tsconfig.json`, `yarn lint`, `yarn build` clean.
+- Browser check (session scratchpad `ac/recipientcheck.mjs`, server production build with restapi/react-shared/web-client
+  overlaid and the server `DirectoryRoute` files added, port 38580): seeds a domain, users, a shared mailbox, room,
+  equipment, a list and contacts through the API, enrolls keys through the gate (password + "I have saved these recovery
+  codes"), then at 1400px and 400px: "al" lists 4 contacts then Person/Group/Room entries with alice.johnson listed once,
+  arrow+Enter pick, "phil" matches Jean-Philippe and a mouse pick works, comma and Tab commit, Escape closes only the
+  list, Cc suggestions. 31/31 checks, no page errors. Seen while there, not caused by this change: at 400px a compose
+  opened from the folders drawer leaves the drawer open over it and the compose window renders at desktop width, cut off
+  on the left (the dropdown clamps to the viewport); an invalid-address chip makes key lookups fail, which shows the
+  existing "encryption settings couldn't be checked" alert, as a typed invalid address did before.

@@ -43,6 +43,8 @@ import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buil
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import type { ComposeSession } from "./ComposeContext.js";
 import { isSigningOut, registerComposeFlush } from "./composeFlushRegistry.js";
+import RecipientInput from "./RecipientInput.js";
+import { parseRecipientList } from "./recipients.js";
 import RichTextEditor from "./RichTextEditor.js";
 import ScheduleSendPicker from "./ScheduleSendPicker.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -149,12 +151,9 @@ interface Size {
 
 type ResizeEdge = "left" | "top" | "corner";
 
+/** A To/Cc/Bcc field's recipients - see `recipients.ts` for the format. */
 function parseAddresses(value: string): ComposeRecipientInput[] {
-    return value
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-        .map((address) => ({ address }));
+    return parseRecipientList(value);
 }
 
 function HeaderButton({
@@ -1457,13 +1456,14 @@ export default function ComposeWindow({
                     <label htmlFor={`compose-to-${id}`} className="text-xs text-text-muted shrink-0">
                         To
                     </label>
-                    <input
+                    <RecipientInput
                         id={`compose-to-${id}`}
-                        type="text"
-                        className={FIELD_INPUT}
+                        label="To"
                         value={to}
-                        onChange={(e) => setTo(e.target.value)}
-                        onBlur={() => checkRecipientDiscovery(parseAddresses(to))}
+                        mailboxUid={mailboxUid}
+                        onChange={setTo}
+                        onBlur={(value) => checkRecipientDiscovery(parseAddresses(value))}
+                        onCommit={(value) => checkRecipientDiscovery(parseAddresses(value))}
                     />
                     {!showCcBcc && (
                         <button
@@ -1482,26 +1482,28 @@ export default function ComposeWindow({
                             <label htmlFor={`compose-cc-${id}`} className="text-xs text-text-muted shrink-0">
                                 Cc
                             </label>
-                            <input
+                            <RecipientInput
                                 id={`compose-cc-${id}`}
-                                type="text"
-                                className={FIELD_INPUT}
+                                label="Cc"
                                 value={cc}
-                                onChange={(e) => setCc(e.target.value)}
-                                onBlur={() => checkRecipientDiscovery(parseAddresses(cc))}
+                                mailboxUid={mailboxUid}
+                                onChange={setCc}
+                                onBlur={(value) => checkRecipientDiscovery(parseAddresses(value))}
+                                onCommit={(value) => checkRecipientDiscovery(parseAddresses(value))}
                             />
                         </div>
                         <div className={FIELD_ROW}>
                             <label htmlFor={`compose-bcc-${id}`} className="text-xs text-text-muted shrink-0">
                                 Bcc
                             </label>
-                            <input
+                            <RecipientInput
                                 id={`compose-bcc-${id}`}
-                                type="text"
-                                className={FIELD_INPUT}
+                                label="Bcc"
                                 value={bcc}
-                                onChange={(e) => setBcc(e.target.value)}
-                                onBlur={() => checkRecipientDiscovery(parseAddresses(bcc))}
+                                mailboxUid={mailboxUid}
+                                onChange={setBcc}
+                                onBlur={(value) => checkRecipientDiscovery(parseAddresses(value))}
+                                onCommit={(value) => checkRecipientDiscovery(parseAddresses(value))}
                             />
                         </div>
                     </>

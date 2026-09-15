@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+Needs `@rapidmx/react-shared` with `mail/directoryApi.js` and `@rapidmx/restapi` with `BaseDirectoryRoute` (both
+unreleased).
+
+### Features
+
+- **Recipient autocomplete in Compose:** the To, Cc and Bcc fields suggest your contacts and the server's directory
+  (people, shared mailboxes, rooms, equipment and groups) as you type two or more characters of a name or address.
+  Contacts come first, each address is listed once, and each entry shows its name, address and what it is. Use the
+  arrow keys and Enter or Tab, or click, to pick one; Escape closes the list. Contacts of the mailbox you're sending
+  from are included when you can read them.
+- **Recipients as chips:** each recipient in To, Cc and Bcc shows as a removable chip, with its name when it has one.
+  Typing a comma or semicolon, pressing Enter or leaving the field turns what you typed into a chip, pasted lists are
+  split the same way, and Backspace in an empty field removes the last chip. Addresses that don't look valid are shown
+  in red. `Name <address>` recipients (including quoted names containing commas) are now sent with their display name,
+  and semicolons separate recipients as well as commas.
+
 ### Fixes
 
 - **Styles for `@rapidmx/react-shared` components:** `app.css` told Tailwind to scan

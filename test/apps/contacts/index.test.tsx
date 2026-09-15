@@ -114,6 +114,13 @@ function mockShellAndContacts(
     });
 }
 
+/** The recipients a compose field shows as chips. */
+function recipientChips(label: string): (string | null)[] {
+    return within(screen.getByRole("list", { name: `${label} recipients` }))
+        .getAllByRole("listitem")
+        .map((item) => item.getAttribute("title"));
+}
+
 afterEach(() => {
     vi.unstubAllGlobals();
     truncateNextLists.length = 0;
@@ -1085,7 +1092,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
 
         // Bob has no email, so only Jane's address should appear.
         expect(await screen.findByRole("dialog", { name: "New Message" })).toBeInTheDocument();
-        expect(screen.getByLabelText("To")).toHaveValue("jane@example.com");
+        expect(recipientChips("To")).toEqual(["jane@example.com"]);
     });
 
     it("toolbar Favorite marks every checked contact favorited, then relabels to Unfavorite once all are.", async () => {

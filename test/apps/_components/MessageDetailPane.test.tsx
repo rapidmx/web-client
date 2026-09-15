@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -135,6 +135,13 @@ function messageFixture(overrides: Record<string, unknown> = {}) {
         hasAttachments: false,
         ...overrides,
     };
+}
+
+/** The recipients a compose field shows as chips. */
+function recipientChips(label: string): (string | null)[] {
+    return within(screen.getByRole("list", { name: `${label} recipients` }))
+        .getAllByRole("listitem")
+        .map((item) => item.getAttribute("title"));
 }
 
 afterEach(() => {
@@ -593,7 +600,7 @@ describe("MessageDetailPane", () => {
             await user.click(screen.getByRole("button", { name: "Reply" }));
 
             expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
-            expect(screen.getByLabelText("To")).toHaveValue("sender@example.com");
+            expect(recipientChips("To")).toEqual(["sender@example.com"]);
         });
 
         it("Reply All prefills To with the sender and Cc with every other recipient, excluding bcc", async () => {
@@ -615,8 +622,8 @@ describe("MessageDetailPane", () => {
             await user.click(screen.getByRole("button", { name: "Reply All" }));
 
             await screen.findByRole("dialog", { name: "Re: Hello there" });
-            expect(screen.getByLabelText("To")).toHaveValue("sender@example.com");
-            expect(screen.getByLabelText("Cc")).toHaveValue("u1@example.com, other@example.com");
+            expect(recipientChips("To")).toEqual(["sender@example.com"]);
+            expect(recipientChips("Cc")).toEqual(["u1@example.com", "other@example.com"]);
         });
 
         it("Forward opens Compose with a 'Fwd:' subject and no prefilled recipient", async () => {

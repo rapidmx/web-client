@@ -165,6 +165,13 @@ function signatureFixture(overrides: Record<string, unknown> = {}) {
     };
 }
 
+/** The recipients a compose field shows as chips. */
+function recipientChips(label: string): (string | null)[] {
+    return within(screen.getByRole("list", { name: `${label} recipients` }))
+        .getAllByRole("listitem")
+        .map((item) => item.getAttribute("title"));
+}
+
 afterEach(() => {
     clearMailboxWritabilityCache();
     vi.unstubAllGlobals();
@@ -246,7 +253,8 @@ describe("ComposeWindow", () => {
             const calls = fetchMock.mock.calls.map(([url, init]) => `${(init as RequestInit | undefined)?.method ?? "GET"} ${url}`);
             const secondCreate = calls.findIndex((c, i) => c === "POST /api/mail/messages" && calls.indexOf("POST /api/mail/messages") !== i);
             expect(calls.indexOf("DELETE /api/mail/messages/m-1?version=0")).toBeGreaterThan(secondCreate);
-            expect(screen.getByLabelText("To")).toHaveValue("jane@example.com");
+            // Leaving the field for From turned what was typed into a recipient.
+            expect(recipientChips("To")).toEqual(["jane@example.com"]);
         });
 
         it("keeps the old draft when the replacement draft can't be created", async () => {
@@ -578,7 +586,8 @@ describe("ComposeWindow", () => {
     it("prefills the To field from the session's initialTo", async () => {
         mockCompose();
         render(<ComposeWindow session={session({ initialTo: "jane@example.com" })} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
-        expect(screen.getByLabelText("To")).toHaveValue("jane@example.com");
+        expect(recipientChips("To")).toEqual(["jane@example.com"]);
+        expect(screen.getByLabelText("To")).toHaveValue("");
         await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
     });
 
@@ -601,7 +610,7 @@ describe("ComposeWindow", () => {
         await user.click(screen.getByRole("button", { name: "Cc Bcc" }));
         await user.type(screen.getByLabelText("Cc"), "cc@example.com");
         await user.type(screen.getByLabelText("Bcc"), "bcc@example.com");
-        expect(screen.getByLabelText("Cc")).toHaveValue("cc@example.com");
+        expect(recipientChips("Cc")).toEqual(["cc@example.com"]);
         expect(screen.getByLabelText("Bcc")).toHaveValue("bcc@example.com");
     });
 
@@ -1532,6 +1541,76 @@ describe("ComposeWindow", () => {
 
             resolveSignatures!();
             expect(await screen.findByTestId("html-editor")).toBeInTheDocument();
+        });
+    });
+
+    describe("recipient autocomplete", () => {
+        const janeContact = { displayName: "Jane (personal)", address: "Jane@Example.com", kind: "contact" };
+        const janeDirectory = { displayName: "Jane Doe", address: "jane@example.com", kind: "user" };
+        const janetRoom = { displayName: "Janet Room", address: "janet@example.com", kind: "room" };
+
+        function mockSuggestions(extra?: (url: string, init?: RequestInit) => Response | undefined) {
+            return mockCompose((url, init) => {
+                const custom = extra?.(url, init);
+                if (custom) return custom;
+                if (url.startsWith("/api/mail/directory/contacts?")) return jsonResponse(200, [janeContact]);
+                if (url.startsWith("/api/mail/directory?")) return jsonResponse(200, [janeDirectory, janetRoom]);
+                return undefined;
+            });
+        }
+
+        it("suggests the sender's contacts first, then the directory, and sends a picked recipient with its name", async () => {
+            const fetchMock = mockSuggestions((url, init) => {
+                const method = init?.method ?? "GET";
+                if (url === "/api/mail/compose/m1/assemble" && method === "POST") return jsonResponse(200, draft);
+                if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.type(screen.getByLabelText("To"), "ja");
+            const listbox = await screen.findByRole("listbox", { name: "To suggestions" });
+            expect(within(listbox).getAllByRole("option").map((option) => option.textContent)).toEqual([
+                "Jane (personal)Jane@Example.comContact",
+                "Janet Roomjanet@example.comRoom",
+            ]);
+            expect(fetchMock).toHaveBeenCalledWith("/api/mail/directory/contacts?q=ja&limit=8&mailboxUid=mb1", expect.anything());
+            await user.keyboard("{ArrowDown}{Enter}");
+            expect(recipientChips("To")).toEqual(["Janet Room <janet@example.com>"]);
+
+            await user.type(screen.getByLabelText("To"), "bob@example.com");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })));
+            const assembleCall = fetchMock.mock.calls.find((call) => call[0] === "/api/mail/compose/m1/assemble")!;
+            expect(JSON.parse((assembleCall[1] as RequestInit).body as string).to).toEqual([
+                { address: "janet@example.com", displayName: "Janet Room" },
+                { address: "bob@example.com" },
+            ]);
+        });
+
+        it("suggests in Cc and Bcc too, and looks a picked recipient's keys up without waiting for a blur", async () => {
+            const fetchMock = mockSuggestions((url) => {
+                if (url.startsWith("/api/mail/mailboxes/mb1/keys/lookup")) return jsonResponse(200, { keys: [] });
+                if (url === "/api/system/encryption-policy") return jsonResponse(200, { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" });
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+            await user.click(screen.getByRole("button", { name: "Cc Bcc" }));
+
+            await user.type(screen.getByLabelText("Cc"), "jan");
+            await user.click(within(await screen.findByRole("listbox", { name: "Cc suggestions" })).getByRole("option", { name: /Janet Room/ }));
+            expect(recipientChips("Cc")).toEqual(["Janet Room <janet@example.com>"]);
+            expect(screen.getByLabelText("Cc")).toHaveFocus();
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/keys/lookup") && String(url).includes("janet%40example.com"))).toBe(true));
+
+            await user.type(screen.getByLabelText("Bcc"), "ja");
+            await screen.findByRole("listbox", { name: "Bcc suggestions" });
+            await user.keyboard("{Tab}");
+            expect(recipientChips("Bcc")).toEqual(['"Jane (personal)" <Jane@Example.com>']);
         });
     });
 
