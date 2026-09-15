@@ -921,9 +921,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:0.4.0":
-  version: 0.4.0
-  resolution: "@rapidmx/react-shared@npm:0.4.0"
+"@rapidmx/react-shared@npm:^0.5.0":
+  version: 0.5.0
+  resolution: "@rapidmx/react-shared@npm:0.5.0"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -938,28 +938,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/c8807e5d416d8782be69dfd6fd93578e378668144f0a96116613474b9fefe0d87958eba371b22ada69b8bf89b8153e0bda62d84ec4508f509a8953435e43a497
-  languageName: node
-  linkType: hard
-
-"@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch":
-  version: 0.4.0
-  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch::version=0.4.0&hash=bef676"
-  dependencies:
-    "@emoji-mart/data": "npm:^1.2.1"
-    "@peculiar/x509": "npm:^2.1.0"
-    asn1js: "npm:^3.0.10"
-    date-fns: "npm:^4.4.0"
-    dompurify: "npm:^3.4.15"
-    hash-wasm: "npm:^4.12.0"
-    pkijs: "npm:^3.4.0"
-    react-icons: "npm:^5.7.0"
-    reflect-metadata: "npm:^0.2.2"
-    rrule: "npm:^2.8.1"
-  peerDependencies:
-    react: 19.x
-    react-dom: 19.x
-  checksum: 10c0/2728095812449e0dc26a23ca11affcc8ded46ddb80364c3ba5a383873cbc360d0b88b99a0eb8322efe528c62f01d4063e519379c9670b3c3fd28d55567e0294a
+  checksum: 10c0/df445e2176744bbf81441ed6e0278e5f0761a651edee4519747731aaa85954a8bd75c46f3d5c6903e2f179b87482ceae63210d42378dbdb951fda541397e89f4
   languageName: node
   linkType: hard
 
@@ -970,7 +949,7 @@ __metadata:
     "@dnd-kit/core": "npm:^6.3.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch"
+    "@rapidmx/react-shared": "npm:^0.5.0"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"
     "@testing-library/jest-dom": "npm:^7.0.1"
