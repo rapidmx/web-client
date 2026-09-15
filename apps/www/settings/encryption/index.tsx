@@ -914,7 +914,12 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                             {displayedKeys.map((key) => (
                                 <li key={key.fingerprint} className="font-mono text-xs">
                                     {key.useType === "sign" ? "Signing" : "Encryption"} key: {key.fingerprint}
-                                    {key.revokedAt && <span className="text-danger"> (revoked)</span>}
+                                    {key.revokedAt &&
+                                        (key.revocationReason === "superseded" ? (
+                                            <span className="text-text-muted"> (superseded)</span>
+                                        ) : (
+                                            <span className="text-danger"> (revoked)</span>
+                                        ))}
                                 </li>
                             ))}
                         </ul>

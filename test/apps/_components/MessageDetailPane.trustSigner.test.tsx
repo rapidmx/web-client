@@ -34,7 +34,12 @@ vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) =>
     ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
     trustSigner,
 }));
-vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints, clearPinnedSignerCache }));
+vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({
+    getPinnedSignerFingerprints,
+    clearPinnedSignerCache,
+    // No recorded key conflicts - see MessageDetailPane.keyChange.test.tsx for those.
+    getSignerKeyState: async () => ({ pinned: [], previous: [] }),
+}));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock: vi.fn() }) }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ moveLocalEntity: vi.fn() }));
 

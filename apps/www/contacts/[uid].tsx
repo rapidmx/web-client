@@ -61,6 +61,11 @@ function ContactDetailContent({ uid }: { uid: string }) {
         }
     }
 
+    // After a key change was resolved (or found stale): re-read the contact, keeping the one shown if that fails.
+    function handleKeysChanged() {
+        getContact(uid).then(setContact, () => undefined);
+    }
+
     if (loading) {
         return <p className="p-8 text-sm text-text-muted">Loading&hellip;</p>;
     }
@@ -90,7 +95,13 @@ function ContactDetailContent({ uid }: { uid: string }) {
     return (
         <div className="p-6">
             {deleteError && <Alert>{deleteError}</Alert>}
-            <ContactDetailPane contact={contact} onEdit={() => setMode("edit")} onDelete={() => handleDelete(contact)} backHref={backHref} />
+            <ContactDetailPane
+                contact={contact}
+                onEdit={() => setMode("edit")}
+                onDelete={() => handleDelete(contact)}
+                backHref={backHref}
+                onKeysChanged={handleKeysChanged}
+            />
         </div>
     );
 }

@@ -6,6 +6,7 @@ import {
     CONTACTS_CACHE_TTL_MS,
     clearPinnedSignerCache,
     getPinnedSignerFingerprints,
+    getSignerKeyState,
 } from "../../../apps/shared/components/mail/pinnedSigners.js";
 
 const { listContacts, listFolders } = vi.hoisted(() => ({ listContacts: vi.fn(), listFolders: vi.fn() }));
@@ -126,5 +127,58 @@ describe("getPinnedSignerFingerprints", () => {
         expect(await getPinnedSignerFingerprints("mb1", "a@example.com")).toEqual([]);
         expect(listFolders).toHaveBeenCalledTimes(2);
         expect(keySessionListeners.size).toBe(1);
+    });
+});
+
+describe("getSignerKeyState", () => {
+    const signKey = (fingerprint: string, notBefore = 100) => ({ useType: "sign", fingerprint, notBefore });
+
+    it("merges the sender's contacts, pointing at the contact holding the first pinned key and dating it", async () => {
+        listFolders.mockResolvedValue([{ uid: "f-c1", type: "contacts" }]);
+        const conflict = { useType: "sign", observedKey: signKey("new"), observedAt: 5, source: "header" };
+        listContacts.mockResolvedValue([
+            { uid: "c-other", emails: [{ address: "other@example.com" }], keys: [signKey("zz")] },
+            { uid: "c-nokeys", emails: [{ address: "Sender@example.com" }] },
+            {
+                uid: "c-holder",
+                emails: [{ address: "sender@example.com" }],
+                keys: [{ useType: "encrypt", fingerprint: "enc" }, signKey("old")],
+                keysFirstSeen: 42,
+                keyConflicts: [conflict],
+            },
+        ]);
+
+        const state = await getSignerKeyState("mb1", " SENDER@example.com ");
+
+        expect(state.pinned.map((key) => key.fingerprint)).toEqual(["old"]);
+        expect(state.conflict).toEqual(conflict);
+        expect(state.contactUid).toBe("c-holder");
+        expect(state.pinnedSince).toBe(42);
+    });
+
+    it("points at the contact with a conflict when nothing is pinned, else the first match, else none", async () => {
+        listFolders.mockResolvedValue([{ uid: "f-c1", type: "contacts" }]);
+        listContacts.mockResolvedValue([
+            { uid: "c-first", emails: [{ address: "a@example.com" }], keys: [{ useType: "encrypt", fingerprint: "enc" }] },
+            {
+                uid: "c-conflict",
+                emails: [{ address: "a@example.com" }],
+                keyConflicts: [{ useType: "encrypt", observedKey: {}, observedAt: 1, source: "discovery" }, { useType: "sign", observedKey: signKey("n"), observedAt: 1, source: "discovery" }],
+            },
+            { uid: "c-b", emails: [{ address: "b@example.com" }], keyConflicts: [{ useType: "encrypt", observedKey: {}, observedAt: 1, source: "discovery" }] },
+        ]);
+
+        const withConflict = await getSignerKeyState("mb1", "a@example.com");
+        expect(withConflict.contactUid).toBe("c-conflict");
+        expect(withConflict).not.toHaveProperty("pinnedSince");
+
+        expect((await getSignerKeyState("mb1", "b@example.com")).contactUid).toBe("c-b");
+        expect(await getSignerKeyState("mb1", "nobody@example.com")).toEqual({ pinned: [], previous: [] });
+        expect(listFolders).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects when the contacts can't be loaded", async () => {
+        listFolders.mockRejectedValue(new Error("down"));
+        await expect(getSignerKeyState("mb1", "a@example.com")).rejects.toThrow("down");
     });
 });

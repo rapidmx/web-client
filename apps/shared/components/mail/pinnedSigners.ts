@@ -21,9 +21,12 @@ import {
     Contact,
     PINNED_FINGERPRINT_MAX_PAGES,
     PINNED_FINGERPRINT_PAGE_SIZE,
+    SignerKeyState,
     listContacts,
     pinnedSigningFingerprintsFor,
+    signerKeyStateFor,
 } from "@rapidmx/react-shared/contacts/contactsApi.js";
+import { keyPinnedSince } from "../contacts/contactKeys.js";
 import { listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
 import { subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
 
@@ -69,8 +72,8 @@ async function loadMailboxContacts(mailboxUid: string): Promise<Contact[]> {
     return contacts;
 }
 
-/** The sender `address`'s pinned signing fingerprints from `mailboxUid`'s contacts. Rejects if they can't be loaded. */
-export async function getPinnedSignerFingerprints(mailboxUid: string, address: string): Promise<string[]> {
+/** `mailboxUid`'s contacts, from the cache when fresh. Rejects if they can't be loaded. */
+function cachedMailboxContacts(mailboxUid: string): Promise<Contact[]> {
     subscribeToLocksOnce();
     let entry = contactsCache.get(mailboxUid);
     if (!entry || Date.now() - entry.loadedAt > CONTACTS_CACHE_TTL_MS) {
@@ -83,5 +86,39 @@ export async function getPinnedSignerFingerprints(mailboxUid: string, address: s
         });
         entry = created;
     }
-    return pinnedSigningFingerprintsFor(await entry.contacts, address);
+    return entry.contacts;
+}
+
+/** The sender `address`'s pinned signing fingerprints from `mailboxUid`'s contacts. Rejects if they can't be loaded. */
+export async function getPinnedSignerFingerprints(mailboxUid: string, address: string): Promise<string[]> {
+    return pinnedSigningFingerprintsFor(await cachedMailboxContacts(mailboxUid), address);
+}
+
+/** A sender's signing-key state (`signerKeyStateFor()`) plus what a key-changed notice needs to show and link. */
+export interface SenderKeyState extends SignerKeyState {
+    /** The contact holding the first pinned signing key, else the one holding the conflict, else the first match. */
+    contactUid?: string;
+    /** When the first pinned signing key started being trusted - see `keyPinnedSince()`. */
+    pinnedSince?: number;
+}
+
+/** The sender `address`'s signing-key state from `mailboxUid`'s (cached) contacts, for a "signing key changed" comparison
+ * or to spot a recorded conflict. Reads stored contacts only. Rejects if they can't be loaded. */
+export async function getSignerKeyState(mailboxUid: string, address: string): Promise<SenderKeyState> {
+    const contacts = await cachedMailboxContacts(mailboxUid);
+    const state = signerKeyStateFor(contacts, address);
+    const wanted = address.trim().toLowerCase();
+    const matching = contacts.filter((contact) => contact.emails.some((email) => email.address.trim().toLowerCase() === wanted));
+    // `signerKeyStateFor()` keeps the contacts' own key objects, so the holder is found by identity.
+    const pinned = state.pinned[0];
+    const holder = matching.find((candidate) => (candidate.keys ?? []).includes(pinned));
+    const contact =
+        holder ??
+        matching.find((candidate) => (candidate.keyConflicts ?? []).some((conflict) => conflict.useType === "sign")) ??
+        matching[0];
+    return {
+        ...state,
+        ...(contact ? { contactUid: contact.uid } : {}),
+        ...(holder ? { pinnedSince: keyPinnedSince(holder, pinned) } : {}),
+    };
 }

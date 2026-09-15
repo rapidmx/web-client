@@ -13,6 +13,13 @@ import ContactDetailPage from "../../../apps/www/contacts/[uid].js";
 const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
 
+// A contact's key change is resolved through resolveKeyConflict(), mocked at the module boundary.
+const { resolveKeyConflict } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn() }));
+vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+    resolveKeyConflict,
+}));
+
 const mailbox = {
     uid: "mb1",
     version: 0,
@@ -70,6 +77,7 @@ afterEach(() => {
     vi.unstubAllGlobals();
     window.history.pushState(null, "", "/");
     clearPinnedSignerCache.mockClear();
+    resolveKeyConflict.mockReset();
 });
 
 describe("ContactDetailPage", () => {
@@ -145,6 +153,56 @@ describe("ContactDetailPage", () => {
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/contacts/c1", expect.objectContaining({ method: "PUT" })),
         );
         expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
+    });
+
+    describe("key changes", () => {
+        const signKey = (fingerprint: string) => ({ publicKey: "p", type: "x509", useType: "sign" as const, fingerprint, notBefore: 1, notAfter: 2 });
+        const conflicted = {
+            ...jane,
+            keys: [signKey("aaaa")],
+            keyConflicts: [{ useType: "sign" as const, observedKey: signKey("bbbb"), observedAt: 1, source: "header" as const }],
+        };
+
+        it("re-reads the contact after keeping the current key", async () => {
+            let reads = 0;
+            mockShell((url) => {
+                if (url === "/api/mail/contacts/c1") {
+                    reads++;
+                    return jsonResponse(200, reads === 1 ? conflicted : { ...jane, keys: [signKey("aaaa")] });
+                }
+                return undefined;
+            });
+            resolveKeyConflict.mockResolvedValue({ keys: [] });
+            const user = userEvent.setup();
+            render(<ContactDetailPage userUid="u1" params={{ uid: "c1" }} />);
+
+            await user.click(await screen.findByRole("button", { name: "Keep current key" }));
+
+            expect(await screen.findByText("You kept the current signing key for Jane Doe.")).toBeInTheDocument();
+            await waitFor(() => expect(screen.queryByRole("region", { name: "Signing key change" })).not.toBeInTheDocument());
+            expect(reads).toBe(2);
+            expect(resolveKeyConflict).toHaveBeenCalledWith("mb1", expect.objectContaining({ action: "reject", expectedPinnedFingerprint: "aaaa" }));
+        });
+
+        it("keeps showing the contact when the re-read fails", async () => {
+            let reads = 0;
+            mockShell((url) => {
+                if (url === "/api/mail/contacts/c1") {
+                    reads++;
+                    return reads === 1 ? jsonResponse(200, conflicted) : jsonResponse(500, { message: "down" });
+                }
+                return undefined;
+            });
+            resolveKeyConflict.mockResolvedValue({ keys: [] });
+            const user = userEvent.setup();
+            render(<ContactDetailPage userUid="u1" params={{ uid: "c1" }} />);
+
+            await user.click(await screen.findByRole("button", { name: "Keep current key" }));
+
+            await waitFor(() => expect(reads).toBe(2));
+            expect(screen.getByRole("heading", { name: "Jane Doe" })).toBeInTheDocument();
+            expect(screen.getByRole("region", { name: "Signing key change" })).toBeInTheDocument();
+        });
     });
 
     it("cancels out of edit mode back to the view without saving", async () => {

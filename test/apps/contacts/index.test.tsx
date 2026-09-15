@@ -34,6 +34,14 @@ vi.mock("../../../apps/shared/mail/listAllPages.js", async (importOriginal) => {
 const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
 
+// Key rotation continuity: a contact's key change is resolved through resolveKeyConflict(), mocked at the module
+// boundary (see .claude/NOTES.md on fetch stubs not reaching keyvaultApi.js).
+const { resolveKeyConflict } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn() }));
+vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+    resolveKeyConflict,
+}));
+
 const mailbox = {
     uid: "mb1",
     version: 0,
@@ -110,6 +118,7 @@ afterEach(() => {
     vi.unstubAllGlobals();
     truncateNextLists.length = 0;
     clearPinnedSignerCache.mockClear();
+    resolveKeyConflict.mockReset();
 });
 
 describe("ContactsPage", () => {
@@ -269,36 +278,66 @@ describe("ContactsPage", () => {
         expect(detail.getByText("(revoked)")).toBeInTheDocument();
     });
 
-    it("detail view shows a key-conflict warning with the newly observed fingerprint, without silently replacing the pinned key", async () => {
+    it("detail view shows a key change with both fingerprints, keeps the pinned key, and reloads after accepting it", async () => {
+        const pinned = {
+            publicKey: "base64cert",
+            type: "x509",
+            useType: "encrypt" as const,
+            fingerprint: "1111222211112222111122221111222211112222111122221111222211112222",
+            notBefore: 1,
+            notAfter: 2,
+        };
         const conflicted = {
             ...jane,
-            keys: [
+            keys: [pinned],
+            keyConflicts: [
                 {
-                    publicKey: "base64cert",
-                    type: "x509",
                     useType: "encrypt" as const,
-                    fingerprint: "1111222211112222111122221111222211112222111122221111222211112222",
-                    notBefore: 1,
-                    notAfter: 2,
+                    observedKey: { ...pinned, fingerprint: "9999888899998888999988889999888899998888999988889999888899998888" },
+                    observedAt: new Date("2026-02-01T00:00:00.000Z").getTime(),
+                    source: "discovery" as const,
                 },
             ],
-            keyConflict: {
-                observedFingerprint: "9999888899998888999988889999888899998888999988889999888899998888",
-                observedAt: new Date("2026-02-01T00:00:00.000Z").getTime(),
-                source: "discovery" as const,
-            },
         };
-        mockShellAndContacts([conflicted]);
+        const resolved = { ...jane, keys: [{ ...pinned, fingerprint: "9999888899998888999988889999888899998888999988889999888899998888" }] };
+        let contactsServed = 0;
+        const fetchMock = mockShellAndContacts([], (url, init) => {
+            if (url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET") {
+                contactsServed++;
+                return jsonResponse(200, contactsServed === 1 ? [conflicted] : [resolved]);
+            }
+            return undefined;
+        });
+        resolveKeyConflict.mockResolvedValue({ keys: resolved.keys });
         const user = userEvent.setup();
         render(<ContactsPage userUid="u1" />);
 
         await user.click(await screen.findByText("Jane Doe"));
 
         const detail = within(screen.getByRole("region", { name: "Contact details" }));
-        expect(detail.getByText(/previously verified key below is still the one in use/)).toBeInTheDocument();
-        expect(detail.getByText(/Newly observed: 9999 8888/)).toBeInTheDocument();
+        const change = within(detail.getByRole("region", { name: "Encryption key change" }));
+        expect(change.getByText("A different encryption key was seen for Jane Doe")).toBeInTheDocument();
+        expect(change.getByText("9999 8888 9999 8888 9999 8888 9999 8888 9999 8888 9999 8888 9999 8888 9999 8888")).toBeInTheDocument();
+        expect(change.getByText(`First seen ${new Date("2026-02-01T00:00:00.000Z").toLocaleDateString()}, by key discovery`)).toBeInTheDocument();
+        expect(screen.queryByText(/There is no automatic way to accept or reject this yet/)).not.toBeInTheDocument();
         // The pinned key is still shown, unchanged - the spec's "retain the previously stored key".
         expect(detail.getByText(/Encryption key: 1111 2222/)).toBeInTheDocument();
+
+        await user.click(change.getByRole("button", { name: "Accept new key" }));
+        await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Accept new key" }));
+
+        expect(await detail.findByText("The new encryption key is now trusted for Jane Doe.")).toBeInTheDocument();
+        expect(resolveKeyConflict).toHaveBeenCalledWith("mb1", {
+            address: "jane@example.com",
+            useType: "encrypt",
+            action: "accept",
+            expectedPinnedFingerprint: pinned.fingerprint,
+        });
+        expect(clearPinnedSignerCache).toHaveBeenCalled();
+        await waitFor(() => expect(detail.queryByRole("region", { name: "Encryption key change" })).not.toBeInTheDocument());
+        expect(detail.getByText(/Encryption key: 9999 8888/)).toBeInTheDocument();
+        expect(contactsServed).toBe(2);
+        expect(fetchMock).toHaveBeenCalled();
     });
 
     it("clicking + New contact shows a blank form", async () => {
@@ -1418,6 +1457,46 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
             expect(screen.queryByText("Bob Smith")).not.toBeInTheDocument();
             expect(screen.queryByText("Jane Doe")).not.toBeInTheDocument();
             expect(screen.getByText("No contacts found.")).toBeInTheDocument();
+        });
+
+        it("hides key change actions from a delegate who can't update the mailbox, and shows them to one who can", async () => {
+            const conflicted = {
+                ...jane,
+                keys: [{ publicKey: "p", type: "x509", useType: "sign" as const, fingerprint: "aaaa", notBefore: 1, notAfter: 2 }],
+                keyConflicts: [
+                    {
+                        useType: "sign" as const,
+                        observedKey: { publicKey: "p", type: "x509", useType: "sign" as const, fingerprint: "bbbb", notBefore: 1, notAfter: 2 },
+                        observedAt: 1,
+                        source: "header" as const,
+                    },
+                ],
+            };
+            for (const [canUpdate, visible] of [
+                [false, false],
+                [true, true],
+            ] as const) {
+                const fetchMock = mockFetch((url, init) => {
+                    if (url === "/api/mail/mailboxes/mb1/access/me") return accessWith(canUpdate, false)();
+                    if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [delegatedMailbox]);
+                    if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [contactsFolder]);
+                    if (url.startsWith("/api/mail/contact-lists")) return jsonResponse(200, []);
+                    if (url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [conflicted]);
+                    throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+                });
+                const user = userEvent.setup();
+                const { unmount } = render(<ContactsPage userUid="u1" />);
+                await user.click(await screen.findByText("Jane Doe"));
+                await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/mailboxes/mb1/access/me")).toBe(true));
+                const change = within(await screen.findByRole("region", { name: "Signing key change" }));
+                if (visible) {
+                    expect(await change.findByRole("button", { name: "Accept new key" })).toBeInTheDocument();
+                } else {
+                    await waitFor(() => expect(change.queryByRole("button", { name: "Accept new key" })).not.toBeInTheDocument());
+                }
+                unmount();
+                vi.unstubAllGlobals();
+            }
         });
 
         it("ignores an access answer that arrives after unmounting", async () => {

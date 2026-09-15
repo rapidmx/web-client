@@ -1593,3 +1593,39 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     `UnlockPromptProvider.test.tsx` and `KeyEnrollmentGate.test.tsx` (their keySession/keyvaultApi/masterKeyWraps mocks
     gained `unlockWithRecoveryCode`/`getKeyVault`/`consumeRecoveryCode`). Per-file 100% on all four sources. Full run:
     151 files / 2172 tests, 100 / 99.96 / 100 / 100 (only ComposeWindow's two known branches).
+- **2026-09-15 — Key rotation continuity (key-change UI).** Not committed. Uses react-shared 24f3e21/b0f5106
+  (`Contact.keyConflicts`/`previousKeys`, `resolveKeyConflict`/`PinnedKeyChangedError`, `signerKeyStateFor`,
+  `signer_key_changed`) and restapi 8e6e72f's `POST /mail/mailboxes/:id/keys/resolve`.
+  - **Shared pieces** (`apps/shared/components/contacts/`): `contactKeys.ts` (error copy for 409/400/403/404/other,
+    `groupFingerprint`, `sameFingerprint`, `revocationLabel` superseded vs revoked, `keyPinnedSince`) and
+    `KeyChangeReview.tsx` (current vs new key, advice, Accept new key behind a confirmation dialog, Keep current key
+    without one). A 409 is handed to the caller (`onPinnedKeyChanged`), which shows `KEY_CHANGE_STALE_MESSAGE` itself,
+    because the reload usually remounts the review. A 403 hides the actions for that review; `canResolve={false}` hides
+    them up front.
+  - **First seen** for a pinned key = newest `previousKeys` `replacedAt` of that use, else `keysFirstSeen` (restapi sends
+    it; react-shared's `Contact` type lacks it, so it's read through a local type), else `notBefore`.
+  - **pinnedSigners.ts**: `getSignerKeyState(mailboxUid, address)` reuses the cached contacts: `signerKeyStateFor()` +
+    `contactUid` (holder of `pinned[0]`, found by object identity, else a contact with a sign conflict, else the first
+    match) + `pinnedSince`. **Test gotcha:** every test that mocks `pinnedSigners.js` for a MessageDetailPane must now
+    also provide `getSignerKeyState` (round5/round6/trustSigner mocks resolve `{ pinned: [], previous: [] }`).
+  - **MessageDetailPane**: after evaluating, `signer_key_changed` loads the key state and `getMyMailboxAccess().canUpdate`
+    (a failed check = unknown, actions shown); an unverified signer with no pins loads the key state only. The notice
+    replaces the generic failure text; `expectedPinnedFingerprint` = `pinned[0]` (restapi compares the first sign key of
+    the contact it finds); accept sends `signerCertificate`. Keep current key only when the recorded conflict's
+    fingerprint equals `signerFingerprint`. Success or 409: `clearPinnedSignerCache()` + bump `unlockRefresh`; the
+    reject and 409 notices live in pane state so they survive the re-evaluation. No pinned contact key (e.g. own
+    mailbox's keys, or a failed lookup) = comparison without actions. An unpinned signer with a sign conflict gets a
+    "Review it in Contacts" link to `/contacts/<uid>` instead of Trust this signer; a failed key-state load keeps Trust.
+  - **ContactDetailPane**: one review per `keyConflicts` entry (accept without `certificate`; address = first email, so
+    no email = no actions), key history list, `(superseded)` muted vs `(revoked)` danger. New props `onKeysChanged`
+    (index: `reload()`; `[uid]`: `getContact()` again, keeping the old contact on failure) and `canResolveKeys` (index:
+    owner, else the delegate's `canUpdate`, `undefined` while unknown). The old "no automatic way" copy is gone.
+  - **Retained encryption keys**: nothing in web-client assumes one encryption key for decryption - every decrypt path
+    (`MessageDetailPane`, `www/index.tsx`, `localIndexBuilder`) passes the whole `UnlockedKeys`; ComposeWindow only uses
+    the active key to encrypt to itself, which is correct.
+  - **Flake seen**: `contacts/index.test.tsx` "toolbar Import does nothing when the mailbox has no contacts folder yet"
+    failed once in a 12-file coverage batch (fetch count 4 vs 2: the contact-list/folder fetches land after
+    `findByText`); passes alone and in the full run. Not related to this change.
+  - Tests: new `KeyChangeReview.test.tsx`, `contactKeys.test.ts`, `MessageDetailPane.keyChange.test.tsx`; additions in
+    `pinnedSigners`, `ContactDetailPane`, contacts `index`/`[uid]`, settings encryption. Per-file 100% on all eight
+    touched sources. Full run: 154 files / 2231 tests, 100 / 99.96 / 100 / 100.

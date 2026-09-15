@@ -1261,7 +1261,7 @@ index 0000000000000000000000000000000000000000..15d19d076fa92602e502f92fb3053cf7
 +    return depth + 1;
 +}
 diff --git a/dist/contacts/contactsApi.d.ts b/dist/contacts/contactsApi.d.ts
-index 535b446cce3b3cf086dc849d521c8c856bebae7f..da52ac4b6c24aea0c0e550ffe658dda31927e0e4 100644
+index 535b446cce3b3cf086dc849d521c8c856bebae7f..95722d667b39002b67bd57558376b5d5c42d2b9d 100644
 --- a/dist/contacts/contactsApi.d.ts
 +++ b/dist/contacts/contactsApi.d.ts
 @@ -1,7 +1,7 @@
@@ -1269,38 +1269,86 @@ index 535b446cce3b3cf086dc849d521c8c856bebae7f..da52ac4b6c24aea0c0e550ffe658dda3
   * comment for the shared ACL/authorization model every wrapper file here follows. */
  import { ListParams } from "../util/apiQuery.js";
 -import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
-+import { type EncryptionPreference, type PublicKey } from "../crypto/keyvaultApi.js";
++import { type EncryptionPreference, type KeyConflict, type PreviousKey, type PublicKey, type RejectedKey } from "../crypto/keyvaultApi.js";
  export type ContactAddressKind = "home" | "work" | "other";
  export interface ContactEmail {
      address: string;
-@@ -65,8 +65,25 @@ export interface Contact {
+@@ -50,23 +50,63 @@ export interface Contact {
+      * via `crypto/keyvaultApi.ts`'s `lookupKeys()` at compose time, never fetched on message receipt
+      * (that would leak read timing to the sender's server). */
+     encryptPreference?: EncryptionPreference;
+-    /** This contact's published public keys, as last discovered. Trust is TOFU (trust-on-first-use) —
+-     * see `keyConflict` for what happens when a newly observed key differs from this one. */
++    /** This contact's pinned public keys. Trust is TOFU (trust-on-first-use) — see `keyConflicts` for what
++     * happens when a newly observed key differs from one of these. */
+     keys?: PublicKey[];
+-    /** Set when an observed key conflicts with the currently pinned key above — blocks silent
+-     * acceptance until the user takes explicit action (the spec's Key Conflict Handling). The
+-     * previously pinned `keys` are retained unchanged while this is set. */
+-    keyConflict?: {
+-        observedFingerprint: string;
+-        observedAt: number;
+-        source: "header" | "discovery";
+-    };
++    /** Observed keys that conflict with the currently pinned key of the same `useType`, at most one per `useType` —
++     * each blocks silent acceptance until the user resolves it (`keyvaultApi.ts`'s `resolveKeyConflict()`, the spec's
++     * Key Conflict Handling). The pinned `keys` are retained unchanged while a conflict is set. */
++    keyConflicts?: KeyConflict[];
++    /** Keys that were pinned before and replaced (by the user accepting a conflict, or by restapi's automatic
++     * same-issuer renewal of an expired or revoked key), newest first, at most 5 per `useType`. Signing keys here
++     * still count as trusted signers — see `signingKeyFingerprints()`. */
++    previousKeys?: PreviousKey[];
++    /** Keys the user rejected when resolving a conflict. */
++    rejectedKeys?: RejectedKey[];
+ }
  /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
   * `listDeletedContacts()` for those. */
  export declare function listContacts(folderUid: string, params?: ListParams): Promise<Contact[]>;
-+/** The pinned signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
-+ * `address` - see `keyvaultApi.ts`'s `signingKeyFingerprints()`. De-duplicated; `[]` when no contact matches or none
-+ * has a pinned signing key. */
++/** The trusted signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
++ * `address`: each contact's pinned `keys` and its `previousKeys`, so mail signed before a key rotation still verifies -
++ * see `keyvaultApi.ts`'s `signingKeyFingerprints()` for the rules (expired and superseded keys kept, compromised or reasonless revoked keys excluded). De-duplicated;
++ * `[]` when no contact matches or none has a trusted signing key. */
 +export declare function pinnedSigningFingerprintsFor(contacts: Contact[], address: string): string[];
-+/** Page size and page cap for `fetchPinnedSigningFingerprints()` (500 is restapi's own `limit` cap). */
++/** Page size and page cap for `fetchPinnedSigningFingerprints()` and `fetchSignerKeyState()` (500 is restapi's own
++ * `limit` cap). */
 +export declare const PINNED_FINGERPRINT_PAGE_SIZE = 500;
 +export declare const PINNED_FINGERPRINT_MAX_PAGES = 20;
  /**
 - * Lists a folder's soft-deleted contacts (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
-+ * Fetches the pinned signing-key fingerprints for a message sender's `address` from the contacts in `folderUids`
-+ * (the reader's contacts folders), for `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what key
-+ * discovery already stored on the reader's own contacts - never triggers a Discovery lookup, which must not happen
-+ * on message receipt (it would leak read timing to the sender's server). Pages through each folder
-+ * (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many
-+ * messages should cache the contact list and use `pinnedSigningFingerprintsFor()` instead.
++ * Fetches the trusted signing-key fingerprints (pinned and previous - see `pinnedSigningFingerprintsFor()`) for a
++ * message sender's `address` from the contacts in `folderUids` (the reader's contacts folders), for
++ * `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what is already stored on the reader's own
++ * contacts - never triggers a Discovery lookup, which must not happen on message receipt (it would leak read timing to
++ * the sender's server). Pages through each folder (`PINNED_FINGERPRINT_PAGE_SIZE`, at most
++ * `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many messages should cache the contact list and
++ * use `pinnedSigningFingerprintsFor()` instead.
 + */
 +export declare function fetchPinnedSigningFingerprints(folderUids: string[], address: string): Promise<string[]>;
++/** A sender's stored signing-key state, for a key-changed comparison - see `signerKeyStateFor()`. */
++export interface SignerKeyState {
++    /** The currently pinned signing keys (every `useType: "sign"` key, revoked and expired ones included, so a UI can
++     * show their dates and status), de-duplicated by fingerprint. */
++    pinned: PublicKey[];
++    /** Previously pinned signing keys, newest `replacedAt` first, de-duplicated by fingerprint. */
++    previous: PreviousKey[];
++    /** The first unresolved signing-key conflict found, if any. */
++    conflict?: KeyConflict;
++}
++/** The signing-key state of every contact in `contacts` with an email equal (case-insensitively) to `address`, merged -
++ * what a UI needs to compare a `signer_key_changed` message's certificate with the pinned and previous keys (their
++ * fingerprints and `notBefore`/`notAfter`/`revokedAt`/`replacedAt` dates) before calling `resolveKeyConflict()`. Empty
++ * `pinned`/`previous` and no `conflict` when no contact matches. */
++export declare function signerKeyStateFor(contacts: Contact[], address: string): SignerKeyState;
++/** Fetches `signerKeyStateFor()` for `address` from the contacts in `folderUids`, paging exactly like
++ * `fetchPinnedSigningFingerprints()`. Reads only stored contacts - never triggers a Discovery lookup. */
++export declare function fetchSignerKeyState(folderUids: string[], address: string): Promise<SignerKeyState>;
 +/**
 + * Lists a folder's soft-deleted contacts
 + (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
   * queryable field on `Contact` (a `RecoverableBaseEntity`), so this is the same `find()` the plain listing
   * above uses, just constrained to `deleted: true` instead of the framework's own default of excluding them.
   *
-@@ -100,9 +117,15 @@ export interface UpdateContactInput extends ContactInput {
+@@ -100,9 +140,15 @@ export interface UpdateContactInput extends ContactInput {
      uid: string;
      version: number;
  }
@@ -1319,40 +1367,37 @@ index 535b446cce3b3cf086dc849d521c8c856bebae7f..da52ac4b6c24aea0c0e550ffe658dda3
  export declare function deleteContact(uid: string, version: number): Promise<void>;
  export interface ContactList {
 diff --git a/dist/contacts/contactsApi.js b/dist/contacts/contactsApi.js
-index 9ff7edbc15133e01784f58fc74c416417a72487f..f6c137f2655aede1b77c69c1851a41904d901251 100644
+index 9ff7edbc15133e01784f58fc74c416417a72487f..e094c30a3b8f994875021db4b45d4ae6e4e0c1dd 100644
 --- a/dist/contacts/contactsApi.js
 +++ b/dist/contacts/contactsApi.js
-@@ -6,13 +6,47 @@
+@@ -6,13 +6,84 @@
   * comment for the shared ACL/authorization model every wrapper file here follows. */
  import { apiFetch } from "../util/api.js";
  import { buildQuery } from "../util/apiQuery.js";
-+import { signingKeyFingerprints } from "../crypto/keyvaultApi.js";
++import { signingKeyFingerprints, } from "../crypto/keyvaultApi.js";
  /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
   * `listDeletedContacts()` for those. */
  export function listContacts(folderUid, params = {}) {
      return apiFetch(`/mail/contacts?${buildQuery(params, { folderUid, sort: JSON.stringify({ displayName: "ASC" }) })}`);
  }
-+/** The pinned signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
-+ * `address` - see `keyvaultApi.ts`'s `signingKeyFingerprints()`. De-duplicated; `[]` when no contact matches or none
-+ * has a pinned signing key. */
-+export function pinnedSigningFingerprintsFor(contacts, address) {
++function contactsMatching(contacts, address) {
 +    const wanted = address.trim().toLowerCase();
-+    const matching = contacts.filter((contact) => contact.emails.some((email) => email.address.trim().toLowerCase() === wanted));
-+    return [...new Set(matching.flatMap((contact) => signingKeyFingerprints(contact.keys)))];
++    return contacts.filter((contact) => contact.emails.some((email) => email.address.trim().toLowerCase() === wanted));
 +}
-+/** Page size and page cap for `fetchPinnedSigningFingerprints()` (500 is restapi's own `limit` cap). */
++/** The trusted signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
++ * `address`: each contact's pinned `keys` and its `previousKeys`, so mail signed before a key rotation still verifies -
++ * see `keyvaultApi.ts`'s `signingKeyFingerprints()` for the rules (expired and superseded keys kept, compromised or reasonless revoked keys excluded). De-duplicated;
++ * `[]` when no contact matches or none has a trusted signing key. */
++export function pinnedSigningFingerprintsFor(contacts, address) {
++    return [...new Set(contactsMatching(contacts, address).flatMap((contact) => signingKeyFingerprints(contact.keys, contact.previousKeys)))];
++}
++/** Page size and page cap for `fetchPinnedSigningFingerprints()` and `fetchSignerKeyState()` (500 is restapi's own
++ * `limit` cap). */
 +export const PINNED_FINGERPRINT_PAGE_SIZE = 500;
 +export const PINNED_FINGERPRINT_MAX_PAGES = 20;
- /**
-- * Lists a folder's soft-deleted contacts (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
-+ * Fetches the pinned signing-key fingerprints for a message sender's `address` from the contacts in `folderUids`
-+ * (the reader's contacts folders), for `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what key
-+ * discovery already stored on the reader's own contacts - never triggers a Discovery lookup, which must not happen
-+ * on message receipt (it would leak read timing to the sender's server). Pages through each folder
-+ * (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many
-+ * messages should cache the contact list and use `pinnedSigningFingerprintsFor()` instead.
-+ */
-+export async function fetchPinnedSigningFingerprints(folderUids, address) {
++/** Every contact in `folderUids`, paged (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages
++ * per folder). A plain contacts read - never a Discovery lookup. */
++async function listContactsInFolders(folderUids) {
 +    const contacts = [];
 +    for (const folderUid of folderUids) {
 +        for (let page = 0; page < PINNED_FINGERPRINT_MAX_PAGES; page++) {
@@ -1363,7 +1408,47 @@ index 9ff7edbc15133e01784f58fc74c416417a72487f..f6c137f2655aede1b77c69c1851a4190
 +            }
 +        }
 +    }
-+    return pinnedSigningFingerprintsFor(contacts, address);
++    return contacts;
++}
+ /**
+- * Lists a folder's soft-deleted contacts (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
++ * Fetches the trusted signing-key fingerprints (pinned and previous - see `pinnedSigningFingerprintsFor()`) for a
++ * message sender's `address` from the contacts in `folderUids` (the reader's contacts folders), for
++ * `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what is already stored on the reader's own
++ * contacts - never triggers a Discovery lookup, which must not happen on message receipt (it would leak read timing to
++ * the sender's server). Pages through each folder (`PINNED_FINGERPRINT_PAGE_SIZE`, at most
++ * `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many messages should cache the contact list and
++ * use `pinnedSigningFingerprintsFor()` instead.
++ */
++export async function fetchPinnedSigningFingerprints(folderUids, address) {
++    return pinnedSigningFingerprintsFor(await listContactsInFolders(folderUids), address);
++}
++function uniqueByFingerprint(keys) {
++    const seen = new Set();
++    return keys.filter((key) => {
++        const fingerprint = key.fingerprint.toLowerCase();
++        if (seen.has(fingerprint)) {
++            return false;
++        }
++        seen.add(fingerprint);
++        return true;
++    });
++}
++/** The signing-key state of every contact in `contacts` with an email equal (case-insensitively) to `address`, merged -
++ * what a UI needs to compare a `signer_key_changed` message's certificate with the pinned and previous keys (their
++ * fingerprints and `notBefore`/`notAfter`/`revokedAt`/`replacedAt` dates) before calling `resolveKeyConflict()`. Empty
++ * `pinned`/`previous` and no `conflict` when no contact matches. */
++export function signerKeyStateFor(contacts, address) {
++    const matching = contactsMatching(contacts, address);
++    const pinned = uniqueByFingerprint(matching.flatMap((contact) => (contact.keys ?? []).filter((key) => key.useType === "sign")));
++    const previous = uniqueByFingerprint(matching.flatMap((contact) => (contact.previousKeys ?? []).filter((key) => key.useType === "sign")).sort((a, b) => b.replacedAt - a.replacedAt));
++    const conflict = matching.flatMap((contact) => contact.keyConflicts ?? []).find((entry) => entry.useType === "sign");
++    return { pinned, previous, ...(conflict ? { conflict } : {}) };
++}
++/** Fetches `signerKeyStateFor()` for `address` from the contacts in `folderUids`, paging exactly like
++ * `fetchPinnedSigningFingerprints()`. Reads only stored contacts - never triggers a Discovery lookup. */
++export async function fetchSignerKeyState(folderUids, address) {
++    return signerKeyStateFor(await listContactsInFolders(folderUids), address);
 +}
 +/**
 + * Lists a folder's soft-deleted contacts
@@ -1371,7 +1456,7 @@ index 9ff7edbc15133e01784f58fc74c416417a72487f..f6c137f2655aede1b77c69c1851a4190
   * queryable field on `Contact` (a `RecoverableBaseEntity`), so this is the same `find()` the plain listing
   * above uses, just constrained to `deleted: true` instead of the framework's own default of excluding them.
   *
-@@ -35,16 +69,17 @@ export function createContact(input) {
+@@ -35,16 +106,17 @@ export function createContact(input) {
          body: JSON.stringify({ emails: [], phones: [], addresses: [], ...input }),
      });
  }
@@ -1686,10 +1771,10 @@ index 30b8b79458347f0b5e09555bd986dd43022d9622..2bccf4aef0df5c6dbea2676cf81c1d77
      return { mk, wrappedKeys };
  }
 diff --git a/dist/crypto/keySession.d.ts b/dist/crypto/keySession.d.ts
-index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d728dcbeacd961b4224d54ab063666098c938131 100644
+index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..7957e2b142357fe2ba1c541fa8dfac0c0937f2ab 100644
 --- a/dist/crypto/keySession.d.ts
 +++ b/dist/crypto/keySession.d.ts
-@@ -11,19 +11,27 @@
+@@ -11,19 +11,40 @@
   * `unlockWithPassword()` below, once per mailbox per session, before rendering the mailbox's real
   * content — see that component's own doc comment.
   *
@@ -1713,6 +1798,19 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d728dcbeacd961b4224d54ab06366609
  export declare const SIGNING_PRIVATE_KEY_AAD_PURPOSE = "sign-private-key";
  export declare const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
 +export { KeysLockedError };
++/** How many retained (non-active) encryption keys an unlock opens at most: the most recently issued ones by
++ * `notBefore`. Each costs an AEAD open and a key import at unlock, and `smime.ts`'s `decryptEnvelopedDataWithKeys()`
++ * considers the active key plus this many (`MAX_DECRYPTION_KEYS`). Mail encrypted to a key older than the 20 most
++ * recent retained ones doesn't decrypt on this device; its wrapped key stays in the vault. */
++export declare const MAX_RETAINED_ENCRYPTION_KEYS = 20;
++/** An older encryption key an unlock opened besides the active one - see `UnlockedKeys.retainedEncryptionKeys`. */
++export interface RetainedEncryptionKey {
++    fingerprint: string;
++    /** Base64-decoded DER certificate, from the mailbox's published `PublicKey.publicKey`. */
++    certDer: Uint8Array;
++    /** Non-extractable ECDH private key. */
++    privateKey: CryptoKey;
++}
  export interface UnlockedKeys {
 +    /** `true` once `destroyUnlockedKeys()` has destroyed this object's keys (master key zeroed, private key
 +     * handles dropped). A caller holding an `UnlockedKeys` across an `await` or a user action must treat a
@@ -1722,17 +1820,26 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d728dcbeacd961b4224d54ab06366609
      masterKey: Uint8Array;
      signingPrivateKey?: CryptoKey;
      signingCertDer?: Uint8Array;
-@@ -32,12 +40,60 @@ export interface UnlockedKeys {
+@@ -31,21 +52,108 @@ export interface UnlockedKeys {
+     encryptionPrivateKey?: CryptoKey;
      encryptionCertDer?: Uint8Array;
      encryptionFingerprint?: string;
- }
++    /** Every non-active encryption key the mailbox still has a wrapped private key for and a published `encrypt` key
++     * listed in its keys - superseded, expired *and* compromised ones - newest first, at most
++     * `MAX_RETAINED_ENCRYPTION_KEYS`. The spec retains an old encryption private key indefinitely on rotation, because
++     * discarding it makes old mail unreadable. **Decryption only:** `evaluateMessageSecurity()` tries these after the
++     * active key; nothing encrypts to or signs with them (`findActivePublicKey()` still picks the only key used for
++     * that). A compromised key is kept because reading one's own mail encrypted to it is still needed. Absent when there
++     * are none. */
++    retainedEncryptionKeys?: RetainedEncryptionKey[];
++}
 +/** What changed in the session store — passed to every `subscribeKeySession()` listener. */
 +export interface KeySessionEvent {
 +    mailboxUid: string;
 +    /** `"unlocked"` when keys were stored (a first unlock, or a re-unlock replacing existing keys, e.g.
 +     * after a key rotation); `"locked"` when they were destroyed. */
 +    state: "unlocked" | "locked";
-+}
+ }
 +export type KeySessionListener = (event: KeySessionEvent) => void;
 +/**
 + * Subscribes to session store changes: fires once per mailbox whenever its keys are unlocked (stored)
@@ -1764,10 +1871,11 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d728dcbeacd961b4224d54ab06366609
  export declare function destroyUnlockedKeys(mailboxUid?: string): void;
 +/** What `unlockWithPassword()` resolves with (and the base of `unlockWithRecoveryCode()`'s result). */
 +export interface UnlockResult {
-+    /** Fingerprints of active *signing* keys whose wrapped private key couldn't be opened with the (correctly
-+     * unwrapped) master key - e.g. a wrap sealed under a master key a later rekey replaced. The unlock still
-+     * succeeds without them (no `signingPrivateKey`), so a user isn't locked out of reading mail by a signing
-+     * key they can re-enroll. Empty when every active key opened. */
++    /** Fingerprints of the active *signing* key and any retained (non-active) *encryption* keys whose wrapped private
++     * key couldn't be opened or imported with the (correctly unwrapped) master key - e.g. a wrap sealed under a master
++     * key a later rekey replaced. The unlock still succeeds without them (no `signingPrivateKey`; the retained key is
++     * left out of `retainedEncryptionKeys`), so a user isn't locked out of reading mail by a key they can't use. Empty
++     * when every key opened. */
 +    unopenableKeys: string[];
 +}
 +/**
@@ -1785,8 +1893,10 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d728dcbeacd961b4224d54ab06366609
  /**
   * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
   * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
-@@ -45,7 +101,35 @@ export declare function destroyUnlockedKeys(mailboxUid?: string): void;
-  * currently-active public keys for. Stores the result in this module's in-memory session store.
+  * the master key, then unwraps and imports whichever signing/encryption private keys the mailbox has
+- * currently-active public keys for. Stores the result in this module's in-memory session store.
++ * currently-active public keys for, plus the retained older encryption keys (`UnlockedKeys.retainedEncryptionKeys`).
++ * Stores the result in this module's in-memory session store.
   *
   * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
 - * wrong (AEAD authentication failure) — callers should present this as "incorrect password," not a
@@ -1794,7 +1904,8 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d728dcbeacd961b4224d54ab06366609
 + * wrong (AEAD authentication failure opening the password wrap) — callers should present this as
 + * "incorrect password," not a generic error, but this module doesn't presume a specific UI's error copy.
 + * Once the master key has opened, the password is known to be right: an active signing key that then
-+ * won't open is skipped and listed in `UnlockResult.unopenableKeys`; an active encryption key that won't
++ * won't open is skipped and listed in `UnlockResult.unopenableKeys` (so is a retained encryption key); an active
++ * encryption key that won't
 + * open still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
 + * `destroyUnlockedKeys()` locked this mailbox (or all mailboxes) while the unlock was in flight.
 + */
@@ -1825,10 +1936,10 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d728dcbeacd961b4224d54ab06366609
 -export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<void>;
 +export declare function unlockWithRecoveryCode(mailboxUid: string, mailboxKeys: PublicKey[], code: string): Promise<RecoveryUnlockResult>;
 diff --git a/dist/crypto/keySession.js b/dist/crypto/keySession.js
-index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc08404ba3945 100644
+index 763759b94580beb99c25cdf780ab1cad7a6f8e60..6972f14ab213b09c1a4a929cb1b2da839027afbe 100644
 --- a/dist/crypto/keySession.js
 +++ b/dist/crypto/keySession.js
-@@ -1,35 +1,168 @@
+@@ -1,46 +1,230 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1868,6 +1979,11 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc084
  export const SIGNING_PRIVATE_KEY_AAD_PURPOSE = "sign-private-key";
  export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
 +export { KeysLockedError };
++/** How many retained (non-active) encryption keys an unlock opens at most: the most recently issued ones by
++ * `notBefore`. Each costs an AEAD open and a key import at unlock, and `smime.ts`'s `decryptEnvelopedDataWithKeys()`
++ * considers the active key plus this many (`MAX_DECRYPTION_KEYS`). Mail encrypted to a key older than the 20 most
++ * recent retained ones doesn't decrypt on this device; its wrapped key stays in the vault. */
++export const MAX_RETAINED_ENCRYPTION_KEYS = 20;
  const sessions = new Map();
 +/** A weak reference to `target` where the runtime has `WeakRef` (every supported browser and Node), otherwise a
 + * strong one - a missing `WeakRef` must never make a lock skip an object. */
@@ -1964,14 +2080,19 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc084
 +        issued.delete(uid);
 +        sessions.delete(uid);
 +        notify({ mailboxUid: uid, state: "locked" });
-     }
- }
++    }
++}
 +function destroyObject(unlocked) {
 +    unlocked.masterKey.fill(0);
 +    unlocked.destroyed = true;
 +    delete unlocked.signingPrivateKey;
 +    delete unlocked.encryptionPrivateKey;
-+}
++    if (unlocked.retainedEncryptionKeys) {
++        // Emptied in place as well as removed, so a consumer that captured the array itself loses the handles too.
++        unlocked.retainedEncryptionKeys.length = 0;
++        delete unlocked.retainedEncryptionKeys;
+     }
+ }
  /** Finds the wrapped private key whose fingerprint matches a given published public key. */
  function findWrappedPrivateKey(vault, fingerprint) {
      return vault.wrappedKeys.find((k) => k.fingerprint === fingerprint);
@@ -1992,20 +2113,56 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc084
 +}
 +/** Opens one wrapped PKCS#8 private key under `masterKey` and imports it (extractable), zeroing the
 + * transient plaintext whether or not the import succeeds. */
-+async function openPrivateKey(masterKey, wrapped, aad, algorithm, usages) {
++async function openPrivateKey(masterKey, wrapped, aad, algorithm, usages, extractable = true) {
 +    const raw = await openWithKey(masterKey, wrapped, aad);
 +    try {
-+        return await importPrivateKeyPkcs8(raw, algorithm, usages, true);
++        return await importPrivateKeyPkcs8(raw, algorithm, usages, extractable);
 +    }
 +    finally {
 +        raw.fill(0);
 +    }
 +}
++/**
++ * Opens the retained encryption keys onto `unlocked.retainedEncryptionKeys`: every published `encrypt` key in
++ * `mailboxKeys` other than the active one (`activeFingerprint`), whatever its revocation or expiry, that has a wrapped
++ * private key in the vault - de-duplicated by fingerprint, newest `notBefore` first, at most
++ * `MAX_RETAINED_ENCRYPTION_KEYS`. A key that won't open or import, or whose certificate won't decode, is skipped and
++ * added to `unopenableKeys`. Retained keys are imported non-extractable: only the active keys are ever exported (by
++ * `keyRotation.ts`). Each key is attached as it opens, so a failed unlock's `destroyObject()` drops those too.
++ */
++async function openRetainedEncryptionKeys(mailboxUid, mailboxKeys, vault, unlocked, activeFingerprint, unopenableKeys) {
++    const seen = new Set(activeFingerprint !== undefined ? [activeFingerprint] : []);
++    const candidates = [];
++    for (const publicKey of [...mailboxKeys].sort((a, b) => b.notBefore - a.notBefore)) {
++        const wrapped = publicKey.useType === "encrypt" && !seen.has(publicKey.fingerprint) ? findWrappedPrivateKey(vault, publicKey.fingerprint) : undefined;
++        if (!wrapped) {
++            continue;
++        }
++        seen.add(publicKey.fingerprint);
++        candidates.push({ publicKey, wrapped });
++        if (candidates.length === MAX_RETAINED_ENCRYPTION_KEYS) {
++            break;
++        }
++    }
++    const aad = buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
++    for (const { publicKey, wrapped } of candidates) {
++        try {
++            const certDer = fromBase64(publicKey.publicKey);
++            const privateKey = await openPrivateKey(unlocked.masterKey, wrapped, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], false);
++            (unlocked.retainedEncryptionKeys ?? (unlocked.retainedEncryptionKeys = [])).push({ fingerprint: publicKey.fingerprint, certDer, privateKey });
++        }
++        catch {
++            unopenableKeys.push(publicKey.fingerprint);
++        }
++    }
++}
  /**
   * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
   * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
-@@ -37,10 +170,15 @@ function findWrappedPrivateKey(vault, fingerprint) {
-  * currently-active public keys for. Stores the result in this module's in-memory session store.
+  * the master key, then unwraps and imports whichever signing/encryption private keys the mailbox has
+- * currently-active public keys for. Stores the result in this module's in-memory session store.
++ * currently-active public keys for, plus the retained older encryption keys (`UnlockedKeys.retainedEncryptionKeys`).
++ * Stores the result in this module's in-memory session store.
   *
   * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
 - * wrong (AEAD authentication failure) — callers should present this as "incorrect password," not a
@@ -2013,7 +2170,8 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc084
 + * wrong (AEAD authentication failure opening the password wrap) — callers should present this as
 + * "incorrect password," not a generic error, but this module doesn't presume a specific UI's error copy.
 + * Once the master key has opened, the password is known to be right: an active signing key that then
-+ * won't open is skipped and listed in `UnlockResult.unopenableKeys`; an active encryption key that won't
++ * won't open is skipped and listed in `UnlockResult.unopenableKeys` (so is a retained encryption key); an active
++ * encryption key that won't
 + * open still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
 + * `destroyUnlockedKeys()` locked this mailbox (or all mailboxes) while the unlock was in flight.
   */
@@ -2022,7 +2180,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc084
      const vault = await getKeyVault(mailboxUid);
      const passwordWrap = vault.masterKeyWraps.find((w) => w.method === "password");
      if (!passwordWrap) {
-@@ -53,22 +191,129 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
+@@ -53,22 +237,130 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
      const salt = fromBase64(passwordWrap.salt);
      const { wrappingKey } = await deriveFromPassword(password, salt, kdfParams);
      const masterKey = await openWithKey(wrappingKey, { ciphertext: passwordWrap.ciphertext, nonce: passwordWrap.nonce }, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
@@ -2082,7 +2240,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc084
 +}
 +/**
 + * Shared tail of every unlock method once its wrap has yielded `masterKey`: opens and imports the active signing and
-+ * encryption private keys, aborts with `KeysLockedError` if the mailbox was locked since `generation` was taken, then
++ * encryption private keys and the retained encryption keys (`openRetainedEncryptionKeys()`), aborts with `KeysLockedError` if the mailbox was locked since `generation` was taken, then
 + * stores the result (tracked weakly in `issued`) and notifies. Zeroes `masterKey` on any failure.
 + */
 +async function openSession(mailboxUid, mailboxKeys, vault, masterKey, generation) {
@@ -2094,6 +2252,14 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc084
 -        unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"]);
 -        unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
 -        unlocked.signingFingerprint = signingPublicKey.fingerprint;
+-    }
+-    const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
+-    const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
+-    if (encryptionPublicKey && wrappedEncryptionKey) {
+-        const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
+-        unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
+-        unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
+-        unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
 +    const unopenableKeys = [];
 +    // The unwrapped private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default)
 +    // for exactly one consumer: `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, which re-seals
@@ -2131,23 +2297,17 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc084
 +            unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
 +            unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
 +        }
++        await openRetainedEncryptionKeys(mailboxUid, mailboxKeys, vault, unlocked, encryptionPublicKey?.fingerprint, unopenableKeys);
 +        if (lockGeneration(mailboxUid) !== generation) {
 +            // Locked (e.g. logout) while this unlock was awaiting - never restore keys after that.
 +            throw new KeysLockedError();
 +        }
      }
--    const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
--    const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
--    if (encryptionPublicKey && wrappedEncryptionKey) {
--        const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
--        unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
--        unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
--        unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
 +    catch (err) {
 +        // A failed unlock never reaches the session store, so nothing else would ever zero this.
 +        destroyObject(unlocked);
 +        throw err;
-     }
++    }
 +    // A re-unlock replacing existing keys (e.g. `settings/encryption`'s post-rotation refresh) deliberately
 +    // does NOT zero the previous entry's master key: an in-flight consumer that captured the old
 +    // `UnlockedKeys` object (e.g. a local-index build pass) is still legitimately using it, and nothing
@@ -2213,7 +2373,7 @@ index 509f0888cb0a588e1a404f15baacb2dad03fc613..eddf7c9f701060061d52b3d7c9bfcf87
 +    return crypto.subtle.importKey("pkcs8", raw, algorithm, extractable, usages);
  }
 diff --git a/dist/crypto/keyvaultApi.d.ts b/dist/crypto/keyvaultApi.d.ts
-index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..72d8dfd94308e8bb1baeab02a89a536458c4d1ce 100644
+index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..976d999bd3d309f462c565741388604d422aca0e 100644
 --- a/dist/crypto/keyvaultApi.d.ts
 +++ b/dist/crypto/keyvaultApi.d.ts
 @@ -1,3 +1,12 @@
@@ -2229,7 +2389,54 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..72d8dfd94308e8bb1baeab02a89a5364
  /** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
   * `@rapidmx/restapi`'s `PublicKey` type exactly. */
  export interface PublicKey {
-@@ -58,6 +67,18 @@ export interface KeyConflict {
+@@ -14,6 +23,13 @@ export interface PublicKey {
+     notAfter: number;
+     /** UTC timestamp (epoch ms) at which this key was revoked, if applicable. */
+     revokedAt?: number;
++    /** Why the key was revoked, alongside `revokedAt`: `"superseded"` for a routine rotation (the key is only retired,
++     * so mail it signed stays verifiable), `"compromised"` for a key that must not be trusted. A revoked key with no
++     * reason (legacy data) is treated as compromised - see `isTrustedForVerification()`. */
++    revocationReason?: "superseded" | "compromised";
++    /** Base64-encoded DER X.509 certificate of this key's direct issuer, when known. restapi uses it to recognize a
++     * same-CA renewal (see `PreviousKey.replacement`); a UI can show it in a key-changed comparison. */
++    issuerCertificate?: string;
+ }
+ /** A private key encrypted under the mailbox's master key (MK). Mirrors `@rapidmx/restapi`'s
+  * `WrappedPrivateKey` exactly. */
+@@ -49,25 +65,86 @@ export interface EncryptionPreference {
+     lastSeen?: number;
+     preferEncrypt: "mutual" | "nopreference";
+ }
++/** A newly observed key that differs from a contact's pinned key of the same `useType` - restapi records it instead of
++ * silently replacing the pin (the spec's Key Conflict Handling) until the user resolves it with `resolveKeyConflict()`.
++ * A contact holds at most one per `useType`. Mirrors `@rapidmx/restapi`'s `KeyConflict`. */
+ export interface KeyConflict {
+-    observedFingerprint: string;
++    useType: "sign" | "encrypt";
++    /** The key that was observed, in full, so a UI can compare it with the pinned one. */
++    observedKey: PublicKey;
++    /** UTC timestamp (epoch ms) at which the key was observed. */
+     observedAt: number;
++    /** Where it was observed: an incoming message's key header, or server-side Discovery. */
+     source: "header" | "discovery";
+ }
++/** A contact key that used to be pinned and was replaced - newest first, at most 5 per `useType` on a contact.
++ * `replacement` says how: `"automatic"` when restapi replaced an expired or revoked pinned key with one from the same
++ * CA issuer, `"user"` when the user accepted a key conflict. Mirrors `@rapidmx/restapi`'s `PreviousKey`. */
++export interface PreviousKey extends PublicKey {
++    /** UTC timestamp (epoch ms) at which this key stopped being the pinned one. */
++    replacedAt: number;
++    replacement: "automatic" | "user";
++}
++/** A key the user rejected when resolving a conflict, remembered so the same key isn't raised again. Mirrors an entry
++ * of `@rapidmx/restapi`'s `Contact.rejectedKeys`. */
++export interface RejectedKey {
++    useType: "sign" | "encrypt";
++    fingerprint: string;
++    /** UTC timestamp (epoch ms) at which the key was rejected. */
++    rejectedAt: number;
++}
+ /** The wire shape `GET`/`POST`/`PUT`/`DELETE` `/mail/mailboxes/:id/keyvault*` return. */
  export interface KeyVault {
      wrappedKeys: WrappedPrivateKey[];
      masterKeyWraps: MasterKeyWrap[];
@@ -2248,21 +2455,45 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..72d8dfd94308e8bb1baeab02a89a5364
  }
  /** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
  export declare function getKeyVault(mailboxUid: string): Promise<KeyVault>;
-@@ -67,7 +88,12 @@ export declare function getKeyVault(mailboxUid: string): Promise<KeyVault>;
-  * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
+ /** The most recently issued, currently-valid (non-revoked, non-expired) published key of the given use
+  * type — the one that should actually be used to sign/encrypt going forward. A mailbox or contact may
+  * have several of the same `useType` on file after a rotation; older ones are kept for decrypting old
+- * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
++ * mail, never removed, per the spec's own key-lifecycle rules. Every revoked key is skipped, whatever its
++ * `revocationReason` - a superseded key may still verify old mail (`isTrustedForVerification()`) but is never used for
++ * new mail. Shared by `crypto/keySession.ts` (the
   * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
  export declare function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt"): PublicKey | undefined;
 -export interface EnrollKeyInput {
-+/** The fingerprints (lowercased) of every signing key in `keys` that hasn't been revoked - the trusted pins to pass
-+ * to `messageSecurity.ts`'s `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys`, which only key
-+ * discovery can write) or a `Mailbox` (its own `keys`). Expired keys are kept: mail signed while a key was valid
-+ * stays verifiable after it expires. */
-+export declare function signingKeyFingerprints(keys: PublicKey[] | undefined): string[];
++/**
++ * Whether `key` may still be trusted to *verify* existing signatures - never whether to sign or encrypt with it (that is
++ * `findActivePublicKey()`, which skips every revoked key). Expired keys are trusted: mail signed while a key was valid
++ * stays verifiable after it expires. A key revoked with `revocationReason: "superseded"` (a routine rotation) is trusted
++ * for the same reason. A key revoked as `"compromised"`, or revoked with no reason (legacy data, treated as
++ * compromised), is never trusted, because a message's claimed signing time can't show it was signed before the
++ * compromise.
++ */
++export declare function isTrustedForVerification(key: PublicKey): boolean;
++/**
++ * The fingerprints (lowercased, de-duplicated) of every signing key in `keys` and `previousKeys` that is still trusted
++ * for verification (`isTrustedForVerification()`) - the trusted pins to pass to `messageSecurity.ts`'s
++ * `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys` plus its `previousKeys`, which only key
++ * discovery, "trust this signer" and conflict resolution write) or a `Mailbox` (its own `keys`, so the user's own mail
++ * signed before their rotation still verifies).
++ *
++ * Key rotation continuity: a `PreviousKey` was pinned before it was replaced - by the user accepting a conflict
++ * (`replacement: "user"`) or by restapi's same-issuer renewal of an expired or revoked key (`"automatic"`, which moves
++ * the superseded key here with `revocationReason: "superseded"`) - so it is trusted for verification exactly like a
++ * current pin, and mail it signed before the rotation still verifies. Both replacement kinds are trusted alike, and the
++ * revocation rule is the same for current and previous keys: expired and superseded keys are trusted, compromised and
++ * reasonless revoked keys are not.
++ */
++export declare function signingKeyFingerprints(keys: PublicKey[] | undefined, previousKeys?: PreviousKey[]): string[];
 +export interface EnrollKeyInput extends ExpectedMasterKeyGeneration {
      useType: "sign" | "encrypt";
      /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
       * calls its own internal CA against this CSR. */
-@@ -78,10 +104,21 @@ export interface EnrollKeyInput {
+@@ -78,10 +155,21 @@ export interface EnrollKeyInput {
      /** Only meaningful the very first time a mailbox enrolls a key at all (bootstraps its master key). */
      masterKeyWraps?: MasterKeyWrap[];
  }
@@ -2286,7 +2517,7 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..72d8dfd94308e8bb1baeab02a89a5364
      /** A PEM-encoded PKCS#10 CSR for the signing key pair to enroll. */
      csr: string;
      wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType">;
-@@ -111,6 +148,10 @@ export declare function startSignEnrollment(mailboxUid: string, input: SignEnrol
+@@ -111,6 +199,10 @@ export declare function startSignEnrollment(mailboxUid: string, input: SignEnrol
  /** Reports the current status of a previously started automated enrollment — see
   * `startSignEnrollment()`. */
  export declare function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult>;
@@ -2297,7 +2528,7 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..72d8dfd94308e8bb1baeab02a89a5364
  /** An escrow scope's public key, exposed only via `getEscrowInfo()` below. Mirrors `@rapidmx/restapi`'s
   * `EscrowScopePublicKey` exactly - the same shape as `PublicKey` minus `useType` (an escrow scope's key
   * is only ever used for encryption, never signing). */
-@@ -138,19 +179,25 @@ export interface EscrowInfo {
+@@ -138,31 +230,96 @@ export interface EscrowInfo {
   * against. */
  export declare function getEscrowInfo(mailboxUid: string): Promise<EscrowInfo>;
  /** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
@@ -2325,9 +2556,20 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..72d8dfd94308e8bb1baeab02a89a5364
 + * holding a wrapped key is in flight (see `cancelSignEnrollment()`), or when an escrowed mailbox's request carries no
 + * replacement escrow wrap. */
  export declare function rekey(mailboxUid: string, input: RekeyInput): Promise<KeyVault>;
- /** The wire shape `GET /mail/mailboxes/:id/keys/lookup` returns. */
+-/** The wire shape `GET /mail/mailboxes/:id/keys/lookup` returns. */
++/** The wire shape `GET /mail/mailboxes/:id/keys/lookup`, `POST .../keys/trust` and `POST .../keys/resolve` return: the
++ * contact's resulting key state. */
  export interface KeyLookupResult {
-@@ -163,6 +210,28 @@ export interface KeyLookupResult {
+     keys: PublicKey[];
+     encryptPreference?: EncryptionPreference;
+-    keyConflict?: KeyConflict;
++    /** Unresolved key conflicts, at most one per `useType` - see `resolveKeyConflict()`. */
++    keyConflicts?: KeyConflict[];
++    /** Keys that were pinned before, newest first - see `PreviousKey`. */
++    previousKeys?: PreviousKey[];
+ }
+ /** Server-side Discovery: the server itself performs the `_rapidmx` DNS lookup and remote key-endpoint
+  * fetch (browsers can't do DNS TXT lookups, and a direct cross-origin fetch would hit CORS), persisting
   * the result onto a `Contact` in the caller's own address book. MUST be called lazily at compose time,
   * never on message receipt (see `specs/end-to-end_encryption.md`'s "Discovery is Server-Side"). */
  export declare function lookupKeys(mailboxUid: string, addr: string): Promise<KeyLookupResult>;
@@ -2353,11 +2595,44 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..72d8dfd94308e8bb1baeab02a89a5364
 + * plain `ApiRequestError` for `400` (an invalid certificate, or one that doesn't name `address`) and `403`/`404`.
 + */
 +export declare function trustSigner(mailboxUid: string, input: TrustSignerInput): Promise<KeyLookupResult>;
++/** What `resolveKeyConflict()` sends to `POST /mail/mailboxes/:id/keys/resolve`. */
++export interface ResolveKeyConflictInput {
++    /** The contact's email address. */
++    address: string;
++    /** Which pinned key's conflict to resolve. */
++    useType: "sign" | "encrypt";
++    /** `"accept"` pins the new key and moves the old one into `previousKeys` (`replacement: "user"`); `"reject"` keeps
++     * the pinned key and remembers the rejected fingerprint in `Contact.rejectedKeys`. */
++    action: "accept" | "reject";
++    /** The fingerprint of the pinned key the user was shown. restapi refuses with `409` (`PinnedKeyChangedError`) when
++     * the pinned key is no longer this one, so a decision made against a stale comparison is never applied. */
++    expectedPinnedFingerprint: string;
++    /** For `"accept"`: base64 DER of the certificate to pin (e.g. `MessageSecurityResult.signerCertificate` of a
++     * `signer_key_changed` result). Omitted, restapi pins the recorded conflict's `observedKey`. */
++    certificate?: string;
++}
++/** The contact's resulting key state after `resolveKeyConflict()`. */
++export type ResolveKeyConflictResult = KeyLookupResult;
++/**
++ * Thrown by `resolveKeyConflict()` when restapi answers `409`: the contact's pinned key is no longer
++ * `expectedPinnedFingerprint` (another device or an automatic renewal changed it meanwhile). Still an `ApiRequestError`
++ * (`status` 409). A UI should reload the key state and ask again rather than retry.
++ */
++export declare class PinnedKeyChangedError extends ApiRequestError {
++    constructor(message: string, code?: string);
++}
++/**
++ * Resolves a contact's key conflict (`POST /mail/mailboxes/:id/keys/resolve`) - see `ResolveKeyConflictInput` for what
++ * each action does. Resolves with the contact's resulting key state. Rejects with `PinnedKeyChangedError` on `409`, and
++ * a plain `ApiRequestError` for `400` (an invalid body or certificate), `403` (no rights) and `404` (no such contact, no
++ * pinned key, or no recorded conflict when one is needed).
++ */
++export declare function resolveKeyConflict(mailboxUid: string, input: ResolveKeyConflictInput): Promise<ResolveKeyConflictResult>;
  export type PolicyState = "automatic" | "optional" | "prohibited";
  export interface EncryptionPolicy {
      encryptSameOrg: PolicyState;
 diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
-index 0c20e1474cff85aa06a91446979ccab550d1b282..6e632f93ec0fd84a650ed1d9aecc4d520ea42f6e 100644
+index 0c20e1474cff85aa06a91446979ccab550d1b282..9af1c33e26dff6b4b0e069385280b9140b6a2141 100644
 --- a/dist/crypto/keyvaultApi.js
 +++ b/dist/crypto/keyvaultApi.js
 @@ -10,7 +10,7 @@
@@ -2369,16 +2644,51 @@ index 0c20e1474cff85aa06a91446979ccab550d1b282..6e632f93ec0fd84a650ed1d9aecc4d52
  /** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
  export function getKeyVault(mailboxUid) {
      return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`);
-@@ -26,13 +26,45 @@ export function findActivePublicKey(keys, useType) {
+@@ -18,7 +18,9 @@ export function getKeyVault(mailboxUid) {
+ /** The most recently issued, currently-valid (non-revoked, non-expired) published key of the given use
+  * type — the one that should actually be used to sign/encrypt going forward. A mailbox or contact may
+  * have several of the same `useType` on file after a rotation; older ones are kept for decrypting old
+- * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
++ * mail, never removed, per the spec's own key-lifecycle rules. Every revoked key is skipped, whatever its
++ * `revocationReason` - a superseded key may still verify old mail (`isTrustedForVerification()`) but is never used for
++ * new mail. Shared by `crypto/keySession.ts` (the
+  * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
+ export function findActivePublicKey(keys, useType) {
+     const now = Date.now();
+@@ -26,13 +28,69 @@ export function findActivePublicKey(keys, useType) {
          .filter((k) => k.useType === useType && !k.revokedAt && k.notAfter > now)
          .sort((a, b) => b.notBefore - a.notBefore)[0];
  }
-+/** The fingerprints (lowercased) of every signing key in `keys` that hasn't been revoked - the trusted pins to pass
-+ * to `messageSecurity.ts`'s `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys`, which only key
-+ * discovery can write) or a `Mailbox` (its own `keys`). Expired keys are kept: mail signed while a key was valid
-+ * stays verifiable after it expires. */
-+export function signingKeyFingerprints(keys) {
-+    return (keys ?? []).filter((key) => key.useType === "sign" && !key.revokedAt).map((key) => key.fingerprint.toLowerCase());
++/**
++ * Whether `key` may still be trusted to *verify* existing signatures - never whether to sign or encrypt with it (that is
++ * `findActivePublicKey()`, which skips every revoked key). Expired keys are trusted: mail signed while a key was valid
++ * stays verifiable after it expires. A key revoked with `revocationReason: "superseded"` (a routine rotation) is trusted
++ * for the same reason. A key revoked as `"compromised"`, or revoked with no reason (legacy data, treated as
++ * compromised), is never trusted, because a message's claimed signing time can't show it was signed before the
++ * compromise.
++ */
++export function isTrustedForVerification(key) {
++    return !key.revokedAt || key.revocationReason === "superseded";
++}
++/**
++ * The fingerprints (lowercased, de-duplicated) of every signing key in `keys` and `previousKeys` that is still trusted
++ * for verification (`isTrustedForVerification()`) - the trusted pins to pass to `messageSecurity.ts`'s
++ * `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys` plus its `previousKeys`, which only key
++ * discovery, "trust this signer" and conflict resolution write) or a `Mailbox` (its own `keys`, so the user's own mail
++ * signed before their rotation still verifies).
++ *
++ * Key rotation continuity: a `PreviousKey` was pinned before it was replaced - by the user accepting a conflict
++ * (`replacement: "user"`) or by restapi's same-issuer renewal of an expired or revoked key (`"automatic"`, which moves
++ * the superseded key here with `revocationReason: "superseded"`) - so it is trusted for verification exactly like a
++ * current pin, and mail it signed before the rotation still verifies. Both replacement kinds are trusted alike, and the
++ * revocation rule is the same for current and previous keys: expired and superseded keys are trusted, compromised and
++ * reasonless revoked keys are not.
++ */
++export function signingKeyFingerprints(keys, previousKeys) {
++    const fingerprints = [...(keys ?? []), ...(previousKeys ?? [])]
++        .filter((key) => key.useType === "sign" && isTrustedForVerification(key))
++        .map((key) => key.fingerprint.toLowerCase());
++    return [...new Set(fingerprints)];
 +}
 +/**
 + * Thrown by `enrollKey()` when `masterKeyWraps` were supplied (a first-time vault setup) but the mailbox's vault
@@ -2421,7 +2731,7 @@ index 0c20e1474cff85aa06a91446979ccab550d1b282..6e632f93ec0fd84a650ed1d9aecc4d52
  }
  /** Starts an automated (RFC 8823 email-reply-00 ACME) public-CA signing-certificate enrollment —
   * only meaningful when the deployment has `mail:pki:signing_enrollment:backend` set to `"rfc8823"`
-@@ -52,6 +84,12 @@ export function startSignEnrollment(mailboxUid, input) {
+@@ -52,6 +110,12 @@ export function startSignEnrollment(mailboxUid, input) {
  export function checkSignEnrollmentStatus(mailboxUid, enrollmentId) {
      return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`);
  }
@@ -2434,7 +2744,7 @@ index 0c20e1474cff85aa06a91446979ccab550d1b282..6e632f93ec0fd84a650ed1d9aecc4d52
  /** Fetches `{escrowScopeId, publicKey}` for the `EscrowScope` this mailbox is currently assigned to
   * (`Mailbox.escrowScopeId`, an admin-only assignment - see `EscrowInfo`'s own doc comment). 404s if the
   * mailbox has no escrow scope assigned, the scope no longer exists, or the caller can't access this
-@@ -61,11 +99,13 @@ export function getEscrowInfo(mailboxUid) {
+@@ -61,11 +125,13 @@ export function getEscrowInfo(mailboxUid) {
      return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/escrow-info`);
  }
  /** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
@@ -2451,7 +2761,7 @@ index 0c20e1474cff85aa06a91446979ccab550d1b282..6e632f93ec0fd84a650ed1d9aecc4d52
      });
  }
  /** Removes a wrapped copy of the master key for one unlock method. `methodId` is required whenever more
-@@ -78,7 +118,9 @@ export function removeMasterKeyWrap(mailboxUid, method, methodId) {
+@@ -78,7 +144,9 @@ export function removeMasterKeyWrap(mailboxUid, method, methodId) {
      });
  }
  /** Full, atomic replacement of the mailbox's key-vault contents — the only real revocation mechanism
@@ -2462,7 +2772,7 @@ index 0c20e1474cff85aa06a91446979ccab550d1b282..6e632f93ec0fd84a650ed1d9aecc4d52
  export function rekey(mailboxUid, input) {
      return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/rekey`, {
          method: "PUT",
-@@ -93,6 +135,38 @@ export function lookupKeys(mailboxUid, addr) {
+@@ -93,6 +161,76 @@ export function lookupKeys(mailboxUid, addr) {
      const query = new URLSearchParams({ addr });
      return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/lookup?${query.toString()}`);
  }
@@ -2494,6 +2804,44 @@ index 0c20e1474cff85aa06a91446979ccab550d1b282..6e632f93ec0fd84a650ed1d9aecc4d52
 +    catch (err) {
 +        if (err instanceof ApiRequestError && err.status === 409) {
 +            throw new SignerKeyConflictError(err.message, err.code);
++        }
++        throw err;
++    }
++}
++/**
++ * Thrown by `resolveKeyConflict()` when restapi answers `409`: the contact's pinned key is no longer
++ * `expectedPinnedFingerprint` (another device or an automatic renewal changed it meanwhile). Still an `ApiRequestError`
++ * (`status` 409). A UI should reload the key state and ask again rather than retry.
++ */
++export class PinnedKeyChangedError extends ApiRequestError {
++    constructor(message, code) {
++        super(message, 409, code);
++        this.name = "PinnedKeyChangedError";
++    }
++}
++/**
++ * Resolves a contact's key conflict (`POST /mail/mailboxes/:id/keys/resolve`) - see `ResolveKeyConflictInput` for what
++ * each action does. Resolves with the contact's resulting key state. Rejects with `PinnedKeyChangedError` on `409`, and
++ * a plain `ApiRequestError` for `400` (an invalid body or certificate), `403` (no rights) and `404` (no such contact, no
++ * pinned key, or no recorded conflict when one is needed).
++ */
++export async function resolveKeyConflict(mailboxUid, input) {
++    const body = {
++        address: input.address,
++        useType: input.useType,
++        action: input.action,
++        expectedPinnedFingerprint: input.expectedPinnedFingerprint,
++        ...(input.certificate !== undefined ? { certificate: input.certificate } : {}),
++    };
++    try {
++        return await apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/resolve`, {
++            method: "POST",
++            body: JSON.stringify(body),
++        });
++    }
++    catch (err) {
++        if (err instanceof ApiRequestError && err.status === 409) {
++            throw new PinnedKeyChangedError(err.message, err.code);
 +        }
 +        throw err;
 +    }
@@ -2882,10 +3230,10 @@ index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..a3d50bd9705e5d72c6ff572416b14a8b
 +    }
 +}
 diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
-index 39c737137ae875767f859affc408f254493a87b5..39e4f06d1fcee0c3ac0b9ff2549ff873407c9b09 100644
+index 39c737137ae875767f859affc408f254493a87b5..82f5da0bc87ebd9c0911b94c83d9e929fa1c6661 100644
 --- a/dist/crypto/messageSecurity.d.ts
 +++ b/dist/crypto/messageSecurity.d.ts
-@@ -1,39 +1,143 @@
+@@ -1,39 +1,166 @@
 -export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
 +/**
 + * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
@@ -2910,9 +3258,17 @@ index 39c737137ae875767f859affc408f254493a87b5..39e4f06d1fcee0c3ac0b9ff2549ff873
 + * checks 1, 3 and 4 alone prove only that *someone* holding a certificate naming the sender signed it - a
 + * self-issued certificate with SAN `ceo@victim.com` passes them. Without a matching pin the result is
 + * `"signed_unverified_signer"`/`"encrypted_unverified_signer"` instead, carrying `signerFingerprint` and
-+ * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A pin that was
-+ * supplied but doesn't match is `"signature_failed"` (`untrusted_signer`), and a failure of checks 1, 3 or 4
-+ * is `"signature_failed"` with `signatureFailureReason` saying which check failed.
++ * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A failure of checks 1, 3
++ * or 4 is `"signature_failed"` with `signatureFailureReason` saying which check failed.
++ *
++ * **Pinned, but a different key.** When pins were supplied and checks 1, 3 and 4 pass but the signer matches no pin, the
++ * result is `"signature_failed"` with `signatureFailureReason: "signer_key_changed"`: the sender's certificate names
++ * them and the message is intact, but it isn't the key the reader pinned (a rotation the reader hasn't accepted, or an
++ * impersonation). Only this failure also carries `signerCertificate`, so a UI can compare it with the pinned keys
++ * (`contactsApi.ts`'s `fetchSignerKeyState()`) and let the user accept or reject it (`keyvaultApi.ts`'s
++ * `resolveKeyConflict()`). A pin mismatch whose certificate also fails check 3 or 4 (or couldn't be resolved) stays
++ * `untrusted_signer`. Previously pinned keys count as pins (see `signingKeyFingerprints()`), so mail signed before an
++ * accepted or automatic rotation still verifies.
 + */
 +import { MimeAttachment, MimeHeaderField } from "./mime.js";
 +import { ProtectedHeaders } from "./smimeMessage.js";
@@ -2923,12 +3279,15 @@ index 39c737137ae875767f859affc408f254493a87b5..39e4f06d1fcee0c3ac0b9ff2549ff873
 +export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signed_unverified_signer" | "encrypted_unverified_signer" | "signature_failed" | "unprotected";
 +/** Why a message is `"signature_failed"`. `invalid_signature`: the CMS signature itself is malformed or
 + * doesn't verify over the content (or a `multipart/signed` body doesn't hold exactly two parts).
-+ * `untrusted_signer`: pinned fingerprints were supplied and the signer certificate matches none of them (or no
-+ * signer certificate could be resolved at all). `signer_identity_mismatch`: the signer certificate doesn't name
-+ * the message's `From` address (or `From` doesn't hold exactly one address). `header_mismatch`: the
-+ * signed/protected `From`/`To`/`Cc` (or a signed-only message's `Subject`) disagree with the outer envelope's,
-+ * or either header block repeats a `From`/`To`/`Cc`/`Sender` field. */
-+export type SignatureFailureReason = "invalid_signature" | "untrusted_signer" | "signer_identity_mismatch" | "header_mismatch";
++ * `signer_key_changed`: pinned fingerprints were supplied and the signer certificate matches none of them, but it
++ * names the sender and every header check passes - the sender appears to use a new key (see this module's doc
++ * comment); the result carries `signerCertificate`. `untrusted_signer`: pinned fingerprints were supplied and the signer
++ * certificate matches none of them and also fails the identity or header checks (or no signer certificate could be
++ * resolved at all). `signer_identity_mismatch`: the signer certificate doesn't name the message's `From` address (or
++ * `From` doesn't hold exactly one address). `header_mismatch`: the signed/protected `From`/`To`/`Cc` (or a signed-only
++ * message's `Subject`) disagree with the outer envelope's, or either header block repeats a `From`/`To`/`Cc`/`Sender`
++ * field. */
++export type SignatureFailureReason = "invalid_signature" | "signer_key_changed" | "untrusted_signer" | "signer_identity_mismatch" | "header_mismatch";
 +/** The header fields recovered from inside the signed/encrypted entity (RFC 9788 header protection), decoded
 + * for display where they are text. */
 +export interface MessageProtectedHeaders {
@@ -3002,8 +3361,10 @@ index 39c737137ae875767f859affc408f254493a87b5..39e4f06d1fcee0c3ac0b9ff2549ff873
 +    signerEmails?: string[];
 +    /** Base64 DER of the certificate that verified the signature - what `keyvaultApi.ts`'s `trustSigner()` pins for
 +     * a "trust this signer" action. Present alongside `signerFingerprint` for `"signed_verified"`,
-+     * `"encrypted_verified"` and the `*_unverified_signer` states; never for `"signature_failed"`, even when its
-+     * signature itself was valid (a failed binding or pin mismatch is not something to offer trusting). */
++     * `"encrypted_verified"`, the `*_unverified_signer` states, and `"signature_failed"` with reason
++     * `"signer_key_changed"` (for a key-changed comparison and `resolveKeyConflict()`'s `certificate`). Never for any
++     * other `"signature_failed"`, even when its signature itself was valid (a failed binding is not something to offer
++     * trusting). */
 +    signerCertificate?: string;
 +}
 +export interface SignerBindingInput {
@@ -3025,7 +3386,9 @@ index 39c737137ae875767f859affc408f254493a87b5..39e4f06d1fcee0c3ac0b9ff2549ff873
 +    compareSubject?: boolean;
  }
 +/** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
-+ * Returns `undefined` when the signer is accepted, otherwise the failure reason.
++ * Returns `undefined` when the signer is accepted, otherwise the failure reason. A pin mismatch is
++ * `"signer_key_changed"` when checks 3 and 4 pass for the certificate, and `"untrusted_signer"` when they don't (or no
++ * certificate was resolved).
 + *
 + * With no `pinnedSignerFingerprint` (or an empty array), check 2 is skipped and `undefined` means only that the
 + * certificate names the sender consistently - NOT that the signer is trusted. Use `evaluateMessageSecurity()`
@@ -3039,22 +3402,30 @@ index 39c737137ae875767f859affc408f254493a87b5..39e4f06d1fcee0c3ac0b9ff2549ff873
 + * content type all degrade to a result the caller can render directly.
 + *
 + * `pinnedSignerFingerprints` - the sender's trusted signing-key fingerprint(s): `signingKeyFingerprints()` of the
-+ * sender's `Contact.keys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). The unlocked mailbox's own
++ * sender's `Contact.keys` and `Contact.previousKeys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). A
++ * supplied pin that the signer doesn't match is `signer_key_changed` or `untrusted_signer`. The unlocked mailbox's own
 + * `signingFingerprint` is always trusted too (mail this mailbox signed itself). Omitted or empty, a valid signature
 + * from any other certificate is `*_unverified_signer`, never verified. `readerAddress` - the unlocked mailbox's own
 + * address - enables `notAddressedToReader`.
++ *
++ * An encrypted message is decrypted with `unlocked`'s active encryption key or any of its `retainedEncryptionKeys` (the
++ * older keys a rotation replaced - see `keySession.ts`), matched by recipient identifier first.
   */
  export declare function evaluateMessageSecurity(rawMime: string, unlocked: {
      encryptionPrivateKey?: CryptoKey;
      encryptionCertDer?: Uint8Array;
 -} | undefined, pinnedSignerFingerprint?: string): Promise<MessageSecurityResult>;
++    retainedEncryptionKeys?: {
++        certDer: Uint8Array;
++        privateKey: CryptoKey;
++    }[];
 +    signingFingerprint?: string;
 +} | undefined, pinnedSignerFingerprints?: string | string[], readerAddress?: string): Promise<MessageSecurityResult>;
 diff --git a/dist/crypto/messageSecurity.js b/dist/crypto/messageSecurity.js
-index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc7856733b156b9 100644
+index d15171a423be5b13034b038a2a19c9edf19cc2cc..b04f739c3fa022db6ea6741c167c8b49f47d3317 100644
 --- a/dist/crypto/messageSecurity.js
 +++ b/dist/crypto/messageSecurity.js
-@@ -4,55 +4,148 @@
+@@ -4,55 +4,168 @@
  ///////////////////////////////////////////////////////////////////////////////
  /**
   * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
@@ -3091,9 +3462,17 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
 + * checks 1, 3 and 4 alone prove only that *someone* holding a certificate naming the sender signed it - a
 + * self-issued certificate with SAN `ceo@victim.com` passes them. Without a matching pin the result is
 + * `"signed_unverified_signer"`/`"encrypted_unverified_signer"` instead, carrying `signerFingerprint` and
-+ * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A pin that was
-+ * supplied but doesn't match is `"signature_failed"` (`untrusted_signer`), and a failure of checks 1, 3 or 4
-+ * is `"signature_failed"` with `signatureFailureReason` saying which check failed.
++ * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A failure of checks 1, 3
++ * or 4 is `"signature_failed"` with `signatureFailureReason` saying which check failed.
++ *
++ * **Pinned, but a different key.** When pins were supplied and checks 1, 3 and 4 pass but the signer matches no pin, the
++ * result is `"signature_failed"` with `signatureFailureReason: "signer_key_changed"`: the sender's certificate names
++ * them and the message is intact, but it isn't the key the reader pinned (a rotation the reader hasn't accepted, or an
++ * impersonation). Only this failure also carries `signerCertificate`, so a UI can compare it with the pinned keys
++ * (`contactsApi.ts`'s `fetchSignerKeyState()`) and let the user accept or reject it (`keyvaultApi.ts`'s
++ * `resolveKeyConflict()`). A pin mismatch whose certificate also fails check 3 or 4 (or couldn't be resolved) stays
++ * `untrusted_signer`. Previously pinned keys count as pins (see `signingKeyFingerprints()`), so mail signed before an
++ * accepted or automatic rotation still verifies.
   */
 -import { computeCertFingerprint } from "./smime.js";
 -import { parseEncryptedMessage, parseSignedOnlyMessage, splitHeadersAndBody } from "./smimeMessage.js";
@@ -3102,7 +3481,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
 +import { decodeHeaderText, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
 +import { toBase64 } from "./encoding.js";
 +import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
-+import { parseEncryptedMessage, parseSignedOnlyMessage } from "./smimeMessage.js";
++import { parseEncryptedMessageWithKeys, parseSignedOnlyMessage } from "./smimeMessage.js";
 +export { signingKeyFingerprints } from "./keyvaultApi.js";
 +function isSignedOnlyContentType(contentTypeValue) {
 +    return contentTypeValue === "multipart/signed";
@@ -3162,19 +3541,27 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
 +    return (Array.isArray(pins) ? pins : pins === undefined ? [] : [pins]).map((pin) => pin.toLowerCase());
 +}
 +/** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
-+ * Returns `undefined` when the signer is accepted, otherwise the failure reason.
++ * Returns `undefined` when the signer is accepted, otherwise the failure reason. A pin mismatch is
++ * `"signer_key_changed"` when checks 3 and 4 pass for the certificate, and `"untrusted_signer"` when they don't (or no
++ * certificate was resolved).
 + *
 + * With no `pinnedSignerFingerprint` (or an empty array), check 2 is skipped and `undefined` means only that the
 + * certificate names the sender consistently - NOT that the signer is trusted. Use `evaluateMessageSecurity()`
 + * (which reports that case as `*_unverified_signer`) unless you enforce a pin yourself. */
 +export async function checkSignerBinding(input) {
-+    const { protectedHeaders, outerHeaders } = input;
 +    const pins = normalizePins(input.pinnedSignerFingerprint);
 +    // Fail closed: an absent certificate hashes/extracts as empty, which can never match a pin or From.
 +    const certDer = input.signerCertificateDer ?? new Uint8Array();
 +    if (pins.length > 0 && !pins.includes(await computeCertFingerprint(certDer))) {
-+        return "untrusted_signer";
++        // A certificate that otherwise binds cleanly to the sender is a key change for the user to judge; anything else
++        // (no certificate, wrong identity, header tampering) stays a plain untrusted signer.
++        return input.signerCertificateDer && checkIdentityAndHeaders(input, certDer) === undefined ? "signer_key_changed" : "untrusted_signer";
 +    }
++    return checkIdentityAndHeaders(input, certDer);
++}
++/** Checks 3-4 from this module's doc comment. */
++function checkIdentityAndHeaders(input, certDer) {
++    const { protectedHeaders, outerHeaders } = input;
 +    if (hasRepeatedAddressField(input.outerFields) || hasRepeatedAddressField(input.protectedFields)) {
 +        return "header_mismatch";
 +    }
@@ -3208,10 +3595,14 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
 + * content type all degrade to a result the caller can render directly.
 + *
 + * `pinnedSignerFingerprints` - the sender's trusted signing-key fingerprint(s): `signingKeyFingerprints()` of the
-+ * sender's `Contact.keys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). The unlocked mailbox's own
++ * sender's `Contact.keys` and `Contact.previousKeys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). A
++ * supplied pin that the signer doesn't match is `signer_key_changed` or `untrusted_signer`. The unlocked mailbox's own
 + * `signingFingerprint` is always trusted too (mail this mailbox signed itself). Omitted or empty, a valid signature
 + * from any other certificate is `*_unverified_signer`, never verified. `readerAddress` - the unlocked mailbox's own
 + * address - enables `notAddressedToReader`.
++ *
++ * An encrypted message is decrypted with `unlocked`'s active encryption key or any of its `retainedEncryptionKeys` (the
++ * older keys a rotation replaced - see `keySession.ts`), matched by recipient identifier first.
   */
 -export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprint) {
 -    const { contentType, body, headers } = splitHeadersAndBody(rawMime);
@@ -3232,7 +3623,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
      const actualOuterHeaders = {
          from: headers["from"],
          to: headers["to"],
-@@ -60,18 +153,59 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+@@ -60,35 +173,94 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
          date: headers["date"],
          subject: headers["subject"],
      };
@@ -3244,8 +3635,9 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
 +        const certDer = signerCertificateDer ?? new Uint8Array();
 +        const fingerprint = await computeCertFingerprint(certDer);
 +        const signer = signerCertificateDer ? { signerFingerprint: fingerprint, signerEmails: extractCertificateEmails(certDer) } : {};
-+        // The certificate itself (for "trust this signer") only accompanies a signature that didn't fail - and an accepted
-+        // signer always has a certificate (a missing one fails the binding check closed), so `certDer` is the real one.
++        // The certificate itself (for "trust this signer" or a key-changed comparison) only accompanies a signature that
++        // didn't fail or failed only as `signer_key_changed` - both always have a certificate (a missing one fails the
++        // binding check closed as another reason), so `certDer` is the real one.
 +        const acceptedSigner = { ...signer, signerCertificate: toBase64(certDer) };
 +        const trustedPins = unlocked?.signingFingerprint ? [...callerPins, unlocked.signingFingerprint.toLowerCase()] : callerPins;
 +        const failure = await checkSignerBinding({
@@ -3288,7 +3680,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
 -        return { state: "signed_verified", html: parsed.bodyText, subject: parsed.protectedHeaders?.subject };
 +        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
 +        if (failure) {
-+            return { state: "signature_failed", signatureFailureReason: failure, ...signer };
++            return { state: "signature_failed", signatureFailureReason: failure, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
 +        }
 +        return {
 +            state: trusted ? "signed_verified" : "signed_unverified_signer",
@@ -3301,10 +3693,18 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
 +        };
      }
      if (isEncryptedContentType(contentType)) {
-         if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
-@@ -79,16 +213,27 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+-        if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
++        // The active key first, then the retained older ones (see `keySession.ts`'s `retainedEncryptionKeys`), so mail
++        // encrypted to a key since replaced still opens. Only ever used to decrypt here - never to encrypt or sign.
++        const keys = [
++            ...(unlocked?.encryptionPrivateKey && unlocked.encryptionCertDer ? [{ certDer: unlocked.encryptionCertDer, privateKey: unlocked.encryptionPrivateKey }] : []),
++            ...(unlocked?.retainedEncryptionKeys ?? []).map(({ certDer, privateKey }) => ({ certDer, privateKey })),
++        ];
++        if (keys.length === 0) {
+             return { state: "encrypted", decryptError: NO_KEY_ERROR };
          }
-         const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
+-        const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
++        const parsed = await parseEncryptedMessageWithKeys(body, keys, actualOuterHeaders);
          if (!parsed.decrypted) {
 -            return { state: "encrypted", decryptError: NO_KEY_ERROR };
 +            return { state: "encrypted", decryptError: parsed.unsupportedContentEncryption ? UNSUPPORTED_ENCRYPTION_ERROR : NO_KEY_ERROR };
@@ -3329,7 +3729,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc78567
 -            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
 +        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
 +        if (failure) {
-+            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...signer };
++            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
          }
 -        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
 +        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner };
@@ -4078,7 +4478,7 @@ index ac7f897fd95d6c05874a8e5856e98c7b88806bec..906b0b52a6782a087ef43b7d19593b83
      return hkdfDerive(ikm, salt, "wrap");
  }
 diff --git a/dist/crypto/smime.d.ts b/dist/crypto/smime.d.ts
-index d064b7e9ba1dcb45cbe921f0177ae7ae6fd67450..a06446d30d752e547835d1eb7915ec0607e248b6 100644
+index d064b7e9ba1dcb45cbe921f0177ae7ae6fd67450..7d449d4760a780c8654e90dd0a617b92c527d399 100644
 --- a/dist/crypto/smime.d.ts
 +++ b/dist/crypto/smime.d.ts
 @@ -11,6 +11,19 @@
@@ -4128,8 +4528,47 @@ index d064b7e9ba1dcb45cbe921f0177ae7ae6fd67450..a06446d30d752e547835d1eb7915ec06
  /**
   * Builds an *opaque* (content embedded, not detached) CMS `SignedData` structure over `content`.
   * Used only when the signed message is going to be encrypted immediately afterward (`buildMessage()`
+@@ -63,8 +87,38 @@ export declare function encryptForRecipients(content: Uint8Array, recipientCertD
+  * function's own caller already knows in advance, so it tries every recipient slot in turn with the
+  * one keypair it has, succeeding on whichever slot was actually built for it and discarding the rest
+  * — the same shape as trying every wrapped-key entry in `KeyVault.masterKeyWraps` until one unwraps.
++ * A slot whose recipient identifier names this certificate is tried first. See
++ * `decryptEnvelopedDataWithKeys()` for several candidate keys.
+  */
+ export declare function decryptEnvelopedData(envelopedDer: Uint8Array, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey): Promise<Uint8Array>;
++/** One candidate decryption keypair for `decryptEnvelopedDataWithKeys()`. */
++export interface DecryptionKey {
++    /** Base64-decoded DER certificate of the key. */
++    certDer: Uint8Array;
++    privateKey: CryptoKey;
++}
++/** At most this many candidate keys are considered by `decryptEnvelopedDataWithKeys()` (further ones are ignored) - the
++ * active encryption key plus `keySession.ts`'s `MAX_RETAINED_ENCRYPTION_KEYS` retained ones. */
++export declare const MAX_DECRYPTION_KEYS = 21;
++/** Trial decryptions (a key tried against a slot whose recipient identifier doesn't name it) allowed for every key
++ * after the first, together. The first key keeps the unbounded every-slot trial `decryptEnvelopedData()` always did;
++ * this budget stops a message with many recipient slots from costing `slots x keys` ECDH operations. */
++export declare const MAX_TRIAL_DECRYPTIONS = 64;
++/**
++ * Decrypts a CMS `EnvelopedData` structure with whichever of several candidate keys it was encrypted to - the mailbox's
++ * active encryption key followed by the retained older ones (`keySession.ts`'s `retainedEncryptionKeys`), so mail
++ * encrypted to a key since replaced stays readable.
++ *
++ * **Matching first:** every recipient slot whose identifier (issuer and serial number, or subject key identifier) names
++ * a candidate's certificate is tried with that key, in candidate order - normally one decryption, no guessing.
++ * **Trial otherwise** (e.g. the sender encrypted to a reissued certificate for the same key): the first candidate is
++ * tried against every remaining slot, then the others in order, sharing `MAX_TRIAL_DECRYPTIONS`.
++ *
++ * Only the first `MAX_DECRYPTION_KEYS` candidates are considered. A candidate whose certificate can't be parsed is
++ * skipped (the parse error is thrown only when no candidate is usable). Throws `UnsupportedContentEncryptionError` for
++ * non-AEAD content, and the last decryption error when no key opens any slot.
++ */
++export declare function decryptEnvelopedDataWithKeys(envelopedDer: Uint8Array, keys: DecryptionKey[]): Promise<Uint8Array>;
+ /** SHA-256 fingerprint of a DER certificate, hex encoded — matches `keyvaultApi.ts`'s own `PublicKey.
+  * fingerprint` format exactly, so a value computed here is directly comparable against one already on
+  * a `Mailbox`/`Contact` record. Used by `messageSecurity.ts` to compare a received message's embedded
 diff --git a/dist/crypto/smime.js b/dist/crypto/smime.js
-index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfeee2a3e2f 100644
+index bfc6236869d92cc0017795be865296eb0f7a079e..b9c5e48c2c4d6621a58634336ca0da4581546267 100644
 --- a/dist/crypto/smime.js
 +++ b/dist/crypto/smime.js
 @@ -32,6 +32,27 @@ const DIGEST_ALGORITHM = "SHA-256";
@@ -4192,8 +4631,7 @@ index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfe
      catch {
 -        return { valid: false };
 +        return undefined;
-     }
--    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
++    }
 +}
 +/**
 + * Verifies `signerInfos[0]` and returns the certificate pkijs actually matched to that SignerInfo's `sid`
@@ -4209,7 +4647,8 @@ index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfe
 +            return { valid: false };
 +        }
 +        return { valid: true, signerCertificateDer: new Uint8Array(result.signerCertificate.toSchema().toBER()) };
-+    }
+     }
+-    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
 +    catch {
          return { valid: false };
      }
@@ -4239,7 +4678,16 @@ index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfe
      catch {
 -        return { valid: false };
 +        return [];
-+    }
+     }
+-    // `certificates` is a CertificateSetItem union (Certificate | AttributeCertificateV1/V2 |
+-    // OtherCertificateFormat) - `signDetached()` only ever embeds a plain Certificate, so the
+-    // non-Certificate branch here is defensive against a foreign/malformed CMS blob, not reachable
+-    // through this module's own signing path (not exercised in tests for that reason).
+-    const signerCertificate = signedData.certificates?.[0];
+-    const signerCertificateDer = signerCertificate && signerCertificate instanceof pkijs.Certificate
+-        ? new Uint8Array(signerCertificate.toSchema().toBER())
+-        : undefined;
+-    return { valid, signerCertificateDer };
 +    const sanEmails = [];
 +    for (const extension of cert.extensions ?? []) {
 +        if (extension.extnID !== "2.5.29.17") {
@@ -4269,16 +4717,7 @@ index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfe
 +        if (isEmailAttribute || (isCommonName && /^[^\s@]+@[^\s@]+$/.test(value))) {
 +            subjectEmails.push(value);
 +        }
-     }
--    // `certificates` is a CertificateSetItem union (Certificate | AttributeCertificateV1/V2 |
--    // OtherCertificateFormat) - `signDetached()` only ever embeds a plain Certificate, so the
--    // non-Certificate branch here is defensive against a foreign/malformed CMS blob, not reachable
--    // through this module's own signing path (not exercised in tests for that reason).
--    const signerCertificate = signedData.certificates?.[0];
--    const signerCertificateDer = signerCertificate && signerCertificate instanceof pkijs.Certificate
--        ? new Uint8Array(signerCertificate.toSchema().toBER())
--        : undefined;
--    return { valid, signerCertificateDer };
++    }
 +    return subjectEmails;
  }
  /**
@@ -4292,14 +4731,12 @@ index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfe
 -        contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(signedDer));
 -    }
 -    catch {
+-        return { valid: false };
+-    }
+-    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
 +    const signedData = parseSignedData(signedDer);
 +    const eContent = signedData?.encapContentInfo.eContent;
 +    if (!signedData || !eContent) {
-         return { valid: false };
-     }
--    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
-+    const result = await verifySignerZero(signedData);
-+    if (!result.valid) {
          return { valid: false };
      }
 -    let signedData;
@@ -4309,8 +4746,10 @@ index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfe
 -        valid = await signedData.verify({ signer: 0 });
 -    }
 -    catch {
--        return { valid: false };
--    }
++    const result = await verifySignerZero(signedData);
++    if (!result.valid) {
+         return { valid: false };
+     }
 -    // Same defensive, not-reachable-through-signOpaque()'s-own-path branch as verifyDetached() above -
 -    // see that function's identical comment.
 -    const signerCertificate = signedData.certificates?.[0];
@@ -4331,27 +4770,165 @@ index bfc6236869d92cc0017795be865296eb0f7a079e..8fb616d9dc0d16ba502d38b7c89e0cfe
  }
  /**
   * Builds a CMS `EnvelopedData` structure encrypting `content` to every certificate in
-@@ -199,6 +262,10 @@ export async function decryptEnvelopedData(envelopedDer, recipientCertDer, recip
+@@ -192,29 +255,138 @@ export async function encryptForRecipients(content, recipientCertDers) {
+  * function's own caller already knows in advance, so it tries every recipient slot in turn with the
+  * one keypair it has, succeeding on whichever slot was actually built for it and discarding the rest
+  * — the same shape as trying every wrapped-key entry in `KeyVault.masterKeyWraps` until one unwraps.
++ * A slot whose recipient identifier names this certificate is tried first. See
++ * `decryptEnvelopedDataWithKeys()` for several candidate keys.
+  */
+ export async function decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey) {
++    return decryptEnvelopedDataWithKeys(envelopedDer, [{ certDer: recipientCertDer, privateKey: recipientPrivateKey }]);
++}
++/** At most this many candidate keys are considered by `decryptEnvelopedDataWithKeys()` (further ones are ignored) - the
++ * active encryption key plus `keySession.ts`'s `MAX_RETAINED_ENCRYPTION_KEYS` retained ones. */
++export const MAX_DECRYPTION_KEYS = 21;
++/** Trial decryptions (a key tried against a slot whose recipient identifier doesn't name it) allowed for every key
++ * after the first, together. The first key keeps the unbounded every-slot trial `decryptEnvelopedData()` always did;
++ * this budget stops a message with many recipient slots from costing `slots x keys` ECDH operations. */
++export const MAX_TRIAL_DECRYPTIONS = 64;
++function bytesEqual(a, b) {
++    return a.length === b.length && a.every((value, index) => value === b[index]);
++}
++/** The recipient identifier of one `RecipientInfo`: an issuer and serial number, or a subject key identifier. Only
++ * key transport (`variant` 1) and key agreement (`variant` 2) recipients carry one naming a certificate; key agreement
++ * uses the first encrypted key's identifier, which is the only one pkijs's `decrypt()` reads. */
++function recipientIdentifier(recipientInfo) {
++    if (recipientInfo.variant === 1) {
++        return recipientInfo.value.rid;
++    }
++    if (recipientInfo.variant === 2) {
++        // pkijs refuses to parse a key agreement recipient without an encrypted key, so `[0]` always exists; a parsed
++        // identifier is variant 1 (issuer and serial number) or 2 (a `RecipientKeyIdentifier`).
++        const rid = recipientInfo.value.recipientEncryptedKeys.encryptedKeys[0].rid;
++        return rid.variant === 1 ? rid.value : rid.value.subjectKeyIdentifier;
++    }
++    return undefined;
++}
++/** The subject key identifier extension's value, when the certificate has a readable one. */
++function subjectKeyIdentifier(certificate) {
++    const extension = certificate.extensions?.find((candidate) => candidate.extnID === "2.5.29.14");
++    const parsed = extension?.parsedValue;
++    return parsed instanceof asn1js.OctetString ? new Uint8Array(parsed.valueBlock.valueHexView) : undefined;
++}
++/** Whether a recipient slot's identifier names `certificate` (same serial number and issuer DER, or same subject key
++ * identifier). A slot with no certificate identifier (KEK, password) names nobody. */
++function recipientMatchesCertificate(recipientInfo, certificate) {
++    const identifier = recipientIdentifier(recipientInfo);
++    if (identifier instanceof pkijs.IssuerAndSerialNumber) {
++        return (bytesEqual(new Uint8Array(identifier.serialNumber.valueBlock.valueHexView), new Uint8Array(certificate.serialNumber.valueBlock.valueHexView)) &&
++            bytesEqual(new Uint8Array(identifier.issuer.toSchema().toBER()), new Uint8Array(certificate.issuer.toSchema().toBER())));
++    }
++    if (identifier instanceof asn1js.OctetString) {
++        const ski = subjectKeyIdentifier(certificate);
++        return ski !== undefined && bytesEqual(new Uint8Array(identifier.valueBlock.valueHexView), ski);
++    }
++    return false;
++}
++/**
++ * Decrypts a CMS `EnvelopedData` structure with whichever of several candidate keys it was encrypted to - the mailbox's
++ * active encryption key followed by the retained older ones (`keySession.ts`'s `retainedEncryptionKeys`), so mail
++ * encrypted to a key since replaced stays readable.
++ *
++ * **Matching first:** every recipient slot whose identifier (issuer and serial number, or subject key identifier) names
++ * a candidate's certificate is tried with that key, in candidate order - normally one decryption, no guessing.
++ * **Trial otherwise** (e.g. the sender encrypted to a reissued certificate for the same key): the first candidate is
++ * tried against every remaining slot, then the others in order, sharing `MAX_TRIAL_DECRYPTIONS`.
++ *
++ * Only the first `MAX_DECRYPTION_KEYS` candidates are considered. A candidate whose certificate can't be parsed is
++ * skipped (the parse error is thrown only when no candidate is usable). Throws `UnsupportedContentEncryptionError` for
++ * non-AEAD content, and the last decryption error when no key opens any slot.
++ */
++export async function decryptEnvelopedDataWithKeys(envelopedDer, keys) {
+     const contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(envelopedDer));
+     if (contentInfo.contentType !== pkijs.ContentInfo.ENVELOPED_DATA) {
          throw new Error("This CMS content is not EnvelopedData.");
      }
      const envelopedData = new pkijs.EnvelopedData({ schema: contentInfo.content });
+-    const recipientCertificate = parseCertificate(recipientCertDer);
 +    const contentEncryptionOid = envelopedData.encryptedContentInfo.contentEncryptionAlgorithm.algorithmId;
 +    if (!AEAD_CONTENT_ENCRYPTION_OIDS.has(contentEncryptionOid)) {
 +        throw new UnsupportedContentEncryptionError(contentEncryptionOid);
 +    }
-     const recipientCertificate = parseCertificate(recipientCertDer);
++    const candidates = [];
++    let parseError;
++    for (const key of keys.slice(0, MAX_DECRYPTION_KEYS)) {
++        try {
++            candidates.push({ certificate: parseCertificate(key.certDer), privateKey: key.privateKey });
++        }
++        catch (err) {
++            parseError = err;
++        }
++    }
++    if (candidates.length === 0) {
++        throw parseError instanceof Error ? parseError : new Error("No decryption key was supplied.");
++    }
++    const slotCount = envelopedData.recipientInfos.length;
++    const tried = new Set();
      let lastError;
-     for (let index = 0; index < envelopedData.recipientInfos.length; index++) {
+-    for (let index = 0; index < envelopedData.recipientInfos.length; index++) {
++    const attempt = async (index, candidate) => {
++        tried.add(`${index}:${candidate}`);
++        const { certificate, privateKey } = candidates[candidate];
+         try {
+-            const decrypted = await envelopedData.decrypt(index, { recipientCertificate, recipientPrivateKey });
+-            return new Uint8Array(decrypted);
++            return new Uint8Array(await envelopedData.decrypt(index, { recipientCertificate: certificate, recipientPrivateKey: privateKey }));
+         }
+         catch (err) {
+             lastError = err;
++            return undefined;
++        }
++    };
++    for (let candidate = 0; candidate < candidates.length; candidate++) {
++        for (let index = 0; index < slotCount; index++) {
++            if (recipientMatchesCertificate(envelopedData.recipientInfos[index], candidates[candidate].certificate)) {
++                const decrypted = await attempt(index, candidate);
++                if (decrypted) {
++                    return decrypted;
++                }
++            }
++        }
++    }
++    let trialBudget = MAX_TRIAL_DECRYPTIONS;
++    for (let candidate = 0; candidate < candidates.length; candidate++) {
++        for (let index = 0; index < slotCount; index++) {
++            if (tried.has(`${index}:${candidate}`)) {
++                continue;
++            }
++            if (candidate > 0 && trialBudget-- <= 0) {
++                break;
++            }
++            const decrypted = await attempt(index, candidate);
++            if (decrypted) {
++                return decrypted;
++            }
+         }
+     }
+-    // The `new Error(...)` fallback covers an EnvelopedData with zero recipientInfos (the loop body
+-    // never runs, so `lastError` stays its initial `undefined`) - not reachable through this module's
+-    // own encryptForRecipients(), which always adds at least one recipient in practice, but kept as a
+-    // defensive fallback since `lastError` could otherwise surface as a non-Error thrown value.
+-    throw lastError instanceof Error ? lastError : new Error("No recipient slot in this EnvelopedData could be decrypted with this key.");
++    // The `new Error(...)` fallback covers an EnvelopedData with zero recipientInfos (no attempt ever runs, so
++    // `lastError` stays its initial `undefined`) - not reachable through this module's own encryptForRecipients(),
++    // which always adds at least one recipient in practice, but kept as a defensive fallback since `lastError` could
++    // otherwise surface as a non-Error thrown value.
++    throw lastError instanceof Error ? lastError : new Error("No recipient slot in this EnvelopedData could be decrypted with these keys.");
+ }
+ /** SHA-256 fingerprint of a DER certificate, hex encoded — matches `keyvaultApi.ts`'s own `PublicKey.
+  * fingerprint` format exactly, so a value computed here is directly comparable against one already on
 diff --git a/dist/crypto/smimeMessage.d.ts b/dist/crypto/smimeMessage.d.ts
-index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..753aab68b63514cd6f74096e87e072c6f593d6ae 100644
+index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..efb923bba6bd6e3ccab3ee8dec0ee11347ec5c30 100644
 --- a/dist/crypto/smimeMessage.d.ts
 +++ b/dist/crypto/smimeMessage.d.ts
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
 +import { DisplayBody, MimeAttachment, MimeHeaderField } from "./mime.js";
++import { type DecryptionKey } from "./smime.js";
  export interface ProtectedHeaders {
      from: string;
      to: string;
-@@ -29,14 +30,28 @@ export interface MimePart {
+@@ -29,14 +31,28 @@ export interface MimePart {
  export declare function buildSignedOnlyMessage(bodyContentType: string, bodyText: string, protectedHeaders: ProtectedHeaders, signingCertDer: Uint8Array, signingPrivateKey: CryptoKey): Promise<MimePart>;
  export interface ParsedSignedOnlyMessage {
      verified: boolean;
@@ -4383,7 +4960,7 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..753aab68b63514cd6f74096e87e072c6
  export declare function parseSignedOnlyMessage(contentType: string, body: string): Promise<ParsedSignedOnlyMessage>;
  /**
   * Builds an `application/pkcs7-mime; smime-type="enveloped-data"` message with RFC 9788 header
-@@ -55,7 +70,8 @@ export declare function buildEncryptedMessage(bodyContentType: string, bodyText:
+@@ -55,7 +71,8 @@ export declare function buildEncryptedMessage(bodyContentType: string, bodyText:
   * (`applyBaselineOuterHeaders()`'s output) - this function does no obscuring itself, it only serializes
   * whatever headers it's given. Deliberately excludes `Bcc`: that recipient list is submission-only and
   * must never appear as a message header (see `AssembleDraftRawInput`'s own doc comment - `bcc` is passed
@@ -4393,7 +4970,7 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..753aab68b63514cd6f74096e87e072c6
   */
  export declare function assembleOutboundMime(outerHeaders: ProtectedHeaders, part: MimePart): string;
  export interface ParsedEncryptedMessage {
-@@ -65,6 +81,8 @@ export interface ParsedEncryptedMessage {
+@@ -65,6 +82,8 @@ export interface ParsedEncryptedMessage {
      signatureVerified?: boolean;
      signerCertificateDer?: Uint8Array;
      protectedHeaders?: ProtectedHeaders;
@@ -4402,7 +4979,7 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..753aab68b63514cd6f74096e87e072c6
      bodyContentType?: string;
      bodyText?: string;
      /** `true` when `actualOuterHeaders` was supplied and disagrees with the `HP-Outer:` field copies
-@@ -75,6 +93,13 @@ export interface ParsedEncryptedMessage {
+@@ -75,6 +94,13 @@ export interface ParsedEncryptedMessage {
       * carries no `HP-Outer:` lines at all (a foreign sender's S/MIME implementation that doesn't write
       * them, or a message from before this field existed). */
      headerTamperDetected?: boolean;
@@ -4416,7 +4993,7 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..753aab68b63514cd6f74096e87e072c6
  }
  /** RFC 9788's `HP-Outer:` field-copy fields to actually compare - a subset of `ProtectedHeaders`
   * (`messageId` has no `HP-Outer` counterpart; only the fields the outer envelope itself carries do).
-@@ -90,15 +115,10 @@ export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to
+@@ -90,15 +116,14 @@ export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to
   * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
   */
  export declare function parseEncryptedMessage(base64Body: string, recipientCertDer: Uint8Array, recipientPrivateKey: CryptoKey, actualOuterHeaders?: ComparableOuterHeaders): Promise<ParsedEncryptedMessage>;
@@ -4429,6 +5006,10 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..753aab68b63514cd6f74096e87e072c6
 - * only hold one value per (lowercased) name, which silently drops all but the last line for a
 - * repeated-name header like RFC 9788's `HP-Outer` (see `extractHpOuterHeaders()`, which parses
 - * `rawHeaderBlock` directly instead). */
++/** `parseEncryptedMessage()` with several candidate keys - the active encryption key first, then retained older ones -
++ * decrypted by `smime.ts`'s `decryptEnvelopedDataWithKeys()` (recipient-identifier matching first, then a bounded
++ * trial). Same never-throws contract. */
++export declare function parseEncryptedMessageWithKeys(base64Body: string, keys: DecryptionKey[], actualOuterHeaders?: ComparableOuterHeaders): Promise<ParsedEncryptedMessage>;
 +/** Splits a MIME entity's raw text into its header lines (lowercased-key map, first occurrence of each
 + * name, unfolded) and raw body, plus the entity's own Content-Type value for convenience. Kept for
 + * backward compatibility - new code should use `mime.ts`'s `parseMimeEntity()`, which also exposes every
@@ -4437,7 +5018,7 @@ index 09d5c9c3c4f88ad55fc0969aa0bf5ff05f4fa5d3..753aab68b63514cd6f74096e87e072c6
      headers: Record<string, string>;
      contentType?: string;
 diff --git a/dist/crypto/smimeMessage.js b/dist/crypto/smimeMessage.js
-index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..6e189129e254f9d9e532259745d1871bb4b1cd92 100644
+index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..1ca92a9a7b00a905a251c6337d94dd9d934c2cad 100644
 --- a/dist/crypto/smimeMessage.js
 +++ b/dist/crypto/smimeMessage.js
 @@ -26,8 +26,9 @@
@@ -4448,7 +5029,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..6e189129e254f9d9e532259745d1871b
 -import { decryptEnvelopedData, encryptForRecipients, signDetached, signOpaque, verifyDetached, verifyOpaque, } from "./smime.js";
 +import { toBase64 } from "./encoding.js";
 +import { binaryStringToBytes, bytesToBinaryString, decodeBase64Text, decodeBodyText, decodeHeaderText, encodeAddressListHeaderValue, encodeUnstructuredHeaderValue, isBinaryString, extractAttachments, extractDisplayBody, parseMimeEntity, parseParameterizedHeader, splitMultipart, } from "./mime.js";
-+import { decryptEnvelopedData, encryptForRecipients, signDetached, signOpaque, UnsupportedContentEncryptionError, verifyDetached, verifyOpaque, } from "./smime.js";
++import { decryptEnvelopedDataWithKeys, encryptForRecipients, signDetached, signOpaque, UnsupportedContentEncryptionError, verifyDetached, verifyOpaque, } from "./smime.js";
  const CRLF = "\r\n";
  /** RFC 2045's own line-length limit for base64-encoded body content. */
  const BASE64_LINE_WIDTH = 76;
@@ -4661,18 +5242,25 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..6e189129e254f9d9e532259745d1871b
      }
      return found ? result : undefined;
  }
-@@ -222,7 +266,7 @@ function outerHeadersMatch(hpOuter, actualOuterHeaders) {
+@@ -222,108 +266,66 @@ function outerHeadersMatch(hpOuter, actualOuterHeaders) {
   * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
   */
  export async function parseEncryptedMessage(base64Body, recipientCertDer, recipientPrivateKey, actualOuterHeaders) {
 -    const envelopedDer = decodeBase64Body(base64Body);
++    return parseEncryptedMessageWithKeys(base64Body, [{ certDer: recipientCertDer, privateKey: recipientPrivateKey }], actualOuterHeaders);
++}
++/** `parseEncryptedMessage()` with several candidate keys - the active encryption key first, then retained older ones -
++ * decrypted by `smime.ts`'s `decryptEnvelopedDataWithKeys()` (recipient-identifier matching first, then a bounded
++ * trial). Same never-throws contract. */
++export async function parseEncryptedMessageWithKeys(base64Body, keys, actualOuterHeaders) {
 +    const envelopedDer = decodeBase64Text(base64Body);
      if (!envelopedDer) {
          return { decrypted: false };
      }
-@@ -230,100 +274,52 @@ export async function parseEncryptedMessage(base64Body, recipientCertDer, recipi
+     let decrypted;
      try {
-         decrypted = await decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey);
+-        decrypted = await decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey);
++        decrypted = await decryptEnvelopedDataWithKeys(envelopedDer, keys);
      }
 -    catch {
 -        return { decrypted: false };
@@ -4799,7 +5387,7 @@ index 9a31edf5f9e42f21ea95463823a0bf9a6f5a96c1..6e189129e254f9d9e532259745d1871b
  }
  function headersToProtectedHeaders(headers) {
      return {
-@@ -331,7 +327,9 @@ function headersToProtectedHeaders(headers) {
+@@ -331,7 +333,9 @@ function headersToProtectedHeaders(headers) {
          to: headers["to"] ?? "",
          cc: headers["cc"],
          date: headers["date"] ?? "",

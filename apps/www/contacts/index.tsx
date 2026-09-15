@@ -128,6 +128,8 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     // and switching mailboxes is a full page load, so `mailboxUid` never changes under this component.
     const ownsMailbox = mailboxes.some((mb) => mb.uid === mailboxUid && mb.ownerUserUid !== undefined && mb.ownerUserUid === userUid);
     const [delegateCanViewDeleted, setDelegateCanViewDeleted] = useState(false);
+    // Resolving a contact's key change needs update rights on the mailbox - `undefined` while unknown.
+    const [delegateCanUpdate, setDelegateCanUpdate] = useState<boolean | undefined>(undefined);
     useEffect(() => {
         if (ownsMailbox) {
             return;
@@ -137,6 +139,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             (access) => {
                 if (!cancelled) {
                     setDelegateCanViewDeleted(access.canDelete && access.canUpdate);
+                    setDelegateCanUpdate(access.canUpdate);
                 }
             },
             () => undefined,
@@ -534,7 +537,13 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 ) : mode === "edit" && selected ? (
                     <ContactForm contact={selected} onSaved={handleSaved} onCancel={handleCancel} />
                 ) : selected ? (
-                    <ContactDetailPane contact={selected} onEdit={() => setMode("edit")} onDelete={() => handleDelete(selected)} />
+                    <ContactDetailPane
+                        contact={selected}
+                        onEdit={() => setMode("edit")}
+                        onDelete={() => handleDelete(selected)}
+                        onKeysChanged={() => void reload()}
+                        canResolveKeys={ownsMailbox || delegateCanUpdate}
+                    />
                 ) : (
                     <p className="text-sm text-text-muted">Select a contact, or create a new one.</p>
                 )}

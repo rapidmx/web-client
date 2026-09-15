@@ -18,7 +18,11 @@ const { evaluateMessageSecurity, getUnlockedKeys, getPinnedSignerFingerprints } 
 }));
 vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
 vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
-vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints }));
+vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({
+    getPinnedSignerFingerprints,
+    // No recorded key conflicts - see MessageDetailPane.keyChange.test.tsx for those.
+    getSignerKeyState: async () => ({ pinned: [], previous: [] }),
+}));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock: vi.fn() }) }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ moveLocalEntity: vi.fn() }));
 

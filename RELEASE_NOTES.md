@@ -22,6 +22,15 @@ hardens compose, encryption, local search and the admin consoles after several r
 - **Trust this signer:** shown on validly signed mail from a sender with no pinned signing key. It confirms the
   certificate's email and fingerprint before pinning it, then the badge turns verified. A sender whose key changed
   isn't offered one-click trust.
+- **Key changes:** needs a server running the next `@rapidmx/restapi` release.
+  - Mail validly signed by a pinned sender with a different key shows "This sender's signing key changed". It compares
+    the trusted and new fingerprints with their dates and offers Accept new key (after a confirmation) or, when the
+    change was already recorded, Keep current key. Accepting re-checks the message.
+  - A contact's recorded key changes show the same comparison and actions, and its replaced keys are listed as a
+    history ("Renewed automatically" or "Replaced by you").
+  - Revoked keys are labelled "superseded" after a routine replacement and "revoked" otherwise, in contacts and in
+    Settings > Encryption.
+  - An unpinned sender with a recorded key change links to the contact instead of offering Trust this signer.
 - **Unverified signers:** a valid signature from a signer that isn't a pinned contact key shows "signer not verified",
   never a green badge.
 - **Signature badges:**

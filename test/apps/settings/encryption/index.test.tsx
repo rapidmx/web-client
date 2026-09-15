@@ -207,6 +207,8 @@ describe("SettingsEncryptionPage", () => {
             keys: [
                 { ...mailbox.keys[0], useType: "sign" as const, fingerprint: "sign-fp" },
                 { ...mailbox.keys[0], fingerprint: "revoked-fp", revokedAt: Date.now() },
+                { ...mailbox.keys[0], fingerprint: "compromised-fp", revokedAt: Date.now(), revocationReason: "compromised" as const },
+                { ...mailbox.keys[0], fingerprint: "superseded-fp", revokedAt: Date.now(), revocationReason: "superseded" as const },
             ],
         };
         mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [mixedMailbox]) : undefined));
@@ -214,7 +216,10 @@ describe("SettingsEncryptionPage", () => {
 
         expect(await screen.findByText(/Signing key: sign-fp/)).toBeInTheDocument();
         expect(screen.getByText(/Encryption key: revoked-fp/)).toBeInTheDocument();
-        expect(screen.getByText("(revoked)")).toBeInTheDocument();
+        // A reasonless or compromised revocation reads "revoked"; a routine rotation's superseded key doesn't.
+        expect(screen.getAllByText("(revoked)")).toHaveLength(2);
+        expect(screen.getByText(/Encryption key: superseded-fp/)).toHaveTextContent("(superseded)");
+        expect(screen.getByText(/Encryption key: superseded-fp/)).not.toHaveTextContent("(revoked)");
         // Unlike the keys list above (rendered straight from the already-loaded `mailboxes` prop), the
         // unlock-methods list depends on this page's own separate `getKeyVault()` fetch - awaited
         // explicitly so this assertion doesn't race that still-pending promise.

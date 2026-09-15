@@ -33,7 +33,10 @@ import {
 import { extractAddresses, type MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
 import { SignerKeyConflictError, signingKeyFingerprints, trustSigner } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
-import { clearPinnedSignerCache, getPinnedSignerFingerprints } from "./pinnedSigners.js";
+import { SenderKeyState, clearPinnedSignerCache, getPinnedSignerFingerprints, getSignerKeyState } from "./pinnedSigners.js";
+import { getMyMailboxAccess } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
+import KeyChangeReview from "../contacts/KeyChangeReview.js";
+import { KEY_CHANGE_STALE_MESSAGE, sameFingerprint } from "../contacts/contactKeys.js";
 import { useCompose } from "./compose/ComposeContext.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
@@ -88,6 +91,7 @@ export const TRUST_SIGNER_CONFLICT_MESSAGE =
 export const TRUST_SIGNER_INVALID_MESSAGE = "This certificate can't be trusted for this sender.";
 export const TRUST_SIGNER_FORBIDDEN_MESSAGE = "You don't have permission to trust signers for this mailbox.";
 export const TRUST_SIGNER_GENERIC_MESSAGE = "Couldn't trust this signer. Try again.";
+export const KEPT_CURRENT_SIGNING_KEY_MESSAGE = "You kept the current signing key for this sender. This message stays unverified.";
 
 /** The error text for a failed `trustSigner()`. */
 export function trustSignerErrorMessage(err: unknown): string {
@@ -138,6 +142,8 @@ const SIGNATURE_FAILURE_MESSAGE: Record<SignatureFailureReason, string> = {
     invalid_signature:
         "This message's digital signature couldn't be verified - it may be malformed, use an unsupported format, or the content may have been altered after signing. Treat it as unverified.",
     untrusted_signer: "This message was signed with a certificate that doesn't match the sender's known key. Treat it as unverified.",
+    // Never shown: the dedicated "signing key changed" notice replaces it. Present so every reason has copy.
+    signer_key_changed: "This message was signed with a different key than the one you trust for this sender. Treat it as unverified.",
     signer_identity_mismatch:
         "This message's signing certificate doesn't belong to the sender shown in From. Treat it as unverified.",
     header_mismatch:
@@ -346,6 +352,15 @@ function MessageDetailContent({
     const [trustConfirmOpen, setTrustConfirmOpen] = useState(false);
     const [trusting, setTrusting] = useState(false);
     const [trustError, setTrustError] = useState<string | null>(null);
+    // The sender's stored signing-key state, loaded for a `signer_key_changed` result (the comparison) and for an
+    // unverified signer with no pins (a recorded conflict sends the reader to the contact instead of offering trust).
+    // `undefined` when not needed or it couldn't be loaded.
+    const [senderKeyState, setSenderKeyState] = useState<SenderKeyState | undefined>(undefined);
+    // Whether the reader may update this mailbox (resolving a key change needs it) - `undefined` when unknown.
+    const [canUpdateMailbox, setCanUpdateMailbox] = useState<boolean | undefined>(undefined);
+    // "Keys changed while you were looking" after a 409, or the outcome of keeping the current key. Survives the
+    // re-evaluation that follows.
+    const [keyChangeNotice, setKeyChangeNotice] = useState<string | null>(null);
     // "Now", for deciding whether a scheduled send's lease is still live - advanced when the lease runs out.
     const [nowMs, setNowMs] = useState(() => Date.now());
     const { mailboxes } = useMailShell();
@@ -385,6 +400,7 @@ function MessageDetailContent({
         let cancelled = false;
         setSecurity(null);
         setSenderUnpinned(false);
+        setSenderKeyState(undefined);
         // The sender's trusted signing keys: what key discovery pinned on this mailbox's contacts, plus this
         // mailbox's own signing keys when it sent the message itself. A failed lookup means no pins, which can only
         // ever make a signature "signer not verified", never verified.
@@ -417,9 +433,19 @@ function MessageDetailContent({
                     const viaAlias = await evaluateMessageSecurity(rawMime, unlocked, pinned, alias);
                     result = { ...result, notAddressedToReader: viaAlias.notAddressedToReader };
                 }
+                const unpinned = contactPins.loaded && pins.length === 0;
+                const keyChanged = result.signatureFailureReason === "signer_key_changed";
+                const [keyState, access] = await Promise.all([
+                    keyChanged || (unpinned && UNVERIFIED_SIGNER_STATES.has(result.state))
+                        ? getSignerKeyState(message.mailboxUid, senderAddress).catch(() => undefined)
+                        : undefined,
+                    keyChanged ? getMyMailboxAccess(message.mailboxUid).then((a) => a.canUpdate, () => undefined) : undefined,
+                ]);
                 if (!cancelled) {
                     setSecurity(result);
-                    setSenderUnpinned(contactPins.loaded && pins.length === 0);
+                    setSenderUnpinned(unpinned);
+                    setSenderKeyState(keyState);
+                    setCanUpdateMailbox(access);
                 }
             })
             .catch(() => {
@@ -504,6 +530,14 @@ function MessageDetailContent({
         } finally {
             setTrusting(false);
         }
+    }
+
+    // After a key change was accepted or kept (or the pinned key moved meanwhile): the pinned signers are re-read and
+    // the message re-evaluated, so an accepted key turns the badge verified.
+    function refreshAfterKeyChange(notice: string | null) {
+        setKeyChangeNotice(notice);
+        clearPinnedSignerCache();
+        setUnlockRefresh((n) => n + 1);
     }
 
     // Only ever invoked from the Reply/Reply All/Forward buttons below, which themselves only render
@@ -690,8 +724,18 @@ function MessageDetailContent({
     const showSenderAddress = !!senderName && (signatureShown || senderNameCheck.looksLikeAddress);
     const senderLabel = showSenderAddress ? `${senderName} <${senderAddress}>` : senderName || senderAddress;
     // Offered only for a valid signature from a certificate nobody pinned for this sender - never to replace a pin.
+    // A recorded signing-key conflict for this sender is resolved from the contact, never by trusting another key.
+    const pendingConflict = senderUnpinned && senderKeyState?.conflict !== undefined;
     const trustableCertificate =
-        security !== null && UNVERIFIED_SIGNER_STATES.has(security.state) && senderUnpinned ? security.signerCertificate : undefined;
+        security !== null && UNVERIFIED_SIGNER_STATES.has(security.state) && senderUnpinned && !pendingConflict
+            ? security.signerCertificate
+            : undefined;
+    const keyChanged = security?.signatureFailureReason === "signer_key_changed" ? security : undefined;
+    const pinnedSignerKey = senderKeyState?.pinned[0];
+    const recordedConflict =
+        keyChanged && sameFingerprint(senderKeyState?.conflict?.observedKey.fingerprint, keyChanged.signerFingerprint)
+            ? senderKeyState!.conflict
+            : undefined;
 
     return (
         <div className="flex-1 min-w-0 flex flex-col">
@@ -770,6 +814,11 @@ function MessageDetailContent({
                         <Alert>{cancelError}</Alert>
                     </div>
                 )}
+                {keyChangeNotice && (
+                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        {keyChangeNotice}
+                    </p>
+                )}
                 {security && UNVERIFIED_SIGNER_STATES.has(security.state) && (
                     // Informational: the signature is intact, but nothing ties its certificate to this sender - anyone can
                     // create a certificate naming any address. "Trust this signer" (below) pins it once the reader has
@@ -783,6 +832,20 @@ function MessageDetailContent({
                                 Fingerprint <span className="font-mono text-xs break-all">{security.signerFingerprint}</span>.
                             </>
                         )}
+                    </p>
+                )}
+                {pendingConflict && (
+                    // Only an unverified signer's result loads the key state while the sender is unpinned, and a conflict
+                    // always comes from a matching contact, so its uid is known.
+                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
+                        This sender has a signing key change waiting for your review, so this signer can&rsquo;t be trusted from
+                        here.{" "}
+                        <a
+                            href={`/contacts/${encodeURIComponent(senderKeyState.contactUid!)}`}
+                            className="font-medium text-primary-dark hover:underline"
+                        >
+                            Review it in Contacts
+                        </a>
                     </p>
                 )}
                 {trustableCertificate && (
@@ -817,7 +880,34 @@ function MessageDetailContent({
                         </Alert>
                     </div>
                 )}
-                {security?.state === "signature_failed" && (
+                {keyChanged && (
+                    <section aria-label="Signing key changed" className="mt-2 py-3 px-3 rounded-sm text-sm bg-warning/15 text-text flex flex-col gap-2">
+                        <h2 className="font-semibold">This sender&rsquo;s signing key changed</h2>
+                        <p>
+                            The signature on this message is valid and its certificate names {senderAddress}, but it was made
+                            with a different key than the one you trust for this sender, so it isn&rsquo;t verified.
+                        </p>
+                        <KeyChangeReview
+                            mailboxUid={message.mailboxUid}
+                            address={senderAddress}
+                            useType="sign"
+                            ownerName="the sender"
+                            current={pinnedSignerKey && { fingerprint: pinnedSignerKey.fingerprint, since: senderKeyState.pinnedSince! }}
+                            proposed={{
+                                fingerprint: keyChanged.signerFingerprint!,
+                                emails: keyChanged.signerEmails,
+                                observedAt: recordedConflict?.observedAt,
+                                source: recordedConflict?.source,
+                            }}
+                            certificate={keyChanged.signerCertificate}
+                            canReject={recordedConflict !== undefined}
+                            canResolve={canUpdateMailbox}
+                            onResolved={(action) => refreshAfterKeyChange(action === "reject" ? KEPT_CURRENT_SIGNING_KEY_MESSAGE : null)}
+                            onPinnedKeyChanged={() => refreshAfterKeyChange(KEY_CHANGE_STALE_MESSAGE)}
+                        />
+                    </section>
+                )}
+                {security?.state === "signature_failed" && !keyChanged && (
                     // Deliberately an informational notice, not an error `Alert`: an unverifiable signature
                     // means "don't trust the signer", not "this message is broken" - the body stays readable.
                     <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
