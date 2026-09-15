@@ -28,6 +28,7 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/listAllPages.js";
+import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigners.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -42,6 +43,9 @@ export default function ContactsPage(props: ContactsShellProps) {
 
 type Mode = "view" | "edit" | "new";
 type SortColumn = "name" | "info";
+
+/** Shown in the Deleted view when the server answered `?deleted=true` with live contacts (see `canViewDeleted`). */
+const DELETED_NOT_PERMITTED_MESSAGE = "You don't have permission to view deleted contacts in this folder.";
 
 function primaryInfo(contact: Contact): string {
     return contact.emails[0]?.address ?? contact.phones[0]?.phoneNumber ?? "";
@@ -115,11 +119,13 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         void reload();
     }, [folderUid]);
 
-    // restapi only honors `?deleted=true` for a caller with both delete and update rights on the mailbox -
-    // anyone else (a read-only delegate) silently gets the *live* contacts back, which the Deleted view would
-    // then present as deleted. An owner always has both; anyone else asks the server. Unknown (still loading,
-    // or the check failed) hides the view. `ContactsShell` only renders this with a resolved mailbox, and switching
-    // mailboxes is a full page load, so `mailboxUid` never changes under this component.
+    // restapi only honors `?deleted=true` for a caller with both delete and update rights on the contacts *folder*
+    // (its ACL, which inherits the mailbox's but can carry its own records) - anyone else silently gets the *live*
+    // contacts back, which the Deleted view would then present as deleted. There is no client API for the caller's
+    // access to a folder, so the mailbox-level check below is only a first gate (an owner always passes; anyone else
+    // asks the server; unknown - still loading, or the check failed - hides the view), and the Deleted view's own
+    // load below detects the server ignoring the filter. `ContactsShell` only renders this with a resolved mailbox,
+    // and switching mailboxes is a full page load, so `mailboxUid` never changes under this component.
     const ownsMailbox = mailboxes.some((mb) => mb.uid === mailboxUid && mb.ownerUserUid !== undefined && mb.ownerUserUid === userUid);
     const [delegateCanViewDeleted, setDelegateCanViewDeleted] = useState(false);
     useEffect(() => {
@@ -149,6 +155,14 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         setDeletedError(null);
         listAllPages((page) => listDeletedContacts(folderUid, { limit: LIST_PAGE_SIZE, page }))
             .then((result) => {
+                // A server that dropped the `deleted` filter (no delete+update right on this folder) answers with live
+                // contacts, which must never be listed as deleted.
+                if (result.items.some((c) => c.deleted !== true)) {
+                    setDeletedContacts([]);
+                    setDeletedTruncated(false);
+                    setDeletedError(DELETED_NOT_PERMITTED_MESSAGE);
+                    return;
+                }
                 setDeletedContacts(result.items);
                 setDeletedTruncated(result.truncated);
             })
@@ -263,6 +277,8 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     async function handleDelete(contact: Contact) {
         try {
             await deleteContact(contact.uid, contact.version);
+            // Trusted signer pins come from contacts - a deleted contact's keys must stop vouching for signatures.
+            clearPinnedSignerCache();
             setSelectedUid(null);
             setMode("view");
             void reload();
@@ -281,6 +297,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 bulkError = err instanceof ApiRequestError ? err.message : "Could not delete one or more contacts.";
             }
         }
+        clearPinnedSignerCache();
         setCheckedUids(new Set());
         await reload();
         setError(bulkError);
@@ -312,6 +329,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 bulkError = err instanceof ApiRequestError ? err.message : "Could not update one or more contacts.";
             }
         }
+        clearPinnedSignerCache();
         await reload();
         setError(bulkError);
     }
@@ -332,6 +350,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 bulkError = err instanceof ApiRequestError ? err.message : "Could not update one or more contacts.";
             }
         }
+        clearPinnedSignerCache();
         await reload();
         setError(bulkError);
     }
@@ -357,6 +376,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 bulkError = err instanceof ApiRequestError ? err.message : "Could not import one or more contacts.";
             }
         }
+        clearPinnedSignerCache();
         await reload();
         setError(bulkError);
     }

@@ -58,7 +58,25 @@ function DistributionListDetailContent({ uid }: { uid: string }) {
                     <dt className="text-text-muted">Alias addresses</dt>
                     <dd>{list.aliasAddresses && list.aliasAddresses.length > 0 ? list.aliasAddresses.join(", ") : "None"}</dd>
                     <dt className="text-text-muted">Restrict senders</dt>
-                    <dd>{list.restrictSenders ? "Only members may send" : "No"}</dd>
+                    <dd>
+                        {list.restrictSenders ? "Only members may send" : "No"}
+                        {/* restapi accepts a member's message only when the mail server's own trusted Authentication-Results
+                            (`mail:security:trusted_authserv_id`) report a passing, aligned DKIM signature. That setting is
+                            empty by default and no API reports it, so this is static text rather than a conditional warning. */}
+                        {list.restrictSenders ? (
+                            <p role="status" className="mt-1.5 py-2 px-3 rounded-sm text-xs bg-warning/15 text-text">
+                                Members are recognized only by a verified (DKIM) signature, which requires the mail server&rsquo;s
+                                Authentication-Results configuration (the trusted authserv id,{" "}
+                                <code>mail:security:trusted_authserv_id</code>). If that isn&rsquo;t configured, all mail sent to
+                                this list is dropped.
+                            </p>
+                        ) : (
+                            <p className="mt-1 text-xs text-text-muted">
+                                Restricting senders to members requires the mail server&rsquo;s Authentication-Results configuration
+                                (the trusted authserv id); without it, all mail to the list is dropped.
+                            </p>
+                        )}
+                    </dd>
                     <dt className="text-text-muted">Created</dt>
                     <dd>{new Date(list.dateCreated).toLocaleString()}</dd>
                 </dl>

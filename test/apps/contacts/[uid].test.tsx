@@ -9,6 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import ContactDetailPage from "../../../apps/www/contacts/[uid].js";
 
+// Round 6: a saved or deleted contact drops the trusted-signer pins cached from contacts.
+const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));
+vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
+
 const mailbox = {
     uid: "mb1",
     version: 0,
@@ -65,6 +69,7 @@ beforeEach(() => {
 afterEach(() => {
     vi.unstubAllGlobals();
     window.history.pushState(null, "", "/");
+    clearPinnedSignerCache.mockClear();
 });
 
 describe("ContactDetailPage", () => {
@@ -139,6 +144,7 @@ describe("ContactDetailPage", () => {
         await waitFor(() =>
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/contacts/c1", expect.objectContaining({ method: "PUT" })),
         );
+        expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
     });
 
     it("cancels out of edit mode back to the view without saving", async () => {
@@ -166,6 +172,7 @@ describe("ContactDetailPage", () => {
         expect(await screen.findByText("boom")).toBeInTheDocument();
         // The contact stays on screen - a failed delete isn't a failed load.
         expect(screen.getByRole("heading", { name: "Jane Doe" })).toBeInTheDocument();
+        expect(clearPinnedSignerCache).not.toHaveBeenCalled();
     });
 
     it("shows a generic error message when deleting the contact fails with a non-API error", async () => {
@@ -198,5 +205,6 @@ describe("ContactDetailPage", () => {
         await user.click(button);
 
         await waitFor(() => expect(location.href).toBe("/contacts"));
+        expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
     });
 });

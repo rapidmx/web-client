@@ -12,6 +12,10 @@
  * contact list is fetched once and reused for `CONTACTS_CACHE_TTL_MS`; a failed load isn't cached. Any failure
  * leaves the caller with no pins, which `evaluateMessageSecurity()` reports as an unverified signer - never as
  * verified.
+ *
+ * The cache is dropped (`clearPinnedSignerCache()`) whenever a key session locks (subscribed on first use), on sign-out
+ * (`AppShell`), and after the reader adds, edits or deletes contacts (the contacts pages) - so a contact removed
+ * because its key was revoked doesn't keep vouching for signatures until the TTL runs out.
  */
 import {
     Contact,
@@ -21,15 +25,33 @@ import {
     pinnedSigningFingerprintsFor,
 } from "@rapidmx/react-shared/contacts/contactsApi.js";
 import { listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
+import { subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
 
 /** How long one mailbox's loaded contact list is reused before it is fetched again. */
 export const CONTACTS_CACHE_TTL_MS = 60_000;
 
 const contactsCache = new Map<string, { loadedAt: number; contacts: Promise<Contact[]> }>();
 
-/** Forgets every cached contact list - for tests, and after the reader changes their contacts. */
+/** Forgets every cached contact list - on sign-out, a key-session lock, after the reader changes their contacts, and
+ * in tests. */
 export function clearPinnedSignerCache(): void {
     contactsCache.clear();
+}
+
+let lockSubscribed = false;
+
+/** Subscribes (once, lazily - a module-level subscription would run in every page that merely imports this) to key
+ * session changes, clearing the cache whenever any mailbox's keys are locked. */
+function subscribeToLocksOnce(): void {
+    if (lockSubscribed) {
+        return;
+    }
+    lockSubscribed = true;
+    subscribeKeySession((event) => {
+        if (event.state === "locked") {
+            clearPinnedSignerCache();
+        }
+    });
 }
 
 async function loadMailboxContacts(mailboxUid: string): Promise<Contact[]> {
@@ -49,6 +71,7 @@ async function loadMailboxContacts(mailboxUid: string): Promise<Contact[]> {
 
 /** The sender `address`'s pinned signing fingerprints from `mailboxUid`'s contacts. Rejects if they can't be loaded. */
 export async function getPinnedSignerFingerprints(mailboxUid: string, address: string): Promise<string[]> {
+    subscribeToLocksOnce();
     let entry = contactsCache.get(mailboxUid);
     if (!entry || Date.now() - entry.loadedAt > CONTACTS_CACHE_TTL_MS) {
         const created = { loadedAt: Date.now(), contacts: loadMailboxContacts(mailboxUid) };

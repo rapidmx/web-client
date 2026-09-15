@@ -9,6 +9,7 @@ import ContactsShell, { ContactsShellProps } from "../../shared/components/conta
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigners.js";
 
 /**
  * Only reached on mobile (below the `md` breakpoint) — desktop's `apps/www/contacts/index.tsx` keeps its
@@ -52,6 +53,8 @@ function ContactDetailContent({ uid }: { uid: string }) {
         setDeleteError(null);
         try {
             await deleteContact(contact.uid, contact.version);
+            // A deleted contact's pinned signing keys must stop vouching for signatures.
+            clearPinnedSignerCache();
             window.location.href = "/contacts";
         } catch (err) {
             setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this contact.");

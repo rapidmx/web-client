@@ -1334,7 +1334,12 @@ describe("MessageDetailPane", () => {
             });
 
             it("shows no signature notice for a non-failed state", async () => {
-                evaluateMessageSecurity.mockResolvedValue({ state: "signed_verified", html: "<p>ok</p>" });
+                // Protected headers present, so round 6's "Subject/To/Cc weren't signed" note doesn't apply either.
+                evaluateMessageSecurity.mockResolvedValue({
+                    state: "signed_verified",
+                    html: "<p>ok</p>",
+                    protectedHeaders: { from: "sender@example.com", to: "u1@example.com", subject: "Hello there" },
+                });
                 mockRawContent();
                 render(<MessageDetailPane message={secureFixture() as any} attachments={[]} />);
 
@@ -1444,10 +1449,12 @@ describe("MessageDetailPane", () => {
                 mockRawContent();
                 const { unmount } = render(<MessageDetailPane message={secureFixture() as any} attachments={[]} />);
                 await screen.findByText("Unprotected");
-                expect(keySessionListeners.size).toBe(1);
+                // pinnedSigners.ts also holds one module-wide subscription (made on first use, never removed).
+                const mounted = keySessionListeners.size;
+                expect(mounted).toBeGreaterThanOrEqual(1);
 
                 unmount();
-                expect(keySessionListeners.size).toBe(0);
+                expect(keySessionListeners.size).toBe(mounted - 1);
             });
         });
 

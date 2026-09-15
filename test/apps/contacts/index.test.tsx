@@ -30,6 +30,10 @@ vi.mock("../../../apps/shared/mail/listAllPages.js", async (importOriginal) => {
     };
 });
 
+// Round 6: every contact add/update/delete drops the trusted-signer pins cached from contacts.
+const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));
+vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
+
 const mailbox = {
     uid: "mb1",
     version: 0,
@@ -105,6 +109,7 @@ function mockShellAndContacts(
 afterEach(() => {
     vi.unstubAllGlobals();
     truncateNextLists.length = 0;
+    clearPinnedSignerCache.mockClear();
 });
 
 describe("ContactsPage", () => {
@@ -446,6 +451,7 @@ describe("ContactsPage", () => {
             }),
         );
         expect(await screen.findByRole("heading", { name: "New Person" })).toBeInTheDocument();
+        expect(clearPinnedSignerCache).toHaveBeenCalled();
     });
 
     it("shows a validation error and does not submit when display name is blank", async () => {
@@ -553,6 +559,7 @@ describe("ContactsPage", () => {
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/contacts/c1?version=0", expect.objectContaining({ method: "DELETE" })),
         );
         expect(await screen.findByText("Select a contact, or create a new one.")).toBeInTheDocument();
+        expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
     });
 
     it("shows an error message when deleting a contact fails", async () => {
@@ -907,6 +914,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
 
         await waitFor(() => expect(deletedCalls.length).toBe(2));
         expect(fetchMock).toHaveBeenCalled();
+        await waitFor(() => expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1));
     });
 
     it("toolbar Delete shows an error, using the ApiRequestError message, when one deletion fails.", async () => {
@@ -1062,6 +1070,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
                 expect.objectContaining({ method: "PUT", body: expect.stringContaining('"favorite":true') }),
             ),
         );
+        await waitFor(() => expect(clearPinnedSignerCache).toHaveBeenCalled());
     });
 
     it("toolbar Favorite shows an error when updating a checked contact's favorite status fails.", async () => {
@@ -1117,6 +1126,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
                 expect.objectContaining({ method: "PUT", body: expect.stringContaining('"categories":["VIP"]') }),
             ),
         );
+        await waitFor(() => expect(clearPinnedSignerCache).toHaveBeenCalled());
         promptSpy.mockRestore();
     });
 
@@ -1233,6 +1243,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
             expect.objectContaining({ mailboxUid: "mb1", folderUid: "f-contacts", displayName: "Imported Person" }),
         );
         expect(fetchMock).toHaveBeenCalled();
+        await waitFor(() => expect(clearPinnedSignerCache).toHaveBeenCalled());
     });
 
     it("toolbar Import shows a generic error message when creating one of the imported contacts fails.", async () => {
@@ -1384,6 +1395,29 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
             await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/mailboxes/mb1/access/me")).toBe(true));
             await new Promise((resolve) => setTimeout(resolve, 20));
             expect(screen.queryByRole("button", { name: "Deleted" })).not.toBeInTheDocument();
+        });
+
+        it("round 6: says so, and lists nothing, when the server ignores the deleted filter (no rights on the contacts folder)", async () => {
+            // A mailbox-level delegate can still lack delete/update on the folder's own ACL: restapi then drops
+            // `deleted=true` and answers with live contacts.
+            mockFetch((url, init) => {
+                if (url === "/api/mail/mailboxes/mb1/access/me") return accessWith(true, true)();
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [delegatedMailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [contactsFolder]);
+                if (url.startsWith("/api/mail/contact-lists")) return jsonResponse(200, []);
+                if (url.includes("deleted=true")) return jsonResponse(200, [{ ...jane, deleted: true }, bob]);
+                if (url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [bob]);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Bob Smith");
+
+            await user.click((await screen.findAllByRole("button", { name: "Deleted" }))[0]);
+            expect(await screen.findByText("You don't have permission to view deleted contacts in this folder.")).toBeInTheDocument();
+            expect(screen.queryByText("Bob Smith")).not.toBeInTheDocument();
+            expect(screen.queryByText("Jane Doe")).not.toBeInTheDocument();
+            expect(screen.getByText("No contacts found.")).toBeInTheDocument();
         });
 
         it("ignores an access answer that arrives after unmounting", async () => {

@@ -15,6 +15,15 @@ vi.mock("@rapidmx/react-shared/contacts/contactsApi.js", async (importOriginal) 
     listContacts,
 }));
 vi.mock("@rapidmx/react-shared/mail/mailApi.js", () => ({ listFolders }));
+const { keySessionListeners } = vi.hoisted(() => ({
+    keySessionListeners: new Set<(event: { mailboxUid: string; state: "locked" | "unlocked" }) => void>(),
+}));
+vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+    subscribeKeySession: (listener: (event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) => {
+        keySessionListeners.add(listener);
+        return () => keySessionListeners.delete(listener);
+    },
+}));
 
 function contact(address: string, fingerprints: string[]) {
     return {
@@ -96,5 +105,26 @@ describe("getPinnedSignerFingerprints", () => {
 
         await getPinnedSignerFingerprints("mb1", "a@example.com");
         expect(listFolders).toHaveBeenCalledTimes(2);
+    });
+
+    it("drops the cache when any key session locks, subscribing only once", async () => {
+        listFolders.mockResolvedValue([{ uid: "f-c1", type: "contacts" }]);
+        listContacts.mockResolvedValue([contact("a@example.com", ["a1"])]);
+
+        await getPinnedSignerFingerprints("mb1", "a@example.com");
+        await getPinnedSignerFingerprints("mb1", "a@example.com");
+        expect(listFolders).toHaveBeenCalledTimes(1);
+        expect(keySessionListeners.size).toBe(1);
+
+        // An unlock keeps the cache; a lock (of any mailbox) drops it.
+        for (const listener of keySessionListeners) listener({ mailboxUid: "mb2", state: "unlocked" });
+        await getPinnedSignerFingerprints("mb1", "a@example.com");
+        expect(listFolders).toHaveBeenCalledTimes(1);
+
+        for (const listener of keySessionListeners) listener({ mailboxUid: "mb2", state: "locked" });
+        listContacts.mockResolvedValue([]);
+        expect(await getPinnedSignerFingerprints("mb1", "a@example.com")).toEqual([]);
+        expect(listFolders).toHaveBeenCalledTimes(2);
+        expect(keySessionListeners.size).toBe(1);
     });
 });

@@ -84,6 +84,26 @@ const KEYS_LOCKED_ENCRYPT_MESSAGE =
 const POLICY_UNAVAILABLE_MESSAGE =
     "Your encryption settings couldn't be loaded, so this message can't be encrypted right now. Try again, or send it without encryption.";
 const BCC_ENCRYPTED_MESSAGE = "Bcc recipients can't be used with encrypted messages. Remove Bcc recipients or turn off encryption.";
+const LOOKUP_UNAVAILABLE_MESSAGE =
+    "Your recipients' encryption keys couldn't be checked, so this message might go out unencrypted when it should be encrypted. Try again, or send it without encryption.";
+/** Thrown by `deleteDraft()` when the server copy is no longer this window's draft (sent or scheduled elsewhere). */
+const NO_LONGER_A_DRAFT_MESSAGE = "This message was already sent or scheduled from another window, so it wasn't deleted.";
+
+/** The server refuses signed/encrypted mail whose From display name differs from its own safe form, which drops a
+ * name containing `@` (or a look-alike) or a line break. */
+const UNSAFE_DISPLAY_NAME_PATTERN = /[@＠﹫\r\n]/;
+
+/** Whether `fresh` (a re-read of a draft) is still an unsent draft in `folderUid`: never delete a message another
+ * window has since sent, scheduled, or started sending. */
+function isStillDraft(fresh: Message, folderUid: string): boolean {
+    return fresh.folderUid === folderUid && !fresh.scheduledSendTime && !fresh.scheduledSendLeaseExpiresAt && !fresh.scheduledSendRelayedAt;
+}
+
+/** Any tier of `policy` auto-encrypts - only then can a message with recipients still to be added turn out encrypted
+ * without the user asking. */
+function policyCanAutoEncrypt(policy: EncryptionPolicy): boolean {
+    return [policy.encryptSameOrg, policy.encryptFederated, policy.encryptExternal].includes("automatic");
+}
 
 const SAVE_STATUS_LABEL = { idle: "", saving: "Saving…", saved: "Draft saved", error: "Couldn't save draft" } as const;
 
@@ -93,6 +113,8 @@ const CHECKING_CLOSE_MESSAGE =
     "This message may be encrypted, and that's still being checked, so it can't be saved as a draft yet. Keep editing and close again in a moment, or discard it.";
 const CRYPTO_UNAVAILABLE_MESSAGE =
     "Your encryption settings couldn't be checked, so this draft isn't being saved - it might be a message that must be encrypted.";
+const NO_RECIPIENTS_CLOSE_MESSAGE =
+    "This message may be encrypted once its recipients are known, so it isn't saved as a draft until you add them. Add a recipient and close again, or discard it.";
 
 /** The confirmation shown before a Close/Discard throws content away (or when a Close couldn't save it). */
 interface ClosePrompt {
@@ -240,6 +262,13 @@ export default function ComposeWindow({
     // look one up twice), and a counter bumped by a From switch so a lookup for the previous sender is dropped.
     const lookupsInFlightRef = useRef(new Set<string>());
     const discoveryGenerationRef = useRef(0);
+    // A failed lookup stores no status (it would read as "no key" and let a message that must be encrypted autosave
+    // or send as plaintext): it's retried with the same backoff as the mailbox/policy load, and once those retries
+    // run out the address is "exhausted" - shown as a check that couldn't be done, with Retry.
+    const lookupFailuresRef = useRef(new Map<string, number>());
+    const lookupRetryTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+    const [lookupRetryToken, setLookupRetryToken] = useState(0);
+    const [exhaustedLookups, setExhaustedLookups] = useState<Record<string, true>>({});
     // A send refused because signing/encryption was wanted but can't happen right now (keys locked, the
     // encryption policy/mailbox couldn't be loaded, or Bcc recipients on an encrypted message) - never a
     // silent downgrade to plaintext; the user has to explicitly pick the override.
@@ -268,7 +297,7 @@ export default function ComposeWindow({
     const sendingRef = useRef(false);
     /** The latest save request, if any - each save is chained after the one before it. Always settles (never
      * rejects), to the saved message, or `undefined` when that save failed. */
-    const saveInFlightRef = useRef<Promise<Message | undefined> | null>(null);
+    const saveInFlightRef = useRef<Promise<Message | undefined>>(Promise.resolve(undefined));
     /** Set once the window has been sent/closed/discarded - nothing more gets autosaved after that. */
     const finishedRef = useRef(false);
 
@@ -388,11 +417,11 @@ export default function ComposeWindow({
      * without waiting for Send. Called from the To/Cc/Bcc fields' own `onBlur` - not on every keystroke,
      * and not the same lookup `assembleForSend()` performs again at send time (deliberately: this is a
      * best-effort UI hint, not something a stale value here should be trusted to skip at send time).
-     * A failed lookup or a mailbox/policy fetch that hasn't resolved yet just leaves that address with no
-     * indicator rather than surfacing an error over what's a cosmetic nicety - the effect below runs it
-     * again for every current recipient once both have loaded.
+     * A mailbox/policy fetch that hasn't resolved yet just leaves that address with no indicator - the effect
+     * below runs it again for every current recipient once both have loaded. A failed lookup leaves it without
+     * a status too, and is retried after `cryptoRetryDelaysMs` (then only on blur, Close or Retry).
      *
-     * The statuses also drive autosave: a recipient without one yet (lookup pending or never run) or a
+     * The statuses also drive autosave: a recipient without one yet (lookup pending, failed or never run) or a
      * decision that would auto-encrypt keeps the plaintext draft save off (see `autosaveSuppressed`).
      */
     function checkRecipientDiscovery(addresses: ComposeRecipientInput[]) {
@@ -406,23 +435,55 @@ export default function ComposeWindow({
         for (const recipient of unchecked) {
             inFlight.add(recipient.address);
             void lookupKeys(mailbox.uid, recipient.address)
-                .catch(() => undefined)
-                .then((lookup) => {
+                .then(
+                    (lookup) => ({ lookup }),
+                    () => null,
+                )
+                .then((result) => {
                     inFlight.delete(recipient.address);
                     if (generation !== discoveryGenerationRef.current) {
                         return;
                     }
-                    const status = resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, recipient.address, lookup);
+                    if (!result) {
+                        noteLookupFailed(recipient.address);
+                        return;
+                    }
+                    lookupFailuresRef.current.delete(recipient.address);
+                    const status = resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, recipient.address, result.lookup);
                     setRecipientStatuses((prev) => ({ ...prev, [recipient.address]: status }));
                 });
         }
     }
 
+    /** Schedules the next automatic retry of a failed lookup, or marks the address exhausted once they've run out. */
+    function noteLookupFailed(address: string) {
+        const failures = (lookupFailuresRef.current.get(address) ?? 0) + 1;
+        lookupFailuresRef.current.set(address, failures);
+        if (failures > cryptoRetryDelaysMs.length) {
+            setExhaustedLookups((prev) => ({ ...prev, [address]: true }));
+            return;
+        }
+        const timer = setTimeout(() => {
+            lookupRetryTimersRef.current.delete(timer);
+            setLookupRetryToken((n) => n + 1);
+        }, cryptoRetryDelaysMs[failures - 1]);
+        lookupRetryTimersRef.current.add(timer);
+    }
+
+    useEffect(
+        () => () => {
+            for (const timer of lookupRetryTimersRef.current) {
+                clearTimeout(timer);
+            }
+        },
+        [],
+    );
+
     // Prefilled recipients (a reply's To/Cc) are never blurred, and a blur before the mailbox/policy loaded
-    // was ignored - look every current recipient up as soon as both are available.
+    // was ignored - look every current recipient up as soon as both are available (and again on a lookup retry).
     useEffect(() => {
         checkRecipientDiscovery([...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)]);
-    }, [mailbox, encryptionPolicy]);
+    }, [mailbox, encryptionPolicy, lookupRetryToken]);
 
     // Resolves the mailbox's default signature (if any) for `signatureContext` and seeds `html` with it
     // plus any quoted original message, before `RichTextEditor` ever mounts (gated by `contentReady`
@@ -499,7 +560,8 @@ export default function ComposeWindow({
      * Deletes a draft a From switch replaced. An autosave of it may still be on the wire - it bumps the
      * draft's version (see `saveDraftNow()`, which keeps `superseded.version` current while it's queued), so
      * the delete waits for it and uses its version; a delete that still fails (e.g. another save of it landed
-     * meanwhile) is retried once with the version the server currently holds.
+     * meanwhile) is retried once with the version the server currently holds - unless it's no longer a draft
+     * (another window sent or scheduled it), which is left alone.
      * Best-effort, never rejects.
      */
     async function deleteSupersededDraft(superseded: Message): Promise<void> {
@@ -511,7 +573,9 @@ export default function ComposeWindow({
         } catch {
             try {
                 const fresh = await getMessage(superseded.uid);
-                await deleteMessage(fresh.uid, fresh.version);
+                if (isStillDraft(fresh, superseded.folderUid)) {
+                    await deleteMessage(fresh.uid, fresh.version);
+                }
             } catch {
                 // Already gone, or the server is unreachable - nothing more to do from here.
             }
@@ -556,6 +620,8 @@ export default function ComposeWindow({
         setRecipientStatuses({});
         discoveryGenerationRef.current += 1;
         lookupsInFlightRef.current = new Set();
+        lookupFailuresRef.current = new Map();
+        setExhaustedLookups({});
         setEncryptRequested(false);
         setEncryptionBlocked(null);
         setSecurityBlock(null);
@@ -713,24 +779,42 @@ export default function ComposeWindow({
             return blockSend(KEYS_LOCKED_SIGN_MESSAGE, "Send without signing or encryption", !keys.unlocked);
         }
 
+        if (!forcePlaintext && !mailbox) {
+            // The mailbox's enrolled keys are what say whether this message could be encrypted at all - with keys
+            // that aren't unlocked in this session, a failed mailbox load would otherwise skip encryption silently.
+            return blockSend(POLICY_UNAVAILABLE_MESSAGE, "Send without encryption", false);
+        }
+
         let wantEncrypt = false;
         let recipientCertDers: Uint8Array[] = [];
         // Entered whenever this message could be encrypted at all - including a mailbox with an enrolled
         // encryption key that this session never unlocked: policy may still auto-encrypt, and that must block
         // (and prompt to unlock) rather than quietly send plaintext.
         if (!forcePlaintext && (keys.canEncryptSelf || offeredCryptoRef.current.encrypt || hasEnrolledEncryptionKey)) {
-            if (!mailbox || !encryptionPolicy) {
-                // Without both, there's no telling whether policy auto-encrypts this message.
+            if (!encryptionPolicy) {
+                // Without it, there's no telling whether policy auto-encrypts this message.
                 return blockSend(POLICY_UNAVAILABLE_MESSAGE, "Send without encryption", false);
             }
-            const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
-            const lookups = await Promise.all(allRecipients.map((r) => lookupKeys(mailboxUid!, r.address).catch(() => undefined)));
+            // Reachable only with `mailbox` loaded (checked above).
+            const ownPrefersMutual = mailbox!.encryptPreference?.preferEncrypt === "mutual";
+            const lookups = await Promise.all(
+                allRecipients.map((r) =>
+                    lookupKeys(mailboxUid!, r.address).then(
+                        (lookup) => ({ lookup }),
+                        () => null,
+                    ),
+                ),
+            );
             keys = readKeys();
             if (signingLost()) {
                 return blockSend(KEYS_LOCKED_SIGN_MESSAGE, "Send without signing or encryption", !keys.unlocked);
             }
+            // A failed lookup isn't "no key": treating it as one could send plaintext that policy would encrypt.
+            if (lookups.some((result) => !result) && (encryptRequested || policyCanAutoEncrypt(encryptionPolicy))) {
+                return blockSend(LOOKUP_UNAVAILABLE_MESSAGE, "Send without encryption", false);
+            }
             const statuses = allRecipients.map((r, i) =>
-                resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, r.address, lookups[i]),
+                resolveRecipientEncryption(mailbox!.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, r.address, lookups[i]?.lookup),
             );
             const decision = decideMessageEncryption(statuses);
             wantEncrypt = encryptRequested || decision.autoEncrypt;
@@ -767,9 +851,10 @@ export default function ComposeWindow({
         }
 
         const domain = mailbox!.primarySmtpAddress.split("@")[1] ?? "localhost";
+        const displayName = mailbox!.displayName && !UNSAFE_DISPLAY_NAME_PATTERN.test(mailbox!.displayName) ? mailbox!.displayName : "";
         const protectedHeaders: ProtectedHeaders = {
-            from: mailbox!.displayName
-                ? `"${mailbox!.displayName.replace(/"/g, '\\"')}" <${mailbox!.primarySmtpAddress}>`
+            from: displayName
+                ? `"${displayName.replace(/"/g, '\\"')}" <${mailbox!.primarySmtpAddress}>`
                 : mailbox!.primarySmtpAddress,
             to: toRecipients.map((r) => r.address).join(", "),
             cc: ccRecipients.length > 0 ? ccRecipients.map((r) => r.address).join(", ") : undefined,
@@ -865,20 +950,29 @@ export default function ComposeWindow({
      * same plaintext assembly a normal send uses). Chained after any save already on the wire - two
      * overlapping assemblies of the same draft race on its version and the later one is rejected - and reads
      * `latestRef` only once it actually runs, so it saves what was last typed (skipping the request when the
-     * save before it already stored exactly that). Never rejects; resolves to `undefined` when the save failed.
+     * save before it already stored exactly that). Whether a save may happen at all is re-checked at that same
+     * moment: while it waited, the message may have become one that must not be stored as plaintext (Encrypt
+     * turned on, a recipient that auto-encrypts), or the window may have started sending or finished - then it
+     * resolves `{ skipped: true }` without a request (`message` then being the previous save's result). Never
+     * rejects; `message` is `undefined` when the save failed.
      */
-    function saveDraftNow(): Promise<Message | undefined> {
+    function saveDraftNow(): Promise<{ message?: Message; skipped?: boolean }> {
         const target = latestRef.current.draft!;
         const previous = saveInFlightRef.current;
         pendingSaveRef.current = false;
         setSaveStatus("saving");
-        const request = (async () => {
+        const outcome = (async (): Promise<{ message?: Message; skipped?: boolean }> => {
             const before = await previous;
             const current = latestRef.current;
+            if (current.autosaveSuppressed || sendingRef.current || finishedRef.current) {
+                setSaveStatus("idle");
+                // Still the newest copy the server holds, for the version a later delete needs.
+                return { skipped: true, message: before };
+            }
             const savedKey = `${target.uid}:${current.contentKey}`;
             if (before?.uid === target.uid && lastSavedRef.current === savedKey) {
                 setSaveStatus("saved");
-                return before;
+                return { message: before };
             }
             try {
                 const saved = await assembleDraft(target.uid, {
@@ -898,15 +992,15 @@ export default function ComposeWindow({
                     superseded.version = saved.version;
                 }
                 setSaveStatus("saved");
-                return saved;
+                return { message: saved };
             } catch (err) {
                 saveErrorRef.current = err instanceof ApiRequestError ? err.message : "the server couldn't be reached";
                 setSaveStatus("error");
-                return undefined;
+                return {};
             }
         })();
-        saveInFlightRef.current = request;
-        return request;
+        saveInFlightRef.current = outcome.then((result) => result.message);
+        return outcome;
     }
 
     /** Keeps the window open after its content couldn't be saved, offering Discard or Keep editing. */
@@ -921,7 +1015,8 @@ export default function ComposeWindow({
      * Deletes `current` (this window's server draft) once any save already on the wire has landed, so the delete
      * carries the draft's current version. A delete rejected for a stale version (404/409: e.g. an attachment
      * upload bumped it) is retried once with the version the server holds - and a draft the server no longer has
-     * counts as deleted. Rejects when the draft couldn't be deleted.
+     * counts as deleted. The retry only happens while the server copy is still an unsent draft in the same folder.
+     * Rejects when the draft couldn't be deleted.
      */
     async function deleteDraft(current: Message): Promise<void> {
         const saved = await saveInFlightRef.current;
@@ -938,9 +1033,14 @@ export default function ComposeWindow({
                 }
                 throw getErr;
             });
-            if (fresh) {
-                await deleteMessage(fresh.uid, fresh.version);
+            if (!fresh) {
+                return;
             }
+            // The version changed because another window sent or scheduled it - that message isn't ours to delete.
+            if (!isStillDraft(fresh, current.folderUid)) {
+                throw new ApiRequestError(NO_LONGER_A_DRAFT_MESSAGE, 409);
+            }
+            await deleteMessage(fresh.uid, fresh.version);
         }
     }
 
@@ -1002,6 +1102,10 @@ export default function ComposeWindow({
             setClosePrompt({ title: DISCARD_TITLE, message: CRYPTO_UNAVAILABLE_MESSAGE, retry: true });
             return;
         }
+        if (awaitingRecipients) {
+            setClosePrompt({ title: DISCARD_TITLE, message: NO_RECIPIENTS_CLOSE_MESSAGE });
+            return;
+        }
         if (encryptionUndetermined) {
             // A recipient typed but never blurred has no lookup running yet.
             checkRecipientDiscovery([...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)]);
@@ -1015,9 +1119,14 @@ export default function ComposeWindow({
         }
         if (lastSavedRef.current !== `${draft.uid}:${contentKey}`) {
             setClosing(true);
-            const saved = await saveDraftNow();
+            const outcome = await saveDraftNow();
             setClosing(false);
-            if (!saved) {
+            if (outcome.skipped) {
+                // It became a message that mustn't be saved as plaintext while waiting on an earlier save.
+                setClosePrompt({ title: DISCARD_TITLE, message: latestRef.current.encryptionDecided ? ENCRYPTED_CLOSE_MESSAGE : CHECKING_CLOSE_MESSAGE });
+                return;
+            }
+            if (!outcome.message) {
                 showSaveFailedPrompt();
                 return;
             }
@@ -1029,6 +1138,9 @@ export default function ComposeWindow({
     function retryCryptoContext() {
         setClosePrompt(null);
         setCryptoRetryToken((n) => n + 1);
+        lookupFailuresRef.current = new Map();
+        setExhaustedLookups({});
+        setLookupRetryToken((n) => n + 1);
     }
 
     // A plain read from keySession.ts's module-level session store, not React state - see that module's
@@ -1069,18 +1181,25 @@ export default function ComposeWindow({
     // defeating end-to-end encryption. Until it's known not to be, it isn't either: while the mailbox (whose
     // enrolled keys say whether encryption is possible at all) or the encryption policy hasn't loaded, and -
     // whenever this message could be encrypted (an unlocked or enrolled encryption key) - while the policy is
-    // missing or any current recipient's lookup is still pending (or hasn't run).
-    const currentStatuses = [...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)].map((r) => recipientStatuses[r.address]);
+    // missing or any current recipient's lookup is still pending (or failed, or hasn't run) - and while there are no
+    // recipients at all when policy auto-encrypts some tier, since the first one added may turn encryption on.
+    const currentAddresses = [...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)].map((r) => r.address);
+    const currentStatuses = currentAddresses.map((address) => recipientStatuses[address]);
     const encryptionPossible = !!unlockedKeys?.encryptionPrivateKey || hasEnrolledEncryptionKey || offeredCryptoRef.current.encrypt;
+    /** Could be auto-encrypted, but has no recipients yet to decide by. */
+    const awaitingRecipients = encryptionPossible && !!encryptionPolicy && currentAddresses.length === 0 && policyCanAutoEncrypt(encryptionPolicy);
     const encryptionUndetermined =
-        !cryptoContextReady || !mailbox || (encryptionPossible && (!encryptionPolicy || currentStatuses.some((s) => !s)));
+        !cryptoContextReady || !mailbox || awaitingRecipients || (encryptionPossible && (!encryptionPolicy || currentStatuses.some((s) => !s)));
     /** Known to be headed for encryption: requested, or policy auto-encrypts it. */
     const encryptionDecided = encryptRequested || (!encryptionUndetermined && encryptionPossible && decideMessageEncryption(currentStatuses).autoEncrypt);
     const autosaveSuppressed = encryptionDecided || encryptionUndetermined;
-    /** Loading the mailbox/policy failed (retries may still be pending) and this message's encryption hinges on it. */
-    const cryptoCheckUnavailable = cryptoContextReady && cryptoLoadFailed && (!mailbox || (encryptionPossible && !encryptionPolicy));
-    const latestRef = useRef({ draft, to, cc, bcc, subject, html, contentKey, saveStatus, hasUserContent });
-    latestRef.current = { draft, to, cc, bcc, subject, html, contentKey, saveStatus, hasUserContent };
+    /** Loading the mailbox/policy failed (retries may still be pending) and this message's encryption hinges on it, or
+     * a current recipient's key lookup kept failing. */
+    const cryptoCheckUnavailable =
+        (cryptoContextReady && cryptoLoadFailed && (!mailbox || (encryptionPossible && !encryptionPolicy))) ||
+        (encryptionPossible && currentAddresses.some((address) => exhaustedLookups[address] && !recipientStatuses[address]));
+    const latestRef = useRef({ draft, to, cc, bcc, subject, html, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided });
+    latestRef.current = { draft, to, cc, bcc, subject, html, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided };
 
     useEffect(() => {
         const due =
@@ -1115,11 +1234,15 @@ export default function ComposeWindow({
      * with Discard / Keep editing. A send clears `pendingSaveRef` before it starts, so this never saves mid-send. */
     async function flushPendingSave(): Promise<boolean> {
         if (pendingSaveRef.current && !finishedRef.current) {
-            const saved = await saveDraftNow();
-            if (!saved) {
+            const outcome = await saveDraftNow();
+            if (outcome.skipped) {
+                // Not saved, but not a failure either: it may be headed for encryption (or was sent/discarded meanwhile).
+                return finishedRef.current;
+            }
+            if (!outcome.message) {
                 showSaveFailedPrompt();
             }
-            return !!saved;
+            return !!outcome.message;
         }
         await saveInFlightRef.current;
         const latest = latestRef.current;

@@ -1467,3 +1467,88 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     wrong west of UTC (New York gives the next day). No UTC-only rule works: legacy values span 26 hours, and
     UTC+14 and UTC-10 values for the same date are exactly 24h apart. The local read is exact whenever the viewer
     is in the creator's zone. Tested in Tongatapu, Kiritimati, New York and Honolulu.
+- **2026-09-14 — Round-6 review fixes, W-B (compose plaintext leaks, Discard of sent mail, encryption settings vs a
+  rotation elsewhere).** Not committed. All seven findings fixed.
+  - **Queued saves** (`saveDraftNow`): the re-check happens when the save actually runs (after the previous save
+    settles). `latestRef` now also carries `autosaveSuppressed`/`encryptionDecided`; a save runs only if none of
+    suppressed, `sendingRef`, `finishedRef` holds. Otherwise it resolves `{ skipped: true, message: <previous save's
+    result> }` (the chain keeps the previous version for a later delete). `saveDraftNow()` now resolves
+    `{ message?, skipped? }`; `saveInFlightRef` is still `Promise<Message | undefined>` (initialised to a resolved
+    promise, not null). Close with a skipped save shows `ENCRYPTED_CLOSE_MESSAGE` or `CHECKING_CLOSE_MESSAGE`;
+    Sign Out's flush returns `finishedRef.current` for a skip, with no save-failed prompt.
+  - **No recipients yet**: `awaitingRecipients` = encryption possible + policy loaded + no recipients + some tier
+    `"automatic"` (`policyCanAutoEncrypt`; the own `mutual` preference is deliberately not consulted). It counts as
+    undetermined; Close says `NO_RECIPIENTS_CLOSE_MESSAGE`. A policy with no automatic tier, or a keyless mailbox,
+    still autosaves with no recipients. **Test gotcha:** a mailbox with `keys: [encryptKey]` under `automaticPolicy`
+    no longer autosaves a recipient-less window; give it `initialTo` (the round-5 retry tests now do).
+  - **Failed lookups** store no status. `noteLookupFailed` retries after `cryptoRetryDelaysMs[n]` via
+    `lookupRetryToken` (the discovery effect depends on it), then marks the address in `exhaustedLookups`, which feeds
+    `cryptoCheckUnavailable` (in-window "couldn't be checked" + Retry; `retryCryptoContext` also clears lookup
+    failures). Timers are cleared on unmount; a From switch resets both. At send, a failed lookup (no longer
+    `.catch(() => undefined)`) blocks with `LOOKUP_UNAVAILABLE_MESSAGE` when Encrypt is on or policy can auto-encrypt;
+    otherwise it's resolved as no key as before. The old "treats a failed key-lookup the same as no keys found" test
+    was replaced.
+  - **Mailbox not loaded at send**: `assembleForSend` blocks with `POLICY_UNAVAILABLE_MESSAGE` whenever `!mailbox` and
+    not `forcePlaintext`, before the encryption branch (which now only checks the policy). "Send without encryption"
+    still works.
+  - **Discard / superseded delete**: the 404/409 retry only deletes the re-read copy if `isStillDraft(fresh, folderUid)`
+    (same folder, no `scheduledSendTime`/`scheduledSendLeaseExpiresAt`/`scheduledSendRelayedAt`). Otherwise Discard
+    fails with `NO_LONGER_A_DRAFT_MESSAGE` (window stays open) and the superseded delete gives up silently.
+  - **Signed/encrypted From**: the display name is left out when it matches `/[@＠﹫\r\n]/` (mirrors restapi's
+    `safeFromDisplayName` + look-alike rule).
+  - ComposeWindow coverage: 100/99.57/100/100; only the two known branches (`e.target.files ?? []`,
+    `value={mailboxUid ?? ""}`) remain.
+  - **Settings > Encryption, stale session master key**: `masterKeyOpensVault(mailboxUid, mk, vault)` opens wrapped
+    keys until one succeeds (bytes zeroed; `KeysLockedError` propagates; an empty `wrappedKeys` passes, since there's
+    nothing to check). `verifiedUnlockedKeys()` = `currentUnlockedKeys()` + a fresh `getKeyVault()` + that check,
+    used by add password, regenerate recovery codes (reuses its fresh vault), add escrow and enable signatures.
+    Rotation runs the same check on its own fresh vault before `rewrapVaultPrivateKeys`, so a key that opens nothing
+    is reported as stale, not as N unopenable keys. `StaleSessionKeysError` -> `errorMessage()` calls
+    `relockStaleKeys()` (`destroyUnlockedKeys`, `destroyLocalIndex`, `requestUnlock` with a swallowed rejection) and
+    shows `STALE_KEYS_MESSAGE`. There's no passkey-add flow on this page. Still a check-then-write race until restapi's
+    `expectedMasterKeyGeneration` lands (not used yet). **Test gotcha:** the encryption test file's `beforeEach` now
+    defaults `openWithKey` to resolve; a test that makes every open fail now gets the stale path.
+  - **Rotation and escrow**: the escrow wrap is built only when the **fresh vault already has an escrow wrap** (not
+    `mailbox.escrowScopeId`). `getEscrowInfo` 404 = scope gone -> rotate without one; any other error ->
+    `EscrowWrapUnavailableError` (abort). `ROTATION_CONFLICT_MESSAGE` now also mentions escrow changing meanwhile.
+- **2026-09-14 — Round-6 review fixes, W-A (message display, contacts, admin).** Not committed. All eight web-client
+  findings fixed, none skipped. Nothing here depends on the round-6 react-shared changes (keySession WeakRef,
+  `expectedMasterKeyGeneration`); everything used (`extractAddresses`, `getMessage`, `scheduledSendLeaseExpiresAt`,
+  `Contact.deleted`) was already in the patched 0.4.0 dist.
+  - **From next to a signature badge** (`MessageDetailPane`): for every state except `unprotected`/`encrypted`, the From
+    line is `Name <address>`, where address = first `extractAddresses(protectedHeaders.from)` else `message.from.address`.
+    New exported `checkSenderName(displayName, address)`: `looksLikeAddress` = name has `@`/`＠`/`﹫` (restapi's
+    `AT_SIGN_LIKE`); `misleading` = the NFKC-folded name contains an `x@y` token that isn't the address. Any message
+    whose name looks like an address shows the address too, and a misleading one gets a `role=status` warning
+    ("looks like an email address, but this message was sent from ..."). The receipt banner uses the same label.
+  - **Unsigned headers**: a verified state with no `protectedHeaders` shows "The signature covers this message's content
+    and attachments only. Its Subject, To and Cc weren't signed...". **Test gotcha:** a `signed_verified` mock with no
+    `protectedHeaders` now renders an extra `role=status`.
+  - **Attachments**: `signature_failed` with `result.attachments` (only a decrypted message has them) lists those, with
+    a warning when non-empty.
+  - **Send lease**: `sendInProgress` = in Outbox and `Date.parse(scheduledSendLeaseExpiresAt) > nowMs` -> "Sending…"
+    pill, no Cancel / Move to Drafts / schedule pill. A timer at lease expiry bumps `nowMs` and re-reads via
+    `getMessage()`. A 409/403 from Cancel/Move to Drafts also re-reads. The re-read copy is local state (`reloaded`,
+    used while its version >= the prop's); `inOutbox` = `isOutbox` and the folder unchanged, so a re-read that finds it
+    sent drops the Outbox controls and shows Archive. The re-read is not reported to the caller (no suitable callback;
+    `onScheduledSendCanceled` means "moved to Drafts").
+  - **Pinned-signer cache**: `pinnedSigners.ts` subscribes to `subscribeKeySession` on first
+    `getPinnedSignerFingerprints()` call (module-wide, never removed) and clears on any `locked` event. AppShell's
+    `handleSignOut` and cross-tab sign-out listener call `clearPinnedSignerCache()`; so do `ContactForm` after a save,
+    contacts `index.tsx` after delete / bulk delete / favorite / add category / import (even partial failures), and
+    `contacts/[uid].tsx` after delete. Not done in AppShell via `subscribeKeySession` because MailShell/encryption tests
+    mock keySession without it. **Test gotcha:** a real (unmocked) `pinnedSigners` adds one listener to a mocked
+    `subscribeKeySession`, so listener-count tests compare against the count while mounted.
+  - **Contacts Deleted view**: restapi checks delete+update on the contacts *folder's* ACL, and there is no client API
+    for folder access. The mailbox check stays as the first gate; the Deleted load now treats any returned contact
+    with `deleted !== true` as "server ignored the filter" -> empty list + "You don't have permission to view deleted
+    contacts in this folder." A folder-only grant wider than the mailbox's still hides the view (safe direction).
+  - **Distribution lists** (`admin/distribution-lists/[uid].tsx`): no API reports `mail:security:trusted_authserv_id`, so
+    static text: a restricted list shows a `role=status` warning that members are recognized only by DKIM, which needs
+    the trusted authserv id, else all mail to the list is dropped; an unrestricted one a muted hint. The setting itself
+    isn't editable in the UI.
+  - **MailboxCreateForm**: display name also rejects `＠`/`﹫`; message is now `A display name can't contain "@" (or a
+    look-alike) or line breaks.`
+  - New tests: `MessageDetailPane.round6.test.tsx`; additions in `pinnedSigners`, `AppShell`, `contacts/index`,
+    `contacts/[uid]`, distribution-lists `[uid]`, `admin/mailboxes/new`. Per-file coverage 100% on MessageDetailPane,
+    pinnedSigners, AppShell, contacts pages, ContactForm.

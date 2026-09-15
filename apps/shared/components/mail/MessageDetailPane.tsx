@@ -17,6 +17,7 @@ import {
     cancelScheduledSend,
     classifyMessage,
     declineReceipt,
+    getMessage,
     getMessageRawContent,
     recallMessage,
     setMessageLabels,
@@ -29,7 +30,7 @@ import {
     SignatureFailureReason,
     evaluateMessageSecurity,
 } from "@rapidmx/react-shared/crypto/messageSecurity.js";
-import type { MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
+import { extractAddresses, type MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
 import { signingKeyFingerprints } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { getPinnedSignerFingerprints } from "./pinnedSigners.js";
@@ -60,6 +61,27 @@ const SECURITY_INDICATOR: Record<MessageSecurityResult["state"], { label: string
 
 const VERIFIED_STATES = new Set<MessageSecurityResult["state"]>(["signed_verified", "encrypted_verified"]);
 const UNVERIFIED_SIGNER_STATES = new Set<MessageSecurityResult["state"]>(["signed_unverified_signer", "encrypted_unverified_signer"]);
+
+/** An `@`, or a look-alike a reader would take for one (fullwidth, small) - restapi's own `AT_SIGN_LIKE`. */
+const AT_SIGN_LIKE = /[@\uFF20\uFE6B]/;
+
+export interface SenderNameCheck {
+    /** The display name contains an `@` or a look-alike - it reads as (part of) an address. */
+    looksLikeAddress: boolean;
+    /** It shows an address-shaped token that isn't `actualAddress` - e.g. `"ceo@corp.com" <x@corp-pay.com>`. */
+    misleading: boolean;
+}
+
+/** Whether a sender's display name poses as an address, and whether that address differs from the one actually sent
+ * from. Compatibility forms are folded first (NFKC turns the fullwidth and small @ into `@`), so a look-alike can't
+ * hide the token. */
+export function checkSenderName(displayName: string | undefined, actualAddress: string): SenderNameCheck {
+    if (!displayName || !AT_SIGN_LIKE.test(displayName)) {
+        return { looksLikeAddress: false, misleading: false };
+    }
+    const shown = /[^\s<>"'(),;:]+@[^\s<>"'(),;:]+/.exec(displayName.normalize("NFKC"))?.[0];
+    return { looksLikeAddress: true, misleading: shown !== undefined && shown.toLowerCase() !== actualAddress.toLowerCase() };
+}
 
 /** Saves one attachment recovered from inside a signed/encrypted entity. Always handed to the browser as an
  * opaque download (`application/octet-stream`), never rendered in this origin. */
@@ -247,7 +269,7 @@ function needsRawSecurityEvaluation(message: Message): boolean {
 }
 
 function MessageDetailContent({
-    message,
+    message: messageProp,
     attachments,
     backHref,
     isSentItems,
@@ -262,6 +284,13 @@ function MessageDetailContent({
     labels,
     onLabelsChanged,
 }: MessageDetailPaneProps & { message: Message }) {
+    // A copy re-read from the server after an Outbox action was refused (409/403) or a send lease ran out - see
+    // `reloadMessage()`. A prop copy newer by `version` wins; an equal-version reload is kept, since claiming a send
+    // lease need not bump `version`.
+    const [reloaded, setReloaded] = useState<Message | null>(null);
+    const message = reloaded && reloaded.version >= messageProp.version ? reloaded : messageProp;
+    // A reload that finds the message already moved on (sent, or moved to Drafts elsewhere) leaves Outbox.
+    const inOutbox = !!isOutbox && message.folderUid === messageProp.folderUid;
     const { openCompose } = useCompose();
     const [confirming, setConfirming] = useState(false);
     const [recalling, setRecalling] = useState(false);
@@ -284,6 +313,8 @@ function MessageDetailContent({
     const [receiptBusy, setReceiptBusy] = useState<ReceiptType | null>(null);
     const [receiptError, setReceiptError] = useState<string | null>(null);
     const [security, setSecurity] = useState<MessageSecurityResult | null>(null);
+    // "Now", for deciding whether a scheduled send's lease is still live - advanced when the lease runs out.
+    const [nowMs, setNowMs] = useState(() => Date.now());
     const { mailboxes } = useMailShell();
     const { requestUnlock } = useUnlockPrompt();
     // Bumped after a successful on-demand unlock to re-run the effect below - it's not a dependency the
@@ -378,6 +409,31 @@ function MessageDetailContent({
         [message.mailboxUid],
     );
 
+    // While restapi's ScheduledSendJob holds a send lease the message is being relayed: cancelling or moving it would be
+    // refused (409/403), so the Outbox controls are replaced by "Sending...". When the lease runs out the message is
+    // re-read - it has either been sent (and left Outbox) or been released back to its schedule.
+    const leaseExpiresMs = message.scheduledSendLeaseExpiresAt ? Date.parse(message.scheduledSendLeaseExpiresAt) : NaN;
+    const sendInProgress = inOutbox && leaseExpiresMs > nowMs;
+    useEffect(() => {
+        if (!sendInProgress) {
+            return;
+        }
+        const timer = setTimeout(() => {
+            setNowMs(Date.now());
+            void reloadMessage();
+        }, leaseExpiresMs - nowMs + 1);
+        return () => clearTimeout(timer);
+    }, [sendInProgress, leaseExpiresMs, nowMs]);
+
+    async function reloadMessage() {
+        try {
+            setReloaded(await getMessage(message.uid));
+            setNowMs(Date.now());
+        } catch {
+            // Keep showing what we have - the next refused action or lease expiry tries again.
+        }
+    }
+
     // Offered only when this device genuinely has no unlocked session for this message's mailbox at all
     // (as opposed to being unlocked but still unable to decrypt - a wrong/since-rotated key, which
     // re-unlocking the same session can't fix) - see `evaluateMessageSecurity()`'s own doc comment on why
@@ -462,6 +518,11 @@ function MessageDetailContent({
         } catch (err) {
             const fallback = message.scheduledSendTime ? "Could not cancel this scheduled send." : "Could not move this message to Drafts.";
             setCancelError(err instanceof ApiRequestError ? err.message : fallback);
+            // A conflict or refusal usually means the send job claimed (or already relayed) the message meanwhile -
+            // re-read it so the pane shows "Sending..." or its new state instead of the stale controls.
+            if (err instanceof ApiRequestError && (err.status === 409 || err.status === 403)) {
+                void reloadMessage();
+            }
         } finally {
             setCanceling(false);
         }
@@ -555,10 +616,22 @@ function MessageDetailContent({
     // Attachments inside the signed/decrypted entity. Under a verified badge only these are listed - the server's
     // attachment records also include parts outside the signature, which the badge doesn't vouch for. For decrypted
     // mail the server only ever saw the encrypted blob, so these are the real attachments.
+    // A decrypted message whose signature failed still only has these (the server list is just `smime.p7m`); they're
+    // listed with a warning. A signed-only failure never carries recovered attachments.
     const innerAttachments =
-        security?.attachments !== undefined && (verified || security.state === "encrypted" || security.state === "encrypted_unverified_signer")
+        security?.attachments !== undefined &&
+        (verified || security.state === "encrypted" || security.state === "encrypted_unverified_signer" || security.state === "signature_failed")
             ? security.attachments
             : undefined;
+    // Any state that involves a signature shows the address actually signed for (the protected From when the message
+    // carries one - it equals the outer From's address, or verification would have failed) next to the badge, never a
+    // display name alone: anyone can put "ceo@corp.com" in the name of a message sent from x@corp-pay.com.
+    const signatureShown = security !== null && security.state !== "unprotected" && security.state !== "encrypted";
+    const senderAddress = (signatureShown ? extractAddresses(security.protectedHeaders?.from)[0] : undefined) ?? message.from.address;
+    const senderName = message.from.displayName;
+    const senderNameCheck = checkSenderName(senderName, senderAddress);
+    const showSenderAddress = !!senderName && (signatureShown || senderNameCheck.looksLikeAddress);
+    const senderLabel = showSenderAddress ? `${senderName} <${senderAddress}>` : senderName || senderAddress;
 
     return (
         <div className="flex-1 min-w-0 flex flex-col">
@@ -573,6 +646,11 @@ function MessageDetailContent({
                         <h1 className="text-lg font-bold tracking-tight truncate">{(protectedSubject ?? message.subject) || "(no subject)"}</h1>
                         {security && <SecurityIndicator state={security.state} />}
                     </div>
+                    {sendInProgress && (
+                        <span className="text-xs font-medium text-text-muted shrink-0 py-1 px-2.5 rounded-pill bg-surface-alt">
+                            Sending&hellip;
+                        </span>
+                    )}
                     {isSentItems &&
                         (message.recallRequestedAt ? (
                             <span className="text-xs font-medium text-text-muted shrink-0 py-1 px-2.5 rounded-pill bg-surface-alt">
@@ -588,7 +666,7 @@ function MessageDetailContent({
                                 Recall this message
                             </Button>
                         ))}
-                    {isOutbox && message.scheduledSendTime && (
+                    {inOutbox && !sendInProgress && message.scheduledSendTime && (
                         <div className="flex items-center gap-2 shrink-0">
                             <span className="text-xs font-medium text-text-muted py-1 px-2.5 rounded-pill bg-surface-alt">
                                 Scheduled for {new Date(message.scheduledSendTime).toLocaleString()}
@@ -609,7 +687,7 @@ function MessageDetailContent({
                         (restapi's ScheduledSendJob clears scheduledSendTime and leaves it there), which can't be sent
                         again from Outbox (409) or archived - would otherwise be stuck. Moving it back to Drafts works for
                         any Outbox message. */}
-                    {isOutbox && !message.scheduledSendTime && draftsFolderUid && (
+                    {inOutbox && !sendInProgress && !message.scheduledSendTime && draftsFolderUid && (
                         <Button
                             type="button"
                             variant="secondary"
@@ -622,7 +700,7 @@ function MessageDetailContent({
                         </Button>
                     )}
                 </div>
-                {isOutbox && message.scheduledSendError && (
+                {inOutbox && message.scheduledSendError && (
                     <div className="mt-2">
                         <Alert>This message wasn&rsquo;t sent: {message.scheduledSendError}</Alert>
                     </div>
@@ -671,6 +749,13 @@ function MessageDetailContent({
                             : GENERIC_SIGNATURE_FAILURE_MESSAGE}
                     </p>
                 )}
+                {verified && !security.protectedHeaders && (
+                    // A legacy S/MIME sender signs only the body: the outer Subject/To/Cc shown here were never signed.
+                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        The signature covers this message&rsquo;s content and attachments only. Its Subject, To and Cc
+                        weren&rsquo;t signed, so they could have been changed after it was sent.
+                    </p>
+                )}
                 {security?.notAddressedToReader && (
                     // Informational, like the notice above: a Bcc recipient legitimately sees this too.
                     <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
@@ -679,9 +764,14 @@ function MessageDetailContent({
                     </p>
                 )}
                 <p className="text-sm text-text-muted mt-1">
-                    From {message.from.displayName || message.from.address} &middot;{" "}
-                    {new Date(message.receivedDate).toLocaleString()}
+                    From {senderLabel} &middot; {new Date(message.receivedDate).toLocaleString()}
                 </p>
+                {senderNameCheck.misleading && (
+                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
+                        The sender&rsquo;s name &ldquo;{senderName}&rdquo; looks like an email address, but this message was
+                        sent from <span className="font-medium">{senderAddress}</span>. Don&rsquo;t trust it based on the name.
+                    </p>
+                )}
                 <p className="text-sm text-text-muted">
                     To {message.recipients.map((r) => r.displayName || r.address).join(", ")}
                 </p>
@@ -695,7 +785,7 @@ function MessageDetailContent({
                     <Button type="button" variant="secondary" className="!w-auto" onClick={handleForward}>
                         Forward
                     </Button>
-                    {!isOutbox && message.folderUid !== draftsFolderUid && (
+                    {!inOutbox && message.folderUid !== draftsFolderUid && (
                         <Button
                             type="button"
                             variant="secondary"
@@ -770,7 +860,7 @@ function MessageDetailContent({
                             className="flex flex-wrap items-center gap-2 mt-2 py-2 px-3 rounded-sm bg-surface-alt text-sm"
                         >
                             <span>
-                                {message.from.displayName || message.from.address} requested a {type} receipt for this
+                                {senderLabel} requested a {type} receipt for this
                                 message.
                             </span>
                             <Button
@@ -797,6 +887,12 @@ function MessageDetailContent({
                     <div className="mt-2">
                         <Alert>{receiptError}</Alert>
                     </div>
+                )}
+                {security?.state === "signature_failed" && innerAttachments && innerAttachments.length > 0 && (
+                    <p role="status" className="mt-3 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
+                        These attachments come from a message whose signature couldn&rsquo;t be verified. Open them only if
+                        you trust the sender.
+                    </p>
                 )}
                 {innerAttachments
                     ? innerAttachments.length > 0 && (

@@ -26,6 +26,10 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => 
     destroyUnlockedKeys,
 }));
 
+// Round 6: sign-out also drops the trusted-signer pins cached from contacts.
+const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));
+vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
+
 const AUTH_SERVER_URL = "https://auth.example.com";
 
 beforeEach(() => {
@@ -35,6 +39,7 @@ beforeEach(() => {
 afterEach(() => {
     vi.unstubAllGlobals();
     useIdleKeyTimeout.mockClear();
+    clearPinnedSignerCache.mockClear();
     clearSigningOut();
 });
 
@@ -208,6 +213,7 @@ describe("AppShell", () => {
         await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
         expect(destroyAllLocalIndexes).toHaveBeenCalled();
         expect(destroyUnlockedKeys).toHaveBeenCalledWith();
+        expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
         expect(fetchMock).toHaveBeenCalledWith(
             `${AUTH_SERVER_URL}/api/auth/logout`,
             expect.objectContaining({ method: "POST", credentials: "include" }),
@@ -305,10 +311,12 @@ describe("AppShell", () => {
         other.postMessage(null);
         await new Promise((r) => setTimeout(r, 20));
         expect(destroyUnlockedKeys).not.toHaveBeenCalled();
+        expect(clearPinnedSignerCache).not.toHaveBeenCalled();
 
         other.postMessage({ type: "sign-out" });
         await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
         expect(destroyUnlockedKeys).toHaveBeenCalledWith();
+        expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
         expect(destroyAllLocalIndexes).toHaveBeenCalledTimes(1);
         unmount();
 

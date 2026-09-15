@@ -71,6 +71,45 @@ class UncoveredVaultKeysError extends Error {
     }
 }
 
+/** Thrown when this session's master key no longer opens the vault - another device rotated the keys since this
+ * session unlocked. Anything wrapped or sealed under it would be unusable (and a signing key sealed under it would
+ * be installed at the vault's current generation, blocking rotation), so nothing is written. */
+class StaleSessionKeysError extends Error {
+    constructor() {
+        super("This session's master key no longer opens the key vault.");
+    }
+}
+
+const STALE_KEYS_MESSAGE =
+    "Your encryption keys were changed on another device (for example, rotated), so the copy unlocked in this session no longer works. Nothing was changed. Unlock again with your current password, then try again.";
+
+function wrappedKeyAad(mailboxUid: string, entry: WrappedPrivateKey): Uint8Array {
+    return buildAad(mailboxUid, entry.useType === "sign" ? SIGNING_PRIVATE_KEY_AAD_PURPOSE : ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
+}
+
+/**
+ * Whether `masterKey` opens at least one of `vault`'s wrapped private keys - i.e. it is still the vault's current
+ * master key. A vault with no wrapped keys has nothing to check against and passes. The opened key bytes are zeroed
+ * straight away. `KeysLockedError` (a destroyed master key) propagates.
+ */
+async function masterKeyOpensVault(mailboxUid: string, masterKey: Uint8Array, vault: KeyVault): Promise<boolean> {
+    if (vault.wrappedKeys.length === 0) {
+        return true;
+    }
+    for (const entry of vault.wrappedKeys) {
+        try {
+            const raw = await openWithKey(masterKey, entry, wrappedKeyAad(mailboxUid, entry));
+            raw.fill(0);
+            return true;
+        } catch (err) {
+            if (err instanceof KeysLockedError) {
+                throw err;
+            }
+        }
+    }
+    return false;
+}
+
 /**
  * Re-seals EVERY private key in the vault (not just the ones this session imported - an inactive or
  * newly issued key would otherwise be silently dropped by `rekey()`, which replaces `wrappedKeys`
@@ -83,8 +122,7 @@ async function rewrapVaultPrivateKeys(
     currentMasterKey: Uint8Array,
     wrappedKeys: WrappedPrivateKey[],
 ): Promise<{ mk: Uint8Array; wrappedKeys: WrappedPrivateKey[] }> {
-    const aadFor = (entry: WrappedPrivateKey) =>
-        buildAad(mailboxUid, entry.useType === "sign" ? SIGNING_PRIVATE_KEY_AAD_PURPOSE : ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
+    const aadFor = (entry: WrappedPrivateKey) => wrappedKeyAad(mailboxUid, entry);
     const opened: { entry: WrappedPrivateKey; raw: Uint8Array }[] = [];
     try {
         const failed: string[] = [];
@@ -155,7 +193,7 @@ function storeSignEnrollment(mailboxUid: string, enrollmentId: string | null): v
 }
 
 const ROTATION_CONFLICT_MESSAGE =
-    "Your keys were not rotated because the server reported a conflicting change. If a signing certificate enrollment is still in progress for this mailbox (it may have been started on another device), wait for it to finish, then try again. Nothing was changed.";
+    "Your keys were not rotated because the server reported a conflicting change. If a signing certificate enrollment is still in progress for this mailbox (it may have been started on another device), wait for it to finish, then try again. If this mailbox is under escrow, its escrow protection may have changed meanwhile - reload this page and try again. Nothing was changed.";
 
 const METHOD_LABELS: Record<string, string> = {
     password: "Password",
@@ -288,9 +326,35 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         return requestUnlock(mailboxUid!, displayedKeys);
     }
 
+    /**
+     * `currentUnlockedKeys()`, checked against a freshly fetched vault before anything is wrapped or sealed under its
+     * master key: after a rotation on another device the session's master key is dead, and every write built from
+     * it would be too. Rejects with `StaleSessionKeysError` then. Resolves to the keys and that fresh vault.
+     */
+    async function verifiedUnlockedKeys(): Promise<{ current: UnlockedKeys; freshVault: KeyVault }> {
+        const current = await currentUnlockedKeys();
+        const freshVault = await getKeyVault(mailboxUid!);
+        if (!(await masterKeyOpensVault(mailboxUid!, current.masterKey, freshVault))) {
+            throw new StaleSessionKeysError();
+        }
+        return { current, freshVault };
+    }
+
+    /** Drops this session's out-of-date keys (and, as with every key destruction, the local index) and asks for the
+     * current password, so the next attempt works with the vault's real master key. */
+    function relockStaleKeys() {
+        destroyUnlockedKeys(mailboxUid);
+        void destroyLocalIndex(mailboxUid!);
+        requestUnlock(mailboxUid!, displayedKeys).catch(() => undefined);
+    }
+
     function errorMessage(err: unknown, fallback: string): string {
         if (err instanceof KeysLockedError) {
             return KEYS_LOCKED_MESSAGE;
+        }
+        if (err instanceof StaleSessionKeysError) {
+            relockStaleKeys();
+            return STALE_KEYS_MESSAGE;
         }
         return err instanceof ApiRequestError ? err.message : fallback;
     }
@@ -300,7 +364,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         setWrappingEscrow(true);
         try {
             // Only reachable when mailbox.escrowScopeId is set (see the render guard below).
-            const current = await currentUnlockedKeys();
+            const { current } = await verifiedUnlockedKeys();
             const escrowInfo = await getEscrowInfo(mailboxUid!);
             const wrap = await buildEscrowWrap(current.masterKey, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
             await addMasterKeyWrap(mailboxUid!, wrap);
@@ -421,7 +485,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         setSigningError(null);
         setSigningStatus("enrolling");
         try {
-            const current = await currentUnlockedKeys();
+            const { current } = await verifiedUnlockedKeys();
             const { keyPair, csrPem } = await generateKeyPairWithCsr(mailbox.primarySmtpAddress, "sign");
             const privateKeyRaw = await exportPrivateKeyPkcs8(keyPair.privateKey);
             const wrappedKeySealed = await sealWithKey(
@@ -507,7 +571,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         setActionError(null);
         setAddingPassword(true);
         try {
-            const current = await currentUnlockedKeys();
+            const { current } = await verifiedUnlockedKeys();
             const wrap = await buildPasswordWrap(mailboxUid!, current.masterKey, newPassword);
             await addMasterKeyWrap(mailboxUid!, wrap);
             setNewPassword("");
@@ -542,8 +606,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         let oldRecoveryWraps: MasterKeyWrap[];
         let free: number;
         try {
-            const current = await currentUnlockedKeys();
-            const freshVault = await getKeyVault(mailboxUid!);
+            const { current, freshVault } = await verifiedUnlockedKeys();
             oldRecoveryWraps = freshVault.masterKeyWraps.filter((w) => w.method === "recovery");
             free = MAX_MASTER_KEY_WRAPS - freshVault.masterKeyWraps.length;
             built = await buildRecoveryWraps(mailboxUid!, current.masterKey);
@@ -686,23 +749,29 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             const current = await currentUnlockedKeys();
             const [freshVault, freshMailbox] = await Promise.all([getKeyVault(mailboxUid!), getMailbox(mailboxUid!)]);
             keys = freshMailbox.keys ?? [];
+            // A session key that opens nothing is stale (rotated elsewhere) rather than missing some keys.
+            if (!(await masterKeyOpensVault(mailboxUid!, current.masterKey, freshVault))) {
+                throw new StaleSessionKeysError();
+            }
             const rewrapped = await rewrapVaultPrivateKeys(mailboxUid!, current.masterKey, freshVault.wrappedKeys);
             const mk = rewrapped.mk;
             const passwordWrap = await buildPasswordWrap(mailboxUid!, mk, rotationPassword);
             const recovery = await buildRecoveryWraps(mailboxUid!, mk);
             codes = recovery.codes;
             const masterKeyWraps = [passwordWrap, ...recovery.wraps];
-            // restapi's rekey() drops the old escrow wraps and refuses (409) to rekey a mailbox assigned an escrow
-            // scope without a fresh escrow wrap of the new master key, so it is built here and sent in the same
-            // request. Decided by the mailbox's current assignment (not by an old escrow wrap in the vault): that
-            // is what restapi checks, and a mailbox taken out of escrow has no scope left to wrap for. Failing to
-            // build it aborts the rotation - rotating without it would silently end escrow coverage.
-            if (freshMailbox.escrowScopeId) {
+            // restapi's rekey() drops the old escrow wraps, and requires a replacement escrow wrap only when the vault
+            // already holds one and the mailbox's escrow scope still exists - so one is carried over exactly then, in
+            // the same request. A mailbox assigned a scope but never escrowed isn't silently escrowed by a rotation,
+            // and a deleted scope (escrow-info 404s) needs nothing. Any other failure to build it aborts the rotation -
+            // rotating without it would end escrow coverage. restapi's own 409 stays the final word.
+            if (freshVault.masterKeyWraps.some((w) => w.method === "escrow")) {
                 try {
                     const escrowInfo = await getEscrowInfo(mailboxUid!);
                     masterKeyWraps.push(await buildEscrowWrap(mk, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey)));
                 } catch (err) {
-                    throw new EscrowWrapUnavailableError(err);
+                    if (!(err instanceof ApiRequestError && err.status === 404)) {
+                        throw new EscrowWrapUnavailableError(err);
+                    }
                 }
             }
             await rekey(mailboxUid!, { wrappedKeys: rewrapped.wrappedKeys, masterKeyWraps, keys });

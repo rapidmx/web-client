@@ -19,6 +19,7 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
+import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -132,6 +133,8 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                     ...(input as Omit<Parameters<typeof createContact>[0], "mailboxUid" | "folderUid">),
                 });
             }
+            // A message opened later in this page load must see the changed contact's signing keys.
+            clearPinnedSignerCache();
             onSaved(saved);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save this contact.");

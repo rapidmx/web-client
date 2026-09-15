@@ -31,7 +31,11 @@ describe("NewMailboxPage", () => {
         expect(await screen.findByText("A display name is required.")).toBeInTheDocument();
     });
 
-    it("refuses a display name that contains an @, without submitting", async () => {
+    it.each([
+        ["an @", "support@example.com"],
+        ["a fullwidth @ (U+FF20)", "ceo＠example.com"],
+        ["a small @ (U+FE6B)", "ceo﹫example.com"],
+    ])("refuses a display name that contains %s, without submitting", async (_label, badName) => {
         let posted = false;
         mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
@@ -43,10 +47,10 @@ describe("NewMailboxPage", () => {
         await screen.findByText("New mailbox");
 
         await user.type(screen.getByLabelText("Primary SMTP address"), "support@example.com");
-        await user.type(screen.getByLabelText("Display name"), "support@example.com");
+        await user.type(screen.getByLabelText("Display name"), badName);
         await user.click(screen.getByRole("button", { name: "Create mailbox" }));
 
-        expect(await screen.findByText("A display name can't contain \"@\" or line breaks.")).toBeInTheDocument();
+        expect(await screen.findByText("A display name can't contain \"@\" (or a look-alike) or line breaks.")).toBeInTheDocument();
         expect(posted).toBe(false);
     });
 

@@ -20,6 +20,7 @@ import { UnlockPromptProvider } from "./UnlockPromptProvider.js";
 import { SIGN_OUT_CHANNEL, destroyAllLocalIndexes } from "../../search/localIndexRpcClient.js";
 import { authApiFetch } from "@rapidmx/react-shared/util/api.js";
 import { destroyUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 
 /** How long sign-out waits for auth-server's logout before navigating anyway. */
 export const LOGOUT_TIMEOUT_MS = 3_000;
@@ -155,6 +156,7 @@ export default function AppShell({
             // Compose windows must not ask "Leave site?" - that would let this forced navigation be cancelled.
             markSigningOut();
             destroyUnlockedKeys();
+            clearPinnedSignerCache();
             // Bounded by its own timeout and never rejects - awaited so navigating doesn't kill the Worker mid-delete.
             void destroyAllLocalIndexes().then(() => {
                 window.location.href = authServerUrl ?? "/";
@@ -170,6 +172,8 @@ export default function AppShell({
         markSigningOut();
         // Unlocked private keys never outlive an explicit sign-out.
         destroyUnlockedKeys();
+        // Trusted signer pins read from contacts don't outlive the session either.
+        clearPinnedSignerCache();
         // Open compose windows save edits still waiting on their autosave debounce while the session is still
         // valid - logout invalidates it. Bounded the same way as logout itself, and never rejects.
         await flushComposeDrafts(LOGOUT_TIMEOUT_MS);

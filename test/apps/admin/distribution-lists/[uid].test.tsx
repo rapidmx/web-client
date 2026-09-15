@@ -42,6 +42,10 @@ describe("DistributionListDetailPage", () => {
         expect(screen.getByText("u1")).toBeInTheDocument();
         expect(screen.getByText("alt@example.com")).toBeInTheDocument();
         expect(screen.getByText("Only members may send")).toBeInTheDocument();
+        // Restricted lists silently drop all mail unless the server's trusted authserv id is configured.
+        expect(screen.getByRole("status")).toHaveTextContent(/requires the mail server.s Authentication-Results configuration/);
+        expect(screen.getByRole("status")).toHaveTextContent("mail:security:trusted_authserv_id");
+        expect(screen.getByRole("status")).toHaveTextContent(/all mail sent to this list is dropped/);
         expect(screen.getByText("Members")).toBeInTheDocument();
         expect(screen.getByText("a@example.com")).toBeInTheDocument();
     });
@@ -65,6 +69,8 @@ describe("DistributionListDetailPage", () => {
         await screen.findByRole("heading", { name: "team@example.com" });
         expect(screen.getAllByText("None")).toHaveLength(3);
         expect(screen.getByText("No")).toBeInTheDocument();
+        expect(screen.queryByRole("status")).not.toBeInTheDocument();
+        expect(screen.getByText(/Restricting senders to members requires the mail server.s Authentication-Results configuration/)).toBeInTheDocument();
     });
 
     it("reflects a member added via MemberListCard back into the page's own state", async () => {
