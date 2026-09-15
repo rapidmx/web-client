@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.6.0
 
 This release lets server plugins add their own pages to the webmail and admin console navigation. It needs a server
 that builds plugin UI and sends plugin navigation; older servers send none and nothing changes.

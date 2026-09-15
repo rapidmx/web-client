@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-15
+
+### Changed
+- Let the app rail, settings and admin console shells take plugin navigation entries from a pluginNav prop, added after the core entries and skipped on id collisions, unsafe hrefs or malformed items
+- Fall back to the current path in the settings mailbox switcher when the active section isn't listed
+- Emit type declarations with the built pages so TypeScript plugin pages can import the shells
+- Document the package layout and the supported plugin UI surface in a README
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Name the local search Worker by its compiled localIndexWorker.js file, so dist/apps/shared/search/localIndexRpcClient.js no longer references a .ts file missing from dist and Vite builds of the compiled modules resolve the worker
+- Fail yarn build when a compiled module under dist imports, re-exports or new URL()s a relative file that doesn't exist there
+- Document the fix in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Depend on the published @rapidmx/react-shared ^0.5.0 instead of a local patch of 0.4.0, and remove the old react-shared patches
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Upgraded react-shared dep
+
+### Removed
+- Removed the Booking Links settings pages, their settings section and AvailabilityEditor, which moved to @rapidmx/booking-plugin and return through plugin navigation
+
 ## [0.5.0] - 2026-09-15
 
 ### Added
@@ -570,7 +590,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/rapidmx/web-client/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rapidmx/web-client/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rapidmx/web-client/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/rapidmx/web-client/compare/v0.3.0...v0.3.1
