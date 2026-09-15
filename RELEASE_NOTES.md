@@ -31,6 +31,11 @@ hardens compose, encryption, local search and the admin consoles after several r
   - Revoked keys are labelled "superseded" after a routine replacement and "revoked" otherwise, in contacts and in
     Settings > Encryption.
   - An unpinned sender with a recorded key change links to the contact instead of offering Trust this signer.
+- **Verified when first opened:** needs a server running the next `@rapidmx/restapi` release. A message whose
+  signature verifies is sealed, so if the sender's key later changes, is removed or is revoked it shows "Verified when
+  first opened" with the date instead of looking untrusted. The badge is muted, not green, and turns amber with a warning
+  when the key was later reported compromised. The local search index seals encrypted mail as it builds, and messages
+  re-seal after a key vault rekey the next time they verify.
 - **Unverified signers:** a valid signature from a signer that isn't a pinned contact key shows "signer not verified",
   never a green badge.
 - **Signature badges:**

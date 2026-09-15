@@ -1687,89 +1687,86 @@ index 81236f1dceed4b282f723ca148bad3a6a66ece00..a6fd0fb85efb83b7a181fd671edcbd22
  /** See this module's own doc comment for why this is an approximation, not an authoritative classification. */
  export function classifyRecipientTier(ownAddress, recipientAddress, hasDiscoveredKeys) {
 diff --git a/dist/crypto/keyRotation.d.ts b/dist/crypto/keyRotation.d.ts
-index 02ddd122b1f534fbca1b2c15716b6de7d3728f71..d2a1f9963930313e6fc03cfb20ec709e48dd30da 100644
+deleted file mode 100644
+index 02ddd122b1f534fbca1b2c15716b6de7d3728f71..0000000000000000000000000000000000000000
 --- a/dist/crypto/keyRotation.d.ts
-+++ b/dist/crypto/keyRotation.d.ts
-@@ -13,6 +13,9 @@ export interface RewrappedPrivateKeys {
-  * reused unchanged, only its protection changes. A mailbox with only an encryption key (signing keys
-  * have no real enrolment path yet — see `KeyEnrollmentGate.tsx`'s own doc comment) simply produces one
-  * `WrappedPrivateKey`, not two; this function never invents key material `unlocked` doesn't already
++++ /dev/null
+@@ -1,18 +0,0 @@
+-import { UnlockedKeys } from "./keySession.js";
+-import type { WrappedPrivateKey } from "./keyvaultApi.js";
+-export interface RewrappedPrivateKeys {
+-    /** The brand new master key - callers wrap it under whichever unlock methods should survive the
+-     * rotation (see `masterKeyWraps.ts`) and pass both alongside this module's own `wrappedKeys` to
+-     * `rekey()`. */
+-    mk: Uint8Array;
+-    wrappedKeys: WrappedPrivateKey[];
+-}
+-/**
+- * Generates a fresh master key and re-wraps whichever of `unlocked`'s already-decrypted private keys
+- * exist under it — the same underlying key material (and its published certificate/fingerprint) is
+- * reused unchanged, only its protection changes. A mailbox with only an encryption key (signing keys
+- * have no real enrolment path yet — see `KeyEnrollmentGate.tsx`'s own doc comment) simply produces one
+- * `WrappedPrivateKey`, not two; this function never invents key material `unlocked` doesn't already
 - * have decrypted.
-+ * have decrypted. Throws `KeysLockedError` for an `UnlockedKeys` object that `destroyUnlockedKeys()` has
-+ * since destroyed (its private keys are gone, so a rotation would silently wrap nothing) - checked on entry
-+ * and again before returning, so a lock during the export/seal awaits also fails (the new master key is
-+ * zeroed first).
-  */
- export declare function rewrapPrivateKeysUnderNewMasterKey(mailboxUid: string, unlocked: UnlockedKeys): Promise<RewrappedPrivateKeys>;
+- */
+-export declare function rewrapPrivateKeysUnderNewMasterKey(mailboxUid: string, unlocked: UnlockedKeys): Promise<RewrappedPrivateKeys>;
 diff --git a/dist/crypto/keyRotation.js b/dist/crypto/keyRotation.js
-index 30b8b79458347f0b5e09555bd986dd43022d9622..2bccf4aef0df5c6dbea2676cf81c1d7781eaeba2 100644
+deleted file mode 100644
+index 30b8b79458347f0b5e09555bd986dd43022d9622..0000000000000000000000000000000000000000
 --- a/dist/crypto/keyRotation.js
-+++ b/dist/crypto/keyRotation.js
-@@ -12,7 +12,7 @@
-  * left permanently unable to unwrap anything useful, even if an attacker later recovers a captured
-  * wrap's secret.
-  */
++++ /dev/null
+@@ -1,51 +0,0 @@
+-///////////////////////////////////////////////////////////////////////////////
+-// Copyright (C) 2026 Jean-Philippe Steinmetz
+-// SPDX-License-Identifier: MPL-2.0
+-///////////////////////////////////////////////////////////////////////////////
+-/**
+- * The client-side half of `keyvaultApi.ts`'s `rekey()` — "the only real revocation mechanism for a
+- * captured wrap" (see that function's own doc comment). A rekey doesn't replace a mailbox's signing/
+- * encryption *keypairs* (restapi's own `BaseKeyVaultRoute.rekey()` rejects any `keys` entry that isn't
+- * byte-identical to what's already enrolled, aside from `revokedAt` — genuinely new key material must
+- * go through `enrollKey()`, which alone talks to the CA); it only changes *how* the existing private
+- * keys are protected: a brand new master key (MK), with the old one (and every wrap built against it)
+- * left permanently unable to unwrap anything useful, even if an attacker later recovers a captured
+- * wrap's secret.
+- */
 -import { buildAad, generateMasterKey, sealWithKey } from "./masterKey.js";
-+import { KeysLockedError, buildAad, generateMasterKey, sealWithKey } from "./masterKey.js";
- import { ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE, SIGNING_PRIVATE_KEY_AAD_PURPOSE } from "./keySession.js";
- /**
-  * Generates a fresh master key and re-wraps whichever of `unlocked`'s already-decrypted private keys
-@@ -20,32 +20,48 @@ import { ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE, SIGNING_PRIVATE_KEY_AAD_PURPOSE } f
-  * reused unchanged, only its protection changes. A mailbox with only an encryption key (signing keys
-  * have no real enrolment path yet — see `KeyEnrollmentGate.tsx`'s own doc comment) simply produces one
-  * `WrappedPrivateKey`, not two; this function never invents key material `unlocked` doesn't already
+-import { ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE, SIGNING_PRIVATE_KEY_AAD_PURPOSE } from "./keySession.js";
+-/**
+- * Generates a fresh master key and re-wraps whichever of `unlocked`'s already-decrypted private keys
+- * exist under it — the same underlying key material (and its published certificate/fingerprint) is
+- * reused unchanged, only its protection changes. A mailbox with only an encryption key (signing keys
+- * have no real enrolment path yet — see `KeyEnrollmentGate.tsx`'s own doc comment) simply produces one
+- * `WrappedPrivateKey`, not two; this function never invents key material `unlocked` doesn't already
 - * have decrypted.
-+ * have decrypted. Throws `KeysLockedError` for an `UnlockedKeys` object that `destroyUnlockedKeys()` has
-+ * since destroyed (its private keys are gone, so a rotation would silently wrap nothing) - checked on entry
-+ * and again before returning, so a lock during the export/seal awaits also fails (the new master key is
-+ * zeroed first).
-  */
- export async function rewrapPrivateKeysUnderNewMasterKey(mailboxUid, unlocked) {
-+    if (unlocked.destroyed) {
-+        throw new KeysLockedError();
-+    }
-+    // Captured before the first await: `destroyUnlockedKeys()` deletes these handles from `unlocked`, so
-+    // re-reading them after an await would silently skip a key that was present when rotation started.
-+    const { signingPrivateKey, signingFingerprint, encryptionPrivateKey, encryptionFingerprint } = unlocked;
-     const mk = generateMasterKey();
-     const wrappedKeys = [];
+- */
+-export async function rewrapPrivateKeysUnderNewMasterKey(mailboxUid, unlocked) {
+-    const mk = generateMasterKey();
+-    const wrappedKeys = [];
 -    if (unlocked.signingPrivateKey && unlocked.signingFingerprint) {
 -        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", unlocked.signingPrivateKey));
-+    if (signingPrivateKey && signingFingerprint) {
-+        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", signingPrivateKey));
-         const sealed = await sealWithKey(mk, raw, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
-+        raw.fill(0);
-         wrappedKeys.push({
-             ciphertext: sealed.ciphertext,
-             nonce: sealed.nonce,
-             algorithm: "AES-256-GCM",
+-        const sealed = await sealWithKey(mk, raw, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
+-        wrappedKeys.push({
+-            ciphertext: sealed.ciphertext,
+-            nonce: sealed.nonce,
+-            algorithm: "AES-256-GCM",
 -            fingerprint: unlocked.signingFingerprint,
-+            fingerprint: signingFingerprint,
-             useType: "sign",
-         });
-     }
+-            useType: "sign",
+-        });
+-    }
 -    if (unlocked.encryptionPrivateKey && unlocked.encryptionFingerprint) {
 -        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", unlocked.encryptionPrivateKey));
-+    if (encryptionPrivateKey && encryptionFingerprint) {
-+        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", encryptionPrivateKey));
-         const sealed = await sealWithKey(mk, raw, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
-+        raw.fill(0);
-         wrappedKeys.push({
-             ciphertext: sealed.ciphertext,
-             nonce: sealed.nonce,
-             algorithm: "AES-256-GCM",
+-        const sealed = await sealWithKey(mk, raw, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
+-        wrappedKeys.push({
+-            ciphertext: sealed.ciphertext,
+-            nonce: sealed.nonce,
+-            algorithm: "AES-256-GCM",
 -            fingerprint: unlocked.encryptionFingerprint,
-+            fingerprint: encryptionFingerprint,
-             useType: "encrypt",
-         });
-     }
-+    if (unlocked.destroyed) {
-+        // Locked mid-rotation: don't hand back a new master key wrapping keys the user just locked away.
-+        mk.fill(0);
-+        throw new KeysLockedError();
-+    }
-     return { mk, wrappedKeys };
- }
+-            useType: "encrypt",
+-        });
+-    }
+-    return { mk, wrappedKeys };
+-}
 diff --git a/dist/crypto/keySession.d.ts b/dist/crypto/keySession.d.ts
 index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..7957e2b142357fe2ba1c541fa8dfac0c0937f2ab 100644
 --- a/dist/crypto/keySession.d.ts
@@ -1936,7 +1933,7 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..7957e2b142357fe2ba1c541fa8dfac0c
 -export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<void>;
 +export declare function unlockWithRecoveryCode(mailboxUid: string, mailboxKeys: PublicKey[], code: string): Promise<RecoveryUnlockResult>;
 diff --git a/dist/crypto/keySession.js b/dist/crypto/keySession.js
-index 763759b94580beb99c25cdf780ab1cad7a6f8e60..6972f14ab213b09c1a4a929cb1b2da839027afbe 100644
+index 763759b94580beb99c25cdf780ab1cad7a6f8e60..12249ced18621848aace442f4e875692d7e3ada8 100644
 --- a/dist/crypto/keySession.js
 +++ b/dist/crypto/keySession.js
 @@ -1,46 +1,230 @@
@@ -2127,8 +2124,8 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..6972f14ab213b09c1a4a929cb1b2da83
 + * `mailboxKeys` other than the active one (`activeFingerprint`), whatever its revocation or expiry, that has a wrapped
 + * private key in the vault - de-duplicated by fingerprint, newest `notBefore` first, at most
 + * `MAX_RETAINED_ENCRYPTION_KEYS`. A key that won't open or import, or whose certificate won't decode, is skipped and
-+ * added to `unopenableKeys`. Retained keys are imported non-extractable: only the active keys are ever exported (by
-+ * `keyRotation.ts`). Each key is attached as it opens, so a failed unlock's `destroyObject()` drops those too.
++ * added to `unopenableKeys`. Retained keys are imported non-extractable. Each key is attached as it opens, so a failed
++ * unlock's `destroyObject()` drops those too.
 + */
 +async function openRetainedEncryptionKeys(mailboxUid, mailboxKeys, vault, unlocked, activeFingerprint, unopenableKeys) {
 +    const seen = new Set(activeFingerprint !== undefined ? [activeFingerprint] : []);
@@ -2180,7 +2177,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..6972f14ab213b09c1a4a929cb1b2da83
      const vault = await getKeyVault(mailboxUid);
      const passwordWrap = vault.masterKeyWraps.find((w) => w.method === "password");
      if (!passwordWrap) {
-@@ -53,22 +237,130 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
+@@ -53,22 +237,128 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
      const salt = fromBase64(passwordWrap.salt);
      const { wrappingKey } = await deriveFromPassword(password, salt, kdfParams);
      const masterKey = await openWithKey(wrappingKey, { ciphertext: passwordWrap.ciphertext, nonce: passwordWrap.nonce }, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
@@ -2261,14 +2258,12 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..6972f14ab213b09c1a4a929cb1b2da83
 -        unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
 -        unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
 +    const unopenableKeys = [];
-+    // The unwrapped private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default)
-+    // for exactly one consumer: `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, which re-seals
-+    // these session keys' PKCS#8 bytes under a new master key via `crypto.subtle.exportKey()` (web-client's
-+    // Settings > Encryption "rotate keys"). Nothing else exports them. Making them non-extractable would
-+    // first require that function to re-open the vault's wraps with `masterKey` instead (round-4 review
-+    // re-flagged this; deliberately left as-is - an XSS that can call `exportKey()` on these handles can
-+    // equally call `openWithKey()` with the in-memory master key, so non-extractability would not remove
-+    // that attacker's access, only complicate rotation). The transient
++    // The active private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default). Their one
++    // consumer, `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, was removed (2026-09-15; it re-wrapped only
++    // the active keys, and web-client's rotation re-seals every vault wrap itself), so nothing in this package exports
++    // them any more; kept extractable for now so no consumer outside it breaks. Non-extractability would add little: an
++    // XSS that can call `exportKey()` on these handles can equally call `openWithKey()` with the in-memory master key
++    // (round-4 review). The transient
 +    // PKCS#8 plaintext buffers are zeroed as soon as WebCrypto has copied them into a `CryptoKey`.
 +    try {
 +        const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
@@ -3230,10 +3225,10 @@ index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..a3d50bd9705e5d72c6ff572416b14a8b
 +    }
 +}
 diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
-index 39c737137ae875767f859affc408f254493a87b5..82f5da0bc87ebd9c0911b94c83d9e929fa1c6661 100644
+index 39c737137ae875767f859affc408f254493a87b5..d7538920bbbeacdeb1a916c8f2d3a34c405b5cbf 100644
 --- a/dist/crypto/messageSecurity.d.ts
 +++ b/dist/crypto/messageSecurity.d.ts
-@@ -1,39 +1,166 @@
+@@ -1,39 +1,248 @@
 -export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
 +/**
 + * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
@@ -3272,11 +3267,21 @@ index 39c737137ae875767f859affc408f254493a87b5..82f5da0bc87ebd9c0911b94c83d9e929
 + */
 +import { MimeAttachment, MimeHeaderField } from "./mime.js";
 +import { ProtectedHeaders } from "./smimeMessage.js";
++import { type PublicKey } from "./keyvaultApi.js";
++import { type SealKeyMaterial, type SealedVerificationState } from "./verificationSeal.js";
 +export { signingKeyFingerprints } from "./keyvaultApi.js";
 +/** `"signed_unverified_signer"`/`"encrypted_unverified_signer"`: the signature is valid and its certificate
 + * names the sender, but the certificate isn't one the reader trusts (no pinned key matched) - see this module's
-+ * doc comment. The encrypted variant's content was decrypted like `"encrypted_verified"`'s. */
-+export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signed_unverified_signer" | "encrypted_unverified_signer" | "signature_failed" | "unprotected";
++ * doc comment. The encrypted variant's content was decrypted like `"encrypted_verified"`'s.
++ *
++ * `"verified_at_first_open"`: only ever returned by `evaluateMessageSecurityWithSeal()`. The live check now fails only
++ * because of the signer key's status (`signer_key_changed`, or `*_unverified_signer` - the pins are gone or no longer
++ * trust the key), but the message carries a valid verification seal (`verificationSeal.ts`) for this exact raw MIME and
++ * this same signer certificate, recording that it verified when first opened. The result carries `verifiedAt`,
++ * `sealedState`, `signerFingerprint`, the recovered content, `liveState`/`liveSignatureFailureReason`, and
++ * `laterCompromised` when the signer key has since been revoked as compromised. A UI should show it as "verified when
++ * first opened" - distinct from the live verified states, and with a warning when `laterCompromised` is set. */
++export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signed_unverified_signer" | "encrypted_unverified_signer" | "signature_failed" | "verified_at_first_open" | "unprotected";
 +/** Why a message is `"signature_failed"`. `invalid_signature`: the CMS signature itself is malformed or
 + * doesn't verify over the content (or a `multipart/signed` body doesn't hold exactly two parts).
 + * `signer_key_changed`: pinned fingerprints were supplied and the signer certificate matches none of them, but it
@@ -3366,6 +3371,28 @@ index 39c737137ae875767f859affc408f254493a87b5..82f5da0bc87ebd9c0911b94c83d9e929
 +     * other `"signature_failed"`, even when its signature itself was valid (a failed binding is not something to offer
 +     * trusting). */
 +    signerCertificate?: string;
++    /** Only from `evaluateMessageSecurityWithSeal()`: a seal for a live `"signed_verified"`/`"encrypted_verified"` result
++     * when no stored seal opens under the current master key generation, or the stored seal is from an older generation.
++     * Persist it best effort with `mailApi.ts`'s `setMessageVerificationSeal(messageUid, sealToWrite.seal,
++     * sealToWrite.masterKeyGeneration)` (a `VerificationSealConflictError` means the server kept the stored seal - ignore
++     * it). */
++    sealToWrite?: SealToWrite;
++    /** For `"verified_at_first_open"`: when the sealed verification happened (epoch ms). */
++    verifiedAt?: number;
++    /** For `"verified_at_first_open"`: the verified state the seal recorded. */
++    sealedState?: SealedVerificationState;
++    /** For `"verified_at_first_open"`: the live state the seal overrode (`"signature_failed"` or `*_unverified_signer`). */
++    liveState?: MessageSecurityState;
++    /** For `"verified_at_first_open"` over a live `"signature_failed"`: its reason (always `"signer_key_changed"`). */
++    liveSignatureFailureReason?: SignatureFailureReason;
++    /** For `"verified_at_first_open"`: `true` when the caller's `signerKeys` show the signer key is now revoked as
++     * compromised (or revoked with no reason) - the seal proves it verified then, not that the key was safe then. */
++    laterCompromised?: boolean;
++}
++/** A seal for the caller to store, with the master key generation it was written under. */
++export interface SealToWrite {
++    seal: string;
++    masterKeyGeneration: number;
 +}
 +export interface SignerBindingInput {
 +    /** The certificate matched to the verified SignerInfo; `undefined` fails closed. */
@@ -3411,7 +3438,10 @@ index 39c737137ae875767f859affc408f254493a87b5..82f5da0bc87ebd9c0911b94c83d9e929
 + * An encrypted message is decrypted with `unlocked`'s active encryption key or any of its `retainedEncryptionKeys` (the
 + * older keys a rotation replaced - see `keySession.ts`), matched by recipient identifier first.
   */
- export declare function evaluateMessageSecurity(rawMime: string, unlocked: {
+-export declare function evaluateMessageSecurity(rawMime: string, unlocked: {
++export declare function evaluateMessageSecurity(rawMime: string, unlocked: MessageSecurityKeys | undefined, pinnedSignerFingerprints?: string | string[], readerAddress?: string): Promise<MessageSecurityResult>;
++/** The keys `evaluateMessageSecurity()` reads from an unlocked session (`keySession.ts`'s `UnlockedKeys`). */
++export interface MessageSecurityKeys {
      encryptionPrivateKey?: CryptoKey;
      encryptionCertDer?: Uint8Array;
 -} | undefined, pinnedSignerFingerprint?: string): Promise<MessageSecurityResult>;
@@ -3420,12 +3450,60 @@ index 39c737137ae875767f859affc408f254493a87b5..82f5da0bc87ebd9c0911b94c83d9e929
 +        privateKey: CryptoKey;
 +    }[];
 +    signingFingerprint?: string;
-+} | undefined, pinnedSignerFingerprints?: string | string[], readerAddress?: string): Promise<MessageSecurityResult>;
++}
++/** Options for `evaluateMessageSecurityWithSeal()`. */
++export interface VerificationSealOptions {
++    mailboxUid: string;
++    messageUid: string;
++    /** The message's stored `Message.verificationSeal`, if any. */
++    seal?: string;
++    /** The vault's current `KeyVault.masterKeyGeneration` (`0` when it reports none): the generation a stored seal must
++     * carry to be honoured, and the one a new `sealToWrite` is written under. */
++    masterKeyGeneration: number;
++    /** The message's stored `Message.verificationSealGeneration`, if any. When it is older than `masterKeyGeneration`, a
++     * live verified message is re-sealed (after a `rekey()`). */
++    sealGeneration?: number;
++    /** The signer's key records the caller knows about, to tell whether the sealed signer key has since been revoked as
++     * compromised: e.g. `[...state.pinned, ...state.previous]` from `contactsApi.ts`'s `fetchSignerKeyState()` for the
++     * sender, plus the mailbox's own `keys` for mail from its own address. A record whose fingerprint equals the signer's
++     * and fails `isTrustedForVerification()` sets `laterCompromised`. Omitted, `laterCompromised` is never set. */
++    signerKeys?: readonly PublicKey[];
++    /** The `verifiedAt` recorded in a new `sealToWrite`. Defaults to `Date.now()`. */
++    now?: number;
++}
++/**
++ * `evaluateMessageSecurity()` with verification seals (`verificationSeal.ts`). The live evaluation always runs first,
++ * with the same arguments; then:
++ *
++ * **Live verified** (`"signed_verified"`/`"encrypted_verified"`, no HP-Outer tampering), and either no seal opens for this
++ * mailbox, message, raw MIME and `options.masterKeyGeneration`, or `options.sealGeneration` is older than
++ * `options.masterKeyGeneration`: the result gains `sealToWrite` (`{ seal, masterKeyGeneration }`), sealing the live
++ * `signerFingerprint` and state at `options.now` under the current generation. The caller persists it best effort
++ * (`setMessageVerificationSeal()`). This is how messages are re-sealed, lazily, after a `rekey()`: seals are never
++ * carried across a master key rotation (see `verificationSeal.ts`).
++ *
++ * **Live failure caused only by key status** (`signer_key_changed`, `signed_unverified_signer`,
++ * `encrypted_unverified_signer` - which also covers a signer key since revoked, since `signingKeyFingerprints()` drops
++ * such pins): when the seal opens, its `signerFingerprint` equals the live one and its state matches the message kind
++ * (signed-only vs. encrypted), the result is `"verified_at_first_open"` with `verifiedAt`, `sealedState`,
++ * `signerFingerprint`, the recovered content (for a signed-only `signer_key_changed` message too), `liveState`,
++ * `liveSignatureFailureReason` and `laterCompromised` (see `VerificationSealOptions.signerKeys`).
++ * `signatureFailureReason` is dropped.
++ *
++ * **Everything else** returns the live result unchanged: an invalid signature, identity or header mismatch,
++ * `untrusted_signer`, HP-Outer tampering, a seal whose MAC fails or whose hash, uids, generation or signer fingerprint differ, and
++ * every unsigned state.
++ *
++ * With `unlocked` undefined (no master key) the seal is ignored and no seal is built. Throws `KeysLockedError` when
++ * `unlocked` was destroyed (`keySession.ts`), before evaluating anything, or if it is destroyed while sealing; otherwise
++ * never throws - a seal that can't be built (e.g. uids too long for the size limit) just leaves `sealToWrite` unset.
++ */
++export declare function evaluateMessageSecurityWithSeal(rawMime: string, unlocked: (MessageSecurityKeys & SealKeyMaterial) | undefined, pinnedSignerFingerprints: string | string[] | undefined, readerAddress: string | undefined, options: VerificationSealOptions): Promise<MessageSecurityResult>;
 diff --git a/dist/crypto/messageSecurity.js b/dist/crypto/messageSecurity.js
-index d15171a423be5b13034b038a2a19c9edf19cc2cc..b04f739c3fa022db6ea6741c167c8b49f47d3317 100644
+index d15171a423be5b13034b038a2a19c9edf19cc2cc..55301e44af0c2ef65c9b78fc0a0161e4be9cf17e 100644
 --- a/dist/crypto/messageSecurity.js
 +++ b/dist/crypto/messageSecurity.js
-@@ -4,55 +4,168 @@
+@@ -4,55 +4,174 @@
  ///////////////////////////////////////////////////////////////////////////////
  /**
   * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
@@ -3482,6 +3560,9 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..b04f739c3fa022db6ea6741c167c8b49
 +import { toBase64 } from "./encoding.js";
 +import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
 +import { parseEncryptedMessageWithKeys, parseSignedOnlyMessage } from "./smimeMessage.js";
++import { isTrustedForVerification } from "./keyvaultApi.js";
++import { KeysLockedError } from "./masterKey.js";
++import { buildVerificationSeal, openVerificationSeal, rawMimeSha256 } from "./verificationSeal.js";
 +export { signingKeyFingerprints } from "./keyvaultApi.js";
 +function isSignedOnlyContentType(contentTypeValue) {
 +    return contentTypeValue === "multipart/signed";
@@ -3607,11 +3688,15 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..b04f739c3fa022db6ea6741c167c8b49
 -export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprint) {
 -    const { contentType, body, headers } = splitHeadersAndBody(rawMime);
 -    if (!contentType) {
+-        return { state: "unprotected" };
 +export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFingerprints, readerAddress) {
++    return (await evaluateLive(rawMime, unlocked, pinnedSignerFingerprints, readerAddress)).result;
++}
++async function evaluateLive(rawMime, unlocked, pinnedSignerFingerprints, readerAddress) {
 +    const { headers, body, fields } = parseMimeEntity(rawMime);
 +    const rawContentType = headers["content-type"];
 +    if (!rawContentType) {
-         return { state: "unprotected" };
++        return { result: { state: "unprotected" }, kind: "other" };
      }
 +    const contentType = parseParameterizedHeader(rawContentType);
 +    const callerPins = normalizePins(pinnedSignerFingerprints);
@@ -3623,7 +3708,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..b04f739c3fa022db6ea6741c167c8b49
      const actualOuterHeaders = {
          from: headers["from"],
          to: headers["to"],
-@@ -60,35 +173,94 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+@@ -60,35 +179,189 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
          date: headers["date"],
          subject: headers["subject"],
      };
@@ -3675,25 +3760,28 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..b04f739c3fa022db6ea6741c167c8b49
 +    if (isSignedOnlyContentType(contentType.value)) {
 +        const parsed = await parseSignedOnlyMessage(rawContentType, body);
 +        if (!parsed.verified) {
-+            return { state: "signature_failed", signatureFailureReason: "invalid_signature" };
-         }
--        return { state: "signed_verified", html: parsed.bodyText, subject: parsed.protectedHeaders?.subject };
-+        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
-+        if (failure) {
-+            return { state: "signature_failed", signatureFailureReason: failure, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
++            return { result: { state: "signature_failed", signatureFailureReason: "invalid_signature" }, kind: "signed" };
 +        }
-+        return {
-+            state: trusted ? "signed_verified" : "signed_unverified_signer",
++        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
++        const content = {
 +            ...renderDisplayBody(parsed.displayBody),
 +            subject: parsed.protectedHeaders?.subject || undefined,
 +            ...exposedHeaders(parsed.protectedHeaders),
 +            attachments: parsed.attachments,
-+            ...acceptedSigner,
-+            ...addressing(parsed.protectedHeaders),
++        };
++        if (failure) {
++            const result = { state: "signature_failed", signatureFailureReason: failure, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
++            return { result, kind: "signed", ...(failure === "signer_key_changed" ? { signedContent: { ...content, ...addressing(parsed.protectedHeaders) } } : {}) };
+         }
+-        return { state: "signed_verified", html: parsed.bodyText, subject: parsed.protectedHeaders?.subject };
++        return {
++            result: { state: trusted ? "signed_verified" : "signed_unverified_signer", ...content, ...acceptedSigner, ...addressing(parsed.protectedHeaders) },
++            kind: "signed",
 +        };
      }
      if (isEncryptedContentType(contentType)) {
 -        if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
+-            return { state: "encrypted", decryptError: NO_KEY_ERROR };
 +        // The active key first, then the retained older ones (see `keySession.ts`'s `retainedEncryptionKeys`), so mail
 +        // encrypted to a key since replaced still opens. Only ever used to decrypt here - never to encrypt or sign.
 +        const keys = [
@@ -3701,13 +3789,13 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..b04f739c3fa022db6ea6741c167c8b49
 +            ...(unlocked?.retainedEncryptionKeys ?? []).map(({ certDer, privateKey }) => ({ certDer, privateKey })),
 +        ];
 +        if (keys.length === 0) {
-             return { state: "encrypted", decryptError: NO_KEY_ERROR };
++            return { result: { state: "encrypted", decryptError: NO_KEY_ERROR }, kind: "encrypted" };
          }
 -        const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
 +        const parsed = await parseEncryptedMessageWithKeys(body, keys, actualOuterHeaders);
          if (!parsed.decrypted) {
 -            return { state: "encrypted", decryptError: NO_KEY_ERROR };
-+            return { state: "encrypted", decryptError: parsed.unsupportedContentEncryption ? UNSUPPORTED_ENCRYPTION_ERROR : NO_KEY_ERROR };
++            return { result: { state: "encrypted", decryptError: parsed.unsupportedContentEncryption ? UNSUPPORTED_ENCRYPTION_ERROR : NO_KEY_ERROR }, kind: "encrypted" };
          }
 -        const subject = parsed.protectedHeaders?.subject;
 +        const content = {
@@ -3720,21 +3808,115 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..b04f739c3fa022db6ea6741c167c8b49
 +        };
          if (parsed.signatureVerified === undefined) {
 -            return { state: "encrypted", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
-+            return { state: "encrypted", ...content };
++            return { result: { state: "encrypted", ...content }, kind: "encrypted" };
 +        }
 +        if (!parsed.signatureVerified) {
-+            return { state: "signature_failed", signatureFailureReason: "invalid_signature", ...content };
++            return { result: { state: "signature_failed", signatureFailureReason: "invalid_signature", ...content }, kind: "encrypted" };
++        }
++        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
++        if (failure) {
++            return { result: { state: "signature_failed", signatureFailureReason: failure, ...content, ...(failure === "signer_key_changed" ? acceptedSigner : signer) }, kind: "encrypted" };
++        }
++        return { result: { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner }, kind: "encrypted" };
++    }
++    return { result: { state: "unprotected" }, kind: "other" };
++}
++const LIVE_VERIFIED_STATES = ["signed_verified", "encrypted_verified"];
++/** Whether a live result failed only because of the signer key's status - the cases a seal may override. Every other
++ * failure (an invalid signature, identity or header mismatch, `untrusted_signer`, HP-Outer tampering) never is. */
++function failedOnlyOnKeyStatus(result) {
++    if (result.headerTamperDetected) {
++        return false;
++    }
++    return (result.state === "signed_unverified_signer" ||
++        result.state === "encrypted_unverified_signer" ||
++        (result.state === "signature_failed" && result.signatureFailureReason === "signer_key_changed"));
++}
++/**
++ * `evaluateMessageSecurity()` with verification seals (`verificationSeal.ts`). The live evaluation always runs first,
++ * with the same arguments; then:
++ *
++ * **Live verified** (`"signed_verified"`/`"encrypted_verified"`, no HP-Outer tampering), and either no seal opens for this
++ * mailbox, message, raw MIME and `options.masterKeyGeneration`, or `options.sealGeneration` is older than
++ * `options.masterKeyGeneration`: the result gains `sealToWrite` (`{ seal, masterKeyGeneration }`), sealing the live
++ * `signerFingerprint` and state at `options.now` under the current generation. The caller persists it best effort
++ * (`setMessageVerificationSeal()`). This is how messages are re-sealed, lazily, after a `rekey()`: seals are never
++ * carried across a master key rotation (see `verificationSeal.ts`).
++ *
++ * **Live failure caused only by key status** (`signer_key_changed`, `signed_unverified_signer`,
++ * `encrypted_unverified_signer` - which also covers a signer key since revoked, since `signingKeyFingerprints()` drops
++ * such pins): when the seal opens, its `signerFingerprint` equals the live one and its state matches the message kind
++ * (signed-only vs. encrypted), the result is `"verified_at_first_open"` with `verifiedAt`, `sealedState`,
++ * `signerFingerprint`, the recovered content (for a signed-only `signer_key_changed` message too), `liveState`,
++ * `liveSignatureFailureReason` and `laterCompromised` (see `VerificationSealOptions.signerKeys`).
++ * `signatureFailureReason` is dropped.
++ *
++ * **Everything else** returns the live result unchanged: an invalid signature, identity or header mismatch,
++ * `untrusted_signer`, HP-Outer tampering, a seal whose MAC fails or whose hash, uids, generation or signer fingerprint differ, and
++ * every unsigned state.
++ *
++ * With `unlocked` undefined (no master key) the seal is ignored and no seal is built. Throws `KeysLockedError` when
++ * `unlocked` was destroyed (`keySession.ts`), before evaluating anything, or if it is destroyed while sealing; otherwise
++ * never throws - a seal that can't be built (e.g. uids too long for the size limit) just leaves `sealToWrite` unset.
++ */
++export async function evaluateMessageSecurityWithSeal(rawMime, unlocked, pinnedSignerFingerprints, readerAddress, options) {
++    if (unlocked?.destroyed) {
++        throw new KeysLockedError();
++    }
++    const live = await evaluateLive(rawMime, unlocked, pinnedSignerFingerprints, readerAddress);
++    const { result } = live;
++    const isLiveVerified = LIVE_VERIFIED_STATES.includes(result.state) && !result.headerTamperDetected;
++    // Every verified and key-status result carries the signer fingerprint (a certificate was always resolved).
++    if (!unlocked || !result.signerFingerprint || (!isLiveVerified && !failedOnlyOnKeyStatus(result))) {
++        return result;
++    }
++    const rawSha256 = await rawMimeSha256(rawMime);
++    const generation = options.masterKeyGeneration;
++    const opened = options.seal ? await openVerificationSeal(options.mailboxUid, unlocked, options.messageUid, options.seal, rawSha256, generation) : undefined;
++    const signerFingerprint = result.signerFingerprint.toLowerCase();
++    if (isLiveVerified) {
++        const storedSealIsOlder = options.sealGeneration !== undefined && options.sealGeneration < generation;
++        if (opened && !storedSealIsOlder) {
++            return result;
          }
 -        if (parsed.signatureVerified && (await checkPinning(parsed.signerCertificateDer))) {
 -            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
-+        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
-+        if (failure) {
-+            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
++        try {
++            const seal = await buildVerificationSeal(options.mailboxUid, unlocked, {
++                messageUid: options.messageUid,
++                rawSha256,
++                signerFingerprint,
++                state: result.state,
++                verifiedAt: options.now ?? Date.now(),
++                masterKeyGeneration: generation,
++            });
++            return { ...result, sealToWrite: { seal, masterKeyGeneration: generation } };
          }
 -        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
-+        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner };
++        catch (err) {
++            if (err instanceof KeysLockedError) {
++                throw err;
++            }
++            return result;
++        }
++    }
++    const expectedSealedState = live.kind === "signed" ? "signed_verified" : "encrypted_verified";
++    if (!opened || opened.signerFingerprint !== signerFingerprint || opened.state !== expectedSealedState) {
++        return result;
      }
-     return { state: "unprotected" };
+-    return { state: "unprotected" };
++    const laterCompromised = (options.signerKeys ?? []).some((key) => key.fingerprint.toLowerCase() === signerFingerprint && !isTrustedForVerification(key));
++    const { signatureFailureReason, ...rest } = result;
++    return {
++        ...live.signedContent,
++        ...rest,
++        state: "verified_at_first_open",
++        verifiedAt: opened.verifiedAt,
++        sealedState: opened.state,
++        liveState: result.state,
++        ...(signatureFailureReason ? { liveSignatureFailureReason: signatureFailureReason } : {}),
++        ...(laterCompromised ? { laterCompromised: true } : {}),
++    };
  }
 diff --git a/dist/crypto/mime.d.ts b/dist/crypto/mime.d.ts
 new file mode 100644
@@ -5551,6 +5733,294 @@ index 6507d543d18d97693f23e9b9961c403119b7c8a7..e5058406d57b8d7473e383c5dbe72e46
          };
      }, []);
  }
+diff --git a/dist/crypto/verificationSeal.d.ts b/dist/crypto/verificationSeal.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..2cf971d8fd0426af2acacdd91d1dfcb2a4a5c88f
+--- /dev/null
++++ b/dist/crypto/verificationSeal.d.ts
+@@ -0,0 +1,56 @@
++/** The longest seal restapi stores (`Message.verificationSeal`). */
++export declare const MAX_VERIFICATION_SEAL_LENGTH = 2048;
++/** The characters restapi allows in a seal. */
++export declare const VERIFICATION_SEAL_CHARSET: RegExp;
++/** The HKDF label the seal key is derived under (suffixed with `:<mailboxUid>`). */
++export declare const VERIFICATION_SEAL_HKDF_LABEL = "rapidmx:verification-seal:v1";
++/** The verified states a seal can record. */
++export type SealedVerificationState = "signed_verified" | "encrypted_verified";
++/** What `buildVerificationSeal()` seals. */
++export interface VerificationSealInput {
++    messageUid: string;
++    /** SHA-256 (hex) of the message's raw MIME - `rawMimeSha256()`. */
++    rawSha256: string;
++    /** The live signer certificate fingerprint (`MessageSecurityResult.signerFingerprint`). */
++    signerFingerprint: string;
++    state: SealedVerificationState;
++    /** UTC timestamp (epoch ms) at which the signature verified. */
++    verifiedAt: number;
++    /** The vault's `masterKeyGeneration` the seal is written under (`0` when the vault reports none). */
++    masterKeyGeneration: number;
++}
++/** What `openVerificationSeal()` recovers from a valid seal. */
++export interface OpenedVerificationSeal {
++    /** Lowercased hex. */
++    signerFingerprint: string;
++    state: SealedVerificationState;
++    verifiedAt: number;
++    masterKeyGeneration: number;
++}
++/** The part of `keySession.ts`'s `UnlockedKeys` a seal needs. */
++export interface SealKeyMaterial {
++    masterKey: Uint8Array;
++    destroyed?: boolean;
++}
++/** SHA-256 (lowercase hex) of a message's raw MIME, as `evaluateMessageSecurity()` receives it: a binary string
++ * (`mailApi.ts`'s `getMessageRawContent()`, one code unit per byte) or the bytes themselves. A string that can't be a
++ * binary string (a code unit above 0xFF) is hashed as its UTF-8 encoding, like `mime.ts`'s `binaryStringToBytes()`. */
++export declare function rawMimeSha256(raw: string | Uint8Array): Promise<string>;
++/**
++ * Seals a verification result for `mailboxUid`'s message `input.messageUid` - see this module's doc comment for the
++ * format. Throws `KeysLockedError` for destroyed keys, and a plain `Error` for input that can't be sealed: empty uids or
++ * fingerprint, a `rawSha256` that isn't 64 hex digits, an unknown `state`, a `verifiedAt` or `masterKeyGeneration` that isn't a non-negative
++ * integer, or a seal that would exceed `MAX_VERIFICATION_SEAL_LENGTH` (very long uids).
++ */
++export declare function buildVerificationSeal(mailboxUid: string, unlocked: SealKeyMaterial, input: VerificationSealInput): Promise<string>;
++/**
++ * Opens a seal written by `buildVerificationSeal()`. Resolves `{ signerFingerprint, state, verifiedAt, masterKeyGeneration }`
++ * only when the version is known, the tag verifies (constant-time comparison) under this mailbox's seal key, the sealed mailbox and
++ * message uids equal `mailboxUid`/`messageUid`, and the sealed hash equals `rawSha256` (the current raw MIME's
++ * `rawMimeSha256()`), and - when `expectedMasterKeyGeneration` is given - the sealed generation equals it (the vault's
++ * current `masterKeyGeneration`; a seal from another generation wouldn't open under that master key anyway, but this
++ * checks it explicitly). Anything else - a malformed, truncated, tampered, foreign or oversized seal, or a seal sealed
++ * under a different master key - resolves `undefined`; this never throws for the seal's content. Throws
++ * `KeysLockedError` for destroyed keys, whatever the seal.
++ */
++export declare function openVerificationSeal(mailboxUid: string, unlocked: SealKeyMaterial, messageUid: string, seal: string | undefined, rawSha256: string, expectedMasterKeyGeneration?: number): Promise<OpenedVerificationSeal | undefined>;
+diff --git a/dist/crypto/verificationSeal.js b/dist/crypto/verificationSeal.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e385b91cedd322cb3bcec88f816e30a14ff4721
+--- /dev/null
++++ b/dist/crypto/verificationSeal.js
+@@ -0,0 +1,220 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Verification seals: a client-side record that a message's signature verified when it was first opened, so later key
++ * events (a signer key replaced beyond the retained previous keys, a deleted contact, expiry, a later compromise
++ * revocation) don't make it look untrusted. See `messageSecurity.ts`'s `evaluateMessageSecurityWithSeal()` for how a
++ * seal is used.
++ *
++ * A seal is an HMAC-SHA256 over the verification result, keyed by a per-mailbox key HKDF-derived from the unlocked
++ * master key - so the server, which stores it as the opaque `Message.verificationSeal` (`mailApi.ts`'s
++ * `setMessageVerificationSeal()`), can't forge or alter one. The seal key is derived on each call (the same way
++ * web-client's local search index key is: `hkdfDerive()` with a fixed salt and a mailbox-bound label), imported as a
++ * non-extractable `CryptoKey`, its raw bytes zeroed at once, and never cached or persisted - there is nothing to destroy
++ * beyond the master key `keySession.ts`'s `destroyUnlockedKeys()` already zeroes. A destroyed `UnlockedKeys` object
++ * throws `KeysLockedError` (checked on entry and again after the derivation awaits).
++ *
++ * **Format (v1).** `v1.<base64url(JSON payload)>.<base64url(32-byte HMAC-SHA256 tag)>`, where the payload is
++ * `{ "v": 1, "mb": mailboxUid, "id": messageUid, "g": masterKeyGeneration, "h": rawSha256, "fp": signerFingerprint,
++ * "st": state, "t": verifiedAt }` (`h`/`fp` lowercased hex). The tag is not computed over the JSON text: it covers a canonical encoding of the fields
++ * (see `canonicalBytes()`), so the JSON's own formatting carries no meaning. Every character is in restapi's allowed
++ * `[A-Za-z0-9+/=_.:-]`, and a seal is at most `MAX_VERIFICATION_SEAL_LENGTH` (2048) characters.
++ *
++ * **Master key rotation.** A seal is bound to the vault's `masterKeyGeneration` (`keyvaultApi.ts`'s
++ * `KeyVault.masterKeyGeneration`): the generation is MAC-covered, and `openVerificationSeal()` refuses a seal for a
++ * generation other than the expected one. Seals are deliberately not carried across a `rekey()`: a seal from an older
++ * generation never opens under the new master key (its MAC fails too), so a rotation after a suspected compromise can't
++ * bless seals that someone holding the old master key could have written. Such a message shows its live result until its
++ * next successful live verification, when `evaluateMessageSecurityWithSeal()` re-seals it lazily under the current
++ * generation (the server replaces a stored seal only for a newer, current generation).
++ */
++import { fromBase64Url, toBase64Url } from "./encoding.js";
++import { KeysLockedError, hkdfDerive } from "./masterKey.js";
++import { binaryStringToBytes } from "./mime.js";
++/** The longest seal restapi stores (`Message.verificationSeal`). */
++export const MAX_VERIFICATION_SEAL_LENGTH = 2048;
++/** The characters restapi allows in a seal. */
++export const VERIFICATION_SEAL_CHARSET = /^[A-Za-z0-9+/=_.:-]*$/;
++/** The HKDF label the seal key is derived under (suffixed with `:<mailboxUid>`). */
++export const VERIFICATION_SEAL_HKDF_LABEL = "rapidmx:verification-seal:v1";
++/** Fixed, non-secret HKDF salt: the master key is already uniformly random (see web-client's `localIndexKey.ts`). */
++const FIXED_SALT = new TextEncoder().encode("rapidmx-verification-seal-v1");
++const SEAL_VERSION = "v1";
++const TAG_LENGTH_BYTES = 32;
++const SHA256_HEX = /^[0-9a-f]{64}$/;
++const SEALED_STATES = ["signed_verified", "encrypted_verified"];
++/** SHA-256 (lowercase hex) of a message's raw MIME, as `evaluateMessageSecurity()` receives it: a binary string
++ * (`mailApi.ts`'s `getMessageRawContent()`, one code unit per byte) or the bytes themselves. A string that can't be a
++ * binary string (a code unit above 0xFF) is hashed as its UTF-8 encoding, like `mime.ts`'s `binaryStringToBytes()`. */
++export async function rawMimeSha256(raw) {
++    const bytes = typeof raw === "string" ? binaryStringToBytes(raw) : raw;
++    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
++    return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
++}
++function assertNotDestroyed(unlocked) {
++    if (unlocked.destroyed) {
++        throw new KeysLockedError();
++    }
++}
++/** Derives the mailbox's seal key and imports it as a non-extractable HMAC key, zeroing the raw bytes. Throws
++ * `KeysLockedError` for destroyed or zeroed key material. */
++async function importSealKey(mailboxUid, unlocked) {
++    assertNotDestroyed(unlocked);
++    const raw = await hkdfDerive(unlocked.masterKey, FIXED_SALT, `${VERIFICATION_SEAL_HKDF_LABEL}:${mailboxUid}`);
++    try {
++        const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
++        // Locked while deriving: the derivation may have copied the master key before it was zeroed.
++        assertNotDestroyed(unlocked);
++        return key;
++    }
++    finally {
++        raw.fill(0);
++    }
++}
++/** Length-prefixed (4-byte big-endian) UTF-8 fields, so no two field lists encode alike. */
++function canonicalBytes(fields) {
++    const encoded = fields.map((field) => new TextEncoder().encode(field));
++    const out = new Uint8Array(encoded.reduce((total, bytes) => total + 4 + bytes.length, 0));
++    const view = new DataView(out.buffer);
++    let offset = 0;
++    for (const bytes of encoded) {
++        view.setUint32(offset, bytes.length);
++        out.set(bytes, offset + 4);
++        offset += 4 + bytes.length;
++    }
++    return out;
++}
++async function computeTag(key, fields) {
++    const data = canonicalBytes([
++        SEAL_VERSION,
++        fields.mailboxUid,
++        fields.messageUid,
++        String(fields.masterKeyGeneration),
++        fields.rawSha256,
++        fields.signerFingerprint,
++        fields.state,
++        String(fields.verifiedAt),
++    ]);
++    return new Uint8Array(await crypto.subtle.sign("HMAC", key, data));
++}
++/** Compares every byte whatever the first difference (callers only pass 32-byte tags; a length difference still fails). */
++function constantTimeEqual(a, b) {
++    let diff = a.length ^ b.length;
++    for (let i = 0; i < a.length; i++) {
++        diff |= a[i] ^ b[i];
++    }
++    return diff === 0;
++}
++/** A non-negative safe integer - a `verifiedAt` or a `masterKeyGeneration`. */
++function isValidTimestamp(value) {
++    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
++}
++/**
++ * Seals a verification result for `mailboxUid`'s message `input.messageUid` - see this module's doc comment for the
++ * format. Throws `KeysLockedError` for destroyed keys, and a plain `Error` for input that can't be sealed: empty uids or
++ * fingerprint, a `rawSha256` that isn't 64 hex digits, an unknown `state`, a `verifiedAt` or `masterKeyGeneration` that isn't a non-negative
++ * integer, or a seal that would exceed `MAX_VERIFICATION_SEAL_LENGTH` (very long uids).
++ */
++export async function buildVerificationSeal(mailboxUid, unlocked, input) {
++    const fields = {
++        mailboxUid,
++        messageUid: input.messageUid,
++        rawSha256: typeof input.rawSha256 === "string" ? input.rawSha256.toLowerCase() : "",
++        signerFingerprint: typeof input.signerFingerprint === "string" ? input.signerFingerprint.toLowerCase() : "",
++        state: input.state,
++        verifiedAt: input.verifiedAt,
++        masterKeyGeneration: input.masterKeyGeneration,
++    };
++    if (!mailboxUid || !fields.messageUid || !fields.signerFingerprint) {
++        throw new Error("A verification seal needs a mailbox uid, message uid and signer fingerprint.");
++    }
++    if (!SHA256_HEX.test(fields.rawSha256)) {
++        throw new Error("A verification seal's rawSha256 must be a hex SHA-256 digest.");
++    }
++    if (!SEALED_STATES.includes(fields.state) || !isValidTimestamp(fields.verifiedAt) || !isValidTimestamp(fields.masterKeyGeneration)) {
++        throw new Error("A verification seal needs a verified state and non-negative integer verifiedAt and masterKeyGeneration.");
++    }
++    const key = await importSealKey(mailboxUid, unlocked);
++    const payload = { v: 1, mb: fields.mailboxUid, id: fields.messageUid, g: fields.masterKeyGeneration, h: fields.rawSha256, fp: fields.signerFingerprint, st: fields.state, t: fields.verifiedAt };
++    const payloadText = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
++    const seal = `${SEAL_VERSION}.${payloadText}.${toBase64Url(await computeTag(key, fields))}`;
++    if (seal.length > MAX_VERIFICATION_SEAL_LENGTH) {
++        throw new Error(`A verification seal can't exceed ${MAX_VERIFICATION_SEAL_LENGTH} characters.`);
++    }
++    return seal;
++}
++const BASE64URL = /^[A-Za-z0-9_-]+$/;
++/** Splits and decodes a v1 seal, or `undefined` for anything malformed. Never throws. */
++function parseSeal(seal) {
++    if (typeof seal !== "string" || seal.length > MAX_VERIFICATION_SEAL_LENGTH || !VERIFICATION_SEAL_CHARSET.test(seal)) {
++        return undefined;
++    }
++    const parts = seal.split(".");
++    if (parts.length !== 3 || parts[0] !== SEAL_VERSION || !BASE64URL.test(parts[1]) || !BASE64URL.test(parts[2])) {
++        return undefined;
++    }
++    try {
++        const tag = fromBase64Url(parts[2]);
++        const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(parts[1])));
++        if (tag.length !== TAG_LENGTH_BYTES || typeof payload !== "object" || payload === null) {
++            return undefined;
++        }
++        const { v, mb, id, g, h, fp, st, t } = payload;
++        if (v !== 1 ||
++            typeof mb !== "string" ||
++            typeof id !== "string" ||
++            !isValidTimestamp(g) ||
++            typeof h !== "string" ||
++            !SHA256_HEX.test(h) ||
++            typeof fp !== "string" ||
++            !fp ||
++            typeof st !== "string" ||
++            !SEALED_STATES.includes(st) ||
++            !isValidTimestamp(t)) {
++            return undefined;
++        }
++        return { fields: { mailboxUid: mb, messageUid: id, rawSha256: h, signerFingerprint: fp, state: st, verifiedAt: t, masterKeyGeneration: g }, tag };
++    }
++    catch {
++        // Invalid base64 or UTF-8, or JSON that won't parse.
++        return undefined;
++    }
++}
++/**
++ * Opens a seal written by `buildVerificationSeal()`. Resolves `{ signerFingerprint, state, verifiedAt, masterKeyGeneration }`
++ * only when the version is known, the tag verifies (constant-time comparison) under this mailbox's seal key, the sealed mailbox and
++ * message uids equal `mailboxUid`/`messageUid`, and the sealed hash equals `rawSha256` (the current raw MIME's
++ * `rawMimeSha256()`), and - when `expectedMasterKeyGeneration` is given - the sealed generation equals it (the vault's
++ * current `masterKeyGeneration`; a seal from another generation wouldn't open under that master key anyway, but this
++ * checks it explicitly). Anything else - a malformed, truncated, tampered, foreign or oversized seal, or a seal sealed
++ * under a different master key - resolves `undefined`; this never throws for the seal's content. Throws
++ * `KeysLockedError` for destroyed keys, whatever the seal.
++ */
++export async function openVerificationSeal(mailboxUid, unlocked, messageUid, seal, rawSha256, expectedMasterKeyGeneration) {
++    assertNotDestroyed(unlocked);
++    const parsed = parseSeal(seal);
++    if (!parsed) {
++        return undefined;
++    }
++    const key = await importSealKey(mailboxUid, unlocked);
++    // The tag is computed over the values the caller expects, so a seal for another mailbox or message fails the MAC as
++    // well as the explicit comparison below.
++    const expected = await computeTag(key, { ...parsed.fields, mailboxUid, messageUid });
++    const { fields } = parsed;
++    const tagMatches = constantTimeEqual(expected, parsed.tag);
++    if (!tagMatches ||
++        fields.mailboxUid !== mailboxUid ||
++        fields.messageUid !== messageUid ||
++        fields.rawSha256 !== String(rawSha256).toLowerCase() ||
++        (expectedMasterKeyGeneration !== undefined && fields.masterKeyGeneration !== expectedMasterKeyGeneration)) {
++        return undefined;
++    }
++    return {
++        signerFingerprint: fields.signerFingerprint,
++        state: fields.state,
++        verifiedAt: fields.verifiedAt,
++        masterKeyGeneration: fields.masterKeyGeneration,
++    };
++}
 diff --git a/dist/mail/dataExportApi.d.ts b/dist/mail/dataExportApi.d.ts
 index f510c2cbac228525c2c32a702d78298e24662484..194334c5e7048b740e8e316532becbbdf8f19db5 100644
 --- a/dist/mail/dataExportApi.d.ts
@@ -5754,10 +6224,18 @@ index bea762b42aeba1188618323fb761bfdecc78d0b9..cdbfb0b42041450ec40889ee455c862a
 +    return perFolder.flat().sort((a, b) => new Date(b.receivedDate).getTime() - new Date(a.receivedDate).getTime());
  }
 diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
-index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5df179b00 100644
+index 6210243d49fef06808114567464c199e117ca3af..72d55637e1b27362628254524a6a2d5a7534b50f 100644
 --- a/dist/mail/mailApi.d.ts
 +++ b/dist/mail/mailApi.d.ts
-@@ -56,11 +56,16 @@ export interface Mailbox {
+@@ -5,6 +5,7 @@
+  * everyone's, depending on who's asking. See `BaseMailboxRoute`'s doc comment in `@rapidmx/restapi` and this
+  * repo's `.claude/NOTES.md`.
+  */
++import { ApiRequestError } from "../util/api.js";
+ import { ListParams } from "../util/apiQuery.js";
+ import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
+ export type { ListParams };
+@@ -56,11 +57,16 @@ export interface Mailbox {
       * real `Mailbox` (defaults `true`/`false` server-side respectively), same optional-for-old-fixtures
       * caveat as `oofEnabled`. */
      alwaysRequestReceiptInternal?: boolean;
@@ -5774,7 +6252,7 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
      autoSendReceiptsExternal?: boolean;
      /** This mailbox's own encryption preference, per `specs/end-to-end_encryption.md` — a client
       * defaults to encrypting only when *both* sender and recipient report `"mutual"`. Absent is
-@@ -129,6 +134,12 @@ export declare function autoProvisionMailbox(selection?: {
+@@ -129,6 +135,12 @@ export declare function autoProvisionMailbox(selection?: {
      alias: string;
      domain: string;
  }): Promise<MailboxAutoProvisionResult>;
@@ -5787,7 +6265,7 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
  export interface UpdateMailboxInput {
      uid: string;
      version: number;
-@@ -137,24 +148,29 @@ export interface UpdateMailboxInput {
+@@ -137,24 +149,29 @@ export interface UpdateMailboxInput {
      quotaBytes?: number;
      aliasAddresses?: string[];
      isResource?: boolean;
@@ -5824,7 +6302,7 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
  export interface QuarantineEntry {
      uid: string;
      version: number;
-@@ -187,6 +203,13 @@ export interface IngestQueueEntry {
+@@ -187,6 +204,13 @@ export interface IngestQueueEntry {
      rawBlobKey: string;
      status: IngestStatus;
      errorMessage?: string;
@@ -5838,7 +6316,7 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
  }
  /** Lists ingest-queue entries for a mailbox the caller can access — useful for diagnosing stuck delivery. */
  export declare function listIngestQueue(mailboxUid: string, params?: ListParams): Promise<IngestQueueEntry[]>;
-@@ -210,7 +233,7 @@ export declare function getMailboxAcl(mailboxUid: string): Promise<AccessControl
+@@ -210,7 +234,7 @@ export declare function getMailboxAcl(mailboxUid: string): Promise<AccessControl
  export declare function grantMailboxAccess(mailboxUid: string, userOrRoleId: string, actions: string[]): Promise<AccessControlList>;
  /** Revokes a delegate's access to a mailbox previously granted via `grantMailboxAccess`. */
  export declare function revokeMailboxAccess(mailboxUid: string, userOrRoleId: string): Promise<AccessControlList>;
@@ -5847,7 +6325,7 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
  export interface Folder {
      uid: string;
      version: number;
-@@ -284,12 +307,24 @@ export interface Message {
+@@ -284,12 +308,24 @@ export interface Message {
       * best-effort (see that function's own doc comment), so this is the only signal a caller gets;
       * there is no separate "recalled successfully"/"failed" outcome synced onto the record itself. */
      recallRequestedAt?: string;
@@ -5874,7 +6352,21 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
      /** Absent means Focused — see `classifyMessage()` and `@rapidmx/restapi`'s own
       * `FocusedInboxUtils.classifyMessage()` doc comment for the full precedence rule this reflects. */
      inferenceClassification?: MessageClassification;
-@@ -367,26 +402,15 @@ export declare function setMessageRead(message: Message, read: boolean): Promise
+@@ -325,6 +361,13 @@ export interface Message {
+      * (`setMessageLabels()`) or auto-applied server-side by a `MailFilterActionType.APPLY_LABEL` rule.
+      * `undefined`/empty means no labels. */
+     labelUids?: string[];
++    /** An opaque client-written verification seal (at most 2048 characters of `[A-Za-z0-9+/=_.:-]`) recording that this
++     * message's signature verified when first opened - see `crypto/verificationSeal.ts` and
++     * `setMessageVerificationSeal()`. The server stores it as given, never interprets it, and never copies it to another
++     * message. Absent until a client writes one. */
++    verificationSeal?: string;
++    /** The vault `masterKeyGeneration` `verificationSeal` was written under, as sent to `setMessageVerificationSeal()`. */
++    verificationSealGeneration?: number;
+ }
+ export interface MessageReceiptEntry {
+     recipientAddress: string;
+@@ -367,28 +410,35 @@ export declare function setMessageRead(message: Message, read: boolean): Promise
   * comment) - this is only for a user explicitly applying/removing labels on one message. */
  export declare function setMessageLabels(message: Message, labelUids: string[]): Promise<Message>;
  /**
@@ -5904,8 +6396,28 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
 + * `send()` convention.
   */
  export declare function setMessageRequestReceipt(message: Message, requestReceipt: boolean): Promise<Message>;
++/**
++ * Thrown by `setMessageVerificationSeal()` when restapi answers `409`: the message already carries a different seal the
++ * server won't replace (it replaces one only when the stored seal's generation is older than the vault's current
++ * `masterKeyGeneration` and the request's generation equals the current one). Still an `ApiRequestError` (`status` 409).
++ * A caller writing seals best effort should ignore it.
++ */
++export declare class VerificationSealConflictError extends ApiRequestError {
++    constructor(message: string, code?: string);
++}
++/**
++ * Stores a verification seal on a message (`PUT /mail/messages/:id/verification-seal` with
++ * `{ seal, masterKeyGeneration }`), normally `MessageSecurityResult.sealToWrite`'s two fields from
++ * `crypto/messageSecurity.ts`'s `evaluateMessageSecurityWithSeal()`. Resolves with the updated message; storing the
++ * identical seal again succeeds. Rejects with `VerificationSealConflictError` on `409` (a different seal is stored and
++ * isn't replaceable - see that class), and a plain `ApiRequestError` for `400` (an invalid seal or generation) and
++ * `403`/`404`.
++ */
++export declare function setMessageVerificationSeal(messageUid: string, seal: string, masterKeyGeneration: number): Promise<Message>;
  export type ReceiptType = "delivery" | "read";
-@@ -410,7 +434,8 @@ export interface Attachment {
+ /** Sends a delivery/read receipt this mailbox held pending the owner's explicit approval (see
+  * `Message.deliveryReceiptPending`/`readReceiptPending`). */
+@@ -410,7 +460,8 @@ export interface Attachment {
  }
  /** Lists the attachments belonging to a single message. */
  export declare function listAttachments(folderUid: string, messageUid: string): Promise<Attachment[]>;
@@ -5915,7 +6427,7 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
  export declare function attachmentContentUrl(uid: string): string;
  /**
   * Uploads a file's raw bytes as a new attachment on a not-yet-sent draft. Bypasses `apiFetch` — that helper
-@@ -462,14 +487,29 @@ export interface AssembleDraftRawInput {
+@@ -462,14 +513,29 @@ export interface AssembleDraftRawInput {
   * own doc comment in `server`.
   */
  export declare function assembleDraftRaw(messageUid: string, input: AssembleDraftRawInput): Promise<Message>;
@@ -5948,7 +6460,7 @@ index 6210243d49fef06808114567464c199e117ca3af..d94a71d05d37393c78009b48da3db7c5
  export declare function getMessageRawContent(messageUid: string): Promise<string>;
  export interface ImpersonationResult {
 diff --git a/dist/mail/mailApi.js b/dist/mail/mailApi.js
-index db8dc3e8586d76f658fe6bb90274ae5d3962ebeb..93ba748c5198903c20ec6ebf1e5e4b953c508c25 100644
+index db8dc3e8586d76f658fe6bb90274ae5d3962ebeb..e5d2f953f8da3b61b95dac1beb60db3b472ae223 100644
 --- a/dist/mail/mailApi.js
 +++ b/dist/mail/mailApi.js
 @@ -9,8 +9,9 @@
@@ -6000,7 +6512,48 @@ index db8dc3e8586d76f658fe6bb90274ae5d3962ebeb..93ba748c5198903c20ec6ebf1e5e4b95
   */
  export function setMessageRequestReceipt(message, requestReceipt) {
      return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
-@@ -234,9 +219,10 @@ export function declineReceipt(uid, type) {
+@@ -215,6 +200,40 @@ export function setMessageRequestReceipt(message, requestReceipt) {
+         body: JSON.stringify({ uid: message.uid, version: message.version, requestReceipt }),
+     });
+ }
++/**
++ * Thrown by `setMessageVerificationSeal()` when restapi answers `409`: the message already carries a different seal the
++ * server won't replace (it replaces one only when the stored seal's generation is older than the vault's current
++ * `masterKeyGeneration` and the request's generation equals the current one). Still an `ApiRequestError` (`status` 409).
++ * A caller writing seals best effort should ignore it.
++ */
++export class VerificationSealConflictError extends ApiRequestError {
++    constructor(message, code) {
++        super(message, 409, code);
++        this.name = "VerificationSealConflictError";
++    }
++}
++/**
++ * Stores a verification seal on a message (`PUT /mail/messages/:id/verification-seal` with
++ * `{ seal, masterKeyGeneration }`), normally `MessageSecurityResult.sealToWrite`'s two fields from
++ * `crypto/messageSecurity.ts`'s `evaluateMessageSecurityWithSeal()`. Resolves with the updated message; storing the
++ * identical seal again succeeds. Rejects with `VerificationSealConflictError` on `409` (a different seal is stored and
++ * isn't replaceable - see that class), and a plain `ApiRequestError` for `400` (an invalid seal or generation) and
++ * `403`/`404`.
++ */
++export async function setMessageVerificationSeal(messageUid, seal, masterKeyGeneration) {
++    try {
++        return await apiFetch(`/mail/messages/${encodeURIComponent(messageUid)}/verification-seal`, {
++            method: "PUT",
++            body: JSON.stringify({ seal, masterKeyGeneration }),
++        });
++    }
++    catch (err) {
++        if (err instanceof ApiRequestError && err.status === 409) {
++            throw new VerificationSealConflictError(err.message, err.code);
++        }
++        throw err;
++    }
++}
+ /** Sends a delivery/read receipt this mailbox held pending the owner's explicit approval (see
+  * `Message.deliveryReceiptPending`/`readReceiptPending`). */
+ export function approveReceipt(uid, type) {
+@@ -234,9 +253,10 @@ export function declineReceipt(uid, type) {
  export function listAttachments(folderUid, messageUid) {
      return apiFetch(`/mail/attachments?${buildQuery({ limit: 200 }, { folderUid, messageUid })}`);
  }
@@ -6013,7 +6566,7 @@ index db8dc3e8586d76f658fe6bb90274ae5d3962ebeb..93ba748c5198903c20ec6ebf1e5e4b95
  }
  /**
   * Uploads a file's raw bytes as a new attachment on a not-yet-sent draft. Bypasses `apiFetch` — that helper
-@@ -245,8 +231,9 @@ export function attachmentContentUrl(uid) {
+@@ -245,8 +265,9 @@ export function attachmentContentUrl(uid) {
   */
  export async function uploadAttachment(messageUid, file) {
      const params = new URLSearchParams({ messageUid, filename: file.name, mimeType: file.type || "application/octet-stream" });
@@ -6024,7 +6577,7 @@ index db8dc3e8586d76f658fe6bb90274ae5d3962ebeb..93ba748c5198903c20ec6ebf1e5e4b95
          headers: { "Content-Type": file.type || "application/octet-stream" },
          body: file,
      });
-@@ -295,9 +282,16 @@ export function assembleDraftRaw(messageUid, input) {
+@@ -295,9 +316,16 @@ export function assembleDraftRaw(messageUid, input) {
          body: JSON.stringify(input),
      });
  }
@@ -6044,7 +6597,7 @@ index db8dc3e8586d76f658fe6bb90274ae5d3962ebeb..93ba748c5198903c20ec6ebf1e5e4b95
  }
  /**
   * Fetches a message's raw RFC 5322 MIME source — for client-side E2E decrypt/signature-verification
-@@ -305,16 +299,24 @@ export function sendMessage(messageUid) {
+@@ -305,16 +333,24 @@ export function sendMessage(messageUid) {
   * JSON response body): this server-local route (`BaseMessageRawContentRoute.ts` in `server`, mounted
   * alongside `@rapidmx/restapi`'s own `MessageRoute`) returns `message/rfc822`, not JSON — the one thing
   * that library's own `GET /:id/content` deliberately never serves (see that route's own doc comment).

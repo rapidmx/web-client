@@ -34,6 +34,9 @@ const rpc = vi.hoisted(() => ({
 }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => rpc);
 
+// No readable vault generation, so these passes never seal - see localIndexBuilder.seal.test.ts.
+vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault: vi.fn(async () => Promise.reject(new Error("no vault"))) }));
+
 vi.mock("../../../apps/shared/search/localIndexKey.js", () => ({ deriveLocalIndexKey: vi.fn(async () => new Uint8Array(32)) }));
 
 const unlocked = { masterKey: new Uint8Array(32) } as UnlockedKeys;

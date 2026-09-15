@@ -1629,3 +1629,35 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   - Tests: new `KeyChangeReview.test.tsx`, `contactKeys.test.ts`, `MessageDetailPane.keyChange.test.tsx`; additions in
     `pinnedSigners`, `ContactDetailPane`, contacts `index`/`[uid]`, settings encryption. Per-file 100% on all eight
     touched sources. Full run: 154 files / 2231 tests, 100 / 99.96 / 100 / 100.
+
+### 2026-09-15 — Verification seals (react-shared 8863c72)
+
+- **Pane** (`MessageDetailPane.tsx`): with unlocked keys *and* a readable vault generation, evaluates with
+  `evaluateMessageSecurityWithSeal()` (seal/sealGeneration from `currentVerificationSeal()`, `signerKeys` =
+  `getSignerKeyState()` pinned + previous + the mailbox's own `keys` for mail from its own address). Otherwise (no keys,
+  vault read failed, or no non-negative integer `masterKeyGeneration`) plain `evaluateMessageSecurity()` exactly as
+  before, so the older test files' `mockFetch` "{}" vault keeps them on the old path. A throw from the seal path (only a
+  lock) falls back to evaluating with no keys. The alias `notAddressedToReader` re-checks stay plain. The key state
+  loaded for `signerKeys` is reused for the key-change notice (one `getSignerKeyState()` call per evaluation).
+- **`verified_at_first_open` UI**: muted pill with a check ("Verified when first opened"); amber pill with a warning icon
+  and amber detail line when `laterCompromised`; detail text by `liveSignatureFailureReason` (`verifiedAtFirstOpenMessage()`).
+  Treated like verified for the protected Subject, inner attachments and the "Subject/To/Cc weren't signed" note; never in
+  `VERIFIED_STATES`. The key-change notice (`signerKeyChanged()` also reads `liveSignatureFailureReason`) still shows, minus
+  "so it isn't verified".
+- **`verificationSeals.ts`** (new, `apps/shared/components/mail/`): vault generation cache (60 s TTL, unavailable not
+  cached, cleared on any lock); `sendVerificationSeal()` never rejects and sends once per `messageUid:generation` per page
+  session — a seal embeds `verifiedAt`, so deduping by seal string would re-send on every open and draw 409s. 400/403/404/409
+  are final, anything else lets a later evaluation retry (no loop). Successful seals are remembered and preferred over an
+  older list copy's seal.
+- **Index builder**: `createPassSealer()` per pass — vault generation read once, pins memoized per sender (lowercased),
+  seal evaluation only for messages without a current-generation seal and not already attempted; writes queued with
+  `SEAL_WRITE_CONCURRENCY` 2 and `MAX_SEAL_WRITES_PER_PASS` 200 (past the cap, plain evaluation), queue dropped when the
+  pass is aborted or `unlocked.destroyed`; `drain()` runs in the pass's `finally` after `setLocalIndexBuilding(false)`.
+  Signed-only mail isn't sealed by the builder (it never fetches unencrypted raw MIME; sealed when opened). A seal PUT
+  likely bumps the message `version`, so the next pass re-indexes that message once (then it has a current seal).
+  `localIndexBuilder.test.ts` now mocks `getKeyVault` to reject so it stays seal-free.
+- Tests: `MessageDetailPane.verificationSeal.test.tsx`, `verificationSeals.test.ts`, `localIndexBuilder.seal.test.ts`.
+  100/100/100/100 on the three sources. The known `contacts/index.test.tsx` "toolbar Import ... no contacts folder" flake
+  failed in the first full run, and `index.test.tsx` "resets \"Search all mail\" when the query changes" (expected
+  a fetch count > 0) in the second; each passes alone, neither touches these files. Full run: 157 files / 2266 tests,
+  100 / 99.96 (the two known branch gaps) / 100 / 100.

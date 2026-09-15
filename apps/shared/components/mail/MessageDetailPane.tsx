@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef, useState } from "react";
-import { HiOutlineLockClosed } from "react-icons/hi2";
+import { HiOutlineCheck, HiOutlineExclamationTriangle, HiOutlineLockClosed } from "react-icons/hi2";
 import DOMPurify from "dompurify";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -29,11 +29,13 @@ import {
     MessageSecurityResult,
     SignatureFailureReason,
     evaluateMessageSecurity,
+    evaluateMessageSecurityWithSeal,
 } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { extractAddresses, type MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
 import { SignerKeyConflictError, signingKeyFingerprints, trustSigner } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { SenderKeyState, clearPinnedSignerCache, getPinnedSignerFingerprints, getSignerKeyState } from "./pinnedSigners.js";
+import { currentVerificationSeal, getVaultGeneration, sendVerificationSeal } from "./verificationSeals.js";
 import { getMyMailboxAccess } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
 import KeyChangeReview from "../contacts/KeyChangeReview.js";
 import { KEY_CHANGE_STALE_MESSAGE, sameFingerprint } from "../contacts/contactKeys.js";
@@ -60,7 +62,30 @@ const SECURITY_INDICATOR: Record<MessageSecurityResult["state"], { label: string
     signed_unverified_signer: { label: "Signed - signer not verified", className: "bg-warning/15 text-text" },
     encrypted_unverified_signer: { label: "Encrypted - signer not verified", className: "bg-warning/15 text-text" },
     signature_failed: { label: "Signature failed", className: "bg-danger-bg text-danger" },
+    // Verified when first opened (a verification seal), but not live: muted, never the green verified pill. A signer key
+    // later reported compromised switches it to `LATER_COMPROMISED_INDICATOR_CLASS`.
+    verified_at_first_open: { label: "Verified when first opened", className: "bg-surface-alt text-text-muted" },
 };
+
+/** The amber `verified_at_first_open` badge for a signer key since reported compromised. */
+const LATER_COMPROMISED_INDICATOR_CLASS = "bg-warning/15 text-text";
+
+/** Whether a result is (or, for `verified_at_first_open`, was live) a `signer_key_changed` failure. */
+function signerKeyChanged(result: MessageSecurityResult): boolean {
+    return result.signatureFailureReason === "signer_key_changed" || result.liveSignatureFailureReason === "signer_key_changed";
+}
+
+/** The detail line under a `verified_at_first_open` badge. */
+export function verifiedAtFirstOpenMessage(result: MessageSecurityResult): string {
+    const date = new Date(result.verifiedAt!).toLocaleDateString();
+    if (result.laterCompromised) {
+        return `This signature was verified on ${date}, but the sender's key was later reported compromised; treat this message with caution.`;
+    }
+    if (result.liveSignatureFailureReason === "signer_key_changed") {
+        return `This signature was verified on ${date}. The sender has since started signing with a different key.`;
+    }
+    return `This signature was verified on ${date}. The sender's key is no longer trusted since then, for example because it was removed, replaced or revoked.`;
+}
 
 const VERIFIED_STATES = new Set<MessageSecurityResult["state"]>(["signed_verified", "encrypted_verified"]);
 const UNVERIFIED_SIGNER_STATES = new Set<MessageSecurityResult["state"]>(["signed_unverified_signer", "encrypted_unverified_signer"]);
@@ -130,9 +155,25 @@ function downloadMimeAttachment(attachment: MimeAttachment): void {
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-function SecurityIndicator({ state }: { state: MessageSecurityResult["state"] }) {
-    const { label, className } = SECURITY_INDICATOR[state];
-    return <span className={`text-xs font-medium shrink-0 py-1 px-2.5 rounded-pill ${className}`}>{label}</span>;
+function SecurityIndicator({ security }: { security: MessageSecurityResult }) {
+    const { label, className } = SECURITY_INDICATOR[security.state];
+    if (security.state !== "verified_at_first_open") {
+        return <span className={`text-xs font-medium shrink-0 py-1 px-2.5 rounded-pill ${className}`}>{label}</span>;
+    }
+    return (
+        <span
+            className={`inline-flex items-center gap-1 text-xs font-medium shrink-0 py-1 px-2.5 rounded-pill ${
+                security.laterCompromised ? LATER_COMPROMISED_INDICATOR_CLASS : className
+            }`}
+        >
+            {security.laterCompromised ? (
+                <HiOutlineExclamationTriangle size={12} aria-hidden="true" />
+            ) : (
+                <HiOutlineCheck size={12} aria-hidden="true" />
+            )}
+            {label}
+        </span>
+    );
 }
 
 /** User-facing explanation for each `signatureFailureReason` - shown alongside the "Signature failed"
@@ -409,6 +450,16 @@ function MessageDetailContent({
             (fingerprints) => ({ loaded: true, fingerprints }),
             () => ({ loaded: false, fingerprints: [] as string[] }),
         );
+        // Verification seals (see `verificationSeals.ts`) need unlocked keys and the vault's current master key
+        // generation; without either the message is evaluated exactly as before, with no seal. The sender's key records
+        // are loaded alongside, so a seal can say when the signer key was later revoked as compromised.
+        let keyStatePromise: Promise<SenderKeyState | undefined> | undefined;
+        const loadKeyState = () => (keyStatePromise ??= getSignerKeyState(message.mailboxUid, senderAddress).catch(() => undefined));
+        const sealContextPromise = getUnlockedKeys(message.mailboxUid)
+            ? getVaultGeneration(message.mailboxUid).then(async (generation) =>
+                  generation === undefined ? undefined : { generation, keyState: await loadKeyState() },
+              )
+            : undefined;
         getMessageRawContent(message.uid)
             .then(async (rawMime) => {
                 if (cancelled) {
@@ -416,14 +467,38 @@ function MessageDetailContent({
                 }
                 const [primaryAddress, ...aliasAddresses] = readerAddressesKey ? readerAddressesKey.split(" ") : [];
                 const ownAddresses = readerAddressesKey.toLowerCase().split(" ");
-                const ownPins = ownAddresses.includes(senderAddress.toLowerCase()) ? signingKeyFingerprints(readerMailbox!.keys) : [];
-                const contactPins = await pinsPromise;
+                const ownKeys = ownAddresses.includes(senderAddress.toLowerCase()) ? (readerMailbox!.keys ?? []) : [];
+                const ownPins = signingKeyFingerprints(ownKeys);
+                const [contactPins, sealContext] = await Promise.all([pinsPromise, sealContextPromise]);
                 const pins = [...new Set([...contactPins.fingerprints, ...ownPins])];
                 const pinned = pins.length > 0 ? pins : undefined;
                 // The raw content is a byte string - only ever handed to evaluateMessageSecurity(), never shown. Keys
                 // are read after the pin lookup's await, so a lock that happened meanwhile is honored.
                 const unlocked = getUnlockedKeys(message.mailboxUid);
-                let result = await evaluateMessageSecurity(rawMime, unlocked, pinned, primaryAddress);
+                let result: MessageSecurityResult;
+                if (sealContext && unlocked) {
+                    const signerKeys = [
+                        ...(sealContext.keyState?.pinned ?? []),
+                        ...(sealContext.keyState?.previous ?? []),
+                        ...ownKeys,
+                    ];
+                    result = await evaluateMessageSecurityWithSeal(rawMime, unlocked, pinned, primaryAddress, {
+                        mailboxUid: message.mailboxUid,
+                        messageUid: message.uid,
+                        ...currentVerificationSeal(message),
+                        masterKeyGeneration: sealContext.generation,
+                        signerKeys,
+                    }).catch(() =>
+                        // Only a lock while sealing throws: evaluate as locked (the lock itself re-evaluates too).
+                        evaluateMessageSecurity(rawMime, undefined, pinned, primaryAddress),
+                    );
+                    if (result.sealToWrite) {
+                        // Best effort and in the background: never awaited, never shown.
+                        void sendVerificationSeal(message.uid, result.sealToWrite);
+                    }
+                } else {
+                    result = await evaluateMessageSecurity(rawMime, unlocked, pinned, primaryAddress);
+                }
                 // Only one reader address can be checked per evaluation: a message sent to one of this mailbox's
                 // aliases isn't "not addressed to you", so each alias is tried before saying so.
                 for (const alias of aliasAddresses) {
@@ -434,11 +509,9 @@ function MessageDetailContent({
                     result = { ...result, notAddressedToReader: viaAlias.notAddressedToReader };
                 }
                 const unpinned = contactPins.loaded && pins.length === 0;
-                const keyChanged = result.signatureFailureReason === "signer_key_changed";
+                const keyChanged = signerKeyChanged(result);
                 const [keyState, access] = await Promise.all([
-                    keyChanged || (unpinned && UNVERIFIED_SIGNER_STATES.has(result.state))
-                        ? getSignerKeyState(message.mailboxUid, senderAddress).catch(() => undefined)
-                        : undefined,
+                    keyChanged || (unpinned && UNVERIFIED_SIGNER_STATES.has(result.state)) ? loadKeyState() : undefined,
                     keyChanged ? getMyMailboxAccess(message.mailboxUid).then((a) => a.canUpdate, () => undefined) : undefined,
                 ]);
                 if (!cancelled) {
@@ -698,12 +771,15 @@ function MessageDetailContent({
     }
 
     const verified = security !== null && VERIFIED_STATES.has(security.state);
+    // A seal proves the signature verified when first opened, and the live check still passed everything but the signer
+    // key's status - so the signed Subject and attachments are shown as for a verified message, under its own badge.
+    const verifiedOrSealed = verified || security?.state === "verified_at_first_open";
     // Under a verified badge, the Subject shown is the one the signature covers (RFC 9788 protected headers), when
     // the message carries one - the outer Subject is unsigned and anyone relaying the message could change it.
-    const protectedSubject = verified ? security.protectedHeaders?.subject : undefined;
+    const protectedSubject = verifiedOrSealed ? security.protectedHeaders?.subject : undefined;
     // Only meaningful for signed-only mail: an encrypted message's outer Subject is deliberately obscured. Not a
     // signature failure (mailing lists legitimately tag subjects), just worth pointing out.
-    const subjectDiffers = protectedSubject !== undefined && security?.state === "signed_verified" && protectedSubject !== message.subject;
+    const subjectDiffers = protectedSubject !== undefined && (security!.state === "signed_verified" || security!.sealedState === "signed_verified") && protectedSubject !== message.subject;
     // Attachments inside the signed/decrypted entity. Under a verified badge only these are listed - the server's
     // attachment records also include parts outside the signature, which the badge doesn't vouch for. For decrypted
     // mail the server only ever saw the encrypted blob, so these are the real attachments.
@@ -711,7 +787,7 @@ function MessageDetailContent({
     // listed with a warning. A signed-only failure never carries recovered attachments.
     const innerAttachments =
         security?.attachments !== undefined &&
-        (verified || security.state === "encrypted" || security.state === "encrypted_unverified_signer" || security.state === "signature_failed")
+        (verifiedOrSealed || security.state === "encrypted" || security.state === "encrypted_unverified_signer" || security.state === "signature_failed")
             ? security.attachments
             : undefined;
     // Any state that involves a signature shows the address actually signed for (the protected From when the message
@@ -730,7 +806,7 @@ function MessageDetailContent({
         security !== null && UNVERIFIED_SIGNER_STATES.has(security.state) && senderUnpinned && !pendingConflict
             ? security.signerCertificate
             : undefined;
-    const keyChanged = security?.signatureFailureReason === "signer_key_changed" ? security : undefined;
+    const keyChanged = security && signerKeyChanged(security) ? security : undefined;
     const pinnedSignerKey = senderKeyState?.pinned[0];
     const recordedConflict =
         keyChanged && sameFingerprint(senderKeyState?.conflict?.observedKey.fingerprint, keyChanged.signerFingerprint)
@@ -748,7 +824,7 @@ function MessageDetailContent({
                 <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
                         <h1 className="text-lg font-bold tracking-tight truncate">{(protectedSubject ?? message.subject) || "(no subject)"}</h1>
-                        {security && <SecurityIndicator state={security.state} />}
+                        {security && <SecurityIndicator security={security} />}
                     </div>
                     {sendInProgress && (
                         <span className="text-xs font-medium text-text-muted shrink-0 py-1 px-2.5 rounded-pill bg-surface-alt">
@@ -880,12 +956,23 @@ function MessageDetailContent({
                         </Alert>
                     </div>
                 )}
+                {security?.state === "verified_at_first_open" && (
+                    // A seal outranks only a key-status failure (see `evaluateMessageSecurityWithSeal()`). A signer key
+                    // later reported compromised is a warning, never reassurance.
+                    <p
+                        role="status"
+                        className={`mt-2 py-2 px-3 rounded-sm text-sm text-text ${security.laterCompromised ? "bg-warning/15" : "bg-surface-alt"}`}
+                    >
+                        {verifiedAtFirstOpenMessage(security)}
+                    </p>
+                )}
                 {keyChanged && (
                     <section aria-label="Signing key changed" className="mt-2 py-3 px-3 rounded-sm text-sm bg-warning/15 text-text flex flex-col gap-2">
                         <h2 className="font-semibold">This sender&rsquo;s signing key changed</h2>
                         <p>
                             The signature on this message is valid and its certificate names {senderAddress}, but it was made
-                            with a different key than the one you trust for this sender, so it isn&rsquo;t verified.
+                            with a different key than the one you trust for this sender
+                            {keyChanged.state === "verified_at_first_open" ? "." : <>, so it isn&rsquo;t verified.</>}
                         </p>
                         <KeyChangeReview
                             mailboxUid={message.mailboxUid}
@@ -916,7 +1003,7 @@ function MessageDetailContent({
                             : GENERIC_SIGNATURE_FAILURE_MESSAGE}
                     </p>
                 )}
-                {verified && !security.protectedHeaders && (
+                {verifiedOrSealed && !security.protectedHeaders && (
                     // A legacy S/MIME sender signs only the body: the outer Subject/To/Cc shown here were never signed.
                     <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
                         The signature covers this message&rsquo;s content and attachments only. Its Subject, To and Cc

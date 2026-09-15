@@ -23,10 +23,23 @@
  * own precedent in `apps/www/index.tsx`'s inbox-list decrypt work. An unencrypted message is already
  * fully searchable via Tier 1; indexing it here too would spend this index's bounded byte budget on
  * content that didn't need it.
+ *
+ * **Verification seals.** A message this pass decrypts that has no seal for the vault's current `masterKeyGeneration` is
+ * evaluated with `evaluateMessageSecurityWithSeal()`, against the sender's pinned signing keys from the reader's
+ * contacts (`pinnedSigners.ts`, the message pane's own source, looked up once per sender per pass), so a verified
+ * message gets its seal without being opened (see `apps/shared/components/mail/verificationSeals.ts`). Pins only change
+ * the security state, never the recovered subject or body this index stores. Seal writes are best effort and bounded:
+ * at most `SEAL_WRITE_CONCURRENCY` in flight, at most `MAX_SEAL_WRITES_PER_PASS` per pass (past it, messages are
+ * evaluated without seals), failures ignored, and nothing new starts once the pass is aborted or its keys are destroyed.
+ * A seal carries only a hash, fingerprint, state and time, never plaintext. With no readable vault generation the pass
+ * seals nothing. Signed-only (unencrypted) messages aren't sealed here: this pass never fetches their raw MIME (see
+ * above), and fetching it only to seal would cost a download per message; they are sealed when opened.
  */
 import { getMessageRawContent, listFolders, listMessages, type Folder, type Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import { evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
+import { type MessageSecurityResult, evaluateMessageSecurity, evaluateMessageSecurityWithSeal } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { getPinnedSignerFingerprints } from "../components/mail/pinnedSigners.js";
+import { currentVerificationSeal, readVaultGeneration, sendVerificationSeal, verificationSealPending } from "../components/mail/verificationSeals.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 import {
     getIndexedVersions,
@@ -84,6 +97,92 @@ const FETCH_FAILED = Symbol("fetch-failed");
  * 100 requests simultaneously. */
 export const FETCH_CONCURRENCY = 6;
 
+/** How many verification seal writes run at once during a pass. */
+export const SEAL_WRITE_CONCURRENCY = 2;
+
+/** The most verification seals one pass writes. */
+export const MAX_SEAL_WRITES_PER_PASS = 200;
+
+/** A pass's verification sealing - see this module's doc comment. */
+interface PassSealer {
+    /** Evaluates `rawMime`, with seal options when `message` still needs a seal, queuing any seal to write. */
+    evaluate(message: Message, rawMime: string): Promise<MessageSecurityResult>;
+    /** Resolves once every queued write has finished or been dropped. Never rejects. */
+    drain(): Promise<void>;
+}
+
+function createPassSealer(mailboxUid: string, unlocked: UnlockedKeys, signal: AbortSignal): PassSealer {
+    let generation: Promise<number | undefined> | undefined;
+    const pins = new Map<string, Promise<string[] | undefined>>();
+    const queue: (() => Promise<unknown>)[] = [];
+    let queued = 0;
+    let active = 0;
+    let idle: (() => void) | undefined;
+    const stopped = () => signal.aborted || !!unlocked.destroyed;
+
+    const vaultGeneration = () => (generation ??= readVaultGeneration(mailboxUid));
+
+    const pinsFor = (address: string) => {
+        const key = address.toLowerCase();
+        let entry = pins.get(key);
+        if (!entry) {
+            entry = getPinnedSignerFingerprints(mailboxUid, address).then(
+                (fingerprints) => (fingerprints.length > 0 ? fingerprints : undefined),
+                () => undefined,
+            );
+            pins.set(key, entry);
+        }
+        return entry;
+    };
+
+    function pump(): void {
+        if (stopped()) {
+            queue.length = 0;
+        }
+        while (active < SEAL_WRITE_CONCURRENCY && queue.length > 0) {
+            const write = queue.shift()!;
+            active++;
+            void write().finally(() => {
+                active--;
+                pump();
+            });
+        }
+        if (active === 0 && queue.length === 0) {
+            idle?.();
+        }
+    }
+
+    return {
+        async evaluate(message, rawMime) {
+            const current = await vaultGeneration();
+            const { seal, sealGeneration } = currentVerificationSeal(message);
+            if (current === undefined || stopped() || queued >= MAX_SEAL_WRITES_PER_PASS || !verificationSealPending(message.uid, current) || (seal && sealGeneration === current)) {
+                return evaluateMessageSecurity(rawMime, unlocked);
+            }
+            const result = await evaluateMessageSecurityWithSeal(rawMime, unlocked, await pinsFor(message.from.address), undefined, {
+                mailboxUid,
+                messageUid: message.uid,
+                seal,
+                sealGeneration,
+                masterKeyGeneration: current,
+            });
+            const sealToWrite = result.sealToWrite;
+            if (sealToWrite && queued < MAX_SEAL_WRITES_PER_PASS) {
+                queued++;
+                queue.push(() => sendVerificationSeal(message.uid, sealToWrite));
+                pump();
+            }
+            return result;
+        },
+        drain() {
+            return new Promise<void>((resolve) => {
+                idle = resolve;
+                pump();
+            });
+        },
+    };
+}
+
 /** `cutoff === undefined` means no time floor at all (an unbounded `windowConfig`) - every message is
  * "within" it, so the caller's own end-of-folder check (`messages.length < PAGE_SIZE`) becomes the only
  * stopping condition. */
@@ -127,7 +226,7 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
  * recovered (a decrypt failure, or a message that turns out not to actually be encrypted despite the
  * placeholder subject) - mirrors `searchTier3.ts`'s own `!security.html && !security.subject` discard
  * rule exactly, for the same reason. */
-async function buildEntity(message: Message, unlocked: UnlockedKeys): Promise<LocalIndexEntity | undefined | typeof FETCH_FAILED> {
+async function buildEntity(message: Message, sealer: PassSealer): Promise<LocalIndexEntity | undefined | typeof FETCH_FAILED> {
     let rawMime: Awaited<ReturnType<typeof getMessageRawContent>>;
     try {
         rawMime = await getMessageRawContent(message.uid);
@@ -137,7 +236,7 @@ async function buildEntity(message: Message, unlocked: UnlockedKeys): Promise<Lo
         return FETCH_FAILED;
     }
     try {
-        const security = await evaluateMessageSecurity(rawMime, unlocked);
+        const security = await sealer.evaluate(message, rawMime);
         if (!security.subject && !security.html) {
             return undefined;
         }
@@ -269,6 +368,7 @@ async function runBuildPass(mailboxUid: string, unlocked: UnlockedKeys, folders:
     // count, no listing/fetch failure and no budget cut-off - the only case where coverage can be used to
     // narrow Tier 3.
     let complete = true;
+    const sealer = createPassSealer(mailboxUid, unlocked, signal);
     try {
         if (folders.some((f) => !MESSAGE_FOLDER_TYPES.has(f.type) && !NON_MESSAGE_FOLDER_TYPES.has(f.type))) {
             complete = false;
@@ -304,7 +404,7 @@ async function runBuildPass(mailboxUid: string, unlocked: UnlockedKeys, folders:
                         candidates.map((m) => m.uid),
                     );
                     const changed = candidates.filter((m) => indexed[m.uid] !== versionOf(m));
-                    const built = await mapWithConcurrency(changed, FETCH_CONCURRENCY, (m) => buildEntity(m, unlocked));
+                    const built = await mapWithConcurrency(changed, FETCH_CONCURRENCY, (m) => buildEntity(m, sealer));
                     signal.throwIfAborted();
                     if (built.includes(FETCH_FAILED)) {
                         complete = false;
@@ -375,5 +475,7 @@ async function runBuildPass(mailboxUid: string, unlocked: UnlockedKeys, folders:
     } finally {
         // Rejected (harmlessly) when the index was destroyed mid-pass.
         await setLocalIndexBuilding(mailboxUid, false, { complete, coveredFrom: cutoff?.toISOString(), coveredUntil, generation }).catch(() => undefined);
+        // At most `SEAL_WRITE_CONCURRENCY` writes are still in flight; queued ones are dropped if the pass was aborted.
+        await sealer.drain();
     }
 }
