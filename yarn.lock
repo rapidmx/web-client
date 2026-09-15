@@ -921,9 +921,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:^0.5.0":
-  version: 0.5.0
-  resolution: "@rapidmx/react-shared@npm:0.5.0"
+"@rapidmx/react-shared@npm:^0.6.0":
+  version: 0.6.0
+  resolution: "@rapidmx/react-shared@npm:0.6.0"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -938,7 +938,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/df445e2176744bbf81441ed6e0278e5f0761a651edee4519747731aaa85954a8bd75c46f3d5c6903e2f179b87482ceae63210d42378dbdb951fda541397e89f4
+  checksum: 10c0/52de1b5acb6ec731600af0019733317ec7b16b2a14dd56f808de80a2ea5a4dbadb7a1af536f960e7c7ea8ccb114fdbf980b72144dbd4ba5570a69a3a6d4dd81b
   languageName: node
   linkType: hard
 
@@ -949,7 +949,7 @@ __metadata:
     "@dnd-kit/core": "npm:^6.3.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.5.0"
+    "@rapidmx/react-shared": "npm:^0.6.0"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"
     "@testing-library/jest-dom": "npm:^7.0.1"
