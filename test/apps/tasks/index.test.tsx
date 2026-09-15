@@ -116,6 +116,15 @@ async function confirmDelete(user: ReturnType<typeof userEvent.setup>) {
 const BUCKET_TEST_NOW = new Date("2026-06-15T12:00:00.000Z"); // a Monday
 
 describe("TasksPage", () => {
+    it("passes the server's plugin nav through to the app rail", async () => {
+        mockShellAndTasks([]);
+        render(<TasksPage userUid="u1" pluginNav={{ appRail: [{ id: "notes", href: "/notes", label: "Notes" }] }} />);
+
+        const rail = within(await screen.findByRole("navigation", { name: "Apps" }));
+        expect(rail.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+        expect(rail.getByRole("link", { name: "Tasks" })).toHaveAttribute("aria-current", "page");
+    });
+
     it("groups tasks into Overdue/Today/This Week/Later/No due date buckets", async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true });
         vi.setSystemTime(BUCKET_TEST_NOW);

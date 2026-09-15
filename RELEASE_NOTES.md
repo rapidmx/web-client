@@ -1,5 +1,21 @@
 # Release Notes
 
+## Unreleased
+
+This release lets server plugins add their own pages to the webmail and admin console navigation. It needs a server
+that builds plugin UI and sends plugin navigation; older servers send none and nothing changes.
+
+### Plugin pages
+
+- **Navigation:** Settings, the admin console and the app rail list the pages of enabled plugins after their own
+  entries, with a generic icon, and highlight a plugin's entry while its page is open.
+  - An entry that reuses a built-in id, or whose link isn't a path on the same site, is skipped.
+  - Switching mailbox on a plugin's settings page stays on that page.
+- **Supported surface:** `README.md` lists the shells and `@rapidmx/react-shared` modules plugin pages can import:
+  `AppShell`, `SettingsShell`, `AdminShell`, `BrandingChrome`, and the `pluginNav` types.
+- **Type declarations:** the package now ships `.d.ts` files next to the compiled `dist/apps` modules, so TypeScript
+  plugin pages get types for these imports.
+
 ## v0.5.0
 
 This release adds recovery-code unlock, "trust this signer" and plugin search, updates and dependencies. It also

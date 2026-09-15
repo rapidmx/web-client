@@ -11,6 +11,7 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
+import { mergePluginNavItems, PluginNav } from "../../../plugins/pluginNav.js";
 
 export interface SettingsSectionDef {
     id: string;
@@ -32,10 +33,21 @@ export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     { id: "privacy", href: "/settings/privacy", label: "Privacy & Data" },
 ];
 
-export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
+/** A `SETTINGS_SECTIONS` id, or a plugin's `settingsSections` item id (see `PluginNav`). */
+export type SettingsSectionId = string;
+
+/** `SETTINGS_SECTIONS` followed by the plugins' `settingsSections` items, core ids winning - see
+ * `mergePluginNavItems`. */
+export function settingsSections(pluginNav?: PluginNav): SettingsSectionDef[] {
+    return mergePluginNavItems<SettingsSectionDef>(SETTINGS_SECTIONS, pluginNav?.settingsSections, ({ id, href, label }) => ({
+        id,
+        href,
+        label,
+    }));
+}
 
 export interface SettingsShellProps extends Omit<AppShellProps, "active"> {
-    /** Which entry in `SETTINGS_SECTIONS` is highlighted in this shell's own sidebar — distinct from
+    /** Which entry in `SETTINGS_SECTIONS` (or plugin `settingsSections` item) is highlighted in this shell's own sidebar — distinct from
      * `AppShell`'s own `active` (always hardcoded to `"settings"` below), since Settings isn't a rail
      * icon (see `AppShell.tsx`'s `AppShellApp` doc comment) but still needs its own section
      * highlighting. Each settings page passes its own section id explicitly, the same "gotcha" this
@@ -74,6 +86,7 @@ export default function SettingsShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    pluginNav,
     children,
 }: PropsWithChildren<SettingsShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
@@ -130,6 +143,7 @@ export default function SettingsShell({
             </div>
         );
     } else if (userUid && status === "ready") {
+        const sections = settingsSections(pluginNav);
         // A function, not a plain JSX constant — same reasoning as ContactsShell's identical comment:
         // rendered twice (desktop `<aside>` + mobile `Drawer`), possibly simultaneously mounted, so the
         // `<select>`'s `id`/its `<label>`'s `htmlFor` need a distinct value per instance.
@@ -148,11 +162,11 @@ export default function SettingsShell({
                             className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
                             value={mailboxUid}
                             onChange={(e) => {
-                                // `active` always names a real entry in `SETTINGS_SECTIONS` — every settings
-                                // page passes its own section id explicitly (see `SettingsShellProps.active`'s
-                                // own doc comment), so this lookup can't miss.
-                                const section = SETTINGS_SECTIONS.find((s) => s.id === active)!;
-                                window.location.href = `${section.href}?mailboxUid=${encodeURIComponent(e.target.value)}`;
+                                // Every core settings page passes its own section id (see
+                                // `SettingsShellProps.active`), but a plugin page's section is missing when the
+                                // server didn't send its nav item, so that falls back to the current path.
+                                const href = sections.find((s) => s.id === active)?.href ?? window.location.pathname;
+                                window.location.href = `${href}?mailboxUid=${encodeURIComponent(e.target.value)}`;
                             }}
                         >
                             {mailboxes.map((mb) => (
@@ -165,7 +179,7 @@ export default function SettingsShell({
                     </div>
                 )}
                 <nav aria-label="Settings sections" className="flex flex-col gap-0.5">
-                    {SETTINGS_SECTIONS.map((section) => (
+                    {sections.map((section) => (
                         <a
                             key={section.id}
                             // `inner` (this whole branch) is only ever computed once `status === "ready"`
@@ -220,6 +234,7 @@ export default function SettingsShell({
             impersonating={impersonating}
             impersonationBaseUrl={impersonationBaseUrl}
             trusted={trusted}
+            pluginNav={pluginNav}
         >
             {inner}
         </AppShell>

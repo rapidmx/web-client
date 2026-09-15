@@ -1661,3 +1661,34 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   failed in the first full run, and `index.test.tsx` "resets \"Search all mail\" when the query changes" (expected
   a fetch count > 0) in the second; each passes alone, neither touches these files. Full run: 157 files / 2266 tests,
   100 / 99.96 (the two known branch gaps) / 100 / 100.
+
+### 2026-09-15 — Plugin navigation in the shells (booking-as-plugin plan, phase 4)
+
+- **Contract** (`apps/shared/plugins/pluginNav.ts`, new): local structural `PluginUiNavItem {id,label,href}`,
+  `PluginNav {settingsSections?, adminNav?, appRail?}` and `PluginNavProps {pluginNav?}` - deliberately *not* imported
+  from restapi (web-client doesn't depend on it). `mergePluginNavItems(core, plugin, toItem, reservedIds)` appends after
+  core, skipping malformed items, non-same-origin hrefs (`isSafePluginHref`: `/` but not `//` or `/\`), and ids taken by
+  core, `reservedIds` or an earlier plugin item (first wins). Returns the core array itself when there are no plugin items.
+- **Shells:** `AppShellProps` and `AdminShellProps` extend `PluginNavProps`; the core-plus-plugin lists come from
+  `appRailItems()` (reserves `"settings"`), `settingsSections()` and `adminNavItems()` (reserves the off-rail
+  `quarantine`/`ingestQueue`/`setup` ids so their header labels can't be hijacked). Plugin items get
+  `HiOutlinePuzzlePiece`. Active state is id matching, same as core: a plugin page passes its manifest nav id as
+  `active`, so `AppShellActive`/`AdminShellActive` are `core | (string & {})` and `SettingsSectionId` is `string`.
+  `ACTIVE_LABELS` is gone - the header label is `"Settings"` or the merged rail item's label (empty for an unknown id).
+- **SettingsShell mailbox switcher:** used `SETTINGS_SECTIONS.find(...)!`; a plugin page rendered without its nav item
+  (server didn't send it) would have thrown, so it now falls back to `window.location.pathname`.
+- **Threading:** every www/admin page already spreads its props onto its shell and types them as
+  `Omit<XShellProps, "active">`, so no page changed. `MailShell`/`CalendarShell`/`ContactsShell`/`TasksShell`/`SettingsShell`
+  destructure their props and now forward `pluginNav` to `AppShell`. Escrow pages are untouched.
+- **Declarations:** `tsconfig.json` `declaration: true`. `dist/` had no `.d.ts`, so a TypeScript plugin page importing
+  `@rapidmx/web-client/.../SettingsShell.js` would get TS7016. The `"./*.js"` export has no `types` condition, but TS
+  finds the sibling `dist/apps/*.d.ts` - verified from a scratch consumer under both `Bundler` and `NodeNext` resolution
+  (a wrong `active` type errors, so the types are real). Declaration emit was clean with no source changes.
+- **Docs:** new `README.md` (the repo had none) with the package layout and the plugin UI surface.
+- **Booking:** the core `booking-types` settings entry stays until phase 6; a booking plugin sending the same id is
+  skipped as a collision meanwhile, which is harmless (same href).
+- Tests: `test/apps/_plugins/pluginNav.test.ts`; plugin-nav blocks in `AppShell`/`SettingsShell`/`AdminShell` tests
+  (ordering, collision, active state, header label, absence, switcher fallback); pass-through tests in the Mail/Calendar/
+  Contacts/Tasks shell tests and the auto-reply, admin branding and tasks page tests. `tsconfig.test.json` still reports its
+  43 pre-existing errors (same count before and after). Full run: 158 files / 2288 tests, 100 / 99.96 (the two known
+  branch gaps) / 100 / 100; tsc and lint clean.

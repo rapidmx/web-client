@@ -5,7 +5,13 @@
 import "../../styles/app.css";
 import React, { PropsWithChildren, useEffect, useRef, useState } from "react";
 import type { IconType } from "react-icons";
-import { HiOutlineCalendarDays, HiOutlineClipboardDocumentList, HiOutlineEnvelope, HiOutlineUsers } from "react-icons/hi2";
+import {
+    HiOutlineCalendarDays,
+    HiOutlineClipboardDocumentList,
+    HiOutlineEnvelope,
+    HiOutlinePuzzlePiece,
+    HiOutlineUsers,
+} from "react-icons/hi2";
 import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
 import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
 import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -13,7 +19,7 @@ import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import { useIdleKeyTimeout } from "@rapidmx/react-shared/crypto/useIdleKeyTimeout.js";
 import ComposeProvider from "../mail/compose/ComposeContext.js";
 import { flushComposeDrafts, markSigningOut } from "../mail/compose/composeFlushRegistry.js";
-import BottomTabBar from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
+import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { BrandingFooter, BrandingHeader } from "./BrandingChrome.js";
 import UserMenu from "./UserMenu.js";
 import { UnlockPromptProvider } from "./UnlockPromptProvider.js";
@@ -21,6 +27,7 @@ import { SIGN_OUT_CHANNEL, destroyAllLocalIndexes } from "../../search/localInde
 import { authApiFetch } from "@rapidmx/react-shared/util/api.js";
 import { destroyUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
+import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../plugins/pluginNav.js";
 
 /** How long sign-out waits for auth-server's logout before navigating anyway. */
 export const LOGOUT_TIMEOUT_MS = 3_000;
@@ -49,11 +56,13 @@ export type AppShellApp = "mail" | "calendar" | "contacts" | "tasks";
 
 /** `"settings"` is a valid `active` value but deliberately has no entry in `APPS` below — Settings is
  * reached via a `UserMenu` item, not a 5th rail icon (see `SettingsShell.tsx`), so it highlights no
- * rail/tab icon at all; only the header title (`ACTIVE_LABELS` below) needs to account for it. */
-export type AppShellActive = AppShellApp | "settings";
+ * rail/tab icon at all; only the header title needs to account for it. Any other string is a plugin's
+ * `appRail` item id (see `PluginNav`). */
+export type AppShellActive = AppShellApp | "settings" | (string & {});
 
-export interface AppShellProps {
-    /** Which icon in the rail is highlighted as the current app — `"settings"` highlights none. */
+export interface AppShellProps extends PluginNavProps {
+    /** Which icon in the rail is highlighted as the current app — `"settings"` highlights none, and a plugin
+     * app page passes its own `appRail` item id. */
     active: AppShellActive;
     /** Populated automatically by the framework from an authenticated request (e.g. a valid `jwt` cookie). */
     userUid?: string;
@@ -85,15 +94,19 @@ export const APPS: AppDef[] = [
     { id: "tasks", href: "/tasks", label: "Tasks", icon: HiOutlineClipboardDocumentList },
 ];
 
-/** The header title for every valid `active` value — a superset of `APPS`' own labels since `"settings"`
- * has no rail icon (and so no `AppDef`) but still needs a header title. */
-const ACTIVE_LABELS: Record<AppShellActive, string> = {
-    mail: "Mail",
-    calendar: "Calendar",
-    contacts: "Contacts",
-    tasks: "Tasks",
-    settings: "Settings",
-};
+/** Ids plugin `appRail` items can't take besides `APPS`' own - `"settings"` has no rail icon but is still a
+ * core `active` value. */
+const RESERVED_APP_IDS = ["settings"];
+
+/** `APPS` followed by the plugins' `appRail` items (generic icon), core ids winning - see `mergePluginNavItems`. */
+export function appRailItems(pluginNav?: PluginNav): NavItem[] {
+    return mergePluginNavItems<NavItem>(
+        APPS,
+        pluginNav?.appRail,
+        ({ id, href, label }) => ({ id, href, label, icon: HiOutlinePuzzlePiece }),
+        RESERVED_APP_IDS,
+    );
+}
 
 /**
  * The persistent chrome shared by every webmail app (Mail, Calendar, Contacts, Tasks): a left icon rail for
@@ -109,6 +122,7 @@ export default function AppShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    pluginNav,
     children,
 }: PropsWithChildren<AppShellProps>) {
     const [stoppingImpersonation, setStoppingImpersonation] = useState(false);
@@ -204,6 +218,10 @@ export default function AppShell({
         return <div className="min-h-screen" />;
     }
 
+    const apps = appRailItems(pluginNav);
+    // The header title: "settings" has no rail item, everything else is labelled by its own rail item.
+    const activeLabel = active === "settings" ? "Settings" : apps.find((app) => app.id === active)?.label;
+
     return (
         // Mounted here, not scoped to Mail/Settings, for the same reason as useIdleKeyTimeout() above -
         // ComposeWindow's sign/encrypt toggles and MessageDetailPane's encrypted-message view (both Mail)
@@ -235,7 +253,7 @@ export default function AppShell({
                         className="hidden md:flex w-16 shrink-0 bg-surface border-r border-border flex-col items-center py-3 gap-1"
                     >
                         <img src={iconSrc} width="96" height="96" alt="" className="mb-3" />
-                        {APPS.map(({ id, href, label, icon: Icon }) => (
+                        {apps.map(({ id, href, label, icon: Icon }) => (
                             <a
                                 key={id}
                                 href={href}
@@ -253,10 +271,10 @@ export default function AppShell({
                             </a>
                         ))}
                     </nav>
-                    <BottomTabBar apps={APPS} active={active} />
+                    <BottomTabBar apps={apps} active={active} />
                     <div className="flex-1 flex flex-col min-w-0">
                         <header className="h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-6">
-                            <span className="font-display font-bold text-lg uppercase tracking-wide">{ACTIVE_LABELS[active]}</span>
+                            <span className="font-display font-bold text-lg uppercase tracking-wide">{activeLabel}</span>
                             <UserMenu userUid={userUid} authServerUrl={authServerUrl} onSignOut={handleSignOut} showAdminLink={trusted} showSettingsLink />
                         </header>
                         <div className="flex-1 flex min-h-0 pb-14 md:pb-0">{children}</div>

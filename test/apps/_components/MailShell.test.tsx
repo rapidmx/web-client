@@ -214,6 +214,20 @@ describe("MailShell", () => {
         expect(screen.queryByRole("navigation", { name: "Apps" })).not.toBeInTheDocument();
     });
 
+    it("passes plugin app rail items through to AppShell", async () => {
+        mockMailboxesAndFolders([mailboxA], [inboxFolder]);
+        render(
+            <MailShell userUid="u1" pluginNav={{ appRail: [{ id: "notes", href: "/notes", label: "Notes" }] }}>
+                content
+            </MailShell>,
+        );
+
+        await screen.findByText("content");
+        const rail = within(screen.getByRole("navigation", { name: "Apps" }));
+        expect(rail.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+        expect(rail.getByRole("link", { name: "Mail" })).toHaveAttribute("aria-current", "page");
+    });
+
     it("renders a single mailbox's folders (well-known order) with no mailbox switcher", async () => {
         mockMailboxesAndFolders([mailboxA], [draftsFolder, inboxFolder]);
         render(<MailShell userUid="u1">content</MailShell>);

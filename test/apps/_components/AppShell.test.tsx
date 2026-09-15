@@ -113,6 +113,83 @@ describe("AppShell", () => {
         expect(mail.className).not.toContain("bg-primary/10");
     });
 
+    describe("plugin app rail items", () => {
+        const pluginNav = {
+            appRail: [
+                { id: "notes", href: "/notes", label: "Notes" },
+                // Core ids win - including "settings", which has no rail icon of its own.
+                { id: "mail", href: "/plugin-mail", label: "Plugin Mail" },
+                { id: "settings", href: "/plugin-settings", label: "Plugin Settings" },
+                { id: "board", href: "/board", label: "Board" },
+            ],
+            // Other hosts' lists never reach the app rail.
+            settingsSections: [{ id: "other", href: "/settings/other", label: "Other Section" }],
+            adminNav: [{ id: "admin-thing", href: "/admin/thing", label: "Admin Thing" }],
+        };
+
+        it("appends them after the core apps in the rail and the tab bar, skipping ids a core app already uses", () => {
+            render(
+                <AppShell active="mail" userUid="u1" pluginNav={pluginNav}>
+                    content
+                </AppShell>,
+            );
+
+            for (const name of ["Apps", "Mobile navigation"]) {
+                const nav = within(screen.getByRole("navigation", { name }));
+                expect(nav.getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual([
+                    "Mail",
+                    "Calendar",
+                    "Contacts",
+                    "Tasks",
+                    "Notes",
+                    "Board",
+                ]);
+                expect(nav.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+                expect(nav.getByRole("link", { name: "Notes" }).querySelector("svg")).not.toBeNull();
+            }
+            expect(screen.queryByRole("link", { name: "Plugin Mail" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("link", { name: "Plugin Settings" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("link", { name: "Other Section" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("link", { name: "Admin Thing" })).not.toBeInTheDocument();
+        });
+
+        it("highlights a plugin app and titles the header with its label when it is active", () => {
+            render(
+                <AppShell active="notes" userUid="u1" pluginNav={pluginNav}>
+                    content
+                </AppShell>,
+            );
+
+            const rail = within(screen.getByRole("navigation", { name: "Apps" }));
+            const tabBar = within(screen.getByRole("navigation", { name: "Mobile navigation" }));
+            expect(rail.getByRole("link", { name: "Notes" })).toHaveAttribute("aria-current", "page");
+            expect(rail.getByRole("link", { name: "Notes" }).className).toContain("bg-primary/10");
+            expect(tabBar.getByRole("link", { name: "Notes" })).toHaveAttribute("aria-current", "page");
+            expect(rail.getByRole("link", { name: "Mail" })).not.toHaveAttribute("aria-current");
+            expect(screen.getByText("Notes", { selector: "header span" })).toBeInTheDocument();
+        });
+
+        it("still titles Settings, and shows only the core apps with no plugin nav or an unknown active id", () => {
+            const { unmount } = render(
+                <AppShell active="settings" userUid="u1" pluginNav={pluginNav}>
+                    content
+                </AppShell>,
+            );
+            expect(screen.getByText("Settings", { selector: "header span" })).toBeInTheDocument();
+            expect(within(screen.getByRole("navigation", { name: "Apps" })).queryByRole("link", { current: "page" })).toBeNull();
+            unmount();
+
+            const { container } = render(
+                <AppShell active="notes" userUid="u1">
+                    content
+                </AppShell>,
+            );
+            expect(within(screen.getByRole("navigation", { name: "Apps" })).getAllByRole("link")).toHaveLength(4);
+            expect(screen.queryByRole("link", { name: "Notes" })).not.toBeInTheDocument();
+            expect(container.querySelector("header span")).toBeEmptyDOMElement();
+        });
+    });
+
     it("is hidden below md, visible at md and above", () => {
         render(<AppShell active="mail" userUid="u1">content</AppShell>);
         expect(screen.getByRole("navigation", { name: "Apps" })).toHaveClass("hidden", "md:flex");

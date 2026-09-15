@@ -174,6 +174,92 @@ describe("AdminShell", () => {
         expect(screen.getByText("Quarantine", { selector: "span" })).toBeInTheDocument();
     });
 
+    describe("plugin admin nav items", () => {
+        const pluginNav = {
+            adminNav: [
+                { id: "bookings", href: "/admin/bookings", label: "Bookings" },
+                // Core ids win - on the rail and off it (mailbox-scoped sections and the setup wizard).
+                { id: "domains", href: "/admin/plugin-domains", label: "Plugin Domains" },
+                { id: "quarantine", href: "/admin/plugin-quarantine", label: "Plugin Quarantine" },
+                { id: "setup", href: "/admin/plugin-setup", label: "Plugin Setup" },
+                { id: "rooms", href: "/admin/rooms", label: "Rooms" },
+            ],
+            appRail: [{ id: "notes", href: "/notes", label: "Notes" }],
+        };
+
+        function mockAuthorized() {
+            mockFetch((url) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url === "/api/system/setup") return jsonResponse(200, { required: false });
+                throw new Error(`unexpected ${url}`);
+            });
+        }
+
+        it("appends them after the core sections in the rail and the tab bar, skipping ids a core section already uses", async () => {
+            mockAuthorized();
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL} pluginNav={pluginNav}>
+                    content
+                </AdminShell>,
+            );
+            await screen.findByText("content");
+
+            for (const name of ["Admin sections", "Mobile navigation"]) {
+                const nav = within(screen.getByRole("navigation", { name }));
+                const labels = nav.getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent);
+                expect(labels.slice(-3)).toEqual(["Branding", "Bookings", "Rooms"]);
+                expect(nav.getByRole("link", { name: "Bookings" })).toHaveAttribute("href", "/admin/bookings");
+                expect(nav.getByRole("link", { name: "Bookings" }).querySelector("svg")).not.toBeNull();
+                expect(nav.getByRole("link", { name: "Domains" })).toHaveAttribute("aria-current", "page");
+            }
+            for (const name of ["Plugin Domains", "Plugin Quarantine", "Plugin Setup", "Notes"]) {
+                expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
+            }
+        });
+
+        it("highlights a plugin section and titles the header with its label when it is active", async () => {
+            mockAuthorized();
+            render(
+                <AdminShell active="bookings" userUid="admin-1" authServerUrl={AUTH_SERVER_URL} pluginNav={pluginNav}>
+                    content
+                </AdminShell>,
+            );
+            await screen.findByText("content");
+
+            const rail = within(screen.getByRole("navigation", { name: "Admin sections" }));
+            expect(rail.getByRole("link", { name: "Bookings" })).toHaveAttribute("aria-current", "page");
+            expect(rail.getByRole("link", { name: "Bookings" }).className).toContain("bg-primary/10");
+            expect(within(screen.getByRole("navigation", { name: "Mobile navigation" })).getByRole("link", { name: "Bookings" })).toHaveAttribute(
+                "aria-current",
+                "page",
+            );
+            expect(rail.getByRole("link", { name: "Mailboxes" })).not.toHaveAttribute("aria-current");
+            expect(screen.getByText("Bookings", { selector: "header span" })).toBeInTheDocument();
+        });
+
+        it("keeps the core header labels for off-rail sections, and shows only core sections without plugin nav", async () => {
+            mockAuthorized();
+            const { unmount } = render(
+                <AdminShell active="quarantine" userUid="admin-1" authServerUrl={AUTH_SERVER_URL} pluginNav={pluginNav}>
+                    content
+                </AdminShell>,
+            );
+            await screen.findByText("content");
+            expect(screen.getByText("Quarantine", { selector: "header span" })).toBeInTheDocument();
+            unmount();
+
+            mockAuthorized();
+            render(
+                <AdminShell active="bookings" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+            await screen.findByText("content");
+            expect(screen.queryByRole("link", { name: "Bookings" })).not.toBeInTheDocument();
+            expect(within(screen.getByRole("navigation", { name: "Admin sections" })).queryByRole("link", { current: "page" })).toBeNull();
+        });
+    });
+
     it("hides the icon rail below md, shows it at md and above", async () => {
         mockFetch(() => jsonResponse(200, {}));
         render(

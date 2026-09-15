@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -28,6 +28,25 @@ function mockAdminFetch(handlers: (url: string, init: RequestInit) => Response |
 }
 
 describe("BrandingPage", () => {
+    it("passes the server's plugin nav through to the admin rail", async () => {
+        mockAdminFetch((url) => {
+            if (url === "/api/system/setup") return jsonResponse(200, { required: false });
+            if (url === "/api/system/branding") return jsonResponse(200, BRANDING);
+        });
+        render(
+            <BrandingPage
+                userUid="admin-1"
+                authServerUrl="https://auth.example.com"
+                pluginNav={{ adminNav: [{ id: "bookings", href: "/admin/bookings", label: "Bookings" }] }}
+            />,
+        );
+
+        await screen.findByLabelText("Company name");
+        const rail = within(screen.getByRole("navigation", { name: "Admin sections" }));
+        expect(rail.getByRole("link", { name: "Bookings" })).toHaveAttribute("href", "/admin/bookings");
+        expect(rail.getByRole("link", { name: "Branding" })).toHaveAttribute("aria-current", "page");
+    });
+
     it("shows a loading state, then the form once branding has loaded", async () => {
         mockAdminFetch((url) => {
             if (url === "/api/system/branding") return jsonResponse(200, BRANDING);

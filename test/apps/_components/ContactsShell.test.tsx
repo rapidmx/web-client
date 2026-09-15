@@ -109,6 +109,20 @@ describe("ContactsShell", () => {
         expect(screen.queryByRole("navigation", { name: "Apps" })).not.toBeInTheDocument();
     });
 
+    it("passes plugin app rail items through to AppShell", async () => {
+        mockMailboxesAndFolders([mailboxA], [contactsFolder]);
+        render(
+            <ContactsShell userUid="u1" pluginNav={{ appRail: [{ id: "notes", href: "/notes", label: "Notes" }] }}>
+                content
+            </ContactsShell>,
+        );
+
+        await screen.findByText("content");
+        const rail = within(screen.getByRole("navigation", { name: "Apps" }));
+        expect(rail.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+        expect(rail.getByRole("link", { name: "Contacts" })).toHaveAttribute("aria-current", "page");
+    });
+
     it("renders a single mailbox's contacts folder with no mailbox switcher", async () => {
         mockMailboxesAndFolders([mailboxA], [contactsFolder]);
         render(<ContactsShell userUid="u1">content</ContactsShell>);

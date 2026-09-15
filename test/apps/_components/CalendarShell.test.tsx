@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
@@ -122,6 +122,20 @@ describe("CalendarShell", () => {
         expect(screen.queryByText("content")).not.toBeInTheDocument();
         expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
         expect(screen.queryByRole("navigation", { name: "Apps" })).not.toBeInTheDocument();
+    });
+
+    it("passes plugin app rail items through to AppShell", async () => {
+        mockMailboxesAndFolders([mailboxA], [calendarFolder]);
+        render(
+            <CalendarShell userUid="u1" pluginNav={{ appRail: [{ id: "notes", href: "/notes", label: "Notes" }] }}>
+                content
+            </CalendarShell>,
+        );
+
+        await screen.findByText("content");
+        const rail = within(screen.getByRole("navigation", { name: "Apps" }));
+        expect(rail.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+        expect(rail.getByRole("link", { name: "Calendar" })).toHaveAttribute("aria-current", "page");
     });
 
     it("renders a single mailbox's calendar with no mailbox switcher", async () => {

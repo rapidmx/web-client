@@ -47,6 +47,7 @@ export default function TasksShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    pluginNav,
     children,
 }: PropsWithChildren<TasksShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
@@ -192,6 +193,7 @@ export default function TasksShell({
             impersonating={impersonating}
             impersonationBaseUrl={impersonationBaseUrl}
             trusted={trusted}
+            pluginNav={pluginNav}
         >
             {inner}
         </AppShell>

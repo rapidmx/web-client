@@ -44,6 +44,7 @@ export default function ContactsShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    pluginNav,
     children,
 }: PropsWithChildren<ContactsShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
@@ -190,6 +191,7 @@ export default function ContactsShell({
             impersonating={impersonating}
             impersonationBaseUrl={impersonationBaseUrl}
             trusted={trusted}
+            pluginNav={pluginNav}
         >
             {inner}
         </AppShell>

@@ -69,6 +69,7 @@ export default function CalendarShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    pluginNav,
     children,
 }: PropsWithChildren<CalendarShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
@@ -185,6 +186,7 @@ export default function CalendarShell({
             impersonating={impersonating}
             impersonationBaseUrl={impersonationBaseUrl}
             trusted={trusted}
+            pluginNav={pluginNav}
         >
             {inner}
         </AppShell>

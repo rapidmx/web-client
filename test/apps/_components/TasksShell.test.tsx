@@ -109,6 +109,20 @@ describe("TasksShell", () => {
         expect(screen.queryByRole("navigation", { name: "Apps" })).not.toBeInTheDocument();
     });
 
+    it("passes plugin app rail items through to AppShell", async () => {
+        mockMailboxesAndFolders([mailboxA], [tasksFolder]);
+        render(
+            <TasksShell userUid="u1" pluginNav={{ appRail: [{ id: "notes", href: "/notes", label: "Notes" }] }}>
+                content
+            </TasksShell>,
+        );
+
+        await screen.findByText("content");
+        const rail = within(screen.getByRole("navigation", { name: "Apps" }));
+        expect(rail.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+        expect(rail.getByRole("link", { name: "Tasks" })).toHaveAttribute("aria-current", "page");
+    });
+
     it("renders a single mailbox's tasks folder with no mailbox switcher", async () => {
         mockMailboxesAndFolders([mailboxA], [tasksFolder]);
         render(<TasksShell userUid="u1">content</TasksShell>);

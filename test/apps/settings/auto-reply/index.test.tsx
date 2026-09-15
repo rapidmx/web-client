@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -43,6 +43,24 @@ afterEach(() => {
 });
 
 describe("SettingsAutoReplyPage", () => {
+    it("passes the server's plugin nav through to the settings sections and app rail", async () => {
+        mockShell(mailbox());
+        render(
+            <SettingsAutoReplyPage
+                userUid="u1"
+                pluginNav={{
+                    settingsSections: [{ id: "reminders", href: "/settings/reminders", label: "Reminders" }],
+                    appRail: [{ id: "notes", href: "/notes", label: "Notes" }],
+                }}
+            />,
+        );
+
+        const sections = within(await screen.findByRole("navigation", { name: "Settings sections" }));
+        expect(sections.getByRole("link", { name: "Reminders" })).toHaveAttribute("href", "/settings/reminders?mailboxUid=mb1");
+        expect(sections.getByRole("link", { name: "Automatic Replies" })).toHaveAttribute("aria-current", "page");
+        expect(within(screen.getByRole("navigation", { name: "Apps" })).getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+    });
+
     it("renders with the toggle off and no message/date fields when the mailbox has automatic replies disabled", async () => {
         mockShell(mailbox());
         render(<SettingsAutoReplyPage userUid="u1" />);

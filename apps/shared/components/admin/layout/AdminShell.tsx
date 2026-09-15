@@ -30,6 +30,7 @@ import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigati
 import { BrandingFooter, BrandingHeader } from "../../layout/BrandingChrome.js";
 import UserMenu from "../../layout/UserMenu.js";
 import { signOutOfConsole } from "../signOut.js";
+import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../../plugins/pluginNav.js";
 
 export type AdminSection =
     | "mailboxes"
@@ -48,9 +49,13 @@ export type AdminSection =
     | "plugins"
     | "branding";
 
-export interface AdminShellProps {
-    /** Which icon in the rail is highlighted as the current section. */
-    active: AdminSection;
+/** A core `AdminSection`, or a plugin's `adminNav` item id (see `PluginNav`). */
+export type AdminShellActive = AdminSection | (string & {});
+
+export interface AdminShellProps extends PluginNavProps {
+    /** Which icon in the rail is highlighted as the current section - a plugin admin page passes its own
+     * `adminNav` item id. */
+    active: AdminShellActive;
     /** Populated automatically by the framework from an authenticated request (e.g. a valid `jwt` cookie). */
     userUid?: string;
     /** auth-server's base URL, injected via the route's `fetchProps` — see `src/mongo/routes/AdminConsoleRoute.ts`. */
@@ -129,7 +134,18 @@ const MAILBOX_SCOPED_ITEMS: NavItem[] = [
 /** The setup wizard - reached by redirect or from the Mailboxes page, not from the rail. */
 const SETUP_ITEM: NavItem = { id: "setup", href: "/admin/setup", label: "Setup", icon: HiOutlineRocketLaunch };
 
-const ALL_ITEMS: NavItem[] = [...NAV_ITEMS, ...MAILBOX_SCOPED_ITEMS, SETUP_ITEM];
+const OFF_RAIL_ITEMS: NavItem[] = [...MAILBOX_SCOPED_ITEMS, SETUP_ITEM];
+
+/** `NAV_ITEMS` followed by the plugins' `adminNav` items (generic icon). Core ids win, including the
+ * off-rail sections' - see `mergePluginNavItems`. */
+export function adminNavItems(pluginNav?: PluginNav): NavItem[] {
+    return mergePluginNavItems<NavItem>(
+        NAV_ITEMS,
+        pluginNav?.adminNav,
+        ({ id, href, label }) => ({ id, href, label, icon: HiOutlinePuzzlePiece }),
+        OFF_RAIL_ITEMS.map((item) => item.id),
+    );
+}
 
 /**
  * Gates every `apps/admin` page behind the `admin` trusted role. Uses `GET /api/admin/release-notes` (any
@@ -137,7 +153,7 @@ const ALL_ITEMS: NavItem[] = [...NAV_ITEMS, ...MAILBOX_SCOPED_ITEMS, SETUP_ITEM]
  * caller's JWT carries a trusted role, a 403 means it doesn't. There is no local step-up/elevation flow
  * (that would need a cross-origin call to auth-server's own elevation endpoint — not wired up yet).
  */
-export default function AdminShell({ active, userUid, authServerUrl, children }: PropsWithChildren<AdminShellProps>) {
+export default function AdminShell({ active, userUid, authServerUrl, pluginNav, children }: PropsWithChildren<AdminShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
     const { branding, iconSrc } = useBranding();
@@ -199,7 +215,8 @@ export default function AdminShell({ active, userUid, authServerUrl, children }:
             </div>
         );
     } else {
-        const activeItem = ALL_ITEMS.find((item) => item.id === active);
+        const navItems = adminNavItems(pluginNav);
+        const activeItem = [...navItems, ...OFF_RAIL_ITEMS].find((item) => item.id === active);
         content = (
             <div className="min-h-screen flex flex-col bg-surface-alt">
                 <div className="flex-1 flex min-h-0">
@@ -208,7 +225,7 @@ export default function AdminShell({ active, userUid, authServerUrl, children }:
                         className="hidden md:flex w-16 shrink-0 bg-surface border-r border-border flex-col items-center py-3 gap-1"
                     >
                         <img src={iconSrc} width="96" height="96" alt="" className="mb-3" />
-                        {NAV_ITEMS.map(({ id, href, label, icon: Icon }) => (
+                        {navItems.map(({ id, href, label, icon: Icon }) => (
                             <a
                                 key={id}
                                 href={href}
@@ -226,7 +243,7 @@ export default function AdminShell({ active, userUid, authServerUrl, children }:
                             </a>
                         ))}
                     </nav>
-                    <BottomTabBar apps={NAV_ITEMS} active={active} />
+                    <BottomTabBar apps={navItems} active={active} />
                     <div className="flex-1 flex flex-col min-w-0">
                         <header className="h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-6">
                             <span className="font-display font-bold text-lg uppercase tracking-wide">{activeItem?.label}</span>

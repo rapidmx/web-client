@@ -148,6 +148,7 @@ export default function MailShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    pluginNav,
     children,
 }: PropsWithChildren<MailShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
@@ -410,6 +411,7 @@ export default function MailShell({
                 impersonating={impersonating}
                 impersonationBaseUrl={impersonationBaseUrl}
                 trusted={trusted}
+                pluginNav={pluginNav}
             >
                 {inner}
             </AppShell>

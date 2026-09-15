@@ -155,6 +155,76 @@ describe("SettingsShell", () => {
         expect(autoReplyLink.className).not.toContain("bg-primary/10");
     });
 
+    describe("plugin settings sections", () => {
+        const pluginNav = {
+            settingsSections: [
+                { id: "vacation-planner", href: "/settings/vacation-planner", label: "Vacation Planner" },
+                // Core ids win.
+                { id: "filters", href: "/settings/plugin-filters", label: "Plugin Filters" },
+                { id: "reminders", href: "/settings/reminders", label: "Reminders" },
+            ],
+            appRail: [{ id: "notes", href: "/notes", label: "Notes" }],
+        };
+
+        it("appends them after the core sections, skipping ids a core section already uses", async () => {
+            mockMailboxes([mailboxA]);
+            render(
+                <SettingsShell active="auto-reply" userUid="u1" pluginNav={pluginNav}>
+                    content
+                </SettingsShell>,
+            );
+            await screen.findByText("content");
+
+            const nav = within(screen.getByRole("navigation", { name: "Settings sections" }));
+            const labels = nav.getAllByRole("link").map((link) => link.textContent);
+            expect(labels.slice(-3)).toEqual(["Privacy & Data", "Vacation Planner", "Reminders"]);
+            expect(labels).not.toContain("Plugin Filters");
+            expect(nav.getByRole("link", { name: "Reminders" })).toHaveAttribute("href", "/settings/reminders?mailboxUid=mb-a");
+            expect(nav.getByRole("link", { name: "Automatic Replies" })).toHaveAttribute("aria-current", "page");
+            // The same pluginNav reaches AppShell's rail.
+            expect(within(screen.getByRole("navigation", { name: "Apps" })).getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+        });
+
+        it("highlights an active plugin section, and switches mailbox onto its href", async () => {
+            mockMailboxes([mailboxA, mailboxB]);
+            const location = mockLocation();
+            const user = userEvent.setup();
+            render(
+                <SettingsShell active="reminders" userUid="u1" pluginNav={pluginNav}>
+                    content
+                </SettingsShell>,
+            );
+
+            const select = await screen.findByLabelText("Mailbox");
+            const link = within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("link", { name: "Reminders" });
+            expect(link).toHaveAttribute("aria-current", "page");
+            expect(link.className).toContain("bg-primary/10");
+            expect(screen.getByRole("link", { name: "Automatic Replies" })).not.toHaveAttribute("aria-current");
+
+            await user.selectOptions(select, "mb-b");
+            expect(location.href).toBe("/settings/reminders?mailboxUid=mb-b");
+        });
+
+        it("shows only core sections without plugin nav, and switches mailbox onto the current path for an unlisted section", async () => {
+            mockMailboxes([mailboxA, mailboxB]);
+            const location = mockLocation();
+            (location as any).pathname = "/settings/reminders";
+            const user = userEvent.setup();
+            render(
+                <SettingsShell active="reminders" userUid="u1">
+                    content
+                </SettingsShell>,
+            );
+
+            const select = await screen.findByLabelText("Mailbox");
+            expect(screen.queryByRole("link", { name: "Reminders" })).not.toBeInTheDocument();
+            expect(screen.getByRole("navigation", { name: "Settings sections" }).querySelector("[aria-current]")).toBeNull();
+
+            await user.selectOptions(select, "mb-b");
+            expect(location.href).toBe("/settings/reminders?mailboxUid=mb-b");
+        });
+    });
+
     it("shows the mailbox switcher when more than one mailbox is accessible, marking a shared one", async () => {
         mockMailboxes([mailboxA, mailboxB]);
         render(
