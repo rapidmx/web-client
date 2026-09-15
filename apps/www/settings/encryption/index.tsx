@@ -533,9 +533,10 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     const otherWraps = vault?.masterKeyWraps.filter((w) => w.method !== "password" && w.method !== "recovery") ?? [];
 
     // The owner's own unlock methods are every non-escrow wrap - restapi refuses (409) to remove the last
-    // one. But the app can only actually *unlock* with a password today (react-shared's
-    // `unlockWithPassword()` - recovery codes and passkeys have no unlock path yet), so the last password
-    // wrap is never offered for removal either: without it the mailbox would be locked for good in practice.
+    // one. The app unlocks with a password or a single-use recovery code (passkeys have no unlock path yet),
+    // so the last password wrap is never offered for removal either: without it only a dwindling set of
+    // recovery codes would be left. A forgotten password is replaced after a recovery-code unlock instead
+    // (`RecoveryCodeUnlock.tsx`).
     const ownUnlockWrapCount = vault?.masterKeyWraps.filter((w) => w.method !== "escrow").length ?? 0;
     function canRemoveWrap(wrap: MasterKeyWrap): boolean {
         return wrap.method === "password" ? passwordWraps.length > 1 : ownUnlockWrapCount > 1;

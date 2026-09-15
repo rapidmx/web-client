@@ -7,6 +7,7 @@ import {
     getUnlockedKeys,
     unlockWithPassword,
     UnlockedKeys,
+    UnlockResult,
     UnopenableEncryptionKeyError,
 } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
@@ -14,16 +15,30 @@ import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import {
+    RECOVERY_CODE_ERROR,
+    RecoveryFollowUp,
+    RecoveryFollowUpModal,
+    UnlockModeToggle,
+    startRecoveryUnlock,
+} from "./RecoveryCodeUnlock.js";
 
 /** Shown instead of "Incorrect password" when the password was right but the mailbox's encryption key itself
  * won't open (`UnopenableEncryptionKeyError`) - retrying can't fix that, so it must not read as a typo. */
 export const UNOPENABLE_ENCRYPTION_KEY_MESSAGE =
     "Your password is correct, but one of your keys couldn't be opened, so encrypted mail can't be read or sent from this mailbox. Trying again won't help - contact support.";
 
-/** The error text for a failed `unlockWithPassword()`. */
-export function unlockErrorMessage(err: unknown): string {
+/** `UNOPENABLE_ENCRYPTION_KEY_MESSAGE`'s counterpart for a recovery-code unlock. */
+export const UNOPENABLE_ENCRYPTION_KEY_RECOVERY_MESSAGE =
+    "Your recovery code is correct, but one of your keys couldn't be opened, so encrypted mail can't be read or sent from this mailbox. Trying again won't help - contact support.";
+
+/** The error text for a failed `unlockWithPassword()` (or, with `method` `"recovery"`, `unlockWithRecoveryCode()`). */
+export function unlockErrorMessage(err: unknown, method: "password" | "recovery" = "password"): string {
     // Deliberately generic otherwise - see `unlockWithPassword()`'s own doc comment: a wrong password and a
     // missing password wrap fail the same way, and telling them apart would help someone guessing passwords.
+    if (method === "recovery") {
+        return err instanceof UnopenableEncryptionKeyError ? UNOPENABLE_ENCRYPTION_KEY_RECOVERY_MESSAGE : RECOVERY_CODE_ERROR;
+    }
     return err instanceof UnopenableEncryptionKeyError ? UNOPENABLE_ENCRYPTION_KEY_MESSAGE : "Incorrect password.";
 }
 
@@ -91,6 +106,11 @@ export function UnlockPromptProvider({ children }: { children: React.ReactNode }
     const [error, setError] = useState<string | null>(null);
     const [unlocking, setUnlocking] = useState(false);
     const [unopenableKeys, setUnopenableKeys] = useState<string[] | null>(null);
+    const [mode, setMode] = useState<"password" | "recovery">("password");
+    const [code, setCode] = useState("");
+    // The steps after a recovery-code unlock (new password, using up the code). Shown only once the waiters are
+    // already settled - see `RecoveryCodeUnlock.tsx`.
+    const [followUp, setFollowUp] = useState<RecoveryFollowUp | null>(null);
 
     function setPending(next: PendingUnlock | null) {
         pendingRef.current = next;
@@ -112,6 +132,8 @@ export function UnlockPromptProvider({ children }: { children: React.ReactNode }
             // their promises hanging forever.
             current?.waiters.forEach((waiter) => waiter.reject(new Error("Unlock superseded by another request.")));
             setPassword("");
+            setCode("");
+            setMode("password");
             setError(null);
             setPending({ mailboxUid, mailboxKeys, waiters: [{ resolve, reject }] });
         });
@@ -129,8 +151,11 @@ export function UnlockPromptProvider({ children }: { children: React.ReactNode }
         setError(null);
         setUnlocking(true);
         try {
-            const result = await unlockWithPassword(request.mailboxUid, request.mailboxKeys, password);
-            // Always reachable: unlockWithPassword() just populated keySession.ts's session store for
+            const result: UnlockResult | RecoveryFollowUp = await (mode === "recovery"
+                ? startRecoveryUnlock(request.mailboxUid, request.mailboxKeys, code)
+                : unlockWithPassword(request.mailboxUid, request.mailboxKeys, password));
+            const recovery = mode === "recovery" ? (result as RecoveryFollowUp) : null;
+            // Always reachable: the unlock just populated keySession.ts's session store for
             // this exact mailboxUid, or threw before we get here.
             const unlocked = getUnlockedKeys(request.mailboxUid)!;
             request.waiters.forEach((waiter) => waiter.resolve(unlocked));
@@ -140,33 +165,70 @@ export function UnlockPromptProvider({ children }: { children: React.ReactNode }
             if (result.unopenableKeys.length > 0) {
                 setUnopenableKeys(result.unopenableKeys);
             }
+            setCode("");
+            setFollowUp(recovery);
         } catch (err) {
-            setError(unlockErrorMessage(err));
+            setError(unlockErrorMessage(err, mode));
         } finally {
             setUnlocking(false);
         }
+    }
+
+    function handleModeChange(next: "password" | "recovery") {
+        setMode(next);
+        setError(null);
     }
 
     return (
         <UnlockPromptContext.Provider value={{ requestUnlock }}>
             {children}
             {unopenableKeys && <UnopenableKeysNotice fingerprints={unopenableKeys} onDismiss={() => setUnopenableKeys(null)} />}
+            {followUp && (
+                // Hidden (progress kept) while another unlock dialog is open on top of it.
+                <RecoveryFollowUpModal
+                    key={`${followUp.mailboxUid}:${followUp.recoveryMethodId}`}
+                    followUp={followUp}
+                    open={!pending}
+                    onDone={() => setFollowUp(null)}
+                />
+            )}
             <Modal open={!!pending} onClose={handleCancel} title="Unlock your mailbox">
-                <p className="text-sm text-text-muted mb-5">Enter your encryption password to continue.</p>
+                <p className="text-sm text-text-muted mb-5">
+                    {mode === "password"
+                        ? "Enter your encryption password to continue."
+                        : "Enter one of your recovery codes to continue. Each code works once."}
+                </p>
                 {error && <Alert>{error}</Alert>}
                 <form onSubmit={handleSubmit}>
-                    <FormField label="Encryption password" htmlFor="unlock-prompt-password">
-                        <input
-                            id="unlock-prompt-password"
-                            type="password"
-                            className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            disabled={unlocking}
-                            autoComplete="current-password"
-                            autoFocus
-                        />
-                    </FormField>
+                    {mode === "password" ? (
+                        <FormField label="Encryption password" htmlFor="unlock-prompt-password">
+                            <input
+                                id="unlock-prompt-password"
+                                type="password"
+                                className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                disabled={unlocking}
+                                autoComplete="current-password"
+                                autoFocus
+                            />
+                        </FormField>
+                    ) : (
+                        <FormField label="Recovery code" htmlFor="unlock-prompt-recovery-code">
+                            <input
+                                id="unlock-prompt-recovery-code"
+                                type="text"
+                                className="w-full text-sm font-mono border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                value={code}
+                                onChange={(e) => setCode(e.target.value)}
+                                disabled={unlocking}
+                                autoComplete="off"
+                                autoCapitalize="characters"
+                                spellCheck={false}
+                                autoFocus
+                            />
+                        </FormField>
+                    )}
                     <div className="flex gap-2">
                         <Button type="submit" loading={unlocking} disabled={unlocking}>
                             Unlock
@@ -176,6 +238,9 @@ export function UnlockPromptProvider({ children }: { children: React.ReactNode }
                         </Button>
                     </div>
                 </form>
+                <div className="mt-3">
+                    <UnlockModeToggle mode={mode} disabled={unlocking} onChange={handleModeChange} />
+                </div>
             </Modal>
         </UnlockPromptContext.Provider>
     );

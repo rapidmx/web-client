@@ -9,10 +9,12 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import { enrollKey, getKeyVault, PublicKey, VaultAlreadyInitializedError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { UnopenableKeysNotice, unlockErrorMessage } from "./UnlockPromptProvider.js";
+import { RecoveryFollowUp, RecoveryFollowUpModal, UnlockModeToggle, startRecoveryUnlock } from "./RecoveryCodeUnlock.js";
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
     getUnlockedKeys,
     unlockWithPassword,
+    type UnlockResult,
 } from "@rapidmx/react-shared/crypto/keySession.js";
 import { buildAad, generateMasterKey, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
 import { buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
@@ -114,6 +116,10 @@ export default function KeyEnrollmentGate({
     const [codesSaved, setCodesSaved] = useState(false);
     const [codesCopied, setCodesCopied] = useState(false);
     const [unopenableKeys, setUnopenableKeys] = useState<string[] | null>(null);
+    const [unlockMode, setUnlockMode] = useState<"password" | "recovery">("password");
+    const [recoveryCode, setRecoveryCode] = useState("");
+    // Set after a recovery-code unlock: `children` render at once, with the follow-up steps in a dialog on top.
+    const [followUp, setFollowUp] = useState<RecoveryFollowUp | null>(null);
 
     useEffect(() => {
         if (!mailboxUid) {
@@ -150,15 +156,20 @@ export default function KeyEnrollmentGate({
         try {
             // Only reachable via "unlock", which the effect above only ever sets once mailboxUid was
             // defined.
-            const result = await unlockWithPassword(mailboxUid!, mailboxKeys ?? [], password);
+            const result: UnlockResult | RecoveryFollowUp = await (unlockMode === "recovery"
+                ? startRecoveryUnlock(mailboxUid!, mailboxKeys ?? [], recoveryCode)
+                : unlockWithPassword(mailboxUid!, mailboxKeys ?? [], password));
+            const recovery = unlockMode === "recovery" ? (result as RecoveryFollowUp) : null;
             if (result.unopenableKeys.length > 0) {
                 setUnopenableKeys(result.unopenableKeys);
             }
+            setRecoveryCode("");
+            setFollowUp(recovery);
             setStatus("ready");
         } catch (err) {
-            // "Incorrect password." unless the password was right but the encryption key won't open - see
-            // `unlockErrorMessage()`.
-            setError(unlockErrorMessage(err));
+            // "Incorrect password." (or "That recovery code didn't work.") unless the secret was right but the
+            // encryption key won't open - see `unlockErrorMessage()`.
+            setError(unlockErrorMessage(err, unlockMode));
             setStatus("unlock");
         }
     }
@@ -224,25 +235,53 @@ export default function KeyEnrollmentGate({
                 <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
                     <h1 className="text-lg font-bold mb-2">Unlock your mailbox</h1>
                     <p className="text-sm text-text-muted mb-5">
-                        Enter your encryption password to unlock signing and reading protected mail this session.
+                        {unlockMode === "password"
+                            ? "Enter your encryption password to unlock signing and reading protected mail this session."
+                            : "Enter one of your recovery codes to unlock signing and reading protected mail this session. Each code works once."}
                     </p>
                     {error && <Alert>{error}</Alert>}
                     <form onSubmit={handleUnlock}>
-                        <FormField label="Encryption password" htmlFor="key-unlock-password">
-                            <input
-                                id="key-unlock-password"
-                                type="password"
-                                className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                disabled={unlocking}
-                                autoComplete="current-password"
-                            />
-                        </FormField>
+                        {unlockMode === "password" ? (
+                            <FormField label="Encryption password" htmlFor="key-unlock-password">
+                                <input
+                                    id="key-unlock-password"
+                                    type="password"
+                                    className="w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    disabled={unlocking}
+                                    autoComplete="current-password"
+                                />
+                            </FormField>
+                        ) : (
+                            <FormField label="Recovery code" htmlFor="key-unlock-recovery-code">
+                                <input
+                                    id="key-unlock-recovery-code"
+                                    type="text"
+                                    className="w-full text-sm font-mono border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                    value={recoveryCode}
+                                    onChange={(e) => setRecoveryCode(e.target.value)}
+                                    disabled={unlocking}
+                                    autoComplete="off"
+                                    autoCapitalize="characters"
+                                    spellCheck={false}
+                                />
+                            </FormField>
+                        )}
                         <Button type="submit" loading={unlocking} disabled={unlocking}>
                             Unlock
                         </Button>
                     </form>
+                    <div className="mt-3">
+                        <UnlockModeToggle
+                            mode={unlockMode}
+                            disabled={unlocking}
+                            onChange={(next) => {
+                                setUnlockMode(next);
+                                setError(null);
+                            }}
+                        />
+                    </div>
                 </div>
             </div>
         );
@@ -344,6 +383,7 @@ export default function KeyEnrollmentGate({
         <>
             {children}
             {unopenableKeys && <UnopenableKeysNotice fingerprints={unopenableKeys} onDismiss={() => setUnopenableKeys(null)} />}
+            {followUp && <RecoveryFollowUpModal followUp={followUp} onDone={() => setFollowUp(null)} />}
         </>
     );
 }

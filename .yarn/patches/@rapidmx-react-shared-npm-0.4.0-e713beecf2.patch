@@ -1686,12 +1686,22 @@ index 30b8b79458347f0b5e09555bd986dd43022d9622..2bccf4aef0df5c6dbea2676cf81c1d77
      return { mk, wrappedKeys };
  }
 diff --git a/dist/crypto/keySession.d.ts b/dist/crypto/keySession.d.ts
-index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..989e33c8bcdaa1221ffed12e0221c62a79eddfce 100644
+index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..d728dcbeacd961b4224d54ab063666098c938131 100644
 --- a/dist/crypto/keySession.d.ts
 +++ b/dist/crypto/keySession.d.ts
-@@ -16,14 +16,21 @@
-  * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
-  * passkey has no way to unlock through this module today.
+@@ -11,19 +11,27 @@
+  * `unlockWithPassword()` below, once per mailbox per session, before rendering the mailbox's real
+  * content — see that component's own doc comment.
+  *
+- * **Password is the only unlock method implemented so far.** Passkey (`passkeyUnlock.ts`) and recovery
+- * code (`recoveryCode.ts`) derivation already exist and could unwrap the same `MasterKeyWrap` shape,
+- * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
+- * passkey has no way to unlock through this module today.
++ * **Password and recovery code are the unlock methods implemented so far** (`unlockWithPassword()`,
++ * `unlockWithRecoveryCode()`, which share one master-key-to-session step). Passkey (`passkeyUnlock.ts`)
++ * derivation exists and could unwrap the same `MasterKeyWrap` shape, but nothing calls it yet — a real
++ * follow-up, not a silent gap: a mailbox enrolled *only* with a passkey has no way to unlock through this
++ * module today.
   */
 -import type { PublicKey } from "./keyvaultApi.js";
 +import { type PublicKey } from "./keyvaultApi.js";
@@ -1712,7 +1722,7 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..989e33c8bcdaa1221ffed12e0221c62a
      masterKey: Uint8Array;
      signingPrivateKey?: CryptoKey;
      signingCertDer?: Uint8Array;
-@@ -32,12 +39,60 @@ export interface UnlockedKeys {
+@@ -32,12 +40,60 @@ export interface UnlockedKeys {
      encryptionCertDer?: Uint8Array;
      encryptionFingerprint?: string;
  }
@@ -1748,11 +1758,11 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..989e33c8bcdaa1221ffed12e0221c62a
 + * with the zeroed master key throws `KeysLockedError` (see `masterKey.ts`).
 + *
 + * Every object handed out for the mailbox is destroyed - including ones a re-unlock already replaced in the
-+ * store - and an `unlockWithPassword()` still in flight for it when this runs throws `KeysLockedError`
++ * store - and an `unlockWithPassword()`/`unlockWithRecoveryCode()` still in flight for it when this runs throws `KeysLockedError`
 + * instead of restoring keys after the lock.
 + */
  export declare function destroyUnlockedKeys(mailboxUid?: string): void;
-+/** What `unlockWithPassword()` resolves with. */
++/** What `unlockWithPassword()` resolves with (and the base of `unlockWithRecoveryCode()`'s result). */
 +export interface UnlockResult {
 +    /** Fingerprints of active *signing* keys whose wrapped private key couldn't be opened with the (correctly
 +     * unwrapped) master key - e.g. a wrap sealed under a master key a later rekey replaced. The unlock still
@@ -1775,7 +1785,7 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..989e33c8bcdaa1221ffed12e0221c62a
  /**
   * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
   * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
-@@ -45,7 +100,11 @@ export declare function destroyUnlockedKeys(mailboxUid?: string): void;
+@@ -45,7 +101,35 @@ export declare function destroyUnlockedKeys(mailboxUid?: string): void;
   * currently-active public keys for. Stores the result in this module's in-memory session store.
   *
   * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
@@ -1787,14 +1797,38 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..989e33c8bcdaa1221ffed12e0221c62a
 + * won't open is skipped and listed in `UnlockResult.unopenableKeys`; an active encryption key that won't
 + * open still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
 + * `destroyUnlockedKeys()` locked this mailbox (or all mailboxes) while the unlock was in flight.
++ */
++export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<UnlockResult>;
++/** What `unlockWithRecoveryCode()` resolves with. */
++export interface RecoveryUnlockResult extends UnlockResult {
++    /** The `methodId` of the recovery wrap the code opened (e.g. `"recovery-3"`). Recovery codes are single-use:
++     * pass it to `masterKeyWraps.ts`'s `consumeRecoveryCode()` once the unlock flow is done. Absent only for a
++     * recovery wrap stored without a `methodId`, which `buildRecoveryWraps()` never produces. */
++    recoveryMethodId?: string;
++    /** How many *other* recovery wraps the vault holds - the codes left once this one is consumed. */
++    remainingRecoveryCodes: number;
++}
++/**
++ * Unlocks a mailbox's key vault with one of its recovery codes: fetches the vault, tries every `"recovery"` wrap
++ * (`kdf: "hkdf-sha256"`) with `deriveFromRecoveryCode(code, salt)` until one opens the master key, then opens the
++ * signing/encryption private keys and stores the session exactly as `unlockWithPassword()` does - the same
++ * `unopenableKeys` handling, `UnopenableEncryptionKeyError`, `KeysLockedError` on a lock mid-unlock, and
++ * `subscribeKeySession()` notification. `code` is normalized first (case, spacing, dashes, O/I/L slips).
++ *
++ * A wrong code and a vault with no recovery wraps both reject with the same plain `Error` (never saying which
++ * wrap was tried or failed) - the recovery-code counterpart of `unlockWithPassword()`'s wrong-password rejection.
++ *
++ * A recovery code is single-use, but this function writes nothing: the caller removes the used wrap afterwards
++ * with `consumeRecoveryCode(mailboxUid, result.recoveryMethodId)` (and may first offer a new password via
++ * `replacePasswordWrap()` - see that function for why that order is the safe one).
   */
 -export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<void>;
-+export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<UnlockResult>;
++export declare function unlockWithRecoveryCode(mailboxUid: string, mailboxKeys: PublicKey[], code: string): Promise<RecoveryUnlockResult>;
 diff --git a/dist/crypto/keySession.js b/dist/crypto/keySession.js
-index 763759b94580beb99c25cdf780ab1cad7a6f8e60..3817e0c0ef7427ab1f504137dd2cee1aa7a396d0 100644
+index 763759b94580beb99c25cdf780ab1cad7a6f8e60..cc64da5b76a355a2db1f27d6f8bdc08404ba3945 100644
 --- a/dist/crypto/keySession.js
 +++ b/dist/crypto/keySession.js
-@@ -1,35 +1,166 @@
+@@ -1,35 +1,168 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1812,10 +1846,11 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..3817e0c0ef7427ab1f504137dd2cee1a
 + * `unlockWithPassword()` below, once per mailbox per session, before rendering the mailbox's real
 + * content — see that component's own doc comment.
 + *
-+ * **Password is the only unlock method implemented so far.** Passkey (`passkeyUnlock.ts`) and recovery
-+ * code (`recoveryCode.ts`) derivation already exist and could unwrap the same `MasterKeyWrap` shape,
-+ * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
-+ * passkey has no way to unlock through this module today.
++ * **Password and recovery code are the unlock methods implemented so far** (`unlockWithPassword()`,
++ * `unlockWithRecoveryCode()`, which share one master-key-to-session step). Passkey (`passkeyUnlock.ts`)
++ * derivation exists and could unwrap the same `MasterKeyWrap` shape, but nothing calls it yet — a real
++ * follow-up, not a silent gap: a mailbox enrolled *only* with a passkey has no way to unlock through this
++ * module today.
 + */
  import { findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
  import { fromBase64 } from "./encoding.js";
@@ -1825,6 +1860,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..3817e0c0ef7427ab1f504137dd2cee1a
 -import { deriveFromPassword } from "./passwordUnlock.js";
 +import { KeysLockedError, buildAad, openWithKey } from "./masterKey.js";
 +import { deriveFromPassword, parseArgon2idKdfLabel } from "./passwordUnlock.js";
++import { RECOVERY_KDF_LABEL, deriveFromRecoveryCode } from "./recoveryCode.js";
  /** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
   * sealed each of these values, or `openWithKey()` fails (GCM authenticates the AAD, not just the
   * ciphertext). Centralized here as the one place both wrapping and unwrapping refer to. */
@@ -1901,7 +1937,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..3817e0c0ef7427ab1f504137dd2cee1a
 + * with the zeroed master key throws `KeysLockedError` (see `masterKey.ts`).
 + *
 + * Every object handed out for the mailbox is destroyed - including ones a re-unlock already replaced in the
-+ * store - and an `unlockWithPassword()` still in flight for it when this runs throws `KeysLockedError`
++ * store - and an `unlockWithPassword()`/`unlockWithRecoveryCode()` still in flight for it when this runs throws `KeysLockedError`
 + * instead of restoring keys after the lock.
 + */
  export function destroyUnlockedKeys(mailboxUid) {
@@ -1968,7 +2004,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..3817e0c0ef7427ab1f504137dd2cee1a
  /**
   * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
   * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
-@@ -37,10 +168,15 @@ function findWrappedPrivateKey(vault, fingerprint) {
+@@ -37,10 +170,15 @@ function findWrappedPrivateKey(vault, fingerprint) {
   * currently-active public keys for. Stores the result in this module's in-memory session store.
   *
   * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
@@ -1986,9 +2022,70 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..3817e0c0ef7427ab1f504137dd2cee1a
      const vault = await getKeyVault(mailboxUid);
      const passwordWrap = vault.masterKeyWraps.find((w) => w.method === "password");
      if (!passwordWrap) {
-@@ -54,21 +190,68 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
+@@ -53,22 +191,129 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
+     const salt = fromBase64(passwordWrap.salt);
      const { wrappingKey } = await deriveFromPassword(password, salt, kdfParams);
      const masterKey = await openWithKey(wrappingKey, { ciphertext: passwordWrap.ciphertext, nonce: passwordWrap.nonce }, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
++    return openSession(mailboxUid, mailboxKeys, vault, masterKey, generation);
++}
++/** The one rejection for a recovery code that opens nothing - a wrong code and a vault with no recovery wraps
++ * alike, so a UI can say "that recovery code didn't work" without learning (or revealing) which it was. */
++const RECOVERY_CODE_REJECTED = "That recovery code didn't unlock this mailbox.";
++/**
++ * Unlocks a mailbox's key vault with one of its recovery codes: fetches the vault, tries every `"recovery"` wrap
++ * (`kdf: "hkdf-sha256"`) with `deriveFromRecoveryCode(code, salt)` until one opens the master key, then opens the
++ * signing/encryption private keys and stores the session exactly as `unlockWithPassword()` does - the same
++ * `unopenableKeys` handling, `UnopenableEncryptionKeyError`, `KeysLockedError` on a lock mid-unlock, and
++ * `subscribeKeySession()` notification. `code` is normalized first (case, spacing, dashes, O/I/L slips).
++ *
++ * A wrong code and a vault with no recovery wraps both reject with the same plain `Error` (never saying which
++ * wrap was tried or failed) - the recovery-code counterpart of `unlockWithPassword()`'s wrong-password rejection.
++ *
++ * A recovery code is single-use, but this function writes nothing: the caller removes the used wrap afterwards
++ * with `consumeRecoveryCode(mailboxUid, result.recoveryMethodId)` (and may first offer a new password via
++ * `replacePasswordWrap()` - see that function for why that order is the safe one).
++ */
++export async function unlockWithRecoveryCode(mailboxUid, mailboxKeys, code) {
++    const generation = lockGeneration(mailboxUid);
++    const vault = await getKeyVault(mailboxUid);
++    const recoveryWraps = vault.masterKeyWraps.filter((w) => w.method === "recovery");
++    const aad = buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE);
++    let opened;
++    for (const wrap of recoveryWraps) {
++        if (wrap.kdf !== RECOVERY_KDF_LABEL) {
++            continue;
++        }
++        let wrappingKey;
++        try {
++            wrappingKey = await deriveFromRecoveryCode(code, fromBase64(wrap.salt));
++            opened = { masterKey: await openWithKey(wrappingKey, { ciphertext: wrap.ciphertext, nonce: wrap.nonce }, aad), methodId: wrap.methodId };
++        }
++        catch {
++            // Wrong code for this wrap (AEAD failure), an empty code, or a corrupt wrap - all just "not this one".
++        }
++        finally {
++            wrappingKey?.fill(0);
++        }
++        if (opened) {
++            break;
++        }
++    }
++    if (!opened) {
++        throw new Error(RECOVERY_CODE_REJECTED);
++    }
++    const result = await openSession(mailboxUid, mailboxKeys, vault, opened.masterKey, generation);
++    return {
++        ...result,
++        ...(opened.methodId !== undefined ? { recoveryMethodId: opened.methodId } : {}),
++        remainingRecoveryCodes: recoveryWraps.length - 1,
++    };
++}
++/**
++ * Shared tail of every unlock method once its wrap has yielded `masterKey`: opens and imports the active signing and
++ * encryption private keys, aborts with `KeysLockedError` if the mailbox was locked since `generation` was taken, then
++ * stores the result (tracked weakly in `issued`) and notifies. Zeroes `masterKey` on any failure.
++ */
++async function openSession(mailboxUid, mailboxKeys, vault, masterKey, generation) {
      const unlocked = { masterKey };
 -    const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
 -    const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);
@@ -2116,7 +2213,7 @@ index 509f0888cb0a588e1a404f15baacb2dad03fc613..eddf7c9f701060061d52b3d7c9bfcf87
 +    return crypto.subtle.importKey("pkcs8", raw, algorithm, extractable, usages);
  }
 diff --git a/dist/crypto/keyvaultApi.d.ts b/dist/crypto/keyvaultApi.d.ts
-index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..c619529fc068ae6c43e9c5740372c010f887230c 100644
+index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..72d8dfd94308e8bb1baeab02a89a536458c4d1ce 100644
 --- a/dist/crypto/keyvaultApi.d.ts
 +++ b/dist/crypto/keyvaultApi.d.ts
 @@ -1,3 +1,12 @@
@@ -2230,8 +2327,37 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..c619529fc068ae6c43e9c5740372c010
  export declare function rekey(mailboxUid: string, input: RekeyInput): Promise<KeyVault>;
  /** The wire shape `GET /mail/mailboxes/:id/keys/lookup` returns. */
  export interface KeyLookupResult {
+@@ -163,6 +210,28 @@ export interface KeyLookupResult {
+  * the result onto a `Contact` in the caller's own address book. MUST be called lazily at compose time,
+  * never on message receipt (see `specs/end-to-end_encryption.md`'s "Discovery is Server-Side"). */
+ export declare function lookupKeys(mailboxUid: string, addr: string): Promise<KeyLookupResult>;
++/** What `trustSigner()` pins: the sender's address and the certificate that signed their message. */
++export interface TrustSignerInput {
++    address: string;
++    /** Base64 DER of the signer certificate - `MessageSecurityResult.signerCertificate`. */
++    certificate: string;
++}
++/**
++ * Thrown by `trustSigner()` when restapi answers `409`: a different signing key is already pinned for that address, so
++ * trusting this one would silently replace it. Still an `ApiRequestError` (`status` 409). A UI should show this as a
++ * key conflict for the user to resolve deliberately, not retry.
++ */
++export declare class SignerKeyConflictError extends ApiRequestError {
++    constructor(message: string, code?: string);
++}
++/**
++ * "Trust this signer": pins `certificate` as `address`'s signing key on the caller's contact for that address
++ * (`POST /mail/mailboxes/:id/keys/trust`), after which `evaluateMessageSecurity()` given that contact's pins reports
++ * the sender's signed mail as verified. Resolves with the contact's resulting key state, the same shape as
++ * `lookupKeys()`. Rejects with `SignerKeyConflictError` on `409` (a different signing key is already pinned), and a
++ * plain `ApiRequestError` for `400` (an invalid certificate, or one that doesn't name `address`) and `403`/`404`.
++ */
++export declare function trustSigner(mailboxUid: string, input: TrustSignerInput): Promise<KeyLookupResult>;
+ export type PolicyState = "automatic" | "optional" | "prohibited";
+ export interface EncryptionPolicy {
+     encryptSameOrg: PolicyState;
 diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
-index 0c20e1474cff85aa06a91446979ccab550d1b282..c5389143651305906febee8c39e8516e8f97ddc8 100644
+index 0c20e1474cff85aa06a91446979ccab550d1b282..6e632f93ec0fd84a650ed1d9aecc4d520ea42f6e 100644
 --- a/dist/crypto/keyvaultApi.js
 +++ b/dist/crypto/keyvaultApi.js
 @@ -10,7 +10,7 @@
@@ -2336,6 +2462,45 @@ index 0c20e1474cff85aa06a91446979ccab550d1b282..c5389143651305906febee8c39e8516e
  export function rekey(mailboxUid, input) {
      return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/rekey`, {
          method: "PUT",
+@@ -93,6 +135,38 @@ export function lookupKeys(mailboxUid, addr) {
+     const query = new URLSearchParams({ addr });
+     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/lookup?${query.toString()}`);
+ }
++/**
++ * Thrown by `trustSigner()` when restapi answers `409`: a different signing key is already pinned for that address, so
++ * trusting this one would silently replace it. Still an `ApiRequestError` (`status` 409). A UI should show this as a
++ * key conflict for the user to resolve deliberately, not retry.
++ */
++export class SignerKeyConflictError extends ApiRequestError {
++    constructor(message, code) {
++        super(message, 409, code);
++        this.name = "SignerKeyConflictError";
++    }
++}
++/**
++ * "Trust this signer": pins `certificate` as `address`'s signing key on the caller's contact for that address
++ * (`POST /mail/mailboxes/:id/keys/trust`), after which `evaluateMessageSecurity()` given that contact's pins reports
++ * the sender's signed mail as verified. Resolves with the contact's resulting key state, the same shape as
++ * `lookupKeys()`. Rejects with `SignerKeyConflictError` on `409` (a different signing key is already pinned), and a
++ * plain `ApiRequestError` for `400` (an invalid certificate, or one that doesn't name `address`) and `403`/`404`.
++ */
++export async function trustSigner(mailboxUid, input) {
++    try {
++        return await apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/trust`, {
++            method: "POST",
++            body: JSON.stringify({ address: input.address, certificate: input.certificate }),
++        });
++    }
++    catch (err) {
++        if (err instanceof ApiRequestError && err.status === 409) {
++            throw new SignerKeyConflictError(err.message, err.code);
++        }
++        throw err;
++    }
++}
+ /** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption
+  * controls a compose UI should offer). */
+ export function getEncryptionPolicy() {
 diff --git a/dist/crypto/masterKey.d.ts b/dist/crypto/masterKey.d.ts
 index 77156c2b0c8817ff89d1e132e43435aae1707800..c13e90b56daf1f5767dc51e6f72c913117e7e119 100644
 --- a/dist/crypto/masterKey.d.ts
@@ -2458,11 +2623,97 @@ index da85967d8e3474b387cff2da2432bdb2b3503be2..ef79a58d4fccfb3c3572364be20ca1f8
      const baseKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
      const bits = await crypto.subtle.deriveBits({
          name: "HKDF",
+diff --git a/dist/crypto/masterKeyWraps.d.ts b/dist/crypto/masterKeyWraps.d.ts
+index 0e6a71d2b6cd5afb235e23eace026e55ead474b5..3bdb2ce48d46ed2fa9999c88328ca54ae9e3518f 100644
+--- a/dist/crypto/masterKeyWraps.d.ts
++++ b/dist/crypto/masterKeyWraps.d.ts
+@@ -1,8 +1,8 @@
+-import type { MasterKeyWrap } from "./keyvaultApi.js";
++import { type UnlockedKeys } from "./keySession.js";
++import { type KeyVault, type MasterKeyWrap } from "./keyvaultApi.js";
+ import { Argon2idParams } from "./passwordUnlock.js";
+-/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
+- * high-entropy, see `recoveryCode.ts`'s own doc comment), just a direct HKDF derivation. */
+-export declare const RECOVERY_KDF_LABEL = "hkdf-sha256";
++import { RECOVERY_KDF_LABEL } from "./recoveryCode.js";
++export { RECOVERY_KDF_LABEL };
+ export declare const WRAP_SCHEME_VERSION = 1;
+ export declare const RECOVERY_CODE_COUNT = 8;
+ /** Wraps `mk` under `password` (fresh Argon2id salt every time, even when replacing an existing
+@@ -27,7 +27,7 @@ export declare function buildRecoveryWraps(mailboxUid: string, mk: Uint8Array, c
+  * `fromBase64(wrap.salt)`/`fromBase64(wrap.nonce)` refactor across every wrap method MUST special-case
+  * (or simply skip) `method === "escrow"` first, or it will silently "succeed" with garbage bytes instead
+  * of failing loudly. Nothing in this codebase does that generically today (`keySession.ts` only ever
+- * reads `.salt`/`.nonce` after already filtering to `method === "password"`), but it's exactly the kind
++ * reads `.salt`/`.nonce` after already filtering to `method === "password"` or `method === "recovery"`), but it's exactly the kind
+  * of innocent-looking refactor that would reintroduce this as a real bug. */
+ export declare const ESCROW_KDF_LABEL = "cms-enveloped-data";
+ /**
+@@ -50,3 +50,59 @@ export declare const ESCROW_KDF_LABEL = "cms-enveloped-data";
+  * (server-side) can confirm it matches the mailbox's actually-assigned scope before persisting.
+  */
+ export declare function buildEscrowWrap(mk: Uint8Array, escrowScopeId: string, scopePublicKeyCertDer: Uint8Array): Promise<MasterKeyWrap>;
++/**
++ * Removes the recovery wrap a recovery code just opened (`unlockWithRecoveryCode()`'s `recoveryMethodId`) - recovery
++ * codes are single-use. A thin, intention-revealing wrapper over `removeMasterKeyWrap(mailboxUid, "recovery",
++ * methodId)`; `methodId` is required, so a missing id can never make the server pick "the" recovery wrap itself.
++ *
++ * restapi (`BaseKeyVaultRoute.removeMasterKeyWrap()`) refuses with `409` when this wrap is the vault's last non-escrow
++ * wrap (the owner's last own unlock method) - e.g. the last recovery code of a vault whose password wrap is gone. A
++ * caller replacing a forgotten password should therefore call `replacePasswordWrap()` *before* this, never after:
++ * while the code's wrap still exists it is the other unlock method that makes replacing the password safe. A `404`
++ * means the wrap is already gone (e.g. consumed from another tab) and is safe to treat as done.
++ */
++export declare function consumeRecoveryCode(mailboxUid: string, methodId: string): Promise<KeyVault>;
++/** Why `replacePasswordWrap()` failed - see that function. */
++export type PasswordWrapReplaceFailure = "master_key_rotated" | "multiple_password_wraps" | "no_other_unlock_method" | "add_failed";
++/**
++ * Thrown by `replacePasswordWrap()`. For every `reason` except `"add_failed"` nothing was written. `"add_failed"` means
++ * the old password wrap was removed but the new one couldn't be added: `restored` says whether the old wrap was put
++ * back (the vault is then as it was), and `cause` holds the add's own error (e.g. an `ApiRequestError` `409` for a
++ * master key rotated in the meantime). Either way the mailbox still has the other unlock method checked beforehand.
++ */
++export declare class PasswordWrapReplaceError extends Error {
++    readonly reason: PasswordWrapReplaceFailure;
++    readonly restored?: boolean;
++    readonly cause?: unknown;
++    constructor(reason: PasswordWrapReplaceFailure, message: string, options?: {
++        restored?: boolean;
++        cause?: unknown;
++    });
++}
++/**
++ * Replaces the mailbox's password wrap with one for `newPassword`, wrapping the session's master key
++ * (`unlocked.masterKey`, e.g. after `unlockWithRecoveryCode()` for a forgotten password). Resolves with the vault after
++ * the new wrap was added.
++ *
++ * Why remove-then-add: `unlockWithPassword()` only ever tries the first password wrap, and password wraps carry no
++ * `methodId`, so restapi can't remove one of two (a `DELETE .../wraps/password` without `methodId` matching two wraps is
++ * a `400`). Adding first would leave an unremovable, unused second wrap. The safest order is therefore:
++ *
++ * 1. Build the new wrap (Argon2id) - fails, e.g. with `KeysLockedError` for destroyed keys, before any request.
++ * 2. Read the vault and refuse, writing nothing, with `PasswordWrapReplaceError` when: `expectedMasterKeyGeneration` was
++ * given and isn't the vault's (`"master_key_rotated"` - the remove endpoint doesn't check it, so it is checked here);
++ * the vault holds more than one password wrap (`"multiple_password_wraps"`); or removing the password wrap would
++ * leave no other own unlock wrap, i.e. no non-escrow, non-password wrap (`"no_other_unlock_method"` - restapi's
++ * remove endpoint refuses that with `409` too, since it counts only non-escrow wraps as the owner's own; checking
++ * here first gives a typed reason without a write attempt).
++ * 3. Remove the old password wrap (skipped when there is none: the new wrap is simply added). A failure here is
++ * rethrown as-is; nothing changed.
++ * 4. Add the new wrap, sending `expectedMasterKeyGeneration` when given (restapi answers `409` if the master key was
++ * rotated since). If this fails, the removed wrap is re-added (with the generation read in step 2) and
++ * `PasswordWrapReplaceError` `"add_failed"` is thrown with `restored`. If even that fails the mailbox has no password
++ * wrap, but step 2 guaranteed another own unlock method remains - the user can unlock with it and retry.
++ *
++ * Because step 2 needs another own unlock method, a caller replacing a password after a recovery-code unlock must call
++ * this *before* `consumeRecoveryCode()`: the not-yet-consumed code's wrap is that other method.
++ */
++export declare function replacePasswordWrap(mailboxUid: string, unlocked: Pick<UnlockedKeys, "masterKey" | "destroyed">, newPassword: string, expectedMasterKeyGeneration?: number, params?: Argon2idParams): Promise<KeyVault>;
 diff --git a/dist/crypto/masterKeyWraps.js b/dist/crypto/masterKeyWraps.js
-index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..4cb94be11ffb5efb25b44a922e6d064e035bbda4 100644
+index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..a3d50bd9705e5d72c6ff572416b14a8bd351b3d4 100644
 --- a/dist/crypto/masterKeyWraps.js
 +++ b/dist/crypto/masterKeyWraps.js
-@@ -9,9 +9,12 @@
+@@ -9,16 +9,18 @@
   * method"/"regenerate recovery codes" actions - which wrap the *same* MK a second time, not a freshly
   * generated one - can reuse the exact same wrap-construction logic rather than a second, potentially
   * drifting copy of it.
@@ -2472,11 +2723,21 @@ index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..4cb94be11ffb5efb25b44a922e6d064e
   */
  import { toBase64 } from "./encoding.js";
 -import { buildAad, sealWithKey } from "./masterKey.js";
-+import { assertKeyMaterialUsable, buildAad, sealWithKey } from "./masterKey.js";
++import { KeysLockedError, assertKeyMaterialUsable, buildAad, sealWithKey } from "./masterKey.js";
  import { MASTER_KEY_AAD_PURPOSE } from "./keySession.js";
++import { addMasterKeyWrap, getKeyVault, removeMasterKeyWrap } from "./keyvaultApi.js";
  import { DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "./passwordUnlock.js";
- import { deriveFromRecoveryCode, generateRecoveryCode } from "./recoveryCode.js";
-@@ -27,6 +30,7 @@ export const RECOVERY_CODE_COUNT = 8;
+-import { deriveFromRecoveryCode, generateRecoveryCode } from "./recoveryCode.js";
++import { RECOVERY_KDF_LABEL, deriveFromRecoveryCode, generateRecoveryCode } from "./recoveryCode.js";
+ import { encryptForRecipients } from "./smime.js";
+-/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
+- * high-entropy, see `recoveryCode.ts`'s own doc comment), just a direct HKDF derivation. */
+-export const RECOVERY_KDF_LABEL = "hkdf-sha256";
++export { RECOVERY_KDF_LABEL };
+ export const WRAP_SCHEME_VERSION = 1;
+ export const RECOVERY_CODE_COUNT = 8;
+ /** Wraps `mk` under `password` (fresh Argon2id salt every time, even when replacing an existing
+@@ -27,6 +29,7 @@ export const RECOVERY_CODE_COUNT = 8;
   * be raised over time, per `passwordUnlock.ts`'s own doc comment on why each wrap stores the exact
   * parameters it was created with) apply. */
  export async function buildPasswordWrap(mailboxUid, mk, password, params = DEFAULT_ARGON2ID_PARAMS) {
@@ -2484,7 +2745,7 @@ index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..4cb94be11ffb5efb25b44a922e6d064e
      const salt = generateSalt();
      const { wrappingKey } = await deriveFromPassword(password, salt, params);
      const sealed = await sealWithKey(wrappingKey, mk, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
-@@ -46,6 +50,7 @@ export async function buildPasswordWrap(mailboxUid, mk, password, params = DEFAU
+@@ -46,6 +49,7 @@ export async function buildPasswordWrap(mailboxUid, mk, password, params = DEFAU
   * itself - that would let anyone who saw a wrap's `methodId` narrow down which physical code it
   * corresponds to. */
  export async function buildRecoveryWraps(mailboxUid, mk, count = RECOVERY_CODE_COUNT) {
@@ -2492,7 +2753,16 @@ index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..4cb94be11ffb5efb25b44a922e6d064e
      const aad = buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE);
      const codes = [];
      const wraps = [];
-@@ -100,6 +105,7 @@ const ESCROW_SALT_PLACEHOLDER = "n/a";
+@@ -75,7 +79,7 @@ export async function buildRecoveryWraps(mailboxUid, mk, count = RECOVERY_CODE_C
+  * `fromBase64(wrap.salt)`/`fromBase64(wrap.nonce)` refactor across every wrap method MUST special-case
+  * (or simply skip) `method === "escrow"` first, or it will silently "succeed" with garbage bytes instead
+  * of failing loudly. Nothing in this codebase does that generically today (`keySession.ts` only ever
+- * reads `.salt`/`.nonce` after already filtering to `method === "password"`), but it's exactly the kind
++ * reads `.salt`/`.nonce` after already filtering to `method === "password"` or `method === "recovery"`), but it's exactly the kind
+  * of innocent-looking refactor that would reintroduce this as a real bug. */
+ export const ESCROW_KDF_LABEL = "cms-enveloped-data";
+ const ESCROW_NONCE_PLACEHOLDER = "n/a";
+@@ -100,6 +104,7 @@ const ESCROW_SALT_PLACEHOLDER = "n/a";
   * (server-side) can confirm it matches the mailbox's actually-assigned scope before persisting.
   */
  export async function buildEscrowWrap(mk, escrowScopeId, scopePublicKeyCertDer) {
@@ -2500,11 +2770,122 @@ index 6b59664b782354b7b0f2c8f61a8c3431a6067cef..4cb94be11ffb5efb25b44a922e6d064e
      const envelopedDer = await encryptForRecipients(mk, [scopePublicKeyCertDer]);
      return {
          method: "escrow",
+@@ -112,3 +117,110 @@ export async function buildEscrowWrap(mk, escrowScopeId, scopePublicKeyCertDer)
+         createdAt: Date.now(),
+     };
+ }
++/**
++ * Removes the recovery wrap a recovery code just opened (`unlockWithRecoveryCode()`'s `recoveryMethodId`) - recovery
++ * codes are single-use. A thin, intention-revealing wrapper over `removeMasterKeyWrap(mailboxUid, "recovery",
++ * methodId)`; `methodId` is required, so a missing id can never make the server pick "the" recovery wrap itself.
++ *
++ * restapi (`BaseKeyVaultRoute.removeMasterKeyWrap()`) refuses with `409` when this wrap is the vault's last non-escrow
++ * wrap (the owner's last own unlock method) - e.g. the last recovery code of a vault whose password wrap is gone. A
++ * caller replacing a forgotten password should therefore call `replacePasswordWrap()` *before* this, never after:
++ * while the code's wrap still exists it is the other unlock method that makes replacing the password safe. A `404`
++ * means the wrap is already gone (e.g. consumed from another tab) and is safe to treat as done.
++ */
++export function consumeRecoveryCode(mailboxUid, methodId) {
++    if (!methodId) {
++        return Promise.reject(new Error("A recovery wrap's methodId is required to consume it."));
++    }
++    return removeMasterKeyWrap(mailboxUid, "recovery", methodId);
++}
++/**
++ * Thrown by `replacePasswordWrap()`. For every `reason` except `"add_failed"` nothing was written. `"add_failed"` means
++ * the old password wrap was removed but the new one couldn't be added: `restored` says whether the old wrap was put
++ * back (the vault is then as it was), and `cause` holds the add's own error (e.g. an `ApiRequestError` `409` for a
++ * master key rotated in the meantime). Either way the mailbox still has the other unlock method checked beforehand.
++ */
++export class PasswordWrapReplaceError extends Error {
++    constructor(reason, message, options = {}) {
++        super(message);
++        this.name = "PasswordWrapReplaceError";
++        this.reason = reason;
++        this.restored = options.restored;
++        this.cause = options.cause;
++    }
++}
++/** Copies only `MasterKeyWrap`'s own fields, so a wrap read back from the server can be re-posted as-is. */
++function wireWrap(wrap) {
++    const { method, methodId, escrowScopeId, ciphertext, nonce, salt, kdf, schemeVersion, createdAt } = wrap;
++    return {
++        method,
++        ...(methodId !== undefined ? { methodId } : {}),
++        ...(escrowScopeId !== undefined ? { escrowScopeId } : {}),
++        ciphertext,
++        nonce,
++        salt,
++        kdf,
++        schemeVersion,
++        createdAt,
++    };
++}
++/**
++ * Replaces the mailbox's password wrap with one for `newPassword`, wrapping the session's master key
++ * (`unlocked.masterKey`, e.g. after `unlockWithRecoveryCode()` for a forgotten password). Resolves with the vault after
++ * the new wrap was added.
++ *
++ * Why remove-then-add: `unlockWithPassword()` only ever tries the first password wrap, and password wraps carry no
++ * `methodId`, so restapi can't remove one of two (a `DELETE .../wraps/password` without `methodId` matching two wraps is
++ * a `400`). Adding first would leave an unremovable, unused second wrap. The safest order is therefore:
++ *
++ * 1. Build the new wrap (Argon2id) - fails, e.g. with `KeysLockedError` for destroyed keys, before any request.
++ * 2. Read the vault and refuse, writing nothing, with `PasswordWrapReplaceError` when: `expectedMasterKeyGeneration` was
++ * given and isn't the vault's (`"master_key_rotated"` - the remove endpoint doesn't check it, so it is checked here);
++ * the vault holds more than one password wrap (`"multiple_password_wraps"`); or removing the password wrap would
++ * leave no other own unlock wrap, i.e. no non-escrow, non-password wrap (`"no_other_unlock_method"` - restapi's
++ * remove endpoint refuses that with `409` too, since it counts only non-escrow wraps as the owner's own; checking
++ * here first gives a typed reason without a write attempt).
++ * 3. Remove the old password wrap (skipped when there is none: the new wrap is simply added). A failure here is
++ * rethrown as-is; nothing changed.
++ * 4. Add the new wrap, sending `expectedMasterKeyGeneration` when given (restapi answers `409` if the master key was
++ * rotated since). If this fails, the removed wrap is re-added (with the generation read in step 2) and
++ * `PasswordWrapReplaceError` `"add_failed"` is thrown with `restored`. If even that fails the mailbox has no password
++ * wrap, but step 2 guaranteed another own unlock method remains - the user can unlock with it and retry.
++ *
++ * Because step 2 needs another own unlock method, a caller replacing a password after a recovery-code unlock must call
++ * this *before* `consumeRecoveryCode()`: the not-yet-consumed code's wrap is that other method.
++ */
++export async function replacePasswordWrap(mailboxUid, unlocked, newPassword, expectedMasterKeyGeneration, params = DEFAULT_ARGON2ID_PARAMS) {
++    if (unlocked.destroyed) {
++        throw new KeysLockedError();
++    }
++    const newWrap = await buildPasswordWrap(mailboxUid, unlocked.masterKey, newPassword, params);
++    const vault = await getKeyVault(mailboxUid);
++    if (expectedMasterKeyGeneration !== undefined && (vault.masterKeyGeneration ?? 0) !== expectedMasterKeyGeneration) {
++        throw new PasswordWrapReplaceError("master_key_rotated", "This mailbox's master key was rotated since it was unlocked - unlock it again before changing the password.");
++    }
++    const passwordWraps = vault.masterKeyWraps.filter((w) => w.method === "password");
++    if (passwordWraps.length > 1) {
++        throw new PasswordWrapReplaceError("multiple_password_wraps", "This mailbox has more than one password wrap, so the old one can't be removed safely.");
++    }
++    const oldWrap = passwordWraps[0];
++    if (oldWrap && !vault.masterKeyWraps.some((w) => w.method !== "password" && w.method !== "escrow")) {
++        throw new PasswordWrapReplaceError("no_other_unlock_method", "The password is this mailbox's only unlock method - add another one (e.g. recovery codes) before replacing it.");
++    }
++    if (unlocked.destroyed) {
++        throw new KeysLockedError();
++    }
++    if (oldWrap) {
++        await removeMasterKeyWrap(mailboxUid, "password");
++    }
++    try {
++        return await addMasterKeyWrap(mailboxUid, newWrap, expectedMasterKeyGeneration);
++    }
++    catch (err) {
++        if (!oldWrap) {
++            throw err;
++        }
++        const restored = await addMasterKeyWrap(mailboxUid, wireWrap(oldWrap), vault.masterKeyGeneration).then(() => true, () => false);
++        throw new PasswordWrapReplaceError("add_failed", "The new password couldn't be saved.", { restored, cause: err });
++    }
++}
 diff --git a/dist/crypto/messageSecurity.d.ts b/dist/crypto/messageSecurity.d.ts
-index 39c737137ae875767f859affc408f254493a87b5..ee7881de41adfdddd893fe4e61cadaa1c9ff89ed 100644
+index 39c737137ae875767f859affc408f254493a87b5..39e4f06d1fcee0c3ac0b9ff2549ff873407c9b09 100644
 --- a/dist/crypto/messageSecurity.d.ts
 +++ b/dist/crypto/messageSecurity.d.ts
-@@ -1,39 +1,138 @@
+@@ -1,39 +1,143 @@
 -export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
 +/**
 + * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
@@ -2619,6 +3000,11 @@ index 39c737137ae875767f859affc408f254493a87b5..ee7881de41adfdddd893fe4e61cadaa1
 +    signerFingerprint?: string;
 +    /** The email addresses that signer certificate asserts (lowercased), alongside `signerFingerprint`. */
 +    signerEmails?: string[];
++    /** Base64 DER of the certificate that verified the signature - what `keyvaultApi.ts`'s `trustSigner()` pins for
++     * a "trust this signer" action. Present alongside `signerFingerprint` for `"signed_verified"`,
++     * `"encrypted_verified"` and the `*_unverified_signer` states; never for `"signature_failed"`, even when its
++     * signature itself was valid (a failed binding or pin mismatch is not something to offer trusting). */
++    signerCertificate?: string;
 +}
 +export interface SignerBindingInput {
 +    /** The certificate matched to the verified SignerInfo; `undefined` fails closed. */
@@ -2665,10 +3051,10 @@ index 39c737137ae875767f859affc408f254493a87b5..ee7881de41adfdddd893fe4e61cadaa1
 +    signingFingerprint?: string;
 +} | undefined, pinnedSignerFingerprints?: string | string[], readerAddress?: string): Promise<MessageSecurityResult>;
 diff --git a/dist/crypto/messageSecurity.js b/dist/crypto/messageSecurity.js
-index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f74e9778b 100644
+index d15171a423be5b13034b038a2a19c9edf19cc2cc..ec0edad31ddb5f6c94401987fbc7856733b156b9 100644
 --- a/dist/crypto/messageSecurity.js
 +++ b/dist/crypto/messageSecurity.js
-@@ -4,55 +4,147 @@
+@@ -4,55 +4,148 @@
  ///////////////////////////////////////////////////////////////////////////////
  /**
   * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
@@ -2714,6 +3100,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f
 -function isSignedOnlyContentType(contentType) {
 -    return contentType.toLowerCase().trimStart().startsWith("multipart/signed");
 +import { decodeHeaderText, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
++import { toBase64 } from "./encoding.js";
 +import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
 +import { parseEncryptedMessage, parseSignedOnlyMessage } from "./smimeMessage.js";
 +export { signingKeyFingerprints } from "./keyvaultApi.js";
@@ -2845,7 +3232,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f
      const actualOuterHeaders = {
          from: headers["from"],
          to: headers["to"],
-@@ -60,18 +152,56 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+@@ -60,18 +153,59 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
          date: headers["date"],
          subject: headers["subject"],
      };
@@ -2857,6 +3244,9 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f
 +        const certDer = signerCertificateDer ?? new Uint8Array();
 +        const fingerprint = await computeCertFingerprint(certDer);
 +        const signer = signerCertificateDer ? { signerFingerprint: fingerprint, signerEmails: extractCertificateEmails(certDer) } : {};
++        // The certificate itself (for "trust this signer") only accompanies a signature that didn't fail - and an accepted
++        // signer always has a certificate (a missing one fails the binding check closed), so `certDer` is the real one.
++        const acceptedSigner = { ...signer, signerCertificate: toBase64(certDer) };
 +        const trustedPins = unlocked?.signingFingerprint ? [...callerPins, unlocked.signingFingerprint.toLowerCase()] : callerPins;
 +        const failure = await checkSignerBinding({
 +            signerCertificateDer,
@@ -2868,7 +3258,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f
 +            pinnedSignerFingerprint: callerPins.length > 0 ? trustedPins : undefined,
 +            compareSubject,
 +        });
-+        return { failure, trusted: trustedPins.includes(fingerprint), signer };
++        return { failure, trusted: trustedPins.includes(fingerprint), signer, acceptedSigner };
 +    };
 +    const addressing = (protectedHeaders) => {
 +        const recipients = [...extractAddresses(protectedHeaders?.to), ...extractAddresses(protectedHeaders?.cc)];
@@ -2896,7 +3286,7 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f
 +            return { state: "signature_failed", signatureFailureReason: "invalid_signature" };
          }
 -        return { state: "signed_verified", html: parsed.bodyText, subject: parsed.protectedHeaders?.subject };
-+        const { failure, trusted, signer } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
++        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
 +        if (failure) {
 +            return { state: "signature_failed", signatureFailureReason: failure, ...signer };
 +        }
@@ -2906,13 +3296,13 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f
 +            subject: parsed.protectedHeaders?.subject || undefined,
 +            ...exposedHeaders(parsed.protectedHeaders),
 +            attachments: parsed.attachments,
-+            ...signer,
++            ...acceptedSigner,
 +            ...addressing(parsed.protectedHeaders),
 +        };
      }
      if (isEncryptedContentType(contentType)) {
          if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
-@@ -79,16 +209,27 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
+@@ -79,16 +213,27 @@ export async function evaluateMessageSecurity(rawMime, unlocked, pinnedSignerFin
          }
          const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
          if (!parsed.decrypted) {
@@ -2937,12 +3327,12 @@ index d15171a423be5b13034b038a2a19c9edf19cc2cc..7b1fc5a3ada49e2bbea6e9e7043bec1f
          }
 -        if (parsed.signatureVerified && (await checkPinning(parsed.signerCertificateDer))) {
 -            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
-+        const { failure, trusted, signer } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
++        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
 +        if (failure) {
 +            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...signer };
          }
 -        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
-+        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...signer };
++        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner };
      }
      return { state: "unprotected" };
  }
@@ -3606,10 +3996,18 @@ index 0000000000000000000000000000000000000000..431a89be74f0b534806091b1605cb9e3
 +    return addresses;
 +}
 diff --git a/dist/crypto/recoveryCode.d.ts b/dist/crypto/recoveryCode.d.ts
-index 14e55fa9b2c6c11d45f3a8442ac36627a10f19f2..7d61c68a6b8184c90e49321b2d15f3d34cd40575 100644
+index 14e55fa9b2c6c11d45f3a8442ac36627a10f19f2..421c994bd8bba34b501e386cdc6faa9d2fe498ee 100644
 --- a/dist/crypto/recoveryCode.d.ts
 +++ b/dist/crypto/recoveryCode.d.ts
-@@ -7,6 +7,18 @@ export declare function base32Encode(bytes: Uint8Array): string;
+@@ -1,3 +1,7 @@
++/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
++ * high-entropy), just a direct HKDF derivation. Re-exported from `masterKeyWraps.ts`, which writes it; defined here
++ * so `keySession.ts` can read it without importing `masterKeyWraps.ts` (which imports `keySession.ts`). */
++export declare const RECOVERY_KDF_LABEL = "hkdf-sha256";
+ /** Exported for direct unit testing of the padding/remainder-bits path — `generateRecoveryCode()` always
+  * calls this with a fixed 20-byte input (160 bits), which happens to divide evenly into 5-bit groups
+  * with no remainder, so that path is otherwise unreachable through the public recovery-code API alone. */
+@@ -7,6 +11,18 @@ export declare function base32Encode(bytes: Uint8Array): string;
   * they've been saved — losing every unlock method makes the mailbox's encrypted content permanently
   * unreadable (see the spec's "Recovery" section). */
  export declare function generateRecoveryCode(): string;
@@ -3630,10 +4028,21 @@ index 14e55fa9b2c6c11d45f3a8442ac36627a10f19f2..7d61c68a6b8184c90e49321b2d15f3d3
 + * slips all derive the same key as the code exactly as displayed. */
  export declare function deriveFromRecoveryCode(code: string, salt: Uint8Array): Promise<Uint8Array>;
 diff --git a/dist/crypto/recoveryCode.js b/dist/crypto/recoveryCode.js
-index ac7f897fd95d6c05874a8e5856e98c7b88806bec..c60f40d5fed57b8592cef542b731e892569b03fd 100644
+index ac7f897fd95d6c05874a8e5856e98c7b88806bec..906b0b52a6782a087ef43b7d19593b839e8980e2 100644
 --- a/dist/crypto/recoveryCode.js
 +++ b/dist/crypto/recoveryCode.js
-@@ -51,9 +51,32 @@ export function generateRecoveryCode() {
+@@ -10,6 +10,10 @@
+  * AEAD(HKDF(recovery_code, salt), MK)`.
+  */
+ import { hkdfDerive } from "./masterKey.js";
++/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
++ * high-entropy), just a direct HKDF derivation. Re-exported from `masterKeyWraps.ts`, which writes it; defined here
++ * so `keySession.ts` can read it without importing `masterKeyWraps.ts` (which imports `keySession.ts`). */
++export const RECOVERY_KDF_LABEL = "hkdf-sha256";
+ /** Crockford base32 alphabet — excludes I/L/O/U to avoid transcription ambiguity with 1/0/V, the same
+  * reasoning as TOTP/backup-code schemes elsewhere. */
+ const CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+@@ -51,9 +55,32 @@ export function generateRecoveryCode() {
      }
      return groups.join("-");
  }

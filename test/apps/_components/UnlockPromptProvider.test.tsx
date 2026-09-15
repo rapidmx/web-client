@@ -3,20 +3,26 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { UnlockPromptProvider, useUnlockPrompt } from "../../../apps/shared/components/layout/UnlockPromptProvider.js";
 
-const { getUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
+const { getUnlockedKeys, unlockWithPassword, unlockWithRecoveryCode, getKeyVault, consumeRecoveryCode } = vi.hoisted(() => ({
     getUnlockedKeys: vi.fn(),
     unlockWithPassword: vi.fn(),
+    unlockWithRecoveryCode: vi.fn(),
+    getKeyVault: vi.fn(),
+    consumeRecoveryCode: vi.fn(),
 }));
 vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => ({
     UnopenableEncryptionKeyError: (await importOriginal<typeof import("@rapidmx/react-shared/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
     getUnlockedKeys,
     unlockWithPassword,
+    unlockWithRecoveryCode,
 }));
+vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault }));
+vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({ consumeRecoveryCode, replacePasswordWrap: vi.fn() }));
 
 const fakeUnlockedKeys = { masterKey: new Uint8Array(32) };
 
@@ -225,5 +231,150 @@ describe("UnlockPromptProvider", () => {
         const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
         expect(() => render(<Bare />)).toThrow(/useUnlockPrompt\(\) must be used within an UnlockPromptProvider/);
         spy.mockRestore();
+    });
+
+    describe("recovery code", () => {
+        async function openRecoveryMode(user: ReturnType<typeof userEvent.setup>) {
+            await user.click(screen.getByRole("button", { name: "Do encrypted thing" }));
+            await screen.findByText("Unlock your mailbox");
+            await user.click(screen.getByRole("button", { name: "Use a recovery code instead" }));
+        }
+
+        it("shows a generic error for a code that didn't work, and switching back to the password clears it", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            getKeyVault.mockResolvedValue({ masterKeyGeneration: 2 });
+            unlockWithRecoveryCode.mockRejectedValue(new Error("no recovery wrap opened"));
+            const user = userEvent.setup();
+            render(
+                <UnlockPromptProvider>
+                    <TestConsumer />
+                </UnlockPromptProvider>,
+            );
+            await openRecoveryMode(user);
+            expect(screen.getByText(/Enter one of your recovery codes/)).toBeInTheDocument();
+            await user.type(screen.getByLabelText("Recovery code"), "abcd efgh");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+            expect(await screen.findByText("That recovery code didn't work.")).toBeInTheDocument();
+            expect(unlockWithRecoveryCode).toHaveBeenCalledWith("mb1", [], "abcd efgh");
+            expect(screen.getByText("Result: idle")).toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: "Use your password instead" }));
+            expect(screen.queryByText("That recovery code didn't work.")).not.toBeInTheDocument();
+            expect(screen.getByLabelText("Encryption password")).toBeInTheDocument();
+        });
+
+        it("keeps the unopenable-key explanation for a correct code", async () => {
+            const { UnopenableEncryptionKeyError } = await import("@rapidmx/react-shared/crypto/keySession.js");
+            getUnlockedKeys.mockReturnValue(undefined);
+            getKeyVault.mockResolvedValue({});
+            unlockWithRecoveryCode.mockRejectedValue(new UnopenableEncryptionKeyError("enc-fp"));
+            const user = userEvent.setup();
+            render(
+                <UnlockPromptProvider>
+                    <TestConsumer />
+                </UnlockPromptProvider>,
+            );
+            await openRecoveryMode(user);
+            await user.type(screen.getByLabelText("Recovery code"), "code");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+            expect(await screen.findByText(/Your recovery code is correct, but one of your keys couldn.t be opened/)).toBeInTheDocument();
+        });
+
+        it("resolves the waiting caller as soon as the keys open, then offers the follow-up steps", async () => {
+            getUnlockedKeys.mockReturnValueOnce(undefined).mockReturnValue(fakeUnlockedKeys);
+            getKeyVault.mockResolvedValue({ masterKeyGeneration: 2 });
+            unlockWithRecoveryCode.mockResolvedValue({ unopenableKeys: ["sign-fp"], recoveryMethodId: "recovery-4", remainingRecoveryCodes: 6 });
+            consumeRecoveryCode.mockResolvedValue({});
+            const user = userEvent.setup();
+            render(
+                <UnlockPromptProvider>
+                    <TestConsumer />
+                </UnlockPromptProvider>,
+            );
+            await openRecoveryMode(user);
+            await user.type(screen.getByLabelText("Recovery code"), "code");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+            expect(await screen.findByText("Result: unlocked")).toBeInTheDocument();
+            expect(screen.getByText("Set a new encryption password")).toBeInTheDocument();
+            expect(screen.queryByText("Unlock your mailbox")).not.toBeInTheDocument();
+            expect(screen.getByText(/one of your signing keys couldn.t be opened/)).toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: "Skip" }));
+            expect(await screen.findByText("You have 6 recovery codes left.")).toBeInTheDocument();
+            expect(consumeRecoveryCode).toHaveBeenCalledWith("mb1", "recovery-4");
+            await user.click(screen.getByRole("button", { name: "Done" }));
+            expect(screen.queryByText("Recovery code used")).not.toBeInTheDocument();
+        });
+
+        it("a recovery unlock that finishes after another mailbox's request doesn't close that request's dialog", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            getKeyVault.mockResolvedValue({});
+            let finishUnlock!: (result: unknown) => void;
+            unlockWithRecoveryCode.mockReturnValueOnce(new Promise((resolve) => (finishUnlock = resolve)));
+            let request!: ReturnType<typeof useUnlockPrompt>["requestUnlock"];
+            function Capture() {
+                request = useUnlockPrompt().requestUnlock;
+                return null;
+            }
+            const user = userEvent.setup();
+            render(
+                <UnlockPromptProvider>
+                    <Capture />
+                </UnlockPromptProvider>,
+            );
+            const first = request("mb1", []);
+            await screen.findByText("Unlock your mailbox");
+            await user.click(screen.getByRole("button", { name: "Use a recovery code instead" }));
+            await user.type(screen.getByLabelText("Recovery code"), "code");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+            await waitFor(() => expect(unlockWithRecoveryCode).toHaveBeenCalled());
+
+            const second = request("mb2", []);
+            await expect(first).rejects.toThrow("superseded");
+            const secondOutcome = expect(second).rejects.toThrow("cancelled");
+            getUnlockedKeys.mockReturnValue(fakeUnlockedKeys);
+            finishUnlock({ unopenableKeys: [], recoveryMethodId: "recovery-1", remainingRecoveryCodes: 3 });
+            await waitFor(() => expect(screen.getByRole("button", { name: "Unlock" })).toBeEnabled());
+            expect(screen.getByText("Unlock your mailbox")).toBeInTheDocument();
+            expect(screen.queryByText("Set a new encryption password")).not.toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: "Cancel" }));
+            await secondOutcome;
+            expect(await screen.findByText("Set a new encryption password")).toBeInTheDocument();
+        });
+
+        it("hides the follow-up while another unlock dialog is open, and a new request starts in password mode", async () => {
+            getUnlockedKeys.mockReturnValueOnce(undefined).mockReturnValueOnce(fakeUnlockedKeys).mockReturnValue(undefined);
+            getKeyVault.mockResolvedValue({});
+            unlockWithRecoveryCode.mockResolvedValue({ unopenableKeys: [], recoveryMethodId: "recovery-4", remainingRecoveryCodes: 6 });
+            let request!: ReturnType<typeof useUnlockPrompt>["requestUnlock"];
+            function Capture() {
+                request = useUnlockPrompt().requestUnlock;
+                return null;
+            }
+            const user = userEvent.setup();
+            render(
+                <UnlockPromptProvider>
+                    <Capture />
+                </UnlockPromptProvider>,
+            );
+            const first = request("mb1", []);
+            await screen.findByText("Unlock your mailbox");
+            await user.click(screen.getByRole("button", { name: "Use a recovery code instead" }));
+            await user.type(screen.getByLabelText("Recovery code"), "code");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+            await expect(first).resolves.toBe(fakeUnlockedKeys);
+            expect(await screen.findByText("Set a new encryption password")).toBeInTheDocument();
+
+            const second = request("mb2", []);
+            const secondOutcome = expect(second).rejects.toThrow("cancelled");
+            expect(await screen.findByLabelText("Encryption password")).toBeInTheDocument();
+            expect(screen.queryByText("Set a new encryption password")).not.toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: "Cancel" }));
+            await secondOutcome;
+            expect(await screen.findByText("Set a new encryption password")).toBeInTheDocument();
+        });
     });
 });

@@ -16,11 +16,13 @@ function mockClipboard(writeText: ReturnType<typeof vi.fn>): void {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
 }
 
-const { getKeyVault, enrollKey, getUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
+const { getKeyVault, enrollKey, getUnlockedKeys, unlockWithPassword, unlockWithRecoveryCode, consumeRecoveryCode } = vi.hoisted(() => ({
     getKeyVault: vi.fn(),
     enrollKey: vi.fn(),
     getUnlockedKeys: vi.fn(),
     unlockWithPassword: vi.fn(),
+    unlockWithRecoveryCode: vi.fn(),
+    consumeRecoveryCode: vi.fn(),
 }));
 
 vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
@@ -35,6 +37,7 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => 
     UnopenableEncryptionKeyError: (await importOriginal<typeof import("@rapidmx/react-shared/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
     getUnlockedKeys,
     unlockWithPassword,
+    unlockWithRecoveryCode,
 }));
 
 // The real crypto primitives are exercised end to end by react-shared's own test suite (real WebCrypto/
@@ -46,6 +49,8 @@ vi.mock("@rapidmx/react-shared/crypto/masterKey.js", () => ({
     sealWithKey: async () => ({ ciphertext: "ct", nonce: "n" }),
 }));
 vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({
+    consumeRecoveryCode,
+    replacePasswordWrap: vi.fn(),
     buildPasswordWrap: async () => ({
         method: "password",
         ciphertext: "ct",
@@ -217,6 +222,73 @@ describe("KeyEnrollmentGate", () => {
 
         expect(await screen.findByText("Mail content")).toBeInTheDocument();
         expect(unlockWithPassword).toHaveBeenCalledWith("mb1", mailboxKeys, "a good password");
+    });
+
+    describe("recovery code", () => {
+        it("shows a generic error for a code that didn't work, and can switch back to the password", async () => {
+            getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+            unlockWithRecoveryCode.mockRejectedValue(new Error("no recovery wrap opened"));
+            const user = userEvent.setup();
+            render(
+                <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                    <div>Mail content</div>
+                </KeyEnrollmentGate>,
+            );
+            await screen.findByText("Unlock your mailbox");
+            await user.click(screen.getByRole("button", { name: "Use a recovery code instead" }));
+            expect(screen.getByText(/Enter one of your recovery codes/)).toBeInTheDocument();
+            await user.type(screen.getByLabelText("Recovery code"), "ABCD-efgh");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+            expect(await screen.findByText("That recovery code didn't work.")).toBeInTheDocument();
+            expect(unlockWithRecoveryCode).toHaveBeenCalledWith("mb1", [], "ABCD-efgh");
+            expect(screen.queryByText("Mail content")).not.toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: "Use your password instead" }));
+            expect(screen.queryByText("That recovery code didn't work.")).not.toBeInTheDocument();
+            expect(screen.getByLabelText("Encryption password")).toBeInTheDocument();
+        });
+
+        it("keeps the unopenable-key explanation for a correct code", async () => {
+            const { UnopenableEncryptionKeyError } = await import("@rapidmx/react-shared/crypto/keySession.js");
+            getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+            unlockWithRecoveryCode.mockRejectedValue(new UnopenableEncryptionKeyError("enc-fp"));
+            const user = userEvent.setup();
+            render(
+                <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                    <div>Mail content</div>
+                </KeyEnrollmentGate>,
+            );
+            await screen.findByText("Unlock your mailbox");
+            await user.click(screen.getByRole("button", { name: "Use a recovery code instead" }));
+            await user.type(screen.getByLabelText("Recovery code"), "code");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+            expect(await screen.findByText(/Your recovery code is correct, but one of your keys couldn.t be opened/)).toBeInTheDocument();
+        });
+
+        it("renders children as soon as the keys open, with the follow-up steps on top", async () => {
+            getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [], masterKeyGeneration: 3 });
+            unlockWithRecoveryCode.mockResolvedValue({ unopenableKeys: [], recoveryMethodId: "recovery-1", remainingRecoveryCodes: 0 });
+            const mailboxKeys = [{ fingerprint: "a", useType: "encrypt" }];
+            const user = userEvent.setup();
+            render(
+                <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com" mailboxKeys={mailboxKeys as never}>
+                    <div>Mail content</div>
+                </KeyEnrollmentGate>,
+            );
+            await screen.findByText("Unlock your mailbox");
+            await user.click(screen.getByRole("button", { name: "Use a recovery code instead" }));
+            await user.type(screen.getByLabelText("Recovery code"), "code");
+            await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+            expect(await screen.findByText("Mail content")).toBeInTheDocument();
+            expect(unlockWithRecoveryCode).toHaveBeenCalledWith("mb1", mailboxKeys, "code");
+            expect(screen.getByText(/That was your last recovery code/)).toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: "Keep this code for now" }));
+            expect(screen.queryByText(/That was your last recovery code/)).not.toBeInTheDocument();
+            expect(consumeRecoveryCode).not.toHaveBeenCalled();
+        });
     });
 
     it("shows a generic error and stays on the unlock form when the password is wrong", async () => {

@@ -31,9 +31,9 @@ import {
     evaluateMessageSecurity,
 } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { extractAddresses, type MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
-import { signingKeyFingerprints } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { SignerKeyConflictError, signingKeyFingerprints, trustSigner } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
-import { getPinnedSignerFingerprints } from "./pinnedSigners.js";
+import { clearPinnedSignerCache, getPinnedSignerFingerprints } from "./pinnedSigners.js";
 import { useCompose } from "./compose/ComposeContext.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
@@ -81,6 +81,33 @@ export function checkSenderName(displayName: string | undefined, actualAddress: 
     }
     const shown = /[^\s<>"'(),;:]+@[^\s<>"'(),;:]+/.exec(displayName.normalize("NFKC"))?.[0];
     return { looksLikeAddress: true, misleading: shown !== undefined && shown.toLowerCase() !== actualAddress.toLowerCase() };
+}
+
+export const TRUST_SIGNER_CONFLICT_MESSAGE =
+    "A different signing key is already trusted for this sender, so this one wasn't trusted. The sender's key may have changed; confirm with them before doing anything.";
+export const TRUST_SIGNER_INVALID_MESSAGE = "This certificate can't be trusted for this sender.";
+export const TRUST_SIGNER_FORBIDDEN_MESSAGE = "You don't have permission to trust signers for this mailbox.";
+export const TRUST_SIGNER_GENERIC_MESSAGE = "Couldn't trust this signer. Try again.";
+
+/** The error text for a failed `trustSigner()`. */
+export function trustSignerErrorMessage(err: unknown): string {
+    if (err instanceof SignerKeyConflictError) {
+        return TRUST_SIGNER_CONFLICT_MESSAGE;
+    }
+    if (err instanceof ApiRequestError && err.status === 400) {
+        return TRUST_SIGNER_INVALID_MESSAGE;
+    }
+    if (err instanceof ApiRequestError && err.status === 403) {
+        return TRUST_SIGNER_FORBIDDEN_MESSAGE;
+    }
+    return TRUST_SIGNER_GENERIC_MESSAGE;
+}
+
+/** Groups a fingerprint into 4-character blocks (`AB12 CD34 ...`), ignoring any separators it came with, so it can be
+ * read out and compared with the sender over another channel. */
+export function formatFingerprint(fingerprint: string): string {
+    const compact = fingerprint.replace(/[\s:]/g, "").toUpperCase();
+    return compact.match(/.{1,4}/g)?.join(" ") ?? compact;
 }
 
 /** Saves one attachment recovered from inside a signed/encrypted entity. Always handed to the browser as an
@@ -313,6 +340,12 @@ function MessageDetailContent({
     const [receiptBusy, setReceiptBusy] = useState<ReceiptType | null>(null);
     const [receiptError, setReceiptError] = useState<string | null>(null);
     const [security, setSecurity] = useState<MessageSecurityResult | null>(null);
+    // Whether the pinned-signer lookup for the sender *succeeded* and found no signing keys - the only case "Trust this
+    // signer" is offered in. A failed lookup could be hiding an existing pin, and trusting never replaces one.
+    const [senderUnpinned, setSenderUnpinned] = useState(false);
+    const [trustConfirmOpen, setTrustConfirmOpen] = useState(false);
+    const [trusting, setTrusting] = useState(false);
+    const [trustError, setTrustError] = useState<string | null>(null);
     // "Now", for deciding whether a scheduled send's lease is still live - advanced when the lease runs out.
     const [nowMs, setNowMs] = useState(() => Date.now());
     const { mailboxes } = useMailShell();
@@ -351,11 +384,15 @@ function MessageDetailContent({
         }
         let cancelled = false;
         setSecurity(null);
+        setSenderUnpinned(false);
         // The sender's trusted signing keys: what key discovery pinned on this mailbox's contacts, plus this
         // mailbox's own signing keys when it sent the message itself. A failed lookup means no pins, which can only
         // ever make a signature "signer not verified", never verified.
         const senderAddress = message.from.address;
-        const pinsPromise = getPinnedSignerFingerprints(message.mailboxUid, senderAddress).catch(() => [] as string[]);
+        const pinsPromise = getPinnedSignerFingerprints(message.mailboxUid, senderAddress).then(
+            (fingerprints) => ({ loaded: true, fingerprints }),
+            () => ({ loaded: false, fingerprints: [] as string[] }),
+        );
         getMessageRawContent(message.uid)
             .then(async (rawMime) => {
                 if (cancelled) {
@@ -364,7 +401,8 @@ function MessageDetailContent({
                 const [primaryAddress, ...aliasAddresses] = readerAddressesKey ? readerAddressesKey.split(" ") : [];
                 const ownAddresses = readerAddressesKey.toLowerCase().split(" ");
                 const ownPins = ownAddresses.includes(senderAddress.toLowerCase()) ? signingKeyFingerprints(readerMailbox!.keys) : [];
-                const pins = [...new Set([...(await pinsPromise), ...ownPins])];
+                const contactPins = await pinsPromise;
+                const pins = [...new Set([...contactPins.fingerprints, ...ownPins])];
                 const pinned = pins.length > 0 ? pins : undefined;
                 // The raw content is a byte string - only ever handed to evaluateMessageSecurity(), never shown. Keys
                 // are read after the pin lookup's await, so a lock that happened meanwhile is honored.
@@ -381,6 +419,7 @@ function MessageDetailContent({
                 }
                 if (!cancelled) {
                     setSecurity(result);
+                    setSenderUnpinned(contactPins.loaded && pins.length === 0);
                 }
             })
             .catch(() => {
@@ -446,6 +485,24 @@ function MessageDetailContent({
             setUnlockRefresh((n) => n + 1);
         } catch {
             // User dismissed the unlock dialog - security state stays exactly as it was.
+        }
+    }
+
+    // Only ever invoked from the "Trust this signer" dialog, which only opens for an unverified-signer result carrying
+    // `signerCertificate`. The pin goes on the contact in the mailbox the message belongs to; the evaluation is then
+    // re-run against a fresh pinned-signer lookup, so the badge turns verified.
+    async function handleTrustSigner(address: string, certificate: string) {
+        setTrusting(true);
+        setTrustError(null);
+        try {
+            await trustSigner(message.mailboxUid, { address, certificate });
+            clearPinnedSignerCache();
+            setTrustConfirmOpen(false);
+            setUnlockRefresh((n) => n + 1);
+        } catch (err) {
+            setTrustError(trustSignerErrorMessage(err));
+        } finally {
+            setTrusting(false);
         }
     }
 
@@ -632,6 +689,9 @@ function MessageDetailContent({
     const senderNameCheck = checkSenderName(senderName, senderAddress);
     const showSenderAddress = !!senderName && (signatureShown || senderNameCheck.looksLikeAddress);
     const senderLabel = showSenderAddress ? `${senderName} <${senderAddress}>` : senderName || senderAddress;
+    // Offered only for a valid signature from a certificate nobody pinned for this sender - never to replace a pin.
+    const trustableCertificate =
+        security !== null && UNVERIFIED_SIGNER_STATES.has(security.state) && senderUnpinned ? security.signerCertificate : undefined;
 
     return (
         <div className="flex-1 min-w-0 flex flex-col">
@@ -712,7 +772,8 @@ function MessageDetailContent({
                 )}
                 {security && UNVERIFIED_SIGNER_STATES.has(security.state) && (
                     // Informational: the signature is intact, but nothing ties its certificate to this sender - anyone can
-                    // create a certificate naming any address. No "trust" action: pins are written only by key discovery.
+                    // create a certificate naming any address. "Trust this signer" (below) pins it once the reader has
+                    // confirmed the fingerprint.
                     <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
                         Signed, but the signer isn&rsquo;t a trusted contact key, so the sender isn&rsquo;t verified.
                         {security.signerEmails && security.signerEmails.length > 0 && <> Certificate for {security.signerEmails.join(", ")}.</>}
@@ -723,6 +784,22 @@ function MessageDetailContent({
                             </>
                         )}
                     </p>
+                )}
+                {trustableCertificate && (
+                    <div className="mt-1.5">
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto"
+                            disabled={trusting}
+                            onClick={() => {
+                                setTrustError(null);
+                                setTrustConfirmOpen(true);
+                            }}
+                        >
+                            Trust this signer
+                        </Button>
+                    </div>
                 )}
                 {subjectDiffers && (
                     <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
@@ -990,6 +1067,51 @@ function MessageDetailContent({
                     >
                         Cancel
                     </Button>
+                </div>
+            </Modal>
+            <Modal
+                open={trustConfirmOpen && !!trustableCertificate}
+                onClose={() => !trusting && setTrustConfirmOpen(false)}
+                title="Trust this signer?"
+            >
+                <div className="flex flex-col gap-3 text-sm">
+                    <p>
+                        Mail from <span className="font-medium">{senderAddress}</span> signed with this certificate will show as
+                        verified.
+                    </p>
+                    <dl className="flex flex-col gap-1">
+                        <dt className="text-xs text-text-muted">Certificate issued to</dt>
+                        <dd>{security?.signerEmails?.length ? security.signerEmails.join(", ") : "No email address"}</dd>
+                        <dt className="text-xs text-text-muted">Fingerprint</dt>
+                        <dd className="font-mono text-xs break-all">
+                            {security?.signerFingerprint ? formatFingerprint(security.signerFingerprint) : "Unknown"}
+                        </dd>
+                    </dl>
+                    <p className="text-text-muted">
+                        Anyone can create a certificate naming any address. Before trusting it, confirm this fingerprint with
+                        the sender through another channel, such as a phone call.
+                    </p>
+                    {trustError && <Alert>{trustError}</Alert>}
+                    <div className="flex gap-3">
+                        <Button
+                            type="button"
+                            className="!w-auto"
+                            loading={trusting}
+                            disabled={trusting}
+                            onClick={() => handleTrustSigner(senderAddress, trustableCertificate!)}
+                        >
+                            Trust
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto"
+                            disabled={trusting}
+                            onClick={() => setTrustConfirmOpen(false)}
+                        >
+                            Cancel
+                        </Button>
+                    </div>
                 </div>
             </Modal>
             <Modal open={labelsOpen} onClose={() => setLabelsOpen(false)} title="Labels">

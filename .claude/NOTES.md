@@ -1552,3 +1552,44 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
   - New tests: `MessageDetailPane.round6.test.tsx`; additions in `pinnedSigners`, `AppShell`, `contacts/index`,
     `contacts/[uid]`, distribution-lists `[uid]`, `admin/mailboxes/new`. Per-file coverage 100% on MessageDetailPane,
     pinnedSigners, AppShell, contacts pages, ContactForm.
+- **2026-09-14 — Recovery-code unlock and "Trust this signer".** Not committed. Uses react-shared aa68672's
+  `unlockWithRecoveryCode`, `consumeRecoveryCode`, `replacePasswordWrap`/`PasswordWrapReplaceError`, `trustSigner`/
+  `SignerKeyConflictError` and `MessageSecurityResult.signerCertificate` (in the refreshed yarn patch).
+  - **Where**: only `UnlockPromptProvider` and `KeyEnrollmentGate` (blocking form) have unlock UIs. Settings > Encryption's
+    one `unlockWithPassword()` is the post-rotation re-unlock with the just-set password, not a prompt; the page unlocks
+    through the gate/provider, so it inherits the recovery mode. Its "last password wrap isn't removable" comment was
+    updated (the rule stays).
+  - **New `apps/shared/components/layout/RecoveryCodeUnlock.tsx`**: `startRecoveryUnlock()` reads
+    `getKeyVault().masterKeyGeneration` *before* `unlockWithRecoveryCode()` (read failure = no generation), so any rotation
+    after that read makes `replacePasswordWrap(..., expectedMasterKeyGeneration)` refuse rather than wrap a dead key.
+    `UnlockModeToggle` ("Use a recovery code instead" / "Use your password instead", clears the error).
+    `unlockErrorMessage(err, "recovery")` = "That recovery code didn't work." or a recovery-worded unopenable-key message.
+  - **Continuation**: both callers settle the unlock first (provider resolves waiters and closes its dialog; gate goes
+    `ready` and renders children), then show `RecoveryFollowUpModal`. The provider hides it (`open={!pending}`, state kept)
+    while another unlock dialog is up; keyed per follow-up.
+  - **Follow-up**: optional "Set a new encryption password" (8+ chars, confirm) with Skip; Skip / Escape / X = consume.
+    `remainingRecoveryCodes === 0`: required, explanation, "Keep this code for now" (closes without consuming; Escape
+    does the same). Set password: `getUnlockedKeys()` re-read at submit (missing/destroyed -> locked message, no request),
+    `replacePasswordWrap`, then `consumeRecoveryCode` (404 = done; other failure or no `recoveryMethodId` -> non-blocking
+    warning that the code may still work). Done screen: "N recovery code(s) left", <= 2 links `/settings/encryption`.
+    Replace errors: `master_key_rotated` -> Reload page / Close, no consume; `multiple_password_wraps` -> form hidden,
+    Skip/Keep still offered; `no_other_unlock_method` and `KeysLockedError` -> Close only; `add_failed` restored / not
+    restored -> retryable with different copy; anything else retryable generic (ApiRequestError message appended).
+    Modal's own X button is labelled "Close" too - tests use `getByText("Close")` for ours.
+  - **Known gap**: Settings > Encryption's vault list is loaded when the gate renders children, so a consume/replace done
+    in the follow-up isn't reflected there until reload.
+  - **Coverage gotcha**: `const r = mode === "recovery" ? await a() : null; const x = r ?? (await b())` left an `if` right
+    after it with a v8 `-1` branch count (reported uncovered though both sides ran). A single
+    `await (cond ? a() : b())` fixed it; both callers use that shape.
+  - **Trust this signer** (`MessageDetailPane`): the security effect now records `senderUnpinned` = contact pin lookup
+    *succeeded* and the combined pins (contacts + own keys) are empty; a failed lookup never offers trust. Button shows for
+    `*_unverified_signer` with `signerCertificate` and `senderUnpinned`. Dialog: signer emails ("No email address"),
+    `formatFingerprint()` (separators dropped, uppercase, groups of 4; "Unknown" if absent), the address =
+    first protected From address else `message.from.address` (same `senderAddress` as the From line), out-of-band advice,
+    Trust / Cancel (both disabled and Escape ignored while running). Success: `trustSigner(message.mailboxUid, ...)`,
+    `clearPinnedSignerCache()`, close, bump `unlockRefresh` to re-evaluate. `trustSignerErrorMessage()`: 409 conflict /
+    400 / 403 copy, otherwise generic; the dialog stays open.
+  - Tests: new `RecoveryCodeUnlock.test.tsx`, `MessageDetailPane.trustSigner.test.tsx`; recovery blocks added to
+    `UnlockPromptProvider.test.tsx` and `KeyEnrollmentGate.test.tsx` (their keySession/keyvaultApi/masterKeyWraps mocks
+    gained `unlockWithRecoveryCode`/`getKeyVault`/`consumeRecoveryCode`). Per-file 100% on all four sources. Full run:
+    151 files / 2172 tests, 100 / 99.96 / 100 / 100 (only ComposeWindow's two known branches).
