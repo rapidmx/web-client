@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useRef } from "react";
+import React, { useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TextStyleKit } from "@tiptap/extension-text-style";
@@ -23,6 +23,15 @@ export interface RichTextEditorProps {
     fill?: boolean;
     /** Passed straight through to `ComposeToolbar` — see its own doc comment on this prop. */
     onUploadImage: (file: File) => Promise<string | null>;
+    /** Focuses the editor with the caret at the very start of the document once it mounts - a reply or forward, whose
+     * body starts with an empty paragraph above the signature and quote, so typing goes above them. Only read when
+     * the editor is created. */
+    autoFocusStart?: boolean;
+    /** Called once the editor is ready, with `value` as the editor itself serializes it: TipTap drops what its schema
+     * doesn't hold (e.g. a blockquote's `style`) and adds an empty paragraph after a trailing non-paragraph node (a
+     * quote). That normalization happens on the editor's first transaction - even one that only moves the caret -
+     * and isn't reported through `onChange`, so a caller can compare later edits against this instead of `value`. */
+    onInitialized?: (value: string) => void;
 }
 
 /**
@@ -46,9 +55,24 @@ export interface RichTextEditorProps {
  * sufficient here since TipTap (unlike Monaco) never touches the DOM at module-evaluation time, only when
  * an editor view actually mounts.
  */
-export default function RichTextEditor({ value, onChange, height = "360px", fill = false, onUploadImage }: RichTextEditorProps) {
+export default function RichTextEditor({
+    value,
+    onChange,
+    height = "360px",
+    fill = false,
+    onUploadImage,
+    autoFocusStart = false,
+    onInitialized,
+}: RichTextEditorProps) {
     const onChangeRef = useRef(onChange);
     onChangeRef.current = onChange;
+    const onInitializedRef = useRef(onInitialized);
+    onInitializedRef.current = onInitialized;
+    // Transactions before `create` (the autofocus, and the normalizing one below) aren't edits.
+    const initializedRef = useRef(false);
+    // Held for this editor's lifetime: TipTap focuses a tick after creating the editor, and a re-render passing a
+    // different value in between would replace the option (via `setOptions`) before it's read.
+    const [autofocus] = useState<"start" | false>(autoFocusStart ? "start" : false);
 
     const editor = useEditor({
         extensions: [
@@ -61,8 +85,19 @@ export default function RichTextEditor({ value, onChange, height = "360px", fill
             Placeholder.configure({ placeholder: "Write your message…" }),
         ],
         content: value,
+        autofocus,
         immediatelyRender: false,
-        onUpdate: ({ editor: updated }) => onChangeRef.current(updated.getHTML()),
+        onCreate: ({ editor: created }) => {
+            // An empty transaction runs the schema's append-transaction normalization now, before any edit.
+            created.view.dispatch(created.state.tr);
+            initializedRef.current = true;
+            onInitializedRef.current?.(created.getHTML());
+        },
+        onUpdate: ({ editor: updated }) => {
+            if (initializedRef.current) {
+                onChangeRef.current(updated.getHTML());
+            }
+        },
     });
 
     return (

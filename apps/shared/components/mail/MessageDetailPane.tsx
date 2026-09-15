@@ -4,26 +4,34 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef, useState } from "react";
 import { HiOutlineCheck, HiOutlineExclamationTriangle, HiOutlineLockClosed } from "react-icons/hi2";
-import DOMPurify from "dompurify";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attachment,
     Message,
     MessageClassification,
     ReceiptType,
+    Recipient,
     approveReceipt,
     archiveMessage,
     attachmentContentUrl,
     cancelScheduledSend,
     classifyMessage,
     declineReceipt,
+    getMailbox,
     getMessage,
     getMessageRawContent,
     recallMessage,
     setMessageLabels,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
-import { buildForwardQuote, buildReplyQuote, forwardSubject, replySubject } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
+import {
+    buildForwardQuote,
+    buildReplyQuote,
+    buildReplyRecipients,
+    forwardSubject,
+    replySubject,
+} from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
+import { sanitizeMessageBodyHtml } from "@rapidmx/react-shared/mail/messageBodySanitizer.js";
 import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
 import {
     MessageSecurityResult,
@@ -40,6 +48,8 @@ import { getMyMailboxAccess } from "@rapidmx/react-shared/mail/mailboxAccessApi.
 import KeyChangeReview from "../contacts/KeyChangeReview.js";
 import { KEY_CHANGE_STALE_MESSAGE, sameFingerprint } from "../contacts/contactKeys.js";
 import { useCompose } from "./compose/ComposeContext.js";
+import { loadOriginalMessage } from "./compose/quotedBody.js";
+import { formatRecipient } from "./compose/recipients.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
 import { moveLocalEntity } from "../../search/localIndexRpcClient.js";
@@ -202,58 +212,10 @@ const ENCRYPTED_LOAD_ERROR = "Couldn't load this message's encrypted content.";
 const BODY_CSP_META =
     "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'\">";
 
-const EMBEDDED_URI = /^\s*(?:data|cid):/i;
-/** Attributes whose value makes the browser fetch a resource (as opposed to a user-clicked link). */
-const RESOURCE_URI_ATTRIBUTES = new Set(["src", "srcset", "background", "poster", "lowsrc", "dynsrc", "xlink:href", "action", "formaction"]);
-
-/** Decodes CSS escapes first (so an escaped `u\72l(` can't hide from the checks below), then drops every
- * `@import` and neutralizes every `url()`/`image-set()` reference that isn't a `data:`/`cid:` URI. */
-export function stripRemoteCssUrls(css: string): string {
-    return css
-        .replace(/\\([0-9a-f]{1,6})\s?/gi, (_match, hex: string) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)))
-        .replace(/\\(.)/g, "$1")
-        .replace(/@import[^;]*;?/gi, "")
-        .replace(/(?:-webkit-)?image-set\((?:[^()]|\([^()]*\))*\)/gi, (match) =>
-            [...match.matchAll(/(["'])(.*?)\1/g)].every(([, , uri]) => EMBEDDED_URI.test(uri)) ? match : "none",
-        )
-        .replace(/url\(\s*(["']?)(.*?)\1\s*\)/gi, (match, _quote: string, uri: string) => (EMBEDDED_URI.test(uri) ? match : "none"));
-}
-
-let bodyPurifier: ReturnType<typeof DOMPurify> | undefined;
-
-/** A dedicated DOMPurify instance (hooks registered here never leak into any other DOMPurify caller)
- * that additionally strips every remote resource reference - see `stripRemoteCssUrls()`. */
-function getBodyPurifier(): ReturnType<typeof DOMPurify> {
-    if (!bodyPurifier) {
-        bodyPurifier = DOMPurify(window);
-        bodyPurifier.addHook("uponSanitizeElement", (node, data) => {
-            if (data.tagName === "style") {
-                // An element's `textContent` is always a string (only documents/doctypes yield null).
-                node.textContent = stripRemoteCssUrls(node.textContent as string);
-            }
-        });
-        bodyPurifier.addHook("uponSanitizeAttribute", (node, data) => {
-            const name = data.attrName.toLowerCase();
-            if (name === "style") {
-                data.attrValue = stripRemoteCssUrls(data.attrValue);
-                return;
-            }
-            const isNavigationLink = name === "href" && ["a", "area"].includes(node.nodeName.toLowerCase());
-            if (RESOURCE_URI_ATTRIBUTES.has(name) || (name === "href" && !isNavigationLink)) {
-                const candidates = name === "srcset" ? data.attrValue.split(/,\s+/) : [data.attrValue];
-                if (!candidates.every((candidate) => EMBEDDED_URI.test(candidate))) {
-                    data.keepAttr = false;
-                }
-            }
-        });
-    }
-    return bodyPurifier;
-}
-
-/** Sanitizes a client-rendered body for `srcDoc`, with the CSP meta as its very first element. */
+/** Sanitizes a client-rendered body for `srcDoc` (DOMPurify plus every remote resource reference stripped - see
+ * react-shared's `messageBodySanitizer.ts`), with the CSP meta as its very first element. */
 export function buildSecureSrcDoc(html: string): string {
-    const sanitized = getBodyPurifier().sanitize(html, { FORBID_TAGS: ["link", "meta", "base"] });
-    return BODY_CSP_META + sanitized;
+    return BODY_CSP_META + sanitizeMessageBodyHtml(html);
 }
 
 export interface MessageDetailPaneProps {
@@ -613,40 +575,58 @@ function MessageDetailContent({
         setUnlockRefresh((n) => n + 1);
     }
 
-    // Only ever invoked from the Reply/Reply All/Forward buttons below, which themselves only render
-    // once `message` is loaded (the early return above covers the only other state) — the non-null
-    // assertions reflect that real invariant, matching `handleRecall`'s identical pattern just below.
-    function handleReply() {
-        openCompose({
-            mailboxUid: message.mailboxUid,
-            to: message.from.address,
-            subject: replySubject(message.subject),
-            quotedHtml: buildReplyQuote(message),
-            signatureContext: "reply_forward",
-            suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
-        });
+    // Reply, Reply All and Forward first load the full body to quote (see `loadQuotedBody()`), so the buttons are
+    // disabled meanwhile - a second click would open a second window. An encrypted original keeps its reply
+    // encrypted, since the quote may carry its decrypted content.
+    const [preparingCompose, setPreparingCompose] = useState(false);
+
+    /** The replying mailbox's own addresses (primary and aliases), which a reply never goes to - from the mail shell's
+     * mailbox list, else fetched; none when neither is available. */
+    async function ownAddresses(): Promise<string[]> {
+        const mailbox = readerMailbox ?? (await getMailbox(message.mailboxUid).catch(() => undefined));
+        return mailbox ? [mailbox.primarySmtpAddress, ...(mailbox.aliasAddresses ?? [])] : [];
     }
 
-    function handleReplyAll() {
-        const cc = message.recipients.filter((r) => r.type !== "bcc").map((r) => r.address);
-        openCompose({
-            mailboxUid: message.mailboxUid,
-            to: message.from.address,
-            cc: cc.join(", "),
-            subject: replySubject(message.subject),
-            quotedHtml: buildReplyQuote(message),
-            signatureContext: "reply_forward",
-            suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
-        });
-    }
-
-    function handleForward() {
-        openCompose({
-            mailboxUid: message.mailboxUid,
-            subject: forwardSubject(message.subject),
-            quotedHtml: buildForwardQuote(message),
-            signatureContext: "reply_forward",
-        });
+    async function handleReplyOrForward(kind: "reply" | "replyAll" | "forward") {
+        setPreparingCompose(true);
+        try {
+            const [original, own] = await Promise.all([
+                loadOriginalMessage(message, security, { recipients: kind === "replyAll" }),
+                kind === "forward" ? [] : ownAddresses(),
+            ]);
+            const encrypt = !!message.encrypted;
+            if (kind === "forward") {
+                openCompose({
+                    mailboxUid: message.mailboxUid,
+                    subject: forwardSubject(message.subject),
+                    quotedHtml: buildForwardQuote(message, original.body),
+                    signatureContext: "reply_forward",
+                    encrypt,
+                });
+                return;
+            }
+            // The message's own recipients are only the envelope recipient of a delivered message, so Reply All
+            // answers whoever its headers actually name, with anything the record holds that they don't.
+            const known = new Set((original.recipients ?? []).map((r) => r.address.trim().toLowerCase()));
+            const recipients = buildReplyRecipients(
+                { ...message, recipients: [...(original.recipients ?? []), ...message.recipients.filter((r) => !known.has(r.address.trim().toLowerCase()))] },
+                own,
+                kind === "replyAll",
+            );
+            const format = (list: Recipient[]) => list.map((r) => formatRecipient(r)).join(", ");
+            openCompose({
+                mailboxUid: message.mailboxUid,
+                to: format(recipients.to),
+                cc: recipients.cc.length > 0 ? format(recipients.cc) : undefined,
+                subject: replySubject(message.subject),
+                quotedHtml: buildReplyQuote(message, original.body),
+                signatureContext: "reply_forward",
+                suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
+                encrypt,
+            });
+        } finally {
+            setPreparingCompose(false);
+        }
     }
 
     async function handleRecall() {
@@ -1030,13 +1010,31 @@ function MessageDetailContent({
                     To {message.recipients.map((r) => r.displayName || r.address).join(", ")}
                 </p>
                 <div className="flex gap-2 mt-3">
-                    <Button type="button" variant="secondary" className="!w-auto" onClick={handleReply}>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto"
+                        disabled={preparingCompose}
+                        onClick={() => void handleReplyOrForward("reply")}
+                    >
                         Reply
                     </Button>
-                    <Button type="button" variant="secondary" className="!w-auto" onClick={handleReplyAll}>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto"
+                        disabled={preparingCompose}
+                        onClick={() => void handleReplyOrForward("replyAll")}
+                    >
                         Reply All
                     </Button>
-                    <Button type="button" variant="secondary" className="!w-auto" onClick={handleForward}>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto"
+                        disabled={preparingCompose}
+                        onClick={() => void handleReplyOrForward("forward")}
+                    >
                         Forward
                     </Button>
                     {!inOutbox && message.folderUid !== draftsFolderUid && (

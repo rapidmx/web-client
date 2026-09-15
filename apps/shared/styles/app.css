@@ -276,3 +276,13 @@ h5,
 h6 {
     font-family: var(--rr-font-display);
 }
+
+/* The compose editor's quoted original (`composeQuoting.ts`'s blockquote). TipTap keeps the element but not the
+ * inline style it was seeded with, and Tailwind's preflight resets the browser's own blockquote indent - without
+ * this the quote under a reply reads as if it were part of the new message. */
+.tiptap blockquote {
+    margin: 0;
+    padding-left: 1em;
+    border-left: 2px solid var(--rr-color-border);
+    color: var(--rr-color-text-muted);
+}

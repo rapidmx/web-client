@@ -44,6 +44,8 @@ export interface RecipientInputProps {
     fetchSuggestions?: (query: string, options: ContactSuggestionOptions) => Promise<RecipientSuggestion[]>;
     debounceMs?: number;
     disabled?: boolean;
+    /** Focuses the input when it mounts - a new message starts in To. */
+    autoFocus?: boolean;
 }
 
 interface DropdownPosition {
@@ -89,6 +91,7 @@ export default function RecipientInput({
     fetchSuggestions = fetchRecipientSuggestions,
     debounceMs = RECIPIENT_SUGGESTION_DEBOUNCE_MS,
     disabled,
+    autoFocus,
 }: RecipientInputProps) {
     const [pending, setPending] = useState("");
     const [suggestions, setSuggestions] = useState<RecipientSuggestion[]>([]);
@@ -304,6 +307,7 @@ export default function RecipientInput({
                 aria-controls={listboxId}
                 aria-activedescendant={expanded ? optionId(active) : undefined}
                 disabled={disabled}
+                autoFocus={autoFocus}
                 className="flex-1 min-w-[6rem] text-sm bg-transparent outline-none py-0.5"
                 value={inputValue}
                 onChange={handleInputChange}

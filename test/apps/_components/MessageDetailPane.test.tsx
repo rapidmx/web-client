@@ -70,11 +70,18 @@ vi.mock("../../../apps/shared/components/mail/layout/MailShell.js", async (impor
 // convention) so the "reply/forward" tests below only exercise the values `MessageDetailPane` itself
 // hands off to `openCompose()`, observed via the real `ComposeWindow` that pops up.
 vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => ({
-    default: () => <textarea data-testid="html-editor" />,
+    default: ({ value, autoFocusStart }: { value: string; autoFocusStart?: boolean }) => {
+        // Like the real editor, only the value it mounts with counts.
+        const [mountedAutoFocusStart] = React.useState(!!autoFocusStart);
+        return <textarea data-testid="html-editor" data-autofocus-start={String(mountedAutoFocusStart)} value={value} readOnly />;
+    },
 }));
 
-function mockComposeDraft() {
+/** Compose's own endpoints; `extra` answers anything else first (e.g. the message body a reply quotes). */
+function mockComposeDraft(extra?: (url: string) => Response | Promise<Response> | undefined) {
     return mockFetch((url, init) => {
+        const custom = extra?.(url);
+        if (custom) return custom;
         if (url.startsWith("/api/mail/folders")) {
             return jsonResponse(200, [
                 {
@@ -588,8 +595,11 @@ describe("MessageDetailPane", () => {
     });
 
     describe("reply/forward", () => {
-        it("Reply opens Compose prefilled with the sender's address, a 'Re:' subject, and a quoted body", async () => {
-            mockComposeDraft();
+        it("Reply opens Compose prefilled with the sender (name and address), a 'Re:' subject, and the quoted full body above an empty first line", async () => {
+            const longBody = `<p>${"All the words of a long message. ".repeat(40)}</p><p>The very end.</p>`;
+            mockComposeDraft((url) =>
+                url === "/api/mail/messages/m1/content" ? new Response(longBody, { headers: { "content-type": "text/html; charset=utf-8" } }) : undefined,
+            );
             const user = userEvent.setup();
             render(
                 <ComposeProvider>
@@ -600,30 +610,326 @@ describe("MessageDetailPane", () => {
             await user.click(screen.getByRole("button", { name: "Reply" }));
 
             expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
-            expect(recipientChips("To")).toEqual(["sender@example.com"]);
+            expect(recipientChips("To")).toEqual(["Sender One <sender@example.com>"]);
+            const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+            expect(body.value.startsWith("<p></p><p>On ")).toBe(true);
+            expect(body.value).toContain("Sender One &lt;sender@example.com&gt; wrote:");
+            expect(body.value).toContain(`${longBody}</blockquote>`);
+            expect(body).toHaveAttribute("data-autofocus-start", "true");
         });
 
-        it("Reply All prefills To with the sender and Cc with every other recipient, excluding bcc", async () => {
-            mockComposeDraft();
+        it("disables Reply, Reply All and Forward while the body to quote is loading", async () => {
+            let resolveContent: ((response: Response) => void) | undefined;
+            mockComposeDraft((url) =>
+                url === "/api/mail/messages/m1/content" ? new Promise<Response>((resolve) => (resolveContent = resolve)) : undefined,
+            );
             const user = userEvent.setup();
-            const message = messageFixture({
-                recipients: [
-                    { address: "u1@example.com", displayName: "Me", type: "to" },
-                    { address: "other@example.com", type: "cc" },
-                    { address: "hidden@example.com", type: "bcc" },
-                ],
-            });
             render(
                 <ComposeProvider>
-                    <MessageDetailPane message={message as any} attachments={[]} />
+                    <MessageDetailPane message={messageFixture() as any} attachments={[]} />
                 </ComposeProvider>,
             );
 
-            await user.click(screen.getByRole("button", { name: "Reply All" }));
+            await user.click(screen.getByRole("button", { name: "Forward" }));
+            await waitFor(() => expect(resolveContent).toBeDefined());
+            for (const name of ["Reply", "Reply All", "Forward"]) {
+                expect(screen.getByRole("button", { name })).toBeDisabled();
+            }
+            resolveContent!(new Response("<p>Body</p>", { headers: { "content-type": "text/html" } }));
 
-            await screen.findByRole("dialog", { name: "Re: Hello there" });
-            expect(recipientChips("To")).toEqual(["sender@example.com"]);
-            expect(recipientChips("Cc")).toEqual(["u1@example.com", "other@example.com"]);
+            expect(await screen.findByRole("dialog", { name: "Fwd: Hello there" })).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Reply" })).not.toBeDisabled();
+        });
+
+        it("quotes the text part of the raw message in full when the server has no HTML body (its /content is just the preview)", async () => {
+            const fullText = `${"A long plain-text line. ".repeat(30)}\n\nSecond paragraph <not a tag>.`;
+            const raw = `Content-Type: multipart/mixed; boundary="b"\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${fullText}\r\n--b--\r\n`;
+            const fetchMock = mockComposeDraft((url) => {
+                if (url === "/api/mail/messages/m1/content") return new Response("A long plain", { headers: { "content-type": "text/plain" } });
+                if (url === "/api/mail/messages/m1/raw") return new Response(raw);
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture({ bodyPreview: "A long plain" }) as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+
+            const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+            expect(body.value).toContain(`<p>${"A long plain-text line. ".repeat(30)}</p><p>&nbsp;</p><p>Second paragraph &lt;not a tag&gt;.</p>`);
+            expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1/raw", expect.anything());
+        });
+
+        it("sanitizes the quoted HTML body, dropping scripts and remote images", async () => {
+            mockComposeDraft((url) =>
+                url === "/api/mail/messages/m1/content"
+                    ? new Response('<p onclick="x()">Hello</p><script>evil()</script><img src="https://tracker.example/p.gif">', {
+                          headers: { "content-type": "text/html" },
+                      })
+                    : undefined,
+            );
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+
+            const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+            expect(body.value).toContain("<p>Hello</p></blockquote>");
+            expect(body.value).not.toMatch(/script|onclick|tracker\.example/);
+        });
+
+        it("falls back to the body preview when the body can't be loaded", async () => {
+            mockComposeDraft();
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+
+            const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+            expect(body.value).toContain("<p>Hi there, just checking in.</p></blockquote>");
+        });
+
+        it("falls back to the preview when the raw message has no text part either", async () => {
+            mockComposeDraft((url) => {
+                if (url === "/api/mail/messages/m1/content") return new Response("Preview", { headers: { "content-type": "text/plain" } });
+                if (url === "/api/mail/messages/m1/raw") return new Response("Content-Type: image/png\r\n\r\nPNG");
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture({ bodyPreview: "Preview" }) as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Forward" }));
+
+            const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+            expect(body.value).toContain("<p>Preview</p></blockquote>");
+        });
+
+        it("quotes the raw message's HTML part when /content isn't HTML", async () => {
+            const raw = 'Content-Type: text/html; charset=utf-8\r\n\r\n<p>Raw <b>html</b></p>';
+            mockComposeDraft((url) => {
+                if (url === "/api/mail/messages/m1/content") return jsonResponse(404, { message: "gone" });
+                if (url === "/api/mail/messages/m1/raw") return new Response(raw);
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+
+            const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+            expect(body.value).toContain("<p>Raw <b>html</b></p></blockquote>");
+        });
+
+        describe("replying to signed or encrypted mail", () => {
+            function mockSecureCompose(extra?: (url: string) => Response | undefined) {
+                return mockComposeDraft((url) => extra?.(url) ?? (url.endsWith("/raw") ? new Response("raw mime") : undefined));
+            }
+
+            it("quotes the decrypted content the pane shows, never fetching the server body, and starts the reply encrypted", async () => {
+                getUnlockedKeys.mockReturnValue({ encryptionPrivateKey: {} as any, encryptionCertDer: new Uint8Array() });
+                evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", html: "<p>Decrypted secret</p><script>evil()</script>" });
+                const fetchMock = mockSecureCompose();
+                const user = userEvent.setup();
+                render(
+                    <ComposeProvider>
+                        <MessageDetailPane message={messageFixture({ encrypted: true, bodyPreview: "" }) as any} attachments={[]} />
+                    </ComposeProvider>,
+                );
+                await screen.findByText("Encrypted");
+
+                await user.click(screen.getByRole("button", { name: "Reply" }));
+
+                const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+                expect(body.value).toContain("<p>Decrypted secret</p></blockquote>");
+                expect(body.value).not.toContain("script");
+                expect(screen.getByRole("checkbox", { name: "Encrypt this message" })).toBeChecked();
+                expect(fetchMock).not.toHaveBeenCalledWith("/api/mail/messages/m1/content", expect.anything());
+            });
+
+            it("quotes a recovered plain-text body as escaped text", async () => {
+                evaluateMessageSecurity.mockResolvedValue({ state: "signed_verified", html: "<pre>x</pre>", text: "Signed <b>text</b>" });
+                mockSecureCompose();
+                const user = userEvent.setup();
+                render(
+                    <ComposeProvider>
+                        <MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={[]} />
+                    </ComposeProvider>,
+                );
+                await screen.findByText("Signed & verified");
+
+                await user.click(screen.getByRole("button", { name: "Reply" }));
+
+                const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+                expect(body.value).toContain("<p>Signed &lt;b&gt;text&lt;/b&gt;</p></blockquote>");
+                expect(screen.queryByRole("checkbox", { name: "Encrypt this message" })).not.toBeInTheDocument();
+            });
+
+            it("quotes no ciphertext for an encrypted message this device couldn't open, and still starts the forward encrypted", async () => {
+                getUnlockedKeys.mockReturnValue({ encryptionPrivateKey: {} as any, encryptionCertDer: new Uint8Array() });
+                evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", decryptError: "No key." });
+                const fetchMock = mockSecureCompose();
+                const user = userEvent.setup();
+                render(
+                    <ComposeProvider>
+                        <MessageDetailPane message={messageFixture({ encrypted: true, bodyPreview: "" }) as any} attachments={[]} />
+                    </ComposeProvider>,
+                );
+                await screen.findByText("No key.");
+
+                await user.click(screen.getByRole("button", { name: "Forward" }));
+
+                const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+                expect(body.value).toMatch(/<blockquote[^>]*><p>&nbsp;<\/p><\/blockquote>$/);
+                expect(screen.getByRole("checkbox", { name: "Encrypt this message" })).toBeChecked();
+                expect(fetchMock.mock.calls.filter(([url]) => url === "/api/mail/messages/m1/content" || url === "/api/mail/messages/m1/raw")).toHaveLength(1);
+            });
+        });
+
+        describe("recipients", () => {
+            const readerMailbox = { uid: "mb1", keys: [], primarySmtpAddress: "me@example.com", aliasAddresses: ["Alias@Example.com"] };
+
+            async function replyWith(button: "Reply" | "Reply All", message: Record<string, unknown>, extra?: (url: string) => Response | undefined) {
+                const fetchMock = mockComposeDraft(extra);
+                const user = userEvent.setup();
+                render(
+                    <ComposeProvider>
+                        <MessageDetailPane message={messageFixture(message) as any} attachments={[]} />
+                    </ComposeProvider>,
+                );
+                await user.click(screen.getByRole("button", { name: button }));
+                await screen.findByRole("dialog", { name: "Re: Hello there" });
+                return fetchMock;
+            }
+
+            function ccChips(): (string | null)[] {
+                return screen.queryByRole("list", { name: "Cc recipients" }) ? recipientChips("Cc") : [];
+            }
+
+            it("Reply All leaves the mailbox's own address and aliases out of To and Cc, and repeats nobody", async () => {
+                mailShellOverride.current = { mailboxes: [readerMailbox], mailboxFolders: [] };
+                await replyWith("Reply All", {
+                    recipients: [
+                        { address: "ME@example.com", displayName: "Me", type: "to" },
+                        { address: "bob@example.com", displayName: "Bob, Jr.", type: "to" },
+                        { address: "alias@example.com", type: "cc" },
+                        { address: "Bob@example.com", type: "cc" },
+                        { address: "carol@example.com", displayName: "Carol", type: "cc" },
+                        { address: "hidden@example.com", type: "bcc" },
+                    ],
+                });
+
+                expect(recipientChips("To")).toEqual(["Sender One <sender@example.com>", '"Bob, Jr." <bob@example.com>']);
+                expect(ccChips()).toEqual(["Carol <carol@example.com>"]);
+            });
+
+            it("Reply All to a message the mailbox sent goes to the original recipients, not back to the mailbox", async () => {
+                mailShellOverride.current = { mailboxes: [readerMailbox], mailboxFolders: [] };
+                await replyWith("Reply All", {
+                    from: { address: "me@example.com", displayName: "Me", type: "to" },
+                    recipients: [
+                        { address: "bob@example.com", type: "to" },
+                        { address: "carol@example.com", type: "cc" },
+                        { address: "alias@example.com", type: "cc" },
+                        { address: "hidden@example.com", type: "bcc" },
+                    ],
+                });
+
+                expect(recipientChips("To")).toEqual(["bob@example.com"]);
+                expect(ccChips()).toEqual(["carol@example.com"]);
+            });
+
+            it("Reply to a message the mailbox sent goes to its original To recipient", async () => {
+                mailShellOverride.current = { mailboxes: [readerMailbox], mailboxFolders: [] };
+                await replyWith("Reply", {
+                    from: { address: "alias@example.com", type: "to" },
+                    recipients: [
+                        { address: "bob@example.com", displayName: "Bob", type: "to" },
+                        { address: "carol@example.com", type: "cc" },
+                    ],
+                });
+
+                expect(recipientChips("To")).toEqual(["Bob <bob@example.com>"]);
+                expect(ccChips()).toEqual([]);
+            });
+
+            it("looks the mailbox up for its addresses when the mail shell hasn't listed it", async () => {
+                const fetchMock = await replyWith(
+                    "Reply All",
+                    { recipients: [{ address: "me@example.com", type: "to" }, { address: "carol@example.com", type: "cc" }] },
+                    (url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(200, { ...readerMailbox, aliasAddresses: undefined }) : undefined),
+                );
+
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1", expect.anything());
+                expect(recipientChips("To")).toEqual(["Sender One <sender@example.com>"]);
+                expect(ccChips()).toEqual(["carol@example.com"]);
+            });
+
+            // A delivered message's own `recipients` hold only the envelope recipient this mailbox received at
+            // (restapi's ScanQueueJob), so Reply All recovers the rest from the message's own To/Cc headers.
+            it("Reply All recovers the original To and Cc from the message's headers", async () => {
+                mailShellOverride.current = { mailboxes: [readerMailbox], mailboxFolders: [] };
+                const raw = [
+                    "From: Bob Allen <bob@partner.test>",
+                    'To: "Diaz, Dave" <dave@partner.test>, me@example.com',
+                    "Cc: Carol Cruz <carol@partner.test>, Alias <alias@example.com>",
+                    "Content-Type: text/html; charset=utf-8",
+                    "",
+                    "<p>Body</p>",
+                    "",
+                ].join("\r\n");
+                await replyWith(
+                    "Reply All",
+                    {
+                        from: { address: "bob@partner.test", displayName: '"Bob Allen" <bob@partner.test>', type: "to" },
+                        recipients: [{ address: "me@example.com", type: "to" }],
+                    },
+                    (url) => (url === "/api/mail/messages/m1/raw" ? new Response(raw) : undefined),
+                );
+
+                expect(recipientChips("To")).toEqual(["Bob Allen <bob@partner.test>", '"Diaz, Dave" <dave@partner.test>']);
+                expect(ccChips()).toEqual(["Carol Cruz <carol@partner.test>"]);
+            });
+
+            it("keeps the message's own recipients when its headers can't be read", async () => {
+                mailShellOverride.current = { mailboxes: [readerMailbox], mailboxFolders: [] };
+                await replyWith("Reply All", {
+                    recipients: [
+                        { address: "me@example.com", type: "to" },
+                        { address: "dave@partner.test", type: "to" },
+                    ],
+                });
+
+                expect(recipientChips("To")).toEqual(["Sender One <sender@example.com>", "dave@partner.test"]);
+            });
+
+            it("doesn't read the raw message for a plain Reply", async () => {
+                mailShellOverride.current = { mailboxes: [readerMailbox], mailboxFolders: [] };
+                const fetchMock = await replyWith("Reply", { recipients: [{ address: "me@example.com", type: "to" }] }, (url) =>
+                    url === "/api/mail/messages/m1/content" ? new Response("<p>Body</p>", { headers: { "content-type": "text/html" } }) : undefined,
+                );
+
+                expect(fetchMock.mock.calls.map(([url]) => url)).not.toContain("/api/mail/messages/m1/raw");
+                expect(recipientChips("To")).toEqual(["Sender One <sender@example.com>"]);
+            });
         });
 
         it("Forward opens Compose with a 'Fwd:' subject and no prefilled recipient", async () => {

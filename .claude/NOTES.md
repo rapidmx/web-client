@@ -1831,3 +1831,59 @@ repo, created from this repo at efe108c, which takes the pages, `AvailabilityEdi
   opened from the folders drawer leaves the drawer open over it and the compose window renders at desktop width, cut off
   on the left (the dropdown clamps to the viewport); an invalid-address chip makes key lookups fail, which shows the
   existing "encryption settings couldn't be checked" alert, as a typed invalid address did before.
+
+### 2026-09-15 — Reply/forward: caret at the top, full-body quotes, Reply All recipients
+
+JP: "when replying the cursor should be at the top and the original content below", then confirmed the Reply All bug
+(his own address landed in Cc, so he got a copy of his own reply). The quote builders, the body layout and the reply
+recipients live in react-shared (see its NOTES for that half); this is the UI wiring.
+
+- **Body layout and caret.** `ComposeWindow` seeds the body through react-shared's `buildComposeBodyHtml()`
+  (`<p></p>` + signature + `<p></p>` + quote) and passes `autoFocusStart` to `RichTextEditor`, which sets TipTap's
+  `autofocus: "start"`. Two traps: (1) TipTap focuses in a `setTimeout(0)` **after** mount and reads
+  `options.autofocus` then, so a re-render passing `false` in between would cancel it - `RichTextEditor` holds the
+  value it mounted with in `useState`; (2) minimizing unmounts the editor, so the focus decision is per mount:
+  `bodyFocusedRef`/`fieldsFocusedRef` make it happen once per session. A new message focuses To (`RecipientInput`'s new
+  `autoFocus`), or Subject when To is prefilled (Contacts' Email action); the body is never focused for it.
+- **The dirty-tracking trap that made this more than a one-liner.** StarterKit's TrailingNode appends an empty
+  paragraph after a trailing non-paragraph node (our quote ends in `</blockquote>`) on the editor's **first
+  transaction** - which is now the autofocus itself - and TipTap also drops what its schema doesn't hold (the
+  blockquote's `style`). That fired `onUpdate`, so an untouched reply counted as edited: autosaved as a plaintext
+  draft and confirmed on Close. Fix: `RichTextEditor` ignores `onUpdate` before `create`, dispatches one empty
+  transaction in `onCreate` to run the normalization, and reports the result through the new `onInitialized`;
+  `ComposeWindow` adopts it as both `html` and `seededHtml` while the body is still exactly what it seeded. There is no
+  "reopen a saved draft" path in this app (a compose window always creates its own draft), so this was the only case.
+- **Quoted body (`compose/quotedBody.ts`).** `loadQuotedBody(message, security)`: the pane's own recovered
+  `security.text`/`security.html` (decrypted or verified) first; an encrypted message with nothing recovered quotes
+  nothing (never the ciphertext, never a fetch); otherwise `GET /mail/messages/:uid/content`, and when that answers
+  `text/plain` (restapi's route falls back to `bodyPreview` for a message with no HTML part) the raw MIME is parsed with
+  react-shared's `parseMimeEntity`/`extractDisplayBody` for the real text. Never rejects - `{}` means "quote the
+  preview". An encrypted original also sets the new `openCompose({ encrypt: true })`, which starts the window with
+  `encryptRequested` true, so the decrypted quote is never autosaved as a plaintext draft.
+- **Reply All had nobody to reply to.** restapi's `ScanQueueJob` stores a delivered message's `recipients` as the
+  envelope recipients only - just this mailbox - which is both why Reply All Cc'd JP himself and why, once that was
+  excluded, Reply All would have degraded to a plain reply. `loadOriginalMessage(message, security, { recipients })`
+  therefore recovers the original To/Cc: from a verified message's protected headers when it has them, else from the
+  raw message's own `To`/`Cc` headers (`parseMimeEntity` + this repo's `parseRecipientList()` + react-shared's
+  `decodeHeaderText()` for RFC 2047 names). Unprotected headers are the sender's claim - same as every other client's
+  Reply All. The record's own recipients are still merged in for anything the headers don't name. Only Reply All asks
+  for this (one extra raw fetch); a plain Reply and Forward don't.
+- **`MessageDetailPane`'s own sanitizer moved to react-shared** (`mail/messageBodySanitizer.js`); `buildSecureSrcDoc()`
+  is now the CSP meta plus `sanitizeMessageBodyHtml()`, and the quote uses the stricter `sanitizeQuotedHtml()`. The
+  three Reply/Reply All/Forward handlers became one `handleReplyOrForward(kind)`; the buttons are disabled while the
+  body loads. Own addresses come from `useMailShell()`'s mailbox, falling back to `getMailbox(message.mailboxUid)`.
+- **Editor CSS:** `app.css` had no `.tiptap` rules at all, and Tailwind's preflight resets the browser's blockquote
+  indent, so the quote read as part of the new message (TipTap drops the seeded inline `style` too). Added
+  `.tiptap blockquote`. The Placeholder extension is still unstyled (pre-existing - no `is-empty` rule), so the empty
+  first line shows no placeholder text.
+- **Test-mock gotcha:** a mocked `RichTextEditor` must hold `autoFocusStart` in `useState` like the real one, or an
+  assertion on it fails depending on how many re-renders happened first (it passed alone and failed in the full run).
+- Verification: full `yarn vitest run --coverage` 157 files / 2321 tests, 100 / 99.96 (the two known branch gaps) /
+  100 / 100; `tsc --noEmit -p tsconfig.json`, `yarn lint`, `yarn build` clean (built against the react-shared checkout's
+  `dist` copied into `node_modules`, removed again with a reinstall). Browser check (session scratchpad
+  `reply/replycheck.mjs`, port 38600, 18/18): unlike the other harnesses this one runs the built server with
+  **NODE_ENV=development** - the pages render exactly the same, and the dev scan bypass (no rspamd/clamd here) is what
+  lets a message handed to `/internal/mta/deliver` actually be delivered, so the check drives a real ingested message
+  rather than a hand-built row. Then Reply (caret in the empty first paragraph, typing lands above the quote, full body
+  quoted, tracker pixel and script dropped), Reply All (To = sender + original To, Cc = original Cc, no own address or
+  alias, no Bcc) and Forward.

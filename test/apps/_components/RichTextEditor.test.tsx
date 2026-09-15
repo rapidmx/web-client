@@ -23,6 +23,12 @@ vi.mock("../../../apps/shared/components/mail/compose/ComposeToolbar.js", () => 
     default: ({ editor }: any) => <div data-testid="toolbar" data-has-editor={editor != null} />,
 }));
 
+/** A stand-in for the editor `onCreate` receives. */
+function fakeCreatedEditor(html: string) {
+    const tr = { fake: "transaction" };
+    return { state: { tr }, view: { dispatch: vi.fn() }, getHTML: () => html };
+}
+
 afterEach(() => {
     vi.clearAllMocks();
     lastUseEditorOptions = undefined;
@@ -41,9 +47,48 @@ describe("RichTextEditor", () => {
         render(<RichTextEditor value="" onChange={onChange} />);
 
         const updatedEditor = { getHTML: () => "<p>edited</p>" };
+        lastUseEditorOptions.onCreate({ editor: fakeCreatedEditor("<p></p>") });
         lastUseEditorOptions.onUpdate({ editor: updatedEditor });
 
         expect(onChange).toHaveBeenCalledWith("<p>edited</p>");
+    });
+
+    it("doesn't report transactions from before the editor is created (its autofocus) as edits", () => {
+        const onChange = vi.fn();
+        render(<RichTextEditor value="<blockquote>q</blockquote>" onChange={onChange} />);
+
+        lastUseEditorOptions.onUpdate({ editor: { getHTML: () => "<blockquote><p>q</p></blockquote><p></p>" } });
+
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("normalizes the document when created and reports it via onInitialized, not onChange", () => {
+        const onChange = vi.fn();
+        const onInitialized = vi.fn();
+        render(<RichTextEditor value="<blockquote>q</blockquote>" onChange={onChange} onInitialized={onInitialized} />);
+
+        const created = fakeCreatedEditor("<blockquote><p>q</p></blockquote><p></p>");
+        lastUseEditorOptions.onCreate({ editor: created });
+
+        expect(created.view.dispatch).toHaveBeenCalledWith(created.state.tr);
+        expect(onInitialized).toHaveBeenCalledWith("<blockquote><p>q</p></blockquote><p></p>");
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("works without an onInitialized callback", () => {
+        render(<RichTextEditor value="" onChange={vi.fn()} />);
+        expect(() => lastUseEditorOptions.onCreate({ editor: fakeCreatedEditor("<p></p>") })).not.toThrow();
+    });
+
+    it("passes autofocus 'start' only with autoFocusStart, and keeps the value it mounted with", () => {
+        const { rerender, unmount } = render(<RichTextEditor value="" onChange={vi.fn()} autoFocusStart />);
+        expect(lastUseEditorOptions.autofocus).toBe("start");
+        rerender(<RichTextEditor value="" onChange={vi.fn()} autoFocusStart={false} />);
+        expect(lastUseEditorOptions.autofocus).toBe("start");
+        unmount();
+
+        render(<RichTextEditor value="" onChange={vi.fn()} />);
+        expect(lastUseEditorOptions.autofocus).toBe(false);
     });
 
     it("passes the same editor instance to both the toolbar and the editable content area.", async () => {

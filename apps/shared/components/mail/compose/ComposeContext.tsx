@@ -14,8 +14,11 @@ export interface ComposeSession {
     initialCc?: string;
     initialSubject?: string;
     /** Pre-built HTML (already includes its own quote-attribution wrapper — see `composeQuoting.ts`)
-     * inserted below the resolved default signature. Absent for a fresh, non-reply/forward compose. */
+     * inserted below the resolved default signature. Absent for a fresh, non-reply/forward compose. Its presence
+     * is what makes the window open with the caret at the top of the body instead of in To. */
     initialQuotedHtml?: string;
+    /** See `OpenComposeInput.encrypt`'s own doc comment. */
+    initialEncrypt?: boolean;
     /** Which of a signature's two "default" flags to resolve against — `"new"` (the default) uses
      * `isDefaultForNewMessages`, `"reply_forward"` uses `isDefaultForReplyForward`. */
     signatureContext: "new" | "reply_forward";
@@ -46,6 +49,10 @@ export interface OpenComposeInput {
      * "Mailing lists" note), so the new compose window defaults its Sign toggle off rather than on.
      * The user can still turn it back on manually; this only changes the *default*. */
     suppressSigning?: boolean;
+    /** `true` for a reply to or forward of an encrypted message, whose quote may carry its decrypted content: the
+     * compose window starts with "Encrypt this message" requested, so it is never autosaved as a plaintext draft and
+     * can't be sent unencrypted without the user explicitly choosing to. */
+    encrypt?: boolean;
 }
 
 export interface ComposeContextValue {
@@ -71,7 +78,7 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
     const [sessions, setSessions] = useState<ComposeSession[]>([]);
     const isMobile = useIsMobile();
 
-    function openCompose({ mailboxUid, to, cc, subject, quotedHtml, signatureContext = "new", suppressSigning }: OpenComposeInput) {
+    function openCompose({ mailboxUid, to, cc, subject, quotedHtml, signatureContext = "new", suppressSigning, encrypt }: OpenComposeInput) {
         setSessions((prev) => [
             ...prev,
             {
@@ -81,6 +88,7 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
                 initialCc: cc,
                 initialSubject: subject,
                 initialQuotedHtml: quotedHtml,
+                initialEncrypt: encrypt,
                 signatureContext,
                 suppressSigning,
                 minimized: false,

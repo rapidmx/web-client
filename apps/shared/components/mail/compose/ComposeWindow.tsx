@@ -33,6 +33,7 @@ import {
     uploadAttachment,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
+import { buildComposeBodyHtml } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import { peekMailboxWritability, useMailboxWritability } from "../writableMailboxes.js";
 import { decideMessageEncryption, resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
@@ -204,7 +205,7 @@ export default function ComposeWindow({
     autosaveDelayMs = DEFAULT_AUTOSAVE_DELAY_MS,
     cryptoRetryDelaysMs = DEFAULT_CRYPTO_RETRY_DELAYS_MS,
 }: ComposeWindowProps) {
-    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, signatureContext, suppressSigning, minimized } = session;
+    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, initialEncrypt, signatureContext, suppressSigning, minimized } = session;
     // The sending ("From") mailbox. A reply/forward session names the original message's mailbox; a fresh
     // compose leaves it unset and defaults to the caller's own mailbox once `listMailboxes()` resolves.
     // Everything mailbox-scoped below (Drafts folder, draft, signatures, crypto context) keys off this.
@@ -250,7 +251,9 @@ export default function ComposeWindow({
     // `MessageDetailPane.tsx`'s handleReply()/handleReplyAll() for where this is computed. The user can
     // still turn it back on; this only changes the default.
     const [signEnabled, setSignEnabled] = useState(!suppressSigning);
-    const [encryptRequested, setEncryptRequested] = useState(false);
+    // A reply to or forward of an encrypted message starts (and, after a From switch, restarts) with encryption
+    // requested - see `OpenComposeInput.encrypt`.
+    const [encryptRequested, setEncryptRequested] = useState(!!initialEncrypt);
     const [encryptionBlocked, setEncryptionBlocked] = useState<RecipientEncryptionStatus[] | null>(null);
     // Compose-time discovery (spec: "Discovery occurs ... when the user addresses a new message to a
     // recipient", never on receipt) - keyed by address so a recipient already looked up isn't re-fetched
@@ -485,7 +488,8 @@ export default function ComposeWindow({
     }, [mailbox, encryptionPolicy, lookupRetryToken]);
 
     // Resolves the mailbox's default signature (if any) for `signatureContext` and seeds `html` with it
-    // plus any quoted original message, before `RichTextEditor` ever mounts (gated by `contentReady`
+    // plus any quoted original message (laid out by `buildComposeBodyHtml()`: an empty first paragraph for the
+    // caret, then the signature, then the quote), before `RichTextEditor` ever mounts (gated by `contentReady`
     // below) — `RichTextEditor`'s own doc comment is explicit that `value` only seeds its *initial*
     // content and never re-syncs from a later prop change, so this has to resolve before that first
     // mount, not after. A signature-list failure is best-effort, same as every other supplementary,
@@ -503,14 +507,14 @@ export default function ComposeWindow({
                 const signature = signatures.find((s) =>
                     signatureContext === "new" ? s.isDefaultForNewMessages : s.isDefaultForReplyForward,
                 );
-                const signatureHtml = signature?.contentHtml ? `${signature.contentHtml}<p></p>` : "";
-                const seeded = `${signatureHtml}${initialQuotedHtml ?? ""}`;
+                const seeded = buildComposeBodyHtml(signature?.contentHtml, initialQuotedHtml);
                 setHtml(seeded);
                 setSeededHtml(seeded);
             })
             .catch(() => {
-                setHtml(initialQuotedHtml ?? "");
-                setSeededHtml(initialQuotedHtml ?? "");
+                const seeded = buildComposeBodyHtml(undefined, initialQuotedHtml);
+                setHtml(seeded);
+                setSeededHtml(seeded);
             })
             .finally(() => setContentReady(true));
     }, [mailboxUid, signatureContext, initialQuotedHtml]);
@@ -621,7 +625,7 @@ export default function ComposeWindow({
         lookupsInFlightRef.current = new Set();
         lookupFailuresRef.current = new Map();
         setExhaustedLookups({});
-        setEncryptRequested(false);
+        setEncryptRequested(!!initialEncrypt);
         setEncryptionBlocked(null);
         setSecurityBlock(null);
         offeredCryptoRef.current = { sign: false, encrypt: false };
@@ -1197,8 +1201,8 @@ export default function ComposeWindow({
     const cryptoCheckUnavailable =
         (cryptoContextReady && cryptoLoadFailed && (!mailbox || (encryptionPossible && !encryptionPolicy))) ||
         (encryptionPossible && currentAddresses.some((address) => exhaustedLookups[address] && !recipientStatuses[address]));
-    const latestRef = useRef({ draft, to, cc, bcc, subject, html, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided });
-    latestRef.current = { draft, to, cc, bcc, subject, html, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided };
+    const latestRef = useRef({ draft, to, cc, bcc, subject, html, seededHtml, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided });
+    latestRef.current = { draft, to, cc, bcc, subject, html, seededHtml, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided };
 
     useEffect(() => {
         const due =
@@ -1282,6 +1286,33 @@ export default function ComposeWindow({
         window.addEventListener("beforeunload", handleBeforeUnload);
         return () => window.removeEventListener("beforeunload", handleBeforeUnload);
     }, []);
+
+    // Where the caret starts, once per session: a reply/forward in the body (at its top), a new message in To - or,
+    // with To already filled in (e.g. Contacts' "Email"), in Subject. Minimizing unmounts the fields, so restoring a
+    // window must not move the caret there again.
+    const isReplyOrForward = initialQuotedHtml !== undefined;
+    const fieldsFocusedRef = useRef(false);
+    const bodyFocusedRef = useRef(false);
+    const focusToOnMount = !isReplyOrForward && !initialTo && !fieldsFocusedRef.current;
+    const focusSubjectOnMount = !isReplyOrForward && !!initialTo && !fieldsFocusedRef.current;
+    const focusBodyOnMount = isReplyOrForward && !bodyFocusedRef.current;
+
+    // The editor serializes the seeded body its own way (see `RichTextEditor`'s `onInitialized`). While the body is
+    // still exactly what compose seeded, that serialization becomes the baseline - so an untouched reply or signature
+    // isn't mistaken for an edit (and autosaved) just because the editor was focused or clicked.
+    function handleEditorInitialized(normalized: string) {
+        const latest = latestRef.current;
+        if (latest.html === latest.seededHtml && normalized !== latest.html) {
+            setHtml(normalized);
+            setSeededHtml(normalized);
+        }
+    }
+    useEffect(() => {
+        if (!minimized) {
+            fieldsFocusedRef.current = true;
+            bodyFocusedRef.current ||= contentReady;
+        }
+    }, [minimized, contentReady]);
 
     const title = subject.trim() || "New Message";
     const titleId = `compose-title-${id}`;
@@ -1464,6 +1495,7 @@ export default function ComposeWindow({
                         onChange={setTo}
                         onBlur={(value) => checkRecipientDiscovery(parseAddresses(value))}
                         onCommit={(value) => checkRecipientDiscovery(parseAddresses(value))}
+                        autoFocus={focusToOnMount}
                     />
                     {!showCcBcc && (
                         <button
@@ -1539,12 +1571,22 @@ export default function ComposeWindow({
                         placeholder="Subject"
                         className={FIELD_INPUT}
                         value={subject}
+                        autoFocus={focusSubjectOnMount}
                         onChange={(e) => setSubject(e.target.value)}
                     />
                 </div>
 
                 <div className="flex-1 min-h-0 p-2">
-                    {contentReady && <RichTextEditor value={html} onChange={setHtml} fill onUploadImage={handleUploadImage} />}
+                    {contentReady && (
+                        <RichTextEditor
+                            value={html}
+                            onChange={setHtml}
+                            fill
+                            onUploadImage={handleUploadImage}
+                            autoFocusStart={focusBodyOnMount}
+                            onInitialized={handleEditorInitialized}
+                        />
+                    )}
                 </div>
 
                 {attachments.length > 0 && (

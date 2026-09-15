@@ -78,15 +78,26 @@ vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => 
         value,
         onChange,
         onUploadImage,
+        autoFocusStart,
+        onInitialized,
     }: {
         value: string;
         onChange: (v: string) => void;
         onUploadImage: (file: File) => Promise<string | null>;
+        autoFocusStart?: boolean;
+        onInitialized?: (v: string) => void;
     }) => {
         const [uploadResult, setUploadResult] = React.useState<string>("");
+        // Like the real editor, only the value it mounts with counts.
+        const [mountedAutoFocusStart] = React.useState(!!autoFocusStart);
         return (
             <div>
-                <textarea data-testid="html-editor" value={value} onChange={(e) => onChange(e.target.value)} />
+                <textarea
+                    data-testid="html-editor"
+                    data-autofocus-start={String(mountedAutoFocusStart)}
+                    value={value}
+                    onChange={(e) => onChange(e.target.value)}
+                />
                 <button
                     type="button"
                     onClick={async () => {
@@ -95,6 +106,10 @@ vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => 
                     }}
                 >
                     fake-upload-image
+                </button>
+                {/* Stands in for TipTap's own serialization of the seeded body (see RichTextEditor's onInitialized). */}
+                <button type="button" onClick={() => onInitialized?.(value.replace(/<blockquote>(.*?)<\/blockquote>/g, "<blockquote><p>$1</p></blockquote>"))}>
+                    fake-initialize
                 </button>
                 <span data-testid="upload-result">{uploadResult}</span>
             </div>
@@ -1473,7 +1488,7 @@ describe("ComposeWindow", () => {
             );
             render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
 
-            expect(await screen.findByTestId("html-editor")).toHaveValue("<p>Best,<br>Jane</p><p></p>");
+            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><p>Best,<br>Jane</p>");
         });
 
         it("seeds the editor with the mailbox's isDefaultForReplyForward signature, plus the quoted content, for a reply/forward", async () => {
@@ -1493,7 +1508,7 @@ describe("ComposeWindow", () => {
                 />,
             );
 
-            expect(await screen.findByTestId("html-editor")).toHaveValue("<p>Best,<br>Jane</p><p></p><blockquote>Hi</blockquote>");
+            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><p>Best,<br>Jane</p><p></p><blockquote>Hi</blockquote>");
         });
 
         it("seeds the editor with just the quoted content when the mailbox has no matching default signature", async () => {
@@ -1508,7 +1523,7 @@ describe("ComposeWindow", () => {
                 />,
             );
 
-            expect(await screen.findByTestId("html-editor")).toHaveValue("<blockquote>Hi</blockquote>");
+            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><blockquote>Hi</blockquote>");
         });
 
         it("falls back to just the quoted content when the signature list fails to load", async () => {
@@ -1521,7 +1536,7 @@ describe("ComposeWindow", () => {
                 />,
             );
 
-            expect(await screen.findByTestId("html-editor")).toHaveValue("<blockquote>Hi</blockquote>");
+            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><blockquote>Hi</blockquote>");
         });
 
         it("does not mount the editor until the signature lookup resolves", async () => {
@@ -1541,6 +1556,159 @@ describe("ComposeWindow", () => {
 
             resolveSignatures!();
             expect(await screen.findByTestId("html-editor")).toBeInTheDocument();
+        });
+    });
+
+    describe("initial focus and reply layout", () => {
+        function renderSession(overrides: Partial<ComposeSession>, props: Partial<React.ComponentProps<typeof ComposeWindow>> = {}) {
+            const onClose = vi.fn();
+            const utils = render(<ComposeWindow session={session(overrides)} onClose={onClose} onToggleMinimize={vi.fn()} {...props} />);
+            return { ...utils, onClose };
+        }
+
+        const replySession = {
+            signatureContext: "reply_forward" as const,
+            initialTo: "sender@example.com",
+            initialSubject: "Re: Hi",
+            initialQuotedHtml: "<blockquote>Hi</blockquote>",
+        };
+
+        it("starts a reply in the body, at its top above the quote, not in To", async () => {
+            mockCompose();
+            renderSession(replySession);
+
+            const editor = await screen.findByTestId("html-editor");
+            expect(editor).toHaveValue("<p></p><blockquote>Hi</blockquote>");
+            expect(editor).toHaveAttribute("data-autofocus-start", "true");
+            expect(screen.getByLabelText("To")).not.toHaveFocus();
+            expect(screen.getByLabelText("Subject")).not.toHaveFocus();
+        });
+
+        it("starts a forward in the body too, even with no recipient yet", async () => {
+            mockCompose();
+            renderSession({ signatureContext: "reply_forward", initialQuotedHtml: "<p>---------- Forwarded message ----------</p>" });
+
+            expect(await screen.findByTestId("html-editor")).toHaveAttribute("data-autofocus-start", "true");
+            expect(screen.getByLabelText("To")).not.toHaveFocus();
+        });
+
+        it("starts a new message in To, without focusing the body", async () => {
+            mockCompose();
+            renderSession({});
+
+            expect(await screen.findByTestId("html-editor")).toHaveAttribute("data-autofocus-start", "false");
+            expect(screen.getByLabelText("To")).toHaveFocus();
+        });
+
+        it("starts a new message with prefilled recipients (the Contacts Email action) in Subject", async () => {
+            mockCompose();
+            renderSession({ initialTo: "bob@example.com" });
+
+            expect(await screen.findByTestId("html-editor")).toHaveAttribute("data-autofocus-start", "false");
+            expect(screen.getByLabelText("Subject")).toHaveFocus();
+        });
+
+        it("neither moves the caret again nor reseeds the body when a minimized reply is restored", async () => {
+            mockCompose();
+            const { rerender } = renderSession(replySession);
+            fireEvent.change(await screen.findByTestId("html-editor"), { target: { value: "<p>Thanks!</p><blockquote>Hi</blockquote>" } });
+
+            rerender(<ComposeWindow session={session({ ...replySession, minimized: true })} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            expect(screen.queryByTestId("html-editor")).not.toBeInTheDocument();
+            rerender(<ComposeWindow session={session(replySession)} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            const editor = await screen.findByTestId("html-editor");
+            expect(editor).toHaveValue("<p>Thanks!</p><blockquote>Hi</blockquote>");
+            expect(editor).toHaveAttribute("data-autofocus-start", "false");
+        });
+
+        it("keeps focus out of To when a minimized new message is restored", async () => {
+            mockCompose();
+            const { rerender } = renderSession({});
+            await screen.findByTestId("html-editor");
+            act(() => screen.getByLabelText("To").blur());
+
+            rerender(<ComposeWindow session={session({ minimized: true })} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            rerender(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            await screen.findByTestId("html-editor");
+            expect(screen.getByLabelText("To")).not.toHaveFocus();
+        });
+
+        it("treats an untouched reply as unchanged: no autosave, and Close discards it without asking", async () => {
+            const fetchMock = mockCompose((url, init) => {
+                if (url === "/api/mail/compose/m1/assemble") return jsonResponse(200, draft);
+                return init?.method === "DELETE" ? new Response(null, { status: 204 }) : undefined;
+            });
+            const user = userEvent.setup();
+            const { onClose } = renderSession(replySession, { autosaveDelayMs: 5 });
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+            await screen.findByTestId("html-editor");
+
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(fetchMock.mock.calls.filter(([url]) => url === "/api/mail/compose/m1/assemble")).toHaveLength(0);
+
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            expect(onClose).toHaveBeenCalledTimes(1);
+            expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).not.toBeInTheDocument();
+        });
+
+        it("takes the editor's own serialization of an untouched body as the baseline, so it still isn't autosaved or confirmed", async () => {
+            const fetchMock = mockCompose((url, init) => {
+                if (url === "/api/mail/compose/m1/assemble") return jsonResponse(200, draft);
+                return init?.method === "DELETE" ? new Response(null, { status: 204 }) : undefined;
+            });
+            const user = userEvent.setup();
+            const { onClose } = renderSession(replySession, { autosaveDelayMs: 5 });
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+
+            await user.click(await screen.findByRole("button", { name: "fake-initialize" }));
+            expect(screen.getByTestId("html-editor")).toHaveValue("<p></p><blockquote><p>Hi</p></blockquote>");
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(fetchMock.mock.calls.filter(([url]) => url === "/api/mail/compose/m1/assemble")).toHaveLength(0);
+
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            expect(onClose).toHaveBeenCalledTimes(1);
+            expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).not.toBeInTheDocument();
+        });
+
+        it("keeps an edit made before the editor reported its serialization", async () => {
+            mockCompose();
+            const user = userEvent.setup();
+            renderSession(replySession, { autosaveDelayMs: 60_000 });
+            const editor = await screen.findByTestId("html-editor");
+
+            fireEvent.change(editor, { target: { value: "<p>Typed</p><blockquote>Hi</blockquote>" } });
+            await user.click(screen.getByRole("button", { name: "fake-initialize" }));
+
+            expect(editor).toHaveValue("<p>Typed</p><blockquote>Hi</blockquote>");
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toBeInTheDocument();
+        });
+
+        it("changes nothing when the editor serializes the body exactly as seeded", async () => {
+            mockCompose();
+            const user = userEvent.setup();
+            renderSession({ signatureContext: "reply_forward", initialQuotedHtml: "<p>quoted</p>" });
+
+            await user.click(await screen.findByRole("button", { name: "fake-initialize" }));
+            expect(screen.getByTestId("html-editor")).toHaveValue("<p></p><p>quoted</p>");
+        });
+
+        it("starts a reply to an encrypted message with Encrypt requested, and never autosaves it", async () => {
+            getUnlockedKeys.mockReturnValue({
+                masterKey: new Uint8Array(32),
+                encryptionPrivateKey: fakeEncryptionKey,
+                encryptionCertDer: fakeCertDer("alice-encrypt"),
+                encryptionFingerprint: "fp-own",
+            });
+            const fetchMock = mockCompose((url) => (url === "/api/mail/compose/m1/assemble" ? jsonResponse(200, draft) : undefined));
+            renderSession({ ...replySession, initialQuotedHtml: "<blockquote>Decrypted secret</blockquote>", initialEncrypt: true }, { autosaveDelayMs: 5 });
+
+            expect(await screen.findByLabelText("Encrypt this message")).toBeChecked();
+            fireEvent.change(await screen.findByTestId("html-editor"), { target: { value: "<p>More</p><blockquote>Decrypted secret</blockquote>" } });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(fetchMock.mock.calls.filter(([url]) => url === "/api/mail/compose/m1/assemble")).toHaveLength(0);
         });
     });
 

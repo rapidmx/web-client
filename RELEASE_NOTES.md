@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-Needs `@rapidmx/react-shared` with `mail/directoryApi.js` and `@rapidmx/restapi` with `BaseDirectoryRoute` (both
-unreleased).
+Needs `@rapidmx/react-shared` with `mail/directoryApi.js`, `mail/messageBodySanitizer.js` and `composeQuoting.js`'s
+`buildComposeBodyHtml()`/`buildReplyRecipients()`, and `@rapidmx/restapi` with `BaseDirectoryRoute` (all unreleased).
 
 ### Features
 
@@ -19,6 +19,32 @@ unreleased).
   and semicolons separate recipients as well as commas.
 
 ### Fixes
+
+- **Replying and forwarding:**
+  - Reply, Reply All and Forward now open with the caret on an empty line at the very top of the message, above your
+    signature and the quoted original, so what you type goes above the quote - as in Outlook and Gmail. A new message
+    still starts in To (or in Subject when the recipient is already filled in, for example from Contacts), and the body
+    is never focused for it.
+  - The quote now carries the original message in full, as you saw it - its formatting, lists and links - instead of
+    the short preview the server derives at delivery (which cut a long message off mid-sentence). Quoted HTML is
+    sanitized the same way a displayed body is: no scripts, no remote images or stylesheets, nothing that could load a
+    tracker, and no images that only existed inside the original message. Messages with no HTML body are quoted from
+    their full plain text, and the preview is used only when nothing else can be loaded.
+  - Replying to or forwarding an encrypted message quotes the decrypted content you were reading, so the new message
+    starts with Encrypt turned on: it is never saved as a plaintext draft, and can only go out unencrypted if you
+    explicitly choose to. An encrypted message this device can't open quotes nothing at all, never its ciphertext.
+  - **Reply All no longer addresses the reply to yourself.** Your mailbox's own address and its aliases are left out of
+    both To and Cc, so you no longer receive a copy of your own reply; no address is listed twice; Bcc recipients are
+    never carried over; and recipients keep their display names. Reply All now puts the original To recipients in To
+    (with the sender) and the original Cc in Cc. It also recovers who the message was really addressed to from its own
+    headers, since a delivered message's stored recipients name only your own mailbox - so Reply All reaches everyone
+    on the original again.
+  - A sender whose name the server stored with its address attached (`"Bob Allen" <bob@example.com>`) is no longer
+    shown, or addressed, as `"Bob Allen" <bob@example.com> <bob@example.com>`.
+  - Replying to a message you sent yourself (from Sent Items) now writes back to its original recipients instead of to
+    yourself.
+  - The reply attribution line names the sender as `Name <address>`, and the quoted original is indented behind a
+    grey bar while you write, instead of running on as if it were part of your own message.
 
 - **Styles for `@rapidmx/react-shared` components:** `app.css` told Tailwind to scan
   `node_modules/@rapidmx/react-shared/src`, a path that doesn't exist relative to the stylesheet, and the published
