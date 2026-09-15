@@ -69,7 +69,9 @@ let channel: BroadcastChannel | undefined;
 
 function getWorker(): Worker {
     if (!worker) {
-        worker = new Worker(new URL("./localIndexWorker.ts", import.meta.url), { type: "module" });
+        // Named by its compiled `.js` file, like every other relative import: tsc copies the literal into
+        // `dist` unchanged, where only the `.js` file exists, and Vite maps it back to the `.ts` source.
+        worker = new Worker(new URL("./localIndexWorker.js", import.meta.url), { type: "module" });
         worker.addEventListener("message", (event: MessageEvent<LocalIndexResponse>) => {
             const entry = pending.get(event.data.id);
             if (!entry) {

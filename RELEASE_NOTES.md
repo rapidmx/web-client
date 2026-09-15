@@ -16,6 +16,12 @@ that builds plugin UI and sends plugin navigation; older servers send none and n
 - **Type declarations:** the package now ships `.d.ts` files next to the compiled `dist/apps` modules, so TypeScript
   plugin pages get types for these imports.
 
+### Fixes
+
+- **Search worker in the compiled modules:** `dist/apps/shared/search/localIndexRpcClient.js` named its Worker by its
+  `.ts` source file, which isn't in `dist`, so bundling the compiled modules with Vite (as plugin pages do) failed. It
+  now names `localIndexWorker.js`, and `yarn build` fails if a compiled module references a missing relative file.
+
 ### Breaking changes
 
 - **Booking links moved to a plugin:** the Settings → Booking Links pages (`apps/www/settings/booking-types`) and

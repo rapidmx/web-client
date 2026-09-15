@@ -1717,3 +1717,25 @@ repo, created from this repo at efe108c, which takes the pages, `AvailabilityEdi
   100 / 100; `tsc --noEmit -p tsconfig.json`, `yarn lint`, `yarn build` clean. A first full run had
   `settings/filters/new` "shows a loading state..." fail (`resolveFolders is not a function`) while tsc and lint ran
   alongside it; it passed alone and in the clean rerun - a load-dependent flake, same family as the known ones.
+
+### 2026-09-15 — Worker URL in `dist` named a `.ts` file
+
+- **Cause:** `localIndexRpcClient.ts` spawned its Worker with `new URL("./localIndexWorker.ts", import.meta.url)`. tsc
+  copies that literal into `dist/apps/shared/search/localIndexRpcClient.js` unchanged, but only `localIndexWorker.js`
+  exists there, so any Vite build of the published `dist/apps` modules (the server building plugin pages, which import
+  `@rapidmx/web-client/<path>.js` package exports) failed to resolve the worker. The server carries an alias to
+  `apps` sources (`src/lib/serverViteConfig.ts`, `webClientSourceAlias()`) as a workaround; it can drop it once it
+  consumes a web-client with this fix.
+- **Fix:** name it `./localIndexWorker.js`, like every other relative import. Vite's worker plugin
+  (`vite:worker-import-meta-url`) resolves relative worker URLs through `tryFsResolve`, whose `.js` -> `.ts`/`.tsx`
+  fallback maps it back to the source, so dev, tests (which stub `Worker`) and source builds keep working. It was the
+  only `.ts`/`.tsx` reference in code under `dist` (the other grep hits are comments).
+- **Guard:** `scripts/checkDistReferences.mjs`, now the last step of `yarn build`, fails when a `.js` or `.d.ts` file
+  under `dist` has a static/dynamic import, re-export or `new URL(..., import.meta.url)` whose relative target is
+  missing or ends in `.ts`/`.tsx` (comments are stripped first; a `.d.ts` `./x.js` import may resolve to `x.d.ts`).
+  Run against the old `dist` it reported exactly this one reference.
+- **Verification:** `yarn build` clean with the check passing; scratch Vite 8 builds (in the session scratchpad) of an
+  entry importing `dist/.../localIndexRpcClient.js` and one importing the `.ts` source both emit a
+  `localIndexWorker-*.js` chunk and the wa-sqlite wasm, while the same dist build with the old `.ts` literal restored
+  fails. Full `yarn vitest run --coverage` 153 files / 2253 tests, 100 / 99.96 / 100 / 100; `tsc --noEmit -p
+  tsconfig.json`, `yarn lint` clean.
