@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.5.0
 
 This release adds recovery-code unlock, "trust this signer" and plugin search, updates and dependencies. It also
 hardens compose, encryption, local search and the admin consoles after several rounds of review. It needs

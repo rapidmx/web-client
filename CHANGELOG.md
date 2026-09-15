@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-15
+
+### Added
+- Added a Find plugins section to the Plugins page that searches the configured namespaces, showing each plugin's latest version and install state with Install and Upgrade buttons
+- Added a recovery code unlock mode to the unlock dialog and key enrollment gate, with follow-up steps to optionally set a new encryption password, remove the used code and show how many codes remain
+- Added Trust this signer for validly signed mail from senders with no pinned signing key, confirming the certificate email and fingerprint before pinning it and re-checking the message
+
+### Changed
+- Show an Update available badge with an Upgrade button for installed plugins that have a newer published version
+- Change installed plugins to show an Enabled or Disabled badge with Enable/Disable and Uninstall buttons
+- Patch @rapidmx/react-shared 0.4.0 with the plugin search, update and namespace API functions until its next release
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Check what installing or upgrading a plugin also takes before doing it: conflicts are explained instead, and other plugins it installs or enables are listed for confirmation first
+- Show the dependencies installed or enabled with a plugin, reloading the list after a version change or enable that brought some in
+- Show Requires and Required by on installed plugins
+- Refresh the @rapidmx/react-shared patch with planPluginChange()
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Delete every local search index on sign-out and wait for it before leaving, and remove indexes for mailboxes the signed-in user can't access
+- Run local index worker requests one at a time per mailbox, take a per-mailbox browser lock, and rebuild an index found corrupt instead of failing forever
+- Only narrow encrypted search to the local index once a build is complete, dedupe load-more pages and ignore stale search, folder, label and calendar responses
+- Skip already-indexed messages when rebuilding, limit fetch concurrency, measure the index budget by database size with incremental vacuum and evict in bulk, and prune messages no longer on the server
+- Load labels for the selected message's own mailbox, and keep folder changes from archive and scheduled-send cancel in the local index
+- Only offer mailboxes the user can write to in compose From and the new event, contact and to-do mailbox pickers, and create the new draft before deleting the old one when From changes
+- Settle an earlier unlock request instead of leaving it pending, and only check setup status for trusted users
+- Confirm enabling a plugin through the dependency preview, send the confirmed plan with every plugin change, keep polling status after errors and changes, re-check the Add plugin preview when the name or version changes, and send only changed plugin settings
+- Require downloading the escrow private key before confirming it was saved, delay revoking the download URL, and make generated key fields read-only
+- Confirm running setup again, warn before discarding unsaved settings in the wizard, save step progress in order, retry a failed domain load and require a domain before finishing, and keep locally created mailboxes when the list reloads
+- Show access granted outside the Sharing page as custom access
+- Refresh the @rapidmx/react-shared patch
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Only narrow encrypted search to the local index for mail a build completed this session covered, searching mail newer than the pass, and key the Tier 3 cache by the windows searched
+- Index custom folders, re-walk folders whose message count changed mid-build before pruning, cancel builds from before a lock, and skip messages older than the eviction watermark
+- Close the reopened index when rebuilding after corruption fails, and detect corruption by SQLite error codes rather than message text
+- Sign out of local search in every tab, remove index directories inside each mailbox's queue and retry failed removals on the next load, and skip stale-index cleanup when the mailbox list is truncated
+- Offer mailboxes in compose and pickers by the caller's own create access from getMyMailboxAccess, cached per page, without blocking the From list; delete superseded drafts when compose closes
+- Show a retry when mailbox auto-provisioning can't check the policy
+- Send every plugin setting again so saving doesn't wipe unchanged ones, enable plugins without the registry when planning fails, and skip dependency planning for version changes of disabled plugins
+- Poll plugin status with backoff until it loads without overlapping requests, track busy plugins per row, show when the plugin list may be out of date, and ignore a closed Add plugin dialog's late result
+- Keep unsaved setup edits tracked when choosing the current step, send only changed mailbox policy fields without rounding quotas, and clear retention periods by sending null
+- Refresh the @rapidmx/react-shared patch
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Regenerate recovery codes safely: add uniquely labelled new wraps before removing old ones, confirm removing unlock methods and never remove the last one, and show rotated recovery codes as soon as rekey succeeds
+- Search the open mailbox in every search tier, keep privacy export and erasure to the caller's own mailbox, and clear decrypted rows, previews and caches when keys lock
+- Keep mailbox versions between saves, clear dates and fields with null, add federated read receipt settings, parse date-only values as local dates, and page contacts and tasks past 500
+- Edit single occurrences without their series rule, apply series edits as time-of-day changes, keep organizers on invited events, and store all-day events as dates
+- Never send plaintext when Encrypt or Sign can't be honoured, autosave drafts and confirm discards, replay schedule times, block encrypted Bcc and inline images, and restrict decrypted HTML to data and cid URLs
+- Call the auth server's logout on Sign Out and sign out other tabs, and keep delegates from enrolling keys on shared mailboxes
+- Require at least one condition before saving mail filters and transport rules, and stop unticked or emptied conditions from inverting or disabling rules
+- Sanitize branding HTML and leave it out of the escrow console, confirm escrow scope, erasure, retention, matter close and approval, revoke and impersonation actions, and keep admins from becoming escrow holders
+- Page admin and escrow request lists, label matter export audit actions, assign mailboxes to escrow scopes, and show server-wide plugin errors
+- Refresh the @rapidmx/react-shared patch
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Never offer removing the last password wrap, and re-seal every key vault entry on rotation, refusing when any entry won't open
+- Only offer adding a password when none exists, and keep escrow re-add visible when re-wrapping escrow fails after rotation
+- Check free space before regenerating recovery codes so working codes never drop below the original set
+- Limit export, erasure and import to the single mailbox the user owns, and key-vault writes to the owner when not impersonating
+- Stop load-more retry storms and double loads, discard decrypts that finish after a lock, and reset Search all mail on context changes
+- Show a notice when contacts or tasks hit the listing cap
+- Disable close and discard while sending, hold autosave until encryption decisions are known, and require unlock when auto-encrypting with locked keys
+- Recognise organizer aliases, default key provisioning to off, and clean up the old draft after a From switch using its latest version
+- Save pending compose drafts before leaving the page or signing out
+- Warn when a series save may duplicate detached occurrences, and explain messages not addressed to this mailbox
+- Schedule sends through the send request body, following restapi's new contract, and refresh the react-shared patch
+- Only send an escrow scope's public key when it changed, hide closed matter actions, and confirm escrow scope and retention reductions
+- Call auth-server's logout from the admin and escrow consoles, keep plugins disabled when their preview fails, and block modal close while busy
+- Continue paged lists after the last shown row, page transport rules in sequence order, and explain audit chain verification failures
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Show signatures from signers without a pinned contact key as signer not verified, using pinned signing fingerprints from the mailbox's contacts
+- Show the signed Subject and only the attachments inside verified or decrypted content, and note when the delivered Subject differs
+- Disable key rotation while a signing enrollment is pending, offer cancelling it, and send the replacement escrow wrap with the rekey itself
+- Re-check the vault before first-time key setup and show an already-set-up screen on VaultAlreadyInitializedError
+- Explain unopenable encryption keys on unlock instead of reporting an incorrect password, and list skipped signing keys
+- Restore a removed recovery code when its replacement fails, destroy local indexes after console sign-out, and mark sign-out so compose's leave prompt can't block it
+- Keep loading full pages that add no new rows, hide Deleted contacts from read-only delegates, and show in-progress statuses with neutral badges
+- Show scheduled send errors on Outbox messages with a Move to Drafts action
+- Keep compose open when a draft can't be saved, run draft saves in order, retry encryption policy loads, and treat unloaded encryption settings as possibly encrypted
+- Refresh a draft's version after attachment uploads so discard works, and retry discards against the server's version
+- Seed weekly recurrence from the event's start weekday and clear weekdays when leaving Weekly, and read legacy all-day end dates on the local calendar
+- Refuse mailbox display names containing @ or line breaks, and refresh the react-shared patch
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Show the real sender address beside signature badges and warn when a display name looks like a different address
+- Note when a verified signature doesn't cover Subject, To and Cc, and list recovered attachments for decrypted mail whose signature failed
+- Show Sending while a send lease is live, hide Outbox actions then, and reload the message after a refused cancel or move
+- Clear the pinned signer cache on lock, sign-out and contact changes, and detect a Deleted contacts view the server didn't filter
+- Warn on members-only distribution lists that they need the mail server's trusted authserv id, and refuse look-alike @ in mailbox display names
+- Re-check encryption suppression before a queued draft save runs, don't autosave before recipients are known when auto-encryption is possible, and retry failed key lookups
+- Block sends when the mailbox or a key lookup couldn't be checked unless the user chooses to send without encryption
+- Verify the session master key still opens the vault before adding wraps, regenerating recovery codes, enabling signing, adding escrow or rotating
+- Only re-add escrow on rotation when the vault already holds an escrow wrap, treating a deleted scope as none
+- Stop Discard from deleting a message another window already sent or scheduled, and omit address-like display names from signed and encrypted From headers
+- Refresh the react-shared patch
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Require a new password before removing the last recovery code, and explain every password replacement failure without removing the code
+- Refresh the react-shared patch
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Show when a pinned sender's signing key changed, comparing the trusted and new keys with their dates, with Accept new key after confirmation and Keep current key for a recorded change
+- Show recorded key changes with accept and keep actions on contacts, list replaced keys as history, and label superseded keys separately from revoked ones
+- Point unpinned senders with a recorded key change to their contact instead of offering Trust this signer
+- Refresh the react-shared patch
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Show "Verified when first opened" for signed mail whose live check fails only because the signer's key changed, was removed or was revoked, with a caution badge when the key was later reported compromised
+- Write verification seals after a live verification, best effort, once per message and master key generation
+- Seal newly verified encrypted mail while building the local search index, bounded to two concurrent writes and 200 per pass
+- Refresh the @rapidmx/react-shared patch with verification seals
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+### Fixed
+- Fixed infinite scroll and offset paging after archiving, keep booking link and contact pages on save errors, and confirm task and contact deletes
+- Fixed all-day series end dates west of UTC, keep series time shifts on the event's own clock, and keep weekly rules from collapsing to daily
+
 ## [0.4.0] - 2026-09-14
 
 ### Added
@@ -459,7 +570,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/rapidmx/web-client/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rapidmx/web-client/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/rapidmx/web-client/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/rapidmx/web-client/compare/v0.2.0...v0.3.0
