@@ -1,0 +1,380 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { Attachment, Folder, Message, listAttachments, setMessageRead } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
+import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
+import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import MessageDetailPane from "./MessageDetailPane.js";
+
+/** One request's worth of the thread. The server's own default for `listConversationMessages()`. */
+export const THREAD_PAGE_SIZE = 100;
+/**
+ * How many of a conversation's messages this pane will load. The server reads at most
+ * `CONVERSATION_SCAN_LIMIT` (500) messages when it groups conversations, so a `ConversationSummary` never
+ * describes more than this many anyway; the cap is here so a thread that somehow reports more can't turn
+ * into an unbounded run of requests. Past it the pane says so and the rest stay readable from the list.
+ */
+export const THREAD_MESSAGE_LIMIT = 500;
+
+export interface ConversationThreadPaneProps {
+    conversation: ConversationSummary | null;
+    /** The mailbox the conversation was listed from - `listConversationMessages()` is mailbox-scoped. */
+    mailboxUid: string;
+    /**
+     * The message the reader opened: the thread is scrolled to it, it takes focus, and it is the *oldest*
+     * message left expanded (see `expandedFrom()`). `null`, or a uid this thread doesn't hold, falls back
+     * to the newest message - which is also what a parent row means by "open the conversation".
+     */
+    selectedUid: string | null;
+    /** The mailbox's full folder list. A conversation spans folders (an Inbox message and the Sent Items
+     * copy of its reply), so each message's own folder type is looked up against its own `folderUid`. */
+    folders: Folder[];
+    /** The mailbox's labels, passed through to every expanded message's own `MessageDetailPane`. */
+    labels?: Label[];
+    /** A newer copy of one of the thread's messages - read, flagged, labelled, classified, recalled - for
+     * the caller's own list to stay in step with what was done in here. */
+    onMessagePatched: (updated: Message) => void;
+    /** A message that left the folder being listed (archived, or a scheduled send sent back to Drafts). */
+    onMessageRemoved: (updated: Message) => void;
+    onLabelCreated?: (label: Label) => void;
+}
+
+/** Every message from `selectedUid` through to the newest - the run the reader is reading. Anything older
+ * stays collapsed to its one-line summary. Selecting the newest message therefore expands just that one. */
+function expandedFrom(messages: Message[], selectedUid: string | null): Set<string> {
+    const index = messages.findIndex((message) => message.uid === selectedUid);
+    // `messages` is never empty here (the callers below check), so -1 means "not in this thread" and the
+    // newest message is the anchor, exactly as a parent row's own click means.
+    const anchor = index === -1 ? messages.length - 1 : index;
+    return new Set(messages.slice(anchor).map((message) => message.uid));
+}
+
+/**
+ * The element a message of this thread actually scrolls inside. The pane is not itself the scroll
+ * container in the mail shell - `MailShell`'s own `<main>` is - so an adjustment has to be applied where
+ * the scrolling really happens, which is whichever ancestor is both scrollable and overflowing.
+ */
+function scrollingAncestor(node: HTMLElement): HTMLElement {
+    for (let el = node.parentElement; el; el = el.parentElement) {
+        const overflowY = getComputedStyle(el).overflowY;
+        if ((overflowY === "auto" || overflowY === "scroll") && el.scrollHeight > el.clientHeight) {
+            return el;
+        }
+    }
+    // Nothing between the row and the root scrolls, so the page itself does - which in standards mode is
+    // `documentElement`, the same element `document.scrollingElement` names there.
+    return document.documentElement;
+}
+
+/** The thread's messages, oldest first, in pages of `THREAD_PAGE_SIZE` up to `THREAD_MESSAGE_LIMIT`. */
+async function loadThread(mailboxUid: string, conversationId: string): Promise<{ messages: Message[]; truncated: boolean }> {
+    const messages: Message[] = [];
+    let more = true;
+    while (more && messages.length < THREAD_MESSAGE_LIMIT) {
+        const page = await listConversationMessages(mailboxUid, conversationId, {
+            page: messages.length / THREAD_PAGE_SIZE,
+            limit: THREAD_PAGE_SIZE,
+        });
+        messages.push(...page);
+        // A short page is the last one; a full page means asking for another.
+        more = page.length === THREAD_PAGE_SIZE;
+    }
+    return { messages, truncated: more };
+}
+
+/**
+ * The reading pane for the conversation list: the whole thread, oldest at the top, opened at the message
+ * the reader picked. Every message from that one through to the newest is expanded and the older ones are
+ * collapsed to a one-line summary (sender, date, preview) that expands on click or Enter, so opening the
+ * newest message shows just it, and opening 5 of 10 shows 5 through 10.
+ *
+ * Each *expanded* message is a `MessageDetailPane` of its own rather than a reimplementation of it, so the
+ * signature and verification badges, the verification-seal and decryption behaviour, the labels chips and
+ * menu, the attachments and Reply/Reply All/Forward/Archive all behave exactly as they do in the
+ * single-message pane, and each acts on the message it belongs to. A collapsed message mounts none of
+ * that - mounting a body iframe per message up front would be wasteful in a long thread.
+ */
+export default function ConversationThreadPane({
+    conversation,
+    mailboxUid,
+    selectedUid,
+    folders,
+    labels,
+    onMessagePatched,
+    onMessageRemoved,
+    onLabelCreated,
+}: ConversationThreadPaneProps) {
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [attachmentsByUid, setAttachmentsByUid] = useState<Record<string, Attachment[]>>({});
+    const [expandedUids, setExpandedUids] = useState<Set<string>>(new Set());
+    const [truncated, setTruncated] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    /** The message to scroll to and focus once it has rendered, or `null` once that has happened. */
+    const [pendingFocusUid, setPendingFocusUid] = useState<string | null>(null);
+
+    // Bumped on every conversation switch - an in-flight load/attachments/mark-read response carrying an
+    // older generation belongs to a superseded conversation and is dropped rather than applied.
+    const generationRef = useRef(0);
+    const markReadRequestedRef = useRef<Set<string>>(new Set());
+    const attachmentsRequestedRef = useRef<Set<string>>(new Set());
+    /** The `conversationId:selectedUid` the expansion run below has already been applied for, so patching
+     * a message (which changes `messages`) doesn't re-expand what the reader has since collapsed. */
+    const appliedSelectionRef = useRef<string | null>(null);
+    /** Which conversation the messages currently in state belong to. A render with a new conversation and
+     * the previous one's messages still in state happens before the load effect has cleared them, and the
+     * expansion run below must sit that render out rather than anchor on a message from another thread. */
+    const loadedIdRef = useRef<string | null>(null);
+    const rowRefs = useRef<Record<string, HTMLLIElement | null>>({});
+    const headerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+    /** Where the toggled message's header sat in the viewport before it expanded, so the run below can put
+     * it back there - expanding a message above the one being read must not shove that one off-screen. */
+    const anchorRef = useRef<{ uid: string; top: number } | null>(null);
+
+    const conversationId = conversation?.conversationId;
+
+    useEffect(() => {
+        const generation = ++generationRef.current;
+        markReadRequestedRef.current = new Set();
+        attachmentsRequestedRef.current = new Set();
+        appliedSelectionRef.current = null;
+        loadedIdRef.current = null;
+        setMessages([]);
+        setAttachmentsByUid({});
+        setExpandedUids(new Set());
+        setTruncated(false);
+        setError(null);
+        // The message the previous conversation was to be scrolled to went with it; leaving it set would
+        // point the run below at a row that is no longer rendered.
+        setPendingFocusUid(null);
+        if (!conversationId) {
+            setLoading(false);
+            return;
+        }
+        setLoading(true);
+        loadThread(mailboxUid, conversationId)
+            .then((loaded) => {
+                if (generation !== generationRef.current) return;
+                loadedIdRef.current = conversationId;
+                setMessages(loaded.messages);
+                setTruncated(loaded.truncated);
+            })
+            .catch((err) => {
+                if (generation !== generationRef.current) return;
+                setError(err instanceof ApiRequestError ? err.message : "Could not load this conversation.");
+            })
+            .finally(() => {
+                if (generation === generationRef.current) setLoading(false);
+            });
+    }, [conversationId, mailboxUid]);
+
+    // Opening the thread, and opening a different message of the same thread, both set the run of expanded
+    // messages and ask for that message to be scrolled to. `messages` is a dependency because the thread's
+    // messages arrive after the click that selected one of them; the ref guard keeps a later change to
+    // `messages` (a patched copy) from re-running it.
+    useEffect(() => {
+        if (messages.length === 0 || loadedIdRef.current !== conversationId) return;
+        const key = `${conversationId}:${selectedUid}`;
+        if (appliedSelectionRef.current === key) return;
+        appliedSelectionRef.current = key;
+        const expanded = expandedFrom(messages, selectedUid);
+        setExpandedUids(expanded);
+        // The oldest expanded message is the one that was opened - `expandedFrom()`'s own anchor.
+        setPendingFocusUid([...expanded][0]);
+    }, [conversationId, selectedUid, messages]);
+
+    useLayoutEffect(() => {
+        if (!pendingFocusUid) return;
+        // The row is always rendered by now: this runs after the DOM update that added the message it
+        // names, and that message came out of `messages` in the first place.
+        //
+        // The element itself, never a computed offset - the messages above it have only just been laid
+        // out. `"nearest"` scrolls the least that brings it into view and nothing at all when it is
+        // already there, so opening a thread that fits on screen doesn't move the page under the reader;
+        // a message taller than the view (which an expanded one usually is) ends up at the top.
+        rowRefs.current[pendingFocusUid]!.scrollIntoView({ block: "nearest" });
+        // `preventScroll` so focusing doesn't scroll it somewhere else again.
+        headerRefs.current[pendingFocusUid]!.focus({ preventScroll: true });
+        setPendingFocusUid(null);
+    }, [pendingFocusUid, expandedUids]);
+
+    // Keeps the message whose header was just clicked where it was on screen. Expanding one above the
+    // message being read otherwise pushes everything below it down by however tall the new body is.
+    useLayoutEffect(() => {
+        const anchor = anchorRef.current;
+        if (!anchor) return;
+        anchorRef.current = null;
+        // The row is still there: the anchor was taken from a rendered row, and toggling never removes one.
+        const row = rowRefs.current[anchor.uid]!;
+        scrollingAncestor(row).scrollTop += row.getBoundingClientRect().top - anchor.top;
+    }, [expandedUids]);
+
+    // Attachments and mark-as-read, for expanded messages only - mirrors `mailDetailHooks.ts`'s
+    // `useMessageAttachments`/`useMarkMessageRead`, reimplemented here (rather than called in a loop, which
+    // the rules of hooks don't allow) because a thread expands several messages at once.
+    useEffect(() => {
+        const generation = generationRef.current;
+        for (const message of messages) {
+            const uid = message.uid;
+            if (!expandedUids.has(uid)) continue;
+            if (message.hasAttachments && !attachmentsRequestedRef.current.has(uid)) {
+                attachmentsRequestedRef.current.add(uid);
+                listAttachments(message.folderUid, uid)
+                    .then((loaded) => {
+                        if (generation === generationRef.current) {
+                            setAttachmentsByUid((prev) => ({ ...prev, [uid]: loaded }));
+                        }
+                    })
+                    .catch(() => {
+                        // Best-effort, as in `useMessageAttachments`: no attachments render meanwhile, and
+                        // forgetting the request lets a later re-expand retry it.
+                        attachmentsRequestedRef.current.delete(uid);
+                    });
+            }
+            if (!message.flags.read && !markReadRequestedRef.current.has(uid)) {
+                markReadRequestedRef.current.add(uid);
+                // `message` is this render's copy, so the request carries its current `version`.
+                setMessageRead(message, true)
+                    .then((updated) => {
+                        if (generation !== generationRef.current) return;
+                        patchMessage(updated);
+                    })
+                    .catch(() => {
+                        // Best-effort, as in `useMarkMessageRead`.
+                        markReadRequestedRef.current.delete(uid);
+                    });
+            }
+        }
+    }, [expandedUids, messages]);
+
+    /** A newer copy of one of the thread's messages, kept here and handed to the list. */
+    function patchMessage(updated: Message) {
+        setMessages((prev) => prev.map((message) => (message.uid === updated.uid ? updated : message)));
+        onMessagePatched(updated);
+    }
+
+    /** A message that left the folder being listed - it leaves the thread too, as it left the list. */
+    function removeMessage(updated: Message) {
+        setMessages((prev) => prev.filter((message) => message.uid !== updated.uid));
+        onMessageRemoved(updated);
+    }
+
+    function toggleExpanded(uid: string) {
+        // The row this button lives in has rendered, so its ref is set.
+        anchorRef.current = { uid, top: rowRefs.current[uid]!.getBoundingClientRect().top };
+        setExpandedUids((prev) => {
+            const next = new Set(prev);
+            if (next.has(uid)) {
+                next.delete(uid);
+            } else {
+                next.add(uid);
+            }
+            return next;
+        });
+    }
+
+    function folderTypeOf(message: Message): string | undefined {
+        return folders.find((folder) => folder.uid === message.folderUid)?.type;
+    }
+
+    if (!conversation) {
+        return <p className="p-8 text-sm text-text-muted">Select a conversation to read it.</p>;
+    }
+    if (loading) {
+        return <p className="p-8 text-sm text-text-muted">Loading&hellip;</p>;
+    }
+    if (error) {
+        return (
+            <div className="p-4 flex-1">
+                <Alert>{error}</Alert>
+            </div>
+        );
+    }
+
+    return (
+        <div className="flex-1 min-w-0 flex flex-col overflow-y-auto">
+            <div className="border-b border-border p-4">
+                <h1 className="text-lg font-bold tracking-tight">{conversation.subject || "(no subject)"}</h1>
+                <p className="text-sm text-text-muted mt-1">
+                    {messages.length} message{messages.length === 1 ? "" : "s"}
+                </p>
+                {truncated && (
+                    <p className="text-xs text-text-muted mt-1">
+                        Only the oldest {THREAD_MESSAGE_LIMIT} messages of this conversation are shown here. The rest
+                        are still in the message list.
+                    </p>
+                )}
+            </div>
+            <ul>
+                {messages.map((message) => {
+                    const uid = message.uid;
+                    const expanded = expandedUids.has(uid);
+                    const bodyId = `thread-message-${uid}`;
+                    const sender = message.from.displayName || message.from.address;
+                    return (
+                        <li
+                            key={uid}
+                            ref={(node) => {
+                                rowRefs.current[uid] = node;
+                            }}
+                            className="border-b border-border"
+                        >
+                            <h2>
+                                <button
+                                    type="button"
+                                    ref={(node) => {
+                                        headerRefs.current[uid] = node;
+                                    }}
+                                    onClick={() => toggleExpanded(uid)}
+                                    aria-expanded={expanded}
+                                    aria-controls={bodyId}
+                                    className={[
+                                        "w-full text-left px-4 py-3 hover:bg-surface-alt",
+                                        message.flags.read ? "" : "font-semibold",
+                                    ].join(" ")}
+                                >
+                                    <span className="flex items-center justify-between gap-2 text-sm">
+                                        <span className="truncate">{sender}</span>
+                                        <span className="text-xs text-text-muted shrink-0">
+                                            {new Date(message.receivedDate).toLocaleString()}
+                                        </span>
+                                    </span>
+                                    {!expanded && (
+                                        <span className="block text-xs text-text-muted truncate font-normal">
+                                            {message.bodyPreview}
+                                        </span>
+                                    )}
+                                </button>
+                            </h2>
+                            <div id={bodyId} hidden={!expanded}>
+                                {expanded && (
+                                    <MessageDetailPane
+                                        inThread
+                                        message={message}
+                                        attachments={attachmentsByUid[uid] ?? []}
+                                        isSentItems={folderTypeOf(message) === "sent_items"}
+                                        isOutbox={folderTypeOf(message) === "outbox"}
+                                        isInbox={folderTypeOf(message) === "inbox"}
+                                        draftsFolderUid={folders.find((folder) => folder.type === "drafts")?.uid}
+                                        onRecalled={patchMessage}
+                                        onClassified={patchMessage}
+                                        onReceiptHandled={patchMessage}
+                                        onScheduledSendCanceled={removeMessage}
+                                        onArchived={removeMessage}
+                                        labels={labels}
+                                        onLabelsChanged={patchMessage}
+                                        onLabelCreated={onLabelCreated}
+                                    />
+                                )}
+                            </div>
+                        </li>
+                    );
+                })}
+            </ul>
+        </div>
+    );
+}

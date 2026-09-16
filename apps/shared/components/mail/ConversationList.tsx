@@ -15,11 +15,11 @@ export interface ConversationListProps {
     /** The message currently open in the reading pane, so the row standing for it can be marked. */
     selectedUid: string | null;
     /**
-     * Opens one message. `message` is passed when this list already holds the full record (a child row it
-     * fetched itself); a parent row only knows its conversation's `latestMessageUid`, so the caller
-     * resolves that one.
+     * Opens a conversation in the reading pane, positioned at one of its messages: the one a child row
+     * stands for, or the conversation's own `latestMessageUid` for a parent row. The conversation goes
+     * with the uid because the pane shows the whole thread, not just that message.
      */
-    onOpenMessage: (uid: string, message?: Message) => void;
+    onOpenMessage: (conversation: ConversationSummary, uid: string) => void;
     /** Newer copies of messages this list already fetched - the reading pane marks the message it opens as
      * read, which this list would otherwise keep showing as unread until the thread is collapsed and
      * expanded again. */
@@ -36,10 +36,8 @@ function participantNames(conversation: ConversationSummary): string {
  * own chevron into the conversation's individual messages as child rows, fetched on first expand with
  * `listConversationMessages()` (one request for the whole thread, across folders, oldest first).
  *
- * Opening a row opens a single message in the reading pane: the latest one for a parent, that one for a
- * child. This replaced a merged, Gmail-style thread pane - with every message in the conversation already
- * listed and openable here, a second stacked copy of the same thread in the reading pane showed the same
- * information twice and gave the list nothing the pane didn't already do.
+ * Opening a row opens the whole conversation in `ConversationThreadPane`, positioned at the message the row
+ * stands for: the latest one for a parent row, that one for a child row.
  *
  * The chevron is a button of its own beside the row's own button rather than inside it (a button can't
  * nest inside a button), so expanding and opening are separately reachable by keyboard and each carries
@@ -132,7 +130,7 @@ export default function ConversationList({
                             </button>
                             <button
                                 type="button"
-                                onClick={() => onOpenMessage(conversation.latestMessageUid)}
+                                onClick={() => onOpenMessage(conversation, conversation.latestMessageUid)}
                                 className={["flex-1 min-w-0 text-left pr-4 py-3", unread ? "font-semibold" : ""].join(
                                     " "
                                 )}
@@ -182,7 +180,7 @@ export default function ConversationList({
                                     <li key={message.uid}>
                                         <button
                                             type="button"
-                                            onClick={() => onOpenMessage(message.uid, message)}
+                                            onClick={() => onOpenMessage(conversation, message.uid)}
                                             className={[
                                                 "w-full text-left pl-8 pr-4 py-2 border-b border-border",
                                                 message.uid === selectedUid ? "bg-primary/10" : "hover:bg-surface-alt",

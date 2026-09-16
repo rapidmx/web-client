@@ -771,6 +771,29 @@ describe("InboxPage", () => {
     });
 
     describe("conversations", () => {
+        /** One message's header inside the *thread pane* - the list's own child row shows the same
+         * sender, so the two are told apart by the header's `aria-controls`. */
+        const threadHeader = (name: RegExp) =>
+            screen.getAllByRole("button", { name }).find((button) => button.getAttribute("aria-controls")?.startsWith("thread-message-"));
+
+        /** The thread's own messages, oldest first, as `listConversationMessages()` answers with. */
+        const threadMessages = () => [
+            messageFixture({
+                uid: "m1",
+                subject: "First",
+                bodyPreview: "The opening message",
+                from: { address: "older@example.com", displayName: "Older Sender", type: "to" },
+                flags: { read: true, flagged: false, answered: false, forwarded: false },
+            }),
+            messageFixture({
+                uid: "m2",
+                subject: "Second",
+                bodyPreview: "The most recent reply",
+                from: { address: "newer@example.com", displayName: "Newer Sender", type: "to" },
+                flags: { read: true, flagged: false, answered: false, forwarded: false },
+            }),
+        ];
+
         const thread = () =>
             conversationFixture({
                 subject: "Thread subject",
@@ -875,31 +898,23 @@ describe("InboxPage", () => {
             expect(await screen.findByRole("alert")).toHaveTextContent("Could not load this conversation's messages.");
         });
 
-        it("opens the conversation's latest message when its parent row is clicked", async () => {
-            mockShellAndInbox([messageFixture({ uid: "m2", subject: "Second" })], undefined, [thread()]);
+        it("opens the whole thread at its latest message when the parent row is clicked", async () => {
+            mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
             await toggleConversations(user);
 
             await user.click(await screen.findByText("Thread subject"));
 
-            expect(await screen.findByTestId("detail-pane")).toHaveTextContent("message:m2");
+            // The newest message is the only one expanded; the one before it is a collapsed summary.
+            const panes = await screen.findAllByTestId("detail-pane");
+            expect(panes).toHaveLength(1);
+            expect(panes[0]).toHaveTextContent("message:m2");
+            expect(threadHeader(/^Older Sender/)).toHaveAttribute("aria-expanded", "false");
         });
 
-        it("leaves the reading pane empty when the latest message can no longer be fetched", async () => {
-            mockShellAndInbox([], undefined, [thread()]);
-            const user = userEvent.setup();
-            render(<InboxPage userUid="u1" />);
-            await toggleConversations(user);
-
-            await user.click(await screen.findByText("Thread subject"));
-
-            await waitFor(() => expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message"));
-        });
-
-        it("opens a child message from the record the list already fetched, without a second request", async () => {
-            const child = messageFixture({ uid: "m1", subject: "First", bodyPreview: "The opening message" });
-            const fetchMock = mockShellAndInbox([], undefined, [thread()], { c1: [child] });
+        it("opens the thread at the child message that was clicked, expanding the run from it", async () => {
+            const fetchMock = mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
             await toggleConversations(user);
@@ -907,12 +922,46 @@ describe("InboxPage", () => {
 
             await user.click(await screen.findByText("The opening message"));
 
-            expect(await screen.findByTestId("detail-pane")).toHaveTextContent("message:m1");
-            // The mark-as-read PUT hits the same URL, so only a GET would mean it was refetched.
+            await waitFor(() => expect(screen.getAllByTestId("detail-pane")).toHaveLength(2));
+            expect(screen.getAllByTestId("detail-pane")[0]).toHaveTextContent("message:m1");
+            // The thread scrolls to and focuses the message it opened at.
+            expect(document.activeElement).toBe(threadHeader(/^Older Sender/));
+            // The thread pane loads the thread itself rather than the individual message the row stands for.
             const refetches = fetchMock.mock.calls.filter(
                 ([url, init]: [string, RequestInit]) => url === "/api/mail/messages/m1" && (init?.method ?? "GET") === "GET",
             );
             expect(refetches).toHaveLength(0);
+        });
+
+        it("adds a label created from a message in the thread to the ones the menus offer", async () => {
+            mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await toggleConversations(user);
+            await user.click(await screen.findByText("Thread subject"));
+            await screen.findByTestId("detail-pane");
+
+            await user.click(screen.getByRole("button", { name: "simulate-label-created" }));
+
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Invoices/Travel/Made here");
+        });
+
+        it("keeps the list in step with what an action in the thread did to a message", async () => {
+            mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await toggleConversations(user);
+            await user.click(await screen.findByRole("button", { name: "Expand conversation: Thread subject" }));
+            await user.click(await screen.findByText("The opening message"));
+            await waitFor(() => expect(screen.getAllByTestId("detail-pane")).toHaveLength(2));
+
+            // Archiving from inside the thread takes the message out of the thread and out of the list.
+            await user.click(screen.getAllByRole("button", { name: "simulate-archive" })[0]);
+
+            await waitFor(() => expect(screen.getAllByTestId("detail-pane")).toHaveLength(1));
+            expect(threadHeader(/^Older Sender/)).toBeUndefined();
+            // ...and out of the list's own rows, which the flat list would show after switching back.
+            expect(screen.getAllByTestId("detail-pane")[0]).toHaveTextContent("message:m2");
         });
 
         it("marks an opened child message read and stops showing it as unread in the list", async () => {

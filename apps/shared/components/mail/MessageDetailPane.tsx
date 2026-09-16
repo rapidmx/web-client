@@ -275,6 +275,10 @@ export interface MessageDetailPaneProps {
     /** Handed a label created from the Labels menu, for the caller to add to `labels`. Without it the menu
      * offers no "New label" row, only the link to where labels are managed. */
     onLabelCreated?: (label: Label) => void;
+    /** Rendered as one message of a thread (`ConversationThreadPane`) rather than as the pane itself: the
+     * subject becomes a heading under the thread's own, since a document has one `h1` and the thread's is
+     * the conversation. Everything else - the badges, the actions, the body - is identical. */
+    inThread?: boolean;
 }
 
 function formatBytes(bytes: number): string {
@@ -324,6 +328,7 @@ function MessageDetailContent({
     labels,
     onLabelsChanged,
     onLabelCreated,
+    inThread,
 }: MessageDetailPaneProps & { message: Message }) {
     // A copy re-read from the server after an Outbox action was refused (409/403) or a send lease ran out - see
     // `reloadMessage()`. A prop copy newer by `version` wins; an equal-version reload is kept, since claiming a send
@@ -790,6 +795,8 @@ function MessageDetailContent({
             ? senderKeyState!.conflict
             : undefined;
 
+    const shownSubject = (protectedSubject ?? message.subject) || "(no subject)";
+
     return (
         <div className="flex-1 min-w-0 flex flex-col">
             <div className="border-b border-border p-4">
@@ -800,7 +807,12 @@ function MessageDetailContent({
                 )}
                 <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
-                        <h1 className="text-lg font-bold tracking-tight truncate">{(protectedSubject ?? message.subject) || "(no subject)"}</h1>
+                        {/* One `h1` per document: inside a thread the conversation's own subject is it. */}
+                        {inThread ? (
+                            <h3 className="text-sm font-semibold truncate">{shownSubject}</h3>
+                        ) : (
+                            <h1 className="text-lg font-bold tracking-tight truncate">{shownSubject}</h1>
+                        )}
                         {security && <SecurityIndicator security={security} />}
                     </div>
                     {sendInProgress && (
@@ -1006,7 +1018,9 @@ function MessageDetailContent({
                 <p className="text-sm text-text-muted">
                     To {message.recipients.map((r) => r.displayName || r.address).join(", ")}
                 </p>
-                <div className="flex gap-2 mt-3">
+                {/* Wraps: in a thread the pane can be as narrow as the reading pane gets (the list takes
+                    384px of it), and these are six controls. */}
+                <div className="flex flex-wrap gap-2 mt-3">
                     <Button
                         type="button"
                         variant="secondary"

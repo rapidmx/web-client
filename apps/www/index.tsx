@@ -41,6 +41,7 @@ import MailShell, {
 } from "../shared/components/mail/layout/MailShell.js";
 import MessageDetailPane from "../shared/components/mail/MessageDetailPane.js";
 import ConversationList from "../shared/components/mail/ConversationList.js";
+import ConversationThreadPane from "../shared/components/mail/ConversationThreadPane.js";
 import MailListToolbar from "../shared/components/mail/MailListToolbar.js";
 import MailSelectionBar from "../shared/components/mail/MailSelectionBar.js";
 import { MailListPreferences, getMailListPreferences, setMailListPreferences } from "../shared/components/mail/listPreferences.js";
@@ -443,13 +444,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const [hasMore, setHasMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [selectedUid, setSelectedUid] = useState<string | null>(null);
-    // The message a conversation row opened, in the nested conversation list - a child row hands over the
-    // record it already fetched, a parent row only its conversation's latest uid, which is then loaded here.
-    const [conversationMessage, setConversationMessage] = useState<Message | null>(null);
+    // The thread the conversation list opened, and which of its messages was picked - the reading pane
+    // shows the whole conversation, positioned at that message (see `ConversationThreadPane`).
+    const [openThread, setOpenThread] = useState<{ conversation: ConversationSummary; uid: string } | null>(null);
     // Messages the page has a newer copy of than `ConversationList` fetched (so far only the one the reading
     // pane just marked read), applied over its own child rows so they don't stay bold after being read.
     const [conversationPatches, setConversationPatches] = useState<Record<string, Message>>({});
-    const conversationOpenRef = useRef(0);
     // Folders this session created on demand for a bulk Delete/Report junk - see `resolveFolderOfType()`.
     const lazyFoldersRef = useRef<Map<string, string>>(new Map());
     const [selectMode, setSelectMode] = useState(false);
@@ -743,7 +743,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // piece of per-listing state (selection, paging, select mode) that a previous listing left behind.
     useEffect(() => {
         setSelectedUid(null);
-        setConversationMessage(null);
+        setOpenThread(null);
         setConversationPatches({});
         setSelectedUids(new Set());
         listedOffsetRef.current = 0;
@@ -1132,7 +1132,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * standing for it - with a newer copy the reading pane just produced. */
     function patchListedMessage(updated: Message) {
         setMessages((prev) => prev.map((m) => (m.uid === updated.uid ? updated : m)));
-        setConversationMessage((prev) => (prev && prev.uid === updated.uid ? updated : prev));
         // `ConversationList` fetched its own copy of this message when the thread was expanded; hand it the
         // newer one so the child row doesn't keep showing a stale read/flag state.
         setConversationPatches((prev) => ({ ...prev, [updated.uid]: updated }));
@@ -1146,13 +1145,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     function removeListedMessage(uid: string) {
         removeListedMessages(new Set([uid]));
-        setConversationMessage(null);
     }
 
-    // In the conversation list the reading pane follows the row that was opened (a child message, or the
-    // parent's latest), which is loaded separately from the listed rows; the flat list reads its selection
-    // straight out of the rows it already has.
-    const selected = preferences.showAsConversations ? conversationMessage : (messages.find((m) => m.uid === selectedUid) ?? null);
+    // The conversation list opens a whole thread in `ConversationThreadPane`, which loads and marks read
+    // its own messages; only the flat list feeds the single-message pane below.
+    const selected = preferences.showAsConversations ? null : (messages.find((m) => m.uid === selectedUid) ?? null);
     const attachments = useMessageAttachments(selected);
     useMarkMessageRead(selected, patchListedMessage);
     // Search results can span every folder in the mailbox, not just the one selected in the sidebar - a
@@ -1320,9 +1317,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
         setSelectedUid(message.uid);
     }
 
-    /** Opens one message from the conversation list. A child row hands over the record it already fetched;
-     * a parent row knows only its conversation's latest uid, which is loaded here. */
-    async function handleOpenConversationMessage(uid: string, message?: Message) {
+    /** Opens a conversation in the reading pane, positioned at one of its messages: the one a child row
+     * stands for, or the latest for a parent row. The thread pane loads the thread itself. */
+    function handleOpenConversation(conversation: ConversationSummary, uid: string) {
         if (isMobile) {
             // No dedicated mobile thread route yet - the existing single-message detail route already
             // handles any message uid regardless of conversation grouping.
@@ -1330,15 +1327,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return;
         }
         setSelectedUid(uid);
-        const generation = ++conversationOpenRef.current;
-        setConversationMessage(message ?? null);
-        if (message) {
-            return;
-        }
-        const loaded = await getMessage(uid).catch(() => null);
-        if (generation === conversationOpenRef.current) {
-            setConversationMessage(loaded);
-        }
+        setOpenThread({ conversation, uid });
     }
 
     if (!folderUid && !aggregateFolderType) {
@@ -1516,7 +1505,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             mailboxUid={activeMailboxUid}
                             selectedUid={selectedUid}
                             messageOverrides={conversationPatches}
-                            onOpenMessage={(uid, message) => void handleOpenConversationMessage(uid, message)}
+                            onOpenMessage={handleOpenConversation}
                         />
                         {hasMore && (
                             <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
@@ -1622,6 +1611,18 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 )}
             </div>
             <div className="hidden md:flex flex-1 min-w-0">
+                {preferences.showAsConversations ? (
+                    <ConversationThreadPane
+                        conversation={openThread?.conversation ?? null}
+                        selectedUid={openThread?.uid ?? null}
+                        mailboxUid={activeMailboxUid}
+                        folders={currentFolders}
+                        labels={mailboxLabels}
+                        onMessagePatched={patchListedMessage}
+                        onMessageRemoved={(updated) => removeListedMessage(updated.uid)}
+                        onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
+                    />
+                ) : (
                 <MessageDetailPane
                     message={selected}
                     attachments={attachments}
@@ -1648,6 +1649,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     onLabelsChanged={patchListedMessage}
                     onLabelCreated={(label) => setLabels((prev) => [...prev, label])}
                 />
+                )}
             </div>
         </div>
     );

@@ -151,12 +151,12 @@ describe("ConversationList", () => {
         expect(screen.getByLabelText("Flagged")).toBeInTheDocument();
     });
 
-    it("opens the latest message when the parent row is clicked, and marks it as the selected row", () => {
+    it("opens the conversation at its latest message when the parent row is clicked, and marks it selected", () => {
         const onOpenMessage = vi.fn();
         const { rerender } = renderList({ onOpenMessage });
 
         screen.getByText("Hello there").click();
-        expect(onOpenMessage).toHaveBeenCalledWith("m2");
+        expect(onOpenMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "c1" }), "m2");
 
         rerender(
             <ConversationList
@@ -216,7 +216,7 @@ describe("ConversationList", () => {
         expect(await screen.findByText("The opening message")).toBeInTheDocument();
     });
 
-    it("opens a child message with the record it already has", async () => {
+    it("opens the conversation at the child message that was clicked", async () => {
         const onOpenMessage = vi.fn();
         const child = messageFixture({ uid: "m1" });
         const user = userEvent.setup();
@@ -225,7 +225,7 @@ describe("ConversationList", () => {
         await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
         await user.click(await screen.findByText("The opening message"));
 
-        expect(onOpenMessage).toHaveBeenCalledWith("m1", expect.objectContaining({ uid: "m1" }));
+        expect(onOpenMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "c1" }), "m1");
     });
 
     it("prefers a newer copy of a child message handed down in messageOverrides", async () => {

@@ -1989,3 +1989,40 @@ all multi-select, with the menu staying open and one command committing.
   `MAX_MESSAGE_LABEL_FILTER`, so the two local `LabelFilter*Params` aliases are gone and `MAX_LABEL_FILTER_UIDS` in
   `listPreferences.ts` re-exports the package's cap rather than repeating the number. An empty selection is left out
   of the query entirely rather than sent as `labelUids=`.
+
+### 2026-09-16 — The conversation reading pane became a thread pane again
+
+JP asked for the reading pane to show the whole conversation rather than the single message a row stands for, opened at
+the message that was clicked. `ConversationThreadPane` is back (it was deleted in e631f44 when the nested list landed),
+rewritten around that rule.
+
+- **The expansion rule is the whole design:** every message from the opened one through to the newest is expanded and
+  everything older is a one-line summary. Opening the newest (what a parent row means) therefore shows exactly one
+  message expanded; opening 5 of 10 shows 5 through 10. `expandedFrom()` is that rule, and a `selectedUid` this thread
+  doesn't hold falls back to the newest, so a stale uid can never leave the pane blank.
+- **Each expanded message is a real `MessageDetailPane`**, not a reimplementation - that is what keeps the signature and
+  verification badges, the verification-seal/decryption behaviour, the labels chips and menu, the attachments and
+  Reply/Reply All/Forward/Archive identical and per-message. Its one new prop is `inThread`, which drops the subject
+  from `h1` to `h3` because the thread owns the document's `h1`. A *collapsed* message mounts none of it (a body iframe
+  per message up front would be wasteful).
+- **Scrolling is done on the element, never an offset:** `scrollIntoView({ block: "start" })` on the opened message's
+  row in a layout effect, plus `focus({ preventScroll: true })` on its header button. Toggling a message records where
+  its header sat first and puts it back afterwards, so expanding something *above* what is being read doesn't shove it
+  off screen. jsdom has no layout, so the tests stand in for it by stubbing `getBoundingClientRect` on the row.
+- **Three traps, all found by tests:**
+  - a render with the *new* conversation and the *previous* one's messages still in state happens before the load
+    effect clears them - `loadedIdRef` makes the expansion run sit that render out, or it anchors on a message from
+    another thread and then scrolls to a row that is about to unmount;
+  - the expansion run is keyed `conversationId:selectedUid` in a ref, because `messages` is a dependency (the thread
+    arrives after the click) and a patched copy would otherwise re-expand what the reader just collapsed;
+  - `pendingFocusUid` has to be cleared when the conversation changes, for the same reason.
+- **Fetching:** `listConversationMessages()` in pages of 100 (`THREAD_PAGE_SIZE`, the server's own default) until a
+  short page, capped at `THREAD_MESSAGE_LIMIT` = 500 - which is also `CONVERSATION_SCAN_LIMIT`, so the server never
+  groups more than that into one conversation anyway. If the cap is ever hit the pane says which messages it is
+  showing rather than pretending the thread ends there.
+- **List sync** is two callbacks: `onMessagePatched` (mark-read, labels, classify, recall) feeds `patchListedMessage`,
+  which already updates both the flat rows and `ConversationList`'s own child rows, and `onMessageRemoved` (archive, a
+  scheduled send sent back to Drafts) removes the row. Mark-as-read and attachment loading are the thread pane's own,
+  for expanded messages only - `mailDetailHooks`' single-message hooks can't be called in a loop.
+- **Mobile is unchanged:** the reading pane is desktop-only, so tapping a conversation row still opens
+  `/messages/<uid>`; there is no mobile thread route yet.

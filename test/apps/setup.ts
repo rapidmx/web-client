@@ -36,6 +36,13 @@ if (typeof document !== "undefined") {
             }) as MediaQueryList;
     }
 
+    // jsdom implements no layout, so `Element.scrollIntoView` doesn't exist at all — a component that
+    // scrolls the message it just opened into view (`ConversationThreadPane`) would throw on render. A
+    // test that cares about where it scrolled spies on this.
+    if (typeof Element.prototype.scrollIntoView !== "function") {
+        Element.prototype.scrollIntoView = vi.fn();
+    }
+
     // jsdom doesn't implement `IntersectionObserver` at all — default to a no-op stub (never fires) so the
     // many tests that don't care about infinite-scroll behavior keep passing unmodified; a test that needs
     // to simulate a sentinel intersecting uses `mockIntersectionObserver()` (see `testUtils.ts`) to override

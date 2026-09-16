@@ -177,6 +177,15 @@ describe("MessageDetailPane", () => {
         expect(screen.queryByRole("link", { name: /Back to messages/ })).not.toBeInTheDocument();
     });
 
+    it("drops the subject to a lower heading inside a thread, where the conversation owns the h1", () => {
+        const { rerender } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+        expect(screen.getByRole("heading", { level: 1, name: "Hello there" })).toBeInTheDocument();
+
+        rerender(<MessageDetailPane inThread message={messageFixture()} attachments={[]} />);
+        expect(screen.getByRole("heading", { level: 3, name: "Hello there" })).toBeInTheDocument();
+        expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+    });
+
     it("renders a back link when backHref is given", () => {
         render(
             <MessageDetailPane message={messageFixture() as any} attachments={[]} backHref="/?mailboxUid=mb1&folderUid=f1" />,

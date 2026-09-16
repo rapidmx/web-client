@@ -43,9 +43,16 @@ sorted/filtered/label-filtered/bulk/conversation message routes (all unreleased)
 - **Conversations are now nested rows in the list.** "Show as conversations" (in the Sort menu, as in Outlook) groups
   the list into one row per conversation - participants, subject, message count, unread count, attachment and flag
   hints and the latest message's preview - with a chevron that expands it into that conversation's own messages as
-  child rows. Opening a conversation row opens its latest message; opening a child row opens that message. Unlike the
-  old "By conversation" view, conversations now follow the folder selected in the sidebar and honour the current
-  filter, and can be scrolled past the first page.
+  child rows. Unlike the old "By conversation" view, conversations now follow the folder selected in the sidebar and
+  honour the current filter, and can be scrolled past the first page.
+- **Opening a conversation opens the whole thread.** The reading pane shows every message in the conversation, oldest
+  at the top, positioned at the one you opened: a conversation row opens it at the newest message, a child row opens it
+  at that message (picking 5 of 10 scrolls to 5 of 10). Everything from the message you opened through to the newest is
+  expanded; older ones are a one-line summary - sender, date and preview - that expands when you click it or press
+  Enter, and expanding one above what you are reading leaves what you are reading where it was on screen. Each message
+  keeps its own security badges, labels, attachments and Reply/Reply All/Forward/Archive, acting on that message, and
+  anything you do there is reflected in the list. Messages are read in pages of 100, up to 500 for one conversation -
+  the server groups no more than that into a conversation anyway - and the pane says so if it ever stops there.
 - **Recipient autocomplete in Compose:** the To, Cc and Bcc fields suggest your contacts and the server's directory
   (people, shared mailboxes, rooms, equipment and groups) as you type two or more characters of a name or address.
   Contacts come first, each address is listed once, and each entry shows its name, address and what it is. Use the
