@@ -18,6 +18,11 @@ export interface MailSelectionBarProps {
     selected: Message[];
     /** Every message currently listed - what "Select all" selects and what `allSelected` is measured against. */
     listed: Message[];
+    /** What the bar *counts*, when the rows being ticked aren't messages themselves: the conversation list
+     * ticks conversations, each standing for several messages, so "3 conversations selected" is what the
+     * reader picked while `selected` stays the messages every action below acts on. Left out by the flat
+     * message list, which counts `selected`/`listed` directly. */
+    totals?: { selected: number; listed: number; noun: string };
     onSelectAll: () => void;
     onClearSelection: () => void;
     /** Leaves select mode entirely (and clears the selection). */
@@ -62,6 +67,7 @@ function actionClassName(): string {
 export default function MailSelectionBar({
     selected,
     listed,
+    totals,
     onSelectAll,
     onClearSelection,
     onCancel,
@@ -80,8 +86,12 @@ export default function MailSelectionBar({
     busy,
     error,
 }: MailSelectionBarProps) {
-    const none = selected.length === 0;
-    const allSelected = listed.length > 0 && selected.length === listed.length;
+    const selectedCount = totals?.selected ?? selected.length;
+    const listedCount = totals?.listed ?? listed.length;
+    // Counted on the rows that were ticked, but *emptied* on the messages: a ticked conversation whose
+    // messages are still being fetched has nothing for an action to act on yet.
+    const none = selectedCount === 0 || selected.length === 0;
+    const allSelected = listedCount > 0 && selectedCount === listedCount;
     const currentType = folders.find((folder) => folder.uid === currentFolderUid)?.type;
     const moveTargets = folders.filter((folder) => MOVE_TARGET_TYPES.has(folder.type) && folder.uid !== currentFolderUid);
 
@@ -116,12 +126,13 @@ export default function MailSelectionBar({
         <div className="border-b border-border">
             <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-alt">
                 <span aria-live="polite" className="text-sm font-semibold text-text">
-                    {selected.length} selected
+                    {selectedCount}
+                    {totals ? ` ${totals.noun}${selectedCount === 1 ? "" : "s"}` : ""} selected
                 </span>
-                <button type="button" onClick={onSelectAll} disabled={allSelected || listed.length === 0} className={actionClassName()}>
+                <button type="button" onClick={onSelectAll} disabled={allSelected || listedCount === 0} className={actionClassName()}>
                     Select all
                 </button>
-                <button type="button" onClick={onClearSelection} disabled={none} className={actionClassName()}>
+                <button type="button" onClick={onClearSelection} disabled={selectedCount === 0} className={actionClassName()}>
                     Clear
                 </button>
                 <button type="button" onClick={onCancel} className={`${actionClassName()} ml-auto`}>

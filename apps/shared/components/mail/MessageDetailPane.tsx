@@ -3,7 +3,16 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef, useState } from "react";
-import { HiOutlineCheck, HiOutlineExclamationTriangle, HiOutlineLockClosed } from "react-icons/hi2";
+import {
+    HiOutlineArchiveBox,
+    HiOutlineArrowUturnLeft,
+    HiOutlineArrowUturnRight,
+    HiOutlineCheck,
+    HiOutlineExclamationTriangle,
+    HiOutlineInbox,
+    HiOutlineInboxArrowDown,
+    HiOutlineLockClosed,
+} from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attachment,
@@ -28,6 +37,7 @@ import {
     buildForwardQuote,
     buildReplyQuote,
     buildReplyRecipients,
+    buildReplyThreading,
     forwardSubject,
     replySubject,
 } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
@@ -164,6 +174,45 @@ function downloadMimeAttachment(attachment: MimeAttachment): void {
     a.remove();
     // Some browsers are still reading the blob after `click()` returns.
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
+ * One of the reading pane's own actions - Reply, Reply All, Forward, Archive, Move to Other - as an icon
+ * button. The action's name is its `aria-label` *and* its tooltip, so it has the same accessible name a
+ * labelled button had, and is also shown beside the icon from `xl` up, where the pane is wide enough for
+ * six of them; below that the row is icons only, because the reading pane beside the 384px message list
+ * is about 396px wide and a row of labelled buttons doesn't fit it.
+ *
+ * A plain `<button>` rather than react-shared's `Button`, whose padding and minimum width are sized for a
+ * text label. Ordinary DOM order, so the keyboard reaches these in the order they are read.
+ */
+function IconAction({
+    icon,
+    label,
+    onClick,
+    disabled,
+    busy,
+}: {
+    icon: React.ReactNode;
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+    busy?: boolean;
+}) {
+    return (
+        <button
+            type="button"
+            aria-label={label}
+            title={label}
+            aria-busy={busy || undefined}
+            disabled={disabled}
+            onClick={onClick}
+            className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-border text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent"
+        >
+            {icon}
+            <span className="hidden xl:inline">{label}</span>
+        </button>
+    );
 }
 
 function SecurityIndicator({ security }: { security: MessageSecurityResult }) {
@@ -352,6 +401,10 @@ function MessageDetailContent({
     const [classifying, setClassifying] = useState(false);
     const [classifyError, setClassifyError] = useState<string | null>(null);
     const [alwaysForSender, setAlwaysForSender] = useState(false);
+    // Moving a message between the Focused and Other halves of the Inbox is confirmed first, because the
+    // same step optionally carries "always do this for this sender" - a rule that outlives this one
+    // message and had no business sitting permanently beside the button as a loose checkbox.
+    const [classifyPrompt, setClassifyPrompt] = useState(false);
     // Names which pending receipt (`"delivery"`/`"read"`) is currently being approved/declined, if any —
     // `deliveryReceiptPending`/`readReceiptPending` can both be true independently, so a single boolean
     // wouldn't distinguish which row's buttons should show a loading state.
@@ -604,6 +657,11 @@ function MessageDetailContent({
                 kind === "forward" ? [] : ownAddresses(),
             ]);
             const encrypt = !!message.encrypted;
+            // What makes the new message part of this one's thread rather than a conversation of its own:
+            // the server composes the MIME from the recipients, subject and HTML alone, so nothing else
+            // recovers what is being replied to. A forward carries it for the same reason - it continues
+            // the thread it came from, which is where its recipient will file the reply to it.
+            const threading = buildReplyThreading(message);
             if (kind === "forward") {
                 openCompose({
                     mailboxUid: message.mailboxUid,
@@ -611,6 +669,7 @@ function MessageDetailContent({
                     quotedHtml: buildForwardQuote(message, original.body),
                     signatureContext: "reply_forward",
                     encrypt,
+                    threading,
                 });
                 return;
             }
@@ -632,6 +691,7 @@ function MessageDetailContent({
                 signatureContext: "reply_forward",
                 suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
                 encrypt,
+                threading,
             });
         } finally {
             setPreparingCompose(false);
@@ -729,6 +789,8 @@ function MessageDetailContent({
         setClassifyError(null);
         try {
             const updated = await classifyMessage(message.uid, classifyAs, alwaysForSender);
+            setClassifyPrompt(false);
+            setAlwaysForSender(false);
             onClassified?.(updated);
         } catch (err) {
             setClassifyError(err instanceof ApiRequestError ? err.message : "Could not reclassify this message.");
@@ -796,9 +858,28 @@ function MessageDetailContent({
             : undefined;
 
     const shownSubject = (protectedSubject ?? message.subject) || "(no subject)";
+    /** Which half of the Inbox the Move control would move this message to - the other one from where it
+     * is now (absent `inferenceClassification` means Focused, see `Message`'s own doc comment). */
+    const classifyTarget: MessageClassification = message.inferenceClassification === "other" ? "focused" : "other";
+    /**
+     * How tall the message body is - the one thing on this pane worth every pixel it can have.
+     *
+     * On its own, the pane is a full-height flex column and the body is its one growing child, so it fills
+     * whatever the header leaves (`min-h-0` on both, or a tall body would stretch the column past the pane
+     * instead of scrolling inside it).
+     *
+     * Inside a thread the pane is one item of a scrolling list of messages rather than a flex column of
+     * its own, so there is no "available height" to grow into and the body would fall back to an
+     * `<iframe>`'s own 150px default - the short box with its own scrollbar this replaces. It gets a tall,
+     * viewport-proportional height instead: sizing it to its content would need the document *inside* the
+     * frame to measure and report itself, and these frames are `sandbox=""` - scripts off - because they
+     * render mail from strangers. That is not a trade worth making for a scrollbar, so a very long message
+     * keeps one and everything shorter than two thirds of the window shows whole.
+     */
+    const bodyClassName = inThread ? "w-full h-[65vh] min-h-[16rem]" : "flex-1 min-h-0 w-full";
 
     return (
-        <div className="flex-1 min-w-0 flex flex-col">
+        <div className={`flex-1 min-w-0 min-h-0 flex flex-col${inThread ? "" : " h-full"}`}>
             <div className="border-b border-border p-4">
                 {backHref && (
                     <a href={backHref} className="text-sm text-primary-dark hover:underline block mb-2">
@@ -1020,46 +1101,59 @@ function MessageDetailContent({
                 </p>
                 {/* Wraps: in a thread the pane can be as narrow as the reading pane gets (the list takes
                     384px of it), and these are six controls. */}
-                <div className="flex flex-wrap gap-2 mt-3">
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        className="!w-auto"
+                <div className="flex flex-wrap gap-1 mt-3">
+                    <IconAction
+                        icon={<HiOutlineArrowUturnLeft size={16} aria-hidden="true" />}
+                        label="Reply"
                         disabled={preparingCompose}
                         onClick={() => void handleReplyOrForward("reply")}
-                    >
-                        Reply
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        className="!w-auto"
+                    />
+                    <IconAction
+                        icon={
+                            // The conventional reply-all glyph: the reply arrow, doubled. `hi2` has no
+                            // reply-all icon of its own, and nothing else in it means "answer everyone".
+                            <span className="inline-flex items-center" aria-hidden="true">
+                                <HiOutlineArrowUturnLeft size={16} />
+                                <HiOutlineArrowUturnLeft size={16} className="-ml-2.5" />
+                            </span>
+                        }
+                        label="Reply All"
                         disabled={preparingCompose}
                         onClick={() => void handleReplyOrForward("replyAll")}
-                    >
-                        Reply All
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        className="!w-auto"
+                    />
+                    <IconAction
+                        icon={<HiOutlineArrowUturnRight size={16} aria-hidden="true" />}
+                        label="Forward"
                         disabled={preparingCompose}
                         onClick={() => void handleReplyOrForward("forward")}
-                    >
-                        Forward
-                    </Button>
+                    />
                     {!inOutbox && message.folderUid !== draftsFolderUid && (
-                        <Button
-                            type="button"
-                            variant="secondary"
-                            className="!w-auto"
-                            loading={archiving}
+                        <IconAction
+                            icon={<HiOutlineArchiveBox size={16} aria-hidden="true" />}
+                            label="Archive"
+                            busy={archiving}
                             disabled={archiving}
                             onClick={handleArchive}
-                        >
-                            Archive
-                        </Button>
+                        />
                     )}
+                    {isInbox &&
+                        (message.inferenceClassification === "other" ? (
+                            <IconAction
+                                icon={<HiOutlineInbox size={16} aria-hidden="true" />}
+                                label="Move to Focused"
+                                busy={classifying}
+                                disabled={classifying}
+                                onClick={() => setClassifyPrompt(true)}
+                            />
+                        ) : (
+                            <IconAction
+                                icon={<HiOutlineInboxArrowDown size={16} aria-hidden="true" />}
+                                label="Move to Other"
+                                busy={classifying}
+                                disabled={classifying}
+                                onClick={() => setClassifyPrompt(true)}
+                            />
+                        ))}
                     {labels && labels.length > 0 && (
                         <LabelMenuButton
                             aria-label="Labels"
@@ -1104,34 +1198,8 @@ function MessageDetailContent({
                             ))}
                     </div>
                 )}
-                {isInbox && (
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                        <Button
-                            type="button"
-                            variant="text"
-                            loading={classifying}
-                            disabled={classifying}
-                            onClick={() =>
-                                handleClassify(message.inferenceClassification === "other" ? "focused" : "other")
-                            }
-                        >
-                            {message.inferenceClassification === "other" ? "Move to Focused" : "Move to Other"}
-                        </Button>
-                        <label className="flex items-center gap-1.5 text-xs text-text-muted">
-                            <input
-                                type="checkbox"
-                                checked={alwaysForSender}
-                                onChange={(e) => setAlwaysForSender(e.target.checked)}
-                            />
-                            Always for this sender
-                        </label>
-                    </div>
-                )}
-                {classifyError && (
-                    <div className="mt-2">
-                        <Alert>{classifyError}</Alert>
-                    </div>
-                )}
+                {/* A failed reclassification is reported inside the confirmation dialog it was started
+                    from, next to the Move button that would retry it - not out here behind it. */}
                 {(["delivery", "read"] as const)
                     .filter((type) => (type === "delivery" ? message.deliveryReceiptPending : message.readReceiptPending))
                     .map((type) => (
@@ -1224,7 +1292,7 @@ function MessageDetailContent({
                 // A recovered text/plain body renders as text (React escapes it) - never as markup.
                 <pre
                     aria-label={message.subject || "Message content"}
-                    className="flex-1 w-full overflow-auto p-4 m-0 text-sm font-sans whitespace-pre-wrap break-words"
+                    className={`${bodyClassName} overflow-auto p-4 m-0 text-sm font-sans whitespace-pre-wrap break-words`}
                 >
                     {security.text}
                 </pre>
@@ -1238,7 +1306,7 @@ function MessageDetailContent({
                     title={message.subject || "Message content"}
                     srcDoc={buildSecureSrcDoc(security.html)}
                     sandbox=""
-                    className="flex-1 w-full border-0"
+                    className={`${bodyClassName} border-0`}
                 />
             ) : (
                 <iframe
@@ -1246,10 +1314,53 @@ function MessageDetailContent({
                     title={message.subject || "Message content"}
                     src={`/api/mail/messages/${encodeURIComponent(message.uid)}/content`}
                     sandbox=""
-                    className="flex-1 w-full border-0"
+                    className={`${bodyClassName} border-0`}
                 />
             )}
 
+            <Modal
+                open={classifyPrompt}
+                onClose={() => !classifying && setClassifyPrompt(false)}
+                title={classifyTarget === "other" ? "Move this message to Other?" : "Move this message to Focused?"}
+            >
+                <p className="text-sm text-text-muted mb-4">
+                    {classifyTarget === "other"
+                        ? "It moves out of your Focused Inbox and into Other. It stays in this folder either way - only which half of the Inbox it is listed in changes."
+                        : "It moves into your Focused Inbox. It stays in this folder either way - only which half of the Inbox it is listed in changes."}
+                </p>
+                <label className="flex items-start gap-2 text-sm mb-4">
+                    <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={alwaysForSender}
+                        onChange={(e) => setAlwaysForSender(e.target.checked)}
+                    />
+                    <span>
+                        Always move mail from this sender to {classifyTarget === "other" ? "Other" : "Focused"}
+                    </span>
+                </label>
+                {classifyError && <Alert>{classifyError}</Alert>}
+                <div className="flex gap-3">
+                    <Button
+                        type="button"
+                        className="!w-auto"
+                        loading={classifying}
+                        disabled={classifying}
+                        onClick={() => void handleClassify(classifyTarget)}
+                    >
+                        Move
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto"
+                        disabled={classifying}
+                        onClick={() => setClassifyPrompt(false)}
+                    >
+                        Cancel
+                    </Button>
+                </div>
+            </Modal>
             <Modal open={confirming} onClose={() => setConfirming(false)} title="Recall this message?">
                 <p className="text-sm text-text-muted mb-4">
                     This asks every original recipient's mail system to delete their copy, but only if it's

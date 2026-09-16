@@ -2026,3 +2026,89 @@ rewritten around that rule.
   for expanded messages only - `mailDetailHooks`' single-message hooks can't be called in a loop.
 - **Mobile is unchanged:** the reading pane is desktop-only, so tapping a conversation row still opens
   `/messages/<uid>`; there is no mobile thread route yet.
+
+### 2026-09-16 — Mail UX round: defaults, select over conversations, the body's height, icon actions
+
+JP reported seven things against `yarn dev` after the toolbar/thread work landed. Six were ours; the seventh
+(conversation grouping for replies composed here) is not, and the evidence is below.
+
+- **Focused + conversations are now the defaults** (`listPreferences.ts`). `DEFAULT_MAIL_LIST_PREFERENCES` is
+  `filter: "focused"`, `showAsConversations: true` - this client's opinion, not `listMessages()`'s own defaults, which
+  is why the doc comment says so. `getMailListPreferences()` reads `showAsConversations` as
+  `typeof === "boolean" ? stored : default` rather than `=== true`: a stored `false` is a choice and is honoured, while
+  a record written before the field existed falls back like every other field. `focused` outside an Inbox is already
+  neutralized by `effectiveFilter` in `apps/www/index.tsx`, so no other folder is silently narrowed. **Trap:** every
+  one of `index.test.tsx`'s ~160 tests was written against the flat, unfiltered list; its `beforeEach` now stores that
+  arrangement for `mb1`/`mb2`/`mbA`/`mbB`, and the two tests that actually exercise the defaults clear `localStorage`
+  first.
+- **Select over the conversation list.** It was disabled whenever conversations were shown, which with the new default
+  meant always - that is the whole of JP's "the Select button is always disabled". Select mode now ticks *conversations*
+  (`ConversationList` gets `selectMode`/`selectedConversationIds`/`onToggleSelected`, and a row's own button ticks
+  instead of opening, mirroring `handleSelect()`), and `apps/www/index.tsx` resolves each ticked conversation to real
+  `Message`s with `listConversationMessages()` **on tick**, cached by `conversationId`. That is what lets
+  `MailSelectionBar` and every bulk action keep taking the `Message[]` they always took. Two rules worth keeping:
+  - the resolved messages are **filtered to `folderUid`** - a conversation spans folders, and the list only ever showed
+    this folder's half of it, so a bulk Archive must not reach the Sent Items copy of a reply;
+  - after a bulk action in conversation mode the list is **reloaded** (`refreshKey`), not patched: a conversation row is
+    a summary (count, unread count, participants, preview), so there is no row to patch in place.
+  `MailSelectionBar` grew one optional prop, `totals: {selected, listed, noun}`, so it can count the rows that were
+  ticked ("1 conversation selected") while `selected` stays the messages; `none` is still measured on `selected`, which
+  is what holds the actions while a tick's fetch is still in flight. The toggle's own disabled rule is now
+  `aggregate || loading || no rows`, each with its own reason. **Seen in the browser check:** ticking a conversation
+  seconds after its mail was delivered can still 409 - the delivery pipeline bumps `version` after the message is
+  listable - which reloads the list and says so (the contract `bulkUpdateMessages()` already documents), and ticking it
+  again on the reloaded copies goes through. The harness now proves that recovery rather than retrying blindly.
+- **The body's height.** `MessageDetailPane`'s body is `flex-1` in a flex column - which works only when the pane *is*
+  the column. Inside `ConversationThreadPane` an expanded message is an item of a scrolling list, so `flex-1` meant
+  nothing and the `<iframe>` fell back to its own 150px default: the short box with its own scrollbar JP screenshotted.
+  `bodyClassName` is now `flex-1 min-h-0 w-full` on its own and `w-full h-[65vh] min-h-[16rem]` `inThread`, and the
+  pane root carries `min-h-0` (plus `h-full` outside a thread). **Why not size it to its content:** the frame is
+  `sandbox=""` and stays that way (it renders mail from strangers, and the `src=` variant is a server-rendered document
+  we don't control), and with no script inside the frame nothing can measure the document and report its height. A
+  viewport-proportional height is the honest trade; a very long message keeps a scrollbar.
+- **Icon actions.** `IconAction` (local to `MessageDetailPane`) is a plain `<button>` with the action's name as both
+  `aria-label` and `title`, plus the name in a `hidden xl:inline` span. The `aria-label` is what every existing test and
+  the browser harness match on, so nothing had to be renamed. Reply All is the reply arrow drawn twice (`-ml-2.5`) -
+  `hi2` has no reply-all glyph and nothing else in it means "answer everyone". Verified at 1400px (icon + label) and at
+  a 396px pane (icons only, no sideways scroll).
+- **Move to Other prompts.** The permanent "Always for this sender" checkbox is gone; the button opens a `Modal` with
+  "Always move mail from this sender to Other/Focused" and Move/Cancel, and `handleClassify()` closes it and resets the
+  checkbox on success. The classify error moved into the dialog (next to the button that would retry it) rather than
+  sitting behind it.
+- **Conversation grouping: diagnosed here, fixed on both sides.** Verified against the real compiled server
+  (`scratchpad/mailui/uxcheck.mjs`, which seeds a real three-message thread and then replies *through the UI*):
+  - mail delivered with `References`/`In-Reply-To` groups correctly - `GET /mail/messages/conversations` returned
+    `[{Newsletter,1},{Lunch,1},{"Re: Hello",3}]` for five messages, the list showed two rows for the Focused half with
+    no duplicates, and the thread pane showed all three messages;
+  - a reply composed **in this app** goes out as `From/To/Subject/Message-ID/Content-Transfer-Encoding/Date/
+    MIME-Version/Content-Type` - **no `In-Reply-To`, no `References`** - so `deriveConversationId()` (restapi) falls
+    back to the message's own `Message-ID` and files it as a new conversation. Nothing in web-client can fix that:
+    `AssembleDraftInput` (react-shared `mailApi.ts`) had no threading fields and nothing in the send path named the
+    message being replied to. Reported up rather than worked around - and restapi 1e9ee13 / react-shared 3ef98d3 then
+    landed the other half: `createDraft(mailboxUid, folderUid, threading)` records `inReplyTo`/`references` on the
+    draft, the send writes them into the relayed MIME, and `conversationId` is resolved against the ancestors the
+    mailbox already holds.
+- **What this package now sends.** `buildReplyThreading(message)` (react-shared) goes into `OpenComposeInput`/
+  `ComposeSession` as `threading`, and `ComposeWindow` passes it to `createDraft()` - including the replacement draft a
+  From switch creates, since changing the sending mailbox doesn't change the thread. A *forward* carries it too: it
+  continues the thread it came from, which is where its recipient's reply will be filed. Verified end to end in the
+  browser: a reply composed in the UI now relays with `In-Reply-To`/`References`, and the mailbox lists one "Lunch on
+  Friday" conversation of two messages instead of two of one.
+- **Fewer requests per view** (JP: "navigation feels sluggish"; the sibling agent's instrumentation counted ~9 API
+  calls per folder click, two of them duplicates). Each click is a full document load - that part is the navigation
+  design and was left alone - but two of those requests were this page asking the same question twice:
+  - `listLabels()` ran in two effects, one for the open mailbox and one for the selected message's mailbox, which are
+    the *same* mailbox in every ordinary view. `labels` is now derived from `mailboxLabels`, and the second fetch only
+    happens for a selected message from another mailbox (a search hit, an aggregate row) - which is also the only case
+    where the reading pane's "New label" has to extend that other list.
+  - the list effect ran once before the shell had resolved `folderUid` and again after: in conversation mode the first
+    run was a *mailbox-wide* grouping pass, the most expensive listing there is, thrown away milliseconds later. It now
+    lists nothing until the folder is known - or, in an aggregate view (which has no folder of its own), until every
+    mailbox's folders have arrived, since the effect re-runs when they do.
+  `uxcheck.mjs` counts every `/api/` request per view and fails on any repeat: a folder click is now 8 requests with
+  one mailbox (profile, branding, setup, mailboxes, keyvault, folders, labels, listing), none of them twice.
+- **Trap, cost me a run:** the compiled server serves the *browser* bundle from its own `dist/public`, built by
+  `yarn build` in `server` - copying web-client's `apps`/`dist` into `node_modules` updates SSR but not that bundle.
+  A browser check after changing web-client needs `yarn build` in `server` too, or it silently exercises the previous
+  build (which is how a reply with no `In-Reply-To` and a duplicate `listLabels()` both "survived" a fix that was
+  already in the tree).

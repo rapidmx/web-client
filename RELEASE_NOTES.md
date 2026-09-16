@@ -3,13 +3,33 @@
 ## Unreleased
 
 Needs `@rapidmx/react-shared` with `mail/directoryApi.js`, `mail/messageBodySanitizer.js`, `composeQuoting.js`'s
-`buildComposeBodyHtml()`/`buildReplyRecipients()`, `listMessages()`'s `sortBy`/`sortOrder`/`filter`/`labelUids`, the
-bulk message helpers and `mail/conversationsApi.js`'s `folderUid`/`filter`/`labelUids` and
-`listConversationMessages()`; and `@rapidmx/restapi` with `BaseDirectoryRoute` and the
-sorted/filtered/label-filtered/bulk/conversation message routes (all unreleased).
+`buildComposeBodyHtml()`/`buildReplyRecipients()`/`buildReplyThreading()`, `listMessages()`'s
+`sortBy`/`sortOrder`/`filter`/`labelUids`, `createDraft()`'s `threading`, the bulk message helpers and
+`mail/conversationsApi.js`'s `folderUid`/`filter`/`labelUids` and `listConversationMessages()`; and
+`@rapidmx/restapi` with `BaseDirectoryRoute`, the sorted/filtered/label-filtered/bulk/conversation message routes and
+a send that writes a reply's `In-Reply-To`/`References` (all unreleased).
 
 ### Features
 
+- **Mail opens on Focused, shown as conversations.** A mailbox you have never arranged now opens on the Focused half
+  of the Inbox with "Show as conversations" on, the way Outlook does out of the box. A mailbox you *have* arranged is
+  untouched: a stored flat list, or a stored All, stays exactly as you left it, and either default can be turned off
+  from the Sort and Filter menus (or the tab row) as before.
+- **Select works over conversations.** The Select toggle used to be greyed out whenever conversations were shown -
+  which, with conversations now on by default, meant always. It now ticks whole conversations: the header counts
+  "3 conversations selected", and Mark read, Flag, Archive, Move to, Apply label, Report junk and Delete act on every
+  message of the ticked conversations that is in the folder you are looking at (never on the Sent Items copy of a
+  reply, which that list never showed you). The list reloads afterwards, since a conversation row is a summary of its
+  messages. Select is still unavailable in the merged All Mailboxes views, and is greyed out - saying why - while a
+  folder is still loading or has nothing in it.
+- **The reading pane's actions are icons.** Reply, Reply All, Forward, Archive and Move to Other/Focused are now icon
+  buttons in one row, each keeping its name as its tooltip and its accessible name, with the name shown beside the icon
+  on a wide window. The row fits the ~400px-wide reading pane beside the message list without wrapping or scrolling
+  sideways, and every message in a thread keeps its own.
+- **"Move to Other" asks first.** The loose "Always for this sender" checkbox that sat permanently beside the button is
+  gone. Moving a message between Focused and Other now opens a small confirmation with "Always move mail from this
+  sender to Other" (or Focused) in it, so the rule that outlives the message is a deliberate choice made at the moment
+  you move it. It does exactly what the old checkbox did.
 - **A mail list toolbar, as in Outlook.** The two rows of tabs above the message list ("By date / By conversation" and
   "All / Focused / Other") are replaced by a toolbar with **Filter**, **Sort** and **Select**. The Focused/Other tabs
   stay where they were, and now filter server-side.
@@ -66,6 +86,22 @@ sorted/filtered/label-filtered/bulk/conversation message routes (all unreleased)
 
 ### Fixes
 
+- **A reply composed here joins the thread it answers.** Replies, Reply Alls and forwards sent from this app went out
+  with no `In-Reply-To` or `References` header at all, so every mail system - including your own Sent Items - filed
+  each one as a brand-new conversation: the list showed a separate row per message of a thread, each saying "1
+  message", and older replies never appeared when you opened one. A reply now records the message it answers on its
+  draft, the server writes the headers into what it relays, and the reply is listed inside the conversation it belongs
+  to. (Needs the matching `@rapidmx/restapi` and `@rapidmx/react-shared`.)
+- **Mail asks the server for less on every view.** Opening a folder fetched the mailbox's labels twice and listed the
+  folder twice - the second listing replacing the first the moment the shell knew which folder to list. Both are down
+  to one request, and a merged "All Mailboxes" view no longer lists everything twice while each mailbox's folders
+  arrive.
+- **The message body uses the whole reading pane.** An expanded message in a thread rendered its body in a 150px-tall
+  box with its own scrollbar - an `<iframe>`'s default height - leaving the rest of the pane empty below it. A single
+  message now fills the pane exactly, and a message in a thread gets a body two thirds of the window tall, so a normal
+  message is read whole. A very long one still scrolls inside its own frame: the frame runs no scripts (it renders mail
+  from strangers), and without a script inside it there is nothing that can measure the message and size the frame to
+  it.
 - **Replying and forwarding:**
   - Reply, Reply All and Forward now open with the caret on an empty line at the very top of the message, above your
     signature and the quoted original, so what you type goes above the quote - as in Outlook and Gmail. A new message

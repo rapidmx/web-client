@@ -251,4 +251,34 @@ describe("MailSelectionBar", () => {
         renderBar({ error: "Those messages couldn't all be updated." });
         expect(screen.getByText("Those messages couldn't all be updated.")).toBeInTheDocument();
     });
+
+    describe("counted in conversations", () => {
+        it("counts the rows that were ticked rather than the messages behind them", () => {
+            renderBar({
+                selected: [messageFixture("m1"), messageFixture("m2"), messageFixture("m3")],
+                totals: { selected: 1, listed: 4, noun: "conversation" },
+            });
+
+            expect(screen.getByText("1 conversation selected")).toBeInTheDocument();
+        });
+
+        it("pluralizes the rows it counts", () => {
+            renderBar({ totals: { selected: 2, listed: 4, noun: "conversation" } });
+            expect(screen.getByText("2 conversations selected")).toBeInTheDocument();
+        });
+
+        it("measures Select all against the rows too", () => {
+            renderBar({ totals: { selected: 2, listed: 2, noun: "conversation" } });
+            expect(screen.getByRole("button", { name: "Select all" })).toBeDisabled();
+        });
+
+        it("holds the actions while a ticked row's messages are still being fetched", () => {
+            renderBar({ selected: [], totals: { selected: 1, listed: 4, noun: "conversation" } });
+
+            expect(screen.getByText("1 conversation selected")).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Mark read" })).toBeDisabled();
+            // Clearing the tick is still possible - it is the fetch, not the reader, that isn't ready.
+            expect(screen.getByRole("button", { name: "Clear" })).toBeEnabled();
+        });
+    });
 });

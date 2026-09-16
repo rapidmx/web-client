@@ -524,7 +524,11 @@ export default function ComposeWindow({
             return;
         }
         let cancelled = false;
-        createDraft(mailboxUid, draftsFolderUid)
+        // `session.threading` is what makes a reply a reply: the server writes it into the relayed MIME's
+        // `In-Reply-To`/`References` and groups the message into the thread being answered. Recorded on
+        // every draft this window creates, including the replacement one a From switch makes - the thread
+        // doesn't change because the sending mailbox did.
+        createDraft(mailboxUid, draftsFolderUid, session.threading)
             .then((created) => {
                 if (cancelled) {
                     // The sender changed while this was in flight - discard the now-orphaned draft.
@@ -546,7 +550,7 @@ export default function ComposeWindow({
         return () => {
             cancelled = true;
         };
-    }, [mailboxUid, draftsFolderUid, draft]);
+    }, [mailboxUid, draftsFolderUid, draft, session.threading]);
 
     // Drafts a From switch superseded are otherwise only deleted once their replacement exists - closing the
     // window (or sending, which closes it) first would orphan them.

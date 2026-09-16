@@ -261,9 +261,9 @@ describe("MailListToolbar", () => {
         await user.click(screen.getByRole("button", { name: "Select" }));
         expect(onSelectModeChange).toHaveBeenCalledWith(false);
 
-        renderToolbar({ selectDisabled: true, selectDisabledReason: "Turn off Show as conversations to select messages" });
+        renderToolbar({ selectDisabled: true, selectDisabledReason: "There is nothing here to select" });
         const disabled = screen.getAllByRole("button", { name: "Select" })[1];
         expect(disabled).toBeDisabled();
-        expect(disabled).toHaveAttribute("title", "Turn off Show as conversations to select messages");
+        expect(disabled).toHaveAttribute("title", "There is nothing here to select");
     });
 });

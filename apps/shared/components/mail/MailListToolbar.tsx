@@ -47,9 +47,10 @@ export interface MailListToolbarProps {
     sortKeysDisabled?: boolean;
     /** Says why, under the sort keys. */
     sortKeysNote?: string;
-    /** Select mode acts on messages of one mailbox: a conversation row isn't a message (and a mixed
-     * parent/child selection has no sensible bulk semantics), and an aggregate view's rows come from
-     * several mailboxes, whose folders a single Move couldn't name. */
+    /** Select mode acts on the messages of one mailbox - so it is offered over both the message list and
+     * the conversation list (where a ticked row means every message of that conversation in this folder),
+     * but not over an aggregate view, whose rows come from several mailboxes whose folders a single Move
+     * couldn't name, nor over a list that is still loading or has no rows to tick. */
     selectDisabled?: boolean;
     selectDisabledReason?: string;
 }

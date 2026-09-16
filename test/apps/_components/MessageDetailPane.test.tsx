@@ -186,6 +186,19 @@ describe("MessageDetailPane", () => {
         expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
     });
 
+    it("grows the body to the pane on its own, and to the window inside a thread", () => {
+        // On its own the body is the flex column's growing child; in a thread there is no column to grow
+        // in (the pane is one item of a scrolling list), so it takes a height of its own instead of
+        // falling back to an iframe's 150px default. See `bodyClassName`.
+        const { rerender } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+        expect(screen.getByTitle("Hello there").className).toContain("flex-1");
+        expect(screen.getByTitle("Hello there").className).toContain("min-h-0");
+
+        rerender(<MessageDetailPane inThread message={messageFixture()} attachments={[]} />);
+        expect(screen.getByTitle("Hello there").className).toContain("h-[65vh]");
+        expect(screen.getByTitle("Hello there").className).not.toContain("flex-1");
+    });
+
     it("renders a back link when backHref is given", () => {
         render(
             <MessageDetailPane message={messageFixture() as any} attachments={[]} backHref="/?mailboxUid=mb1&folderUid=f1" />,
@@ -645,10 +658,57 @@ describe("MessageDetailPane", () => {
             expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
             expect(recipientChips("To")).toEqual(["Sender One <sender@example.com>"]);
             const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
-            expect(body.value.startsWith("<p></p><p>On ")).toBe(true);
+            expect(body.value.startsWith("<p></p><p></p><p>On ")).toBe(true);
             expect(body.value).toContain("Sender One &lt;sender@example.com&gt; wrote:");
             expect(body.value).toContain(`${longBody}</blockquote>`);
             expect(body).toHaveAttribute("data-autofocus-start", "true");
+        });
+
+        it("records the thread a reply continues on the draft it creates", async () => {
+            // Without this the relayed message carries no In-Reply-To/References at all and every mail
+            // system - the sender's own Sent Items copy included - files it as a new conversation.
+            const fetchMock = mockComposeDraft();
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane
+                        message={messageFixture({ references: ["root@example.com"] }) as any}
+                        attachments={[]}
+                    />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+            await screen.findByRole("dialog", { name: "Re: Hello there" });
+
+            const draftCreated = () =>
+                fetchMock.mock.calls.find(([url, init]: any[]) => url === "/api/mail/messages" && init?.method === "POST");
+            await waitFor(() => expect(draftCreated()).toBeDefined());
+            expect(JSON.parse(draftCreated()![1].body as string)).toMatchObject({
+                inReplyTo: "abc@example.com",
+                references: ["root@example.com", "abc@example.com"],
+            });
+        });
+
+        it("records it for a forward too - a forward continues the thread it came from", async () => {
+            const fetchMock = mockComposeDraft();
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Forward" }));
+            await screen.findByRole("dialog", { name: "Fwd: Hello there" });
+
+            const draftCreated = () =>
+                fetchMock.mock.calls.find(([url, init]: any[]) => url === "/api/mail/messages" && init?.method === "POST");
+            await waitFor(() => expect(draftCreated()).toBeDefined());
+            expect(JSON.parse(draftCreated()![1].body as string)).toMatchObject({
+                inReplyTo: "abc@example.com",
+                references: ["abc@example.com"],
+            });
         });
 
         it("disables Reply, Reply All and Forward while the body to quote is loading", async () => {
@@ -1213,7 +1273,6 @@ describe("MessageDetailPane", () => {
         it("shows neither the button nor the sender checkbox when isInbox is not set", () => {
             render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
             expect(screen.queryByRole("button", { name: /Move to/ })).not.toBeInTheDocument();
-            expect(screen.queryByText("Always for this sender")).not.toBeInTheDocument();
         });
 
         it("shows 'Move to Other' when the message has no inferenceClassification (defaults to Focused)", () => {
@@ -1232,7 +1291,7 @@ describe("MessageDetailPane", () => {
             expect(screen.getByRole("button", { name: "Move to Focused" })).toBeInTheDocument();
         });
 
-        it("classifies the message and calls onClassified with the server's updated copy", async () => {
+        it("asks before moving, and moves once the prompt is confirmed", async () => {
             const updated = messageFixture({ inferenceClassification: "other" });
             const fetchMock = mockFetch(() => jsonResponse(200, updated));
             const onClassified = vi.fn();
@@ -1242,6 +1301,11 @@ describe("MessageDetailPane", () => {
             );
 
             await user.click(screen.getByRole("button", { name: "Move to Other" }));
+            // Nothing is sent until the prompt is confirmed.
+            expect(screen.getByRole("dialog", { name: "Move this message to Other?" })).toBeInTheDocument();
+            expect(fetchMock).not.toHaveBeenCalled();
+
+            await user.click(screen.getByRole("button", { name: "Move" }));
 
             expect(fetchMock).toHaveBeenCalledWith(
                 "/api/mail/messages/m1/classify",
@@ -1251,6 +1315,31 @@ describe("MessageDetailPane", () => {
                 }),
             );
             await vi.waitFor(() => expect(onClassified).toHaveBeenCalledWith(updated));
+            await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        });
+
+        it("sends nothing when the prompt is cancelled", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture()));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
+
+            await user.click(screen.getByRole("button", { name: "Move to Other" }));
+            await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it("closes the prompt from the dialog's own close control, sending nothing", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture()));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
+
+            await user.click(screen.getByRole("button", { name: "Move to Other" }));
+            await user.click(screen.getByRole("button", { name: "Close" }));
+
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(fetchMock).not.toHaveBeenCalled();
         });
 
         it("classifies back to Focused when the message is currently Other", async () => {
@@ -1265,6 +1354,9 @@ describe("MessageDetailPane", () => {
             );
 
             await user.click(screen.getByRole("button", { name: "Move to Focused" }));
+            expect(screen.getByRole("dialog", { name: "Move this message to Focused?" })).toBeInTheDocument();
+            expect(screen.getByLabelText("Always move mail from this sender to Focused")).toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: "Move" }));
 
             expect(fetchMock).toHaveBeenCalledWith(
                 "/api/mail/messages/m1/classify",
@@ -1272,13 +1364,14 @@ describe("MessageDetailPane", () => {
             );
         });
 
-        it("includes applyToSender when the checkbox is checked", async () => {
+        it("includes applyToSender when the prompt's checkbox is ticked", async () => {
             const fetchMock = mockFetch(() => jsonResponse(200, messageFixture()));
             const user = userEvent.setup();
             render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
 
-            await user.click(screen.getByLabelText("Always for this sender"));
             await user.click(screen.getByRole("button", { name: "Move to Other" }));
+            await user.click(screen.getByLabelText("Always move mail from this sender to Other"));
+            await user.click(screen.getByRole("button", { name: "Move" }));
 
             expect(fetchMock).toHaveBeenCalledWith(
                 "/api/mail/messages/m1/classify",
@@ -1286,14 +1379,16 @@ describe("MessageDetailPane", () => {
             );
         });
 
-        it("shows an error message when classifying fails", async () => {
+        it("shows an error message in the prompt when classifying fails, and keeps it open", async () => {
             mockFetch(() => jsonResponse(500, { message: "boom" }));
             const user = userEvent.setup();
             render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
 
             await user.click(screen.getByRole("button", { name: "Move to Other" }));
+            await user.click(screen.getByRole("button", { name: "Move" }));
 
             expect(await screen.findByText("boom")).toBeInTheDocument();
+            expect(screen.getByRole("dialog")).toBeInTheDocument();
         });
 
         it("shows a generic error message when classifying fails with a non-API error", async () => {
@@ -1304,6 +1399,7 @@ describe("MessageDetailPane", () => {
             render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
 
             await user.click(screen.getByRole("button", { name: "Move to Other" }));
+            await user.click(screen.getByRole("button", { name: "Move" }));
 
             expect(await screen.findByText("Could not reclassify this message.")).toBeInTheDocument();
         });

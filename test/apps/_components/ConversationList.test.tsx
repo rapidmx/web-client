@@ -280,4 +280,51 @@ describe("ConversationList", () => {
 
         expect(await screen.findByRole("alert")).toHaveTextContent("Could not load this conversation's messages.");
     });
+
+    describe("select mode", () => {
+        it("shows no checkbox until select mode is on", () => {
+            renderList();
+            expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+        });
+
+        it("ticks a conversation through its own checkbox, named after the conversation", async () => {
+            const onToggleSelected = vi.fn();
+            const user = userEvent.setup();
+            renderList({ selectMode: true, selectedConversationIds: new Set(), onToggleSelected });
+
+            await user.click(screen.getByRole("checkbox", { name: "Select conversation: Hello there" }));
+
+            expect(onToggleSelected).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "c1" }));
+        });
+
+        it("shows a ticked conversation as checked", () => {
+            renderList({ selectMode: true, selectedConversationIds: new Set(["c1"]), onToggleSelected: vi.fn() });
+
+            expect(screen.getByRole("checkbox", { name: "Select conversation: Hello there" })).toBeChecked();
+        });
+
+        it("names a conversation with no subject in the checkbox the same way the row does", () => {
+            render(
+                <ConversationList
+                    conversations={[conversationFixture({ subject: "" })]}
+                    mailboxUid="mb1"
+                    selectedUid={null}
+                    onOpenMessage={vi.fn()}
+                    selectMode
+                    selectedConversationIds={new Set()}
+                />,
+            );
+
+            expect(screen.getByRole("checkbox", { name: "Select conversation: (no subject)" })).toBeInTheDocument();
+        });
+
+        it("tolerates a checkbox with no handler wired to it", async () => {
+            const user = userEvent.setup();
+            renderList({ selectMode: true });
+
+            await user.click(screen.getByRole("checkbox", { name: "Select conversation: Hello there" }));
+
+            expect(screen.getByRole("checkbox", { name: "Select conversation: Hello there" })).toBeInTheDocument();
+        });
+    });
 });

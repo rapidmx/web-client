@@ -24,6 +24,13 @@ export interface ConversationListProps {
      * read, which this list would otherwise keep showing as unread until the thread is collapsed and
      * expanded again. */
     messageOverrides?: Record<string, Message>;
+    /** Turns each parent row into a checkbox row: select mode here ticks whole conversations, since a
+     * conversation is what this list's rows are. A child row stays a plain "open this message" button - a
+     * mixed conversation/message selection has no sensible bulk semantics (see `MailListToolbar`). */
+    selectMode?: boolean;
+    /** The `conversationId`s currently ticked. */
+    selectedConversationIds?: Set<string>;
+    onToggleSelected?: (conversation: ConversationSummary) => void;
 }
 
 function participantNames(conversation: ConversationSummary): string {
@@ -49,6 +56,9 @@ export default function ConversationList({
     selectedUid,
     onOpenMessage,
     messageOverrides,
+    selectMode,
+    selectedConversationIds,
+    onToggleSelected,
 }: ConversationListProps) {
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     const [messagesById, setMessagesById] = useState<Record<string, Message[]>>({});
@@ -104,16 +114,28 @@ export default function ConversationList({
                 const unread = conversation.unreadCount > 0;
                 const children = messagesById[id];
                 const panelId = `conversation-messages-${id}`;
+                const ticked = selectedConversationIds?.has(id) ?? false;
                 return (
                     <li key={id}>
                         <div
                             className={[
                                 "flex items-stretch border-b border-border",
-                                conversation.latestMessageUid === selectedUid
+                                conversation.latestMessageUid === selectedUid || ticked
                                     ? "bg-primary/10"
                                     : "hover:bg-surface-alt",
                             ].join(" ")}
                         >
+                            {selectMode && (
+                                <span className="shrink-0 flex items-center pl-3">
+                                    <input
+                                        type="checkbox"
+                                        checked={ticked}
+                                        onChange={() => onToggleSelected?.(conversation)}
+                                        aria-label={`Select conversation: ${conversation.subject || "(no subject)"}`}
+                                        className="w-4 h-4 accent-primary"
+                                    />
+                                </span>
+                            )}
                             <button
                                 type="button"
                                 onClick={() => toggle(conversation)}

@@ -375,6 +375,17 @@ async function selectRows(user: ReturnType<typeof userEvent.setup>, ...subjects:
 beforeEach(() => {
     searchEncryptedCandidates.mockResolvedValue([]);
     searchLocalIndex.mockResolvedValue({ results: [] });
+    // Every test below this line was written against the flat, unfiltered list, which is what an
+    // unconfigured mailbox used to open on; the defaults are now Focused + conversations
+    // (`listPreferences.ts`). Storing the old arrangement for each mailbox these tests use keeps them
+    // exercising the flat list they are about, and leaves the defaults themselves to the
+    // "opens a never-arranged mailbox" tests, which store nothing.
+    for (const uid of ["mb1", "mb2", "mbA", "mbB"]) {
+        localStorage.setItem(
+            `rapidmx:mail-list-preferences:${uid}`,
+            JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: false }),
+        );
+    }
 });
 
 afterEach(() => {
@@ -806,6 +817,209 @@ describe("InboxPage", () => {
                 flagged: true,
             });
 
+        it("opens a mailbox nobody has arranged yet on Focused, shown as conversations", async () => {
+            // Nothing stored: this is the very first time this mailbox is opened - see
+            // `DEFAULT_MAIL_LIST_PREFERENCES`. (Every other test in this file stores the flat, unfiltered
+            // arrangement in `beforeEach`.)
+            localStorage.clear();
+            const fetchMock = mockShellAndInbox([messageFixture({ subject: "Flat row" })], undefined, [thread()]);
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Thread subject")).toBeInTheDocument();
+            expect(screen.queryByText("Flat row")).not.toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Focused" })).toHaveAttribute("aria-pressed", "true");
+            expect(fetchMock).toHaveBeenCalledWith(
+                expect.stringContaining("/api/mail/messages/conversations?mailboxUid=mb1&folderUid=f1&filter=focused"),
+                expect.anything(),
+            );
+        });
+
+        it("still honours a mailbox arranged as a flat, unfiltered list", async () => {
+            // What `beforeEach` stores - asserted here rather than left implicit in every other test.
+            const fetchMock = mockShellAndInbox([messageFixture({ subject: "Flat row" })], undefined, [thread()]);
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Flat row")).toBeInTheDocument();
+            expect(screen.queryByText("Thread subject")).not.toBeInTheDocument();
+            expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("filter=all"), expect.anything());
+        });
+
+        describe("select mode", () => {
+            /** Turns on select mode and ticks the seeded conversation. */
+            async function selectThread(user: ReturnType<typeof userEvent.setup>) {
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                await user.click(await screen.findByRole("checkbox", { name: "Select conversation: Thread subject" }));
+            }
+
+            it("ticks a whole conversation and acts on every message of it in this folder", async () => {
+                const unread = threadMessages().map((m) => ({ ...m, flags: { ...m.flags, read: false } }));
+                // A message of the same conversation in another folder (the Sent Items copy of a reply):
+                // the list only showed this folder's half, and neither does the selection.
+                const sentCopy = messageFixture({ uid: "m3", folderUid: "f-sent", subject: "Sent copy" });
+                // Also handed to the mock as the folder's own messages, so the bulk PUT it answers can echo
+                // them back - without that the action fails and this would prove the failure path instead.
+                const fetchMock = mockShellAndInbox([...unread, sentCopy], undefined, [thread()], {
+                    c1: [...unread, sentCopy],
+                });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+
+                await selectThread(user);
+                expect(await screen.findByText("1 conversation selected")).toBeInTheDocument();
+                await user.click(screen.getByRole("button", { name: "Mark read" }));
+
+                const bulk = fetchMock.mock.calls.find(
+                    ([url, init]: any[]) => url === "/api/mail/messages" && init?.method === "PUT",
+                );
+                expect(JSON.parse(bulk![1].body as string).map((u: any) => u.uid)).toEqual(["m1", "m2"]);
+                // A conversation row summarizes its messages, so the list is reloaded rather than patched.
+                await waitFor(() =>
+                    expect(
+                        fetchMock.mock.calls.filter(([url]: any[]) =>
+                            String(url).includes("/api/mail/messages/conversations?"),
+                        ).length,
+                    ).toBeGreaterThan(1),
+                );
+                expect(await screen.findByText("0 conversations selected")).toBeInTheDocument();
+                expect(screen.queryByText(/may already have changed/)).not.toBeInTheDocument();
+            });
+
+            it("ticks the conversation a row's own button would otherwise open", async () => {
+                mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+                await user.click(screen.getByRole("button", { name: "Select" }));
+
+                await user.click(screen.getByText("Thread subject"));
+
+                expect(await screen.findByText("1 conversation selected")).toBeInTheDocument();
+                expect(screen.getByRole("checkbox", { name: "Select conversation: Thread subject" })).toBeChecked();
+            });
+
+            it("selects every listed conversation at once, and clears them again", async () => {
+                mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+                await user.click(screen.getByRole("button", { name: "Select" }));
+
+                await user.click(screen.getByRole("button", { name: "Select all" }));
+                expect(await screen.findByText("1 conversation selected")).toBeInTheDocument();
+
+                await user.click(screen.getByRole("button", { name: "Clear" }));
+                expect(await screen.findByText("0 conversations selected")).toBeInTheDocument();
+            });
+
+            it("unticks a conversation whose messages can't be loaded, and says so", async () => {
+                mockShellAndInbox(
+                    [],
+                    (url) =>
+                        url.startsWith("/api/mail/messages/conversations/")
+                            ? jsonResponse(500, { message: "thread boom" })
+                            : undefined,
+                    [thread()],
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+
+                await selectThread(user);
+
+                expect(await screen.findByText("thread boom")).toBeInTheDocument();
+                await waitFor(() =>
+                    expect(screen.getByRole("checkbox", { name: "Select conversation: Thread subject" })).not.toBeChecked(),
+                );
+            });
+
+            it("says so generically when loading a ticked conversation's messages fails with a non-API error", async () => {
+                mockShellAndInbox(
+                    [],
+                    (url) => {
+                        if (url.startsWith("/api/mail/messages/conversations/")) {
+                            throw new TypeError("network down");
+                        }
+                        return undefined;
+                    },
+                    [thread()],
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+
+                await selectThread(user);
+
+                expect(
+                    await screen.findByText("Could not load the messages in one of those conversations.", { exact: false }),
+                ).toBeInTheDocument();
+            });
+
+            it("unticks a conversation ticked twice, and fetches its messages only once", async () => {
+                const fetchMock = mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+                await selectThread(user);
+                await screen.findByText("1 conversation selected");
+
+                await user.click(screen.getByRole("checkbox", { name: "Select conversation: Thread subject" }));
+                expect(await screen.findByText("0 conversations selected")).toBeInTheDocument();
+                await user.click(screen.getByRole("checkbox", { name: "Select conversation: Thread subject" }));
+                await screen.findByText("1 conversation selected");
+
+                expect(
+                    fetchMock.mock.calls.filter(([url]: any[]) =>
+                        String(url).startsWith("/api/mail/messages/conversations/"),
+                    ).length,
+                ).toBe(1);
+            });
+
+            it("leaves select mode and drops the selection on Cancel", async () => {
+                mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+                await selectThread(user);
+                await screen.findByText("1 conversation selected");
+
+                await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+                expect(screen.queryByRole("checkbox", { name: "Select conversation: Thread subject" })).not.toBeInTheDocument();
+                expect(screen.getByRole("button", { name: "Select" })).toBeInTheDocument();
+            });
+
+            it("reloads the conversation list and says so when a bulk action is rejected", async () => {
+                mockShellAndInbox(
+                    [],
+                    (url, init) =>
+                        url === "/api/mail/messages" && init?.method === "PUT"
+                            ? jsonResponse(409, { message: "version conflict" })
+                            : undefined,
+                    [thread()],
+                    { c1: threadMessages() },
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+                await selectThread(user);
+                await screen.findByText("1 conversation selected");
+
+                await user.click(screen.getByRole("button", { name: "Mark read" }));
+
+                expect(await screen.findByText(/version conflict/)).toBeInTheDocument();
+                expect(await screen.findByText("0 conversations selected")).toBeInTheDocument();
+            });
+        });
+
         it("replaces the flat list with conversations, scoped to the selected folder and the current filter", async () => {
             const fetchMock = mockShellAndInbox([messageFixture({ subject: "Flat row" })], undefined, [thread()]);
             const user = userEvent.setup();
@@ -1084,7 +1298,7 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Could not load conversations.")).toBeInTheDocument();
         });
 
-        it("hides the search box and disables Select while conversations are shown", async () => {
+        it("hides the search box, but keeps Select, while conversations are shown", async () => {
             mockShellAndInbox([messageFixture()], undefined, [thread()]);
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
@@ -1095,7 +1309,9 @@ describe("InboxPage", () => {
 
             await screen.findByText("Thread subject");
             expect(screen.queryByLabelText("Search all mail")).not.toBeInTheDocument();
-            expect(screen.getByRole("button", { name: "Select" })).toBeDisabled();
+            // Select mode over conversations ticks whole conversations - see the "select mode over
+            // conversations" tests below.
+            expect(screen.getByRole("button", { name: "Select" })).toBeEnabled();
         });
 
         it("disables the sort keys while conversations are shown and says why", async () => {
@@ -1385,6 +1601,192 @@ describe("InboxPage", () => {
 
             expect(await screen.findByRole("menuitemcheckbox", { name: "Invoices" })).toBeInTheDocument();
             expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/mail/labels?"), expect.anything());
+        });
+    });
+
+    describe("what one view costs", () => {
+        it("asks for the open mailbox's labels once, not once per list", async () => {
+            const fetchMock = mockShellAndInbox([messageFixture()]);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Hello there");
+
+            // Both the toolbar's own label menu and the reading pane's read the open mailbox's labels; one
+            // request answers both.
+            await waitFor(() =>
+                expect(fetchMock.mock.calls.filter(([url]: any[]) => String(url).startsWith("/api/mail/labels")).length).toBe(1),
+            );
+        });
+
+        it("still asks for a selected message's own mailbox's labels when that is another mailbox", async () => {
+            // A search hit from a shared mailbox: its labels are a different list and must be fetched.
+            const shared = { ...mailbox, uid: "mb2", ownerUserUid: "u2", displayName: "Support" };
+            const hit = messageFixture({ uid: "s1", subject: "Shared hit", mailboxUid: "mb2", folderUid: "f-shared" });
+            const fetchMock = mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, shared]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/labels") && url.includes("mailboxUid=mb2")) {
+                    return jsonResponse(200, [labelFixture("l9", "Shared label")]);
+                }
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, LABELS);
+                if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/")) return jsonResponse(200, hit);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [hit]);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Shared hit");
+
+            await user.click(screen.getByText("Shared hit"));
+
+            await waitFor(() =>
+                expect(fetchMock.mock.calls.some(([url]: any[]) => String(url).includes("/api/mail/labels?") && String(url).includes("mailboxUid=mb2"))).toBe(
+                    true,
+                ),
+            );
+            expect(await screen.findByTestId("detail-pane")).toHaveTextContent("labels:Shared label");
+        });
+
+        it("hides the Labels control when another mailbox's labels can't be loaded", async () => {
+            const shared = { ...mailbox, uid: "mb2", ownerUserUid: "u2", displayName: "Support" };
+            const hit = messageFixture({ uid: "s1", subject: "Shared hit", mailboxUid: "mb2", folderUid: "f-shared" });
+            mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, shared]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/labels") && url.includes("mailboxUid=mb2")) {
+                    return jsonResponse(500, { message: "labels boom" });
+                }
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, LABELS);
+                if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/")) return jsonResponse(200, hit);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [hit]);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Shared hit");
+
+            await user.click(screen.getByText("Shared hit"));
+
+            // No labels rather than this mailbox's own, which belong to a different mailbox entirely.
+            expect(await screen.findByTestId("detail-pane")).toHaveTextContent("labels:");
+            expect(screen.getByTestId("detail-pane")).not.toHaveTextContent("labels:Invoices");
+        });
+
+        it("lists nothing until the shell has resolved which folder to list", async () => {
+            // The folder list never arrives: a listing request now would be answered for the whole mailbox
+            // and thrown away the moment the Inbox did arrive.
+            const fetchMock = mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return new Promise<Response>(() => undefined);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, LABELS);
+                throw new Error(`unexpected ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText(/Loading your mailbox/)).toBeInTheDocument();
+            expect(
+                fetchMock.mock.calls.filter(([url]: any[]) => String(url).startsWith("/api/mail/messages")),
+            ).toHaveLength(0);
+        });
+
+        it("lists a merged view once every mailbox's folders are known, and only then", async () => {
+            // An aggregate view has no folder of its own but is built from every mailbox's folders, which
+            // arrive after this list's first render - listing before that was the second of two identical
+            // requests per view.
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            let resolveFolders: ((response: Response) => void) | undefined;
+            const fetchMock = mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return new Promise<Response>((resolve) => (resolveFolders = resolve));
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, LABELS);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [messageFixture({ subject: "Merged row" })]);
+                throw new Error(`unexpected ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText(/^Loading/);
+            expect(fetchMock.mock.calls.filter(([url]: any[]) => String(url).startsWith("/api/mail/messages"))).toHaveLength(0);
+
+            await act(async () => {
+                resolveFolders!(jsonResponse(200, [inboxFolder]));
+            });
+
+            expect(await screen.findByText("Merged row")).toBeInTheDocument();
+            expect(fetchMock.mock.calls.filter(([url]: any[]) => String(url).startsWith("/api/mail/messages"))).toHaveLength(1);
+            mockLocation();
+        });
+
+        it("lists a conversation view once the folder is known, and only then", async () => {
+            localStorage.clear();
+            let resolveFolders: ((response: Response) => void) | undefined;
+            const fetchMock = mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return new Promise<Response>((resolve) => (resolveFolders = resolve));
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, LABELS);
+                if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText(/Loading your mailbox/);
+
+            await act(async () => {
+                resolveFolders!(jsonResponse(200, [inboxFolder]));
+            });
+
+            await screen.findByText("No conversations in this folder.");
+            const conversationCalls = fetchMock.mock.calls.filter(([url]: any[]) =>
+                String(url).startsWith("/api/mail/messages/conversations"),
+            );
+            expect(conversationCalls).toHaveLength(1);
+            expect(String(conversationCalls[0][0])).toContain("folderUid=f1");
+        });
+    });
+
+    describe("the Select toggle", () => {
+        it("is enabled as soon as the folder has listed rows", async () => {
+            mockShellAndInbox([messageFixture()]);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Hello there");
+
+            expect(screen.getByRole("button", { name: "Select" })).toBeEnabled();
+        });
+
+        it("is held while the folder is still loading, and says why", async () => {
+            // The listing never resolves, so the list stays in its loading state.
+            // Never resolves, so the list stays in its loading state for as long as the test needs it.
+            const pending = new Promise<Response>(() => undefined);
+            mockShellAndInbox([], (url) => (url.startsWith("/api/mail/messages?") ? (pending as never) : undefined));
+            render(<InboxPage userUid="u1" />);
+
+            const select = await screen.findByRole("button", { name: "Select" });
+            await waitFor(() => expect(select).toBeDisabled());
+            expect(select).toHaveAttribute("title", "Wait for this folder to finish loading");
+        });
+
+        it("is held for a folder with nothing in it, and says why", async () => {
+            mockShellAndInbox([]);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("No messages in this folder.");
+
+            const select = screen.getByRole("button", { name: "Select" });
+            expect(select).toBeDisabled();
+            expect(select).toHaveAttribute("title", "There is nothing here to select");
+        });
+
+        it("is held for a conversation list with nothing in it too", async () => {
+            mockShellAndInbox([messageFixture()], undefined, []);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Hello there");
+
+            await toggleConversations(user);
+
+            await screen.findByText("No conversations in this folder.");
+            expect(screen.getByRole("button", { name: "Select" })).toBeDisabled();
         });
     });
 
@@ -3461,9 +3863,10 @@ describe("InboxPage", () => {
             render(<InboxPage userUid="u1" />);
             await screen.findByPlaceholderText("Open a mailbox's own folder to search");
 
-            // Folders still loading: nothing to list yet either way.
+            // Folders still loading: an aggregate view is built from them, so nothing is listed yet either
+            // way - see "what one view costs".
             await toggleConversations(user);
-            expect(await screen.findByText("No conversations in this folder.")).toBeInTheDocument();
+            expect(await screen.findByText(/^Loading/)).toBeInTheDocument();
 
             // Folders arrive; back in the flat list that starts a (slow) aggregate listing, which switching
             // conversations on again supersedes before it lands.

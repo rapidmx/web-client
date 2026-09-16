@@ -1508,7 +1508,7 @@ describe("ComposeWindow", () => {
                 />,
             );
 
-            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><p>Best,<br>Jane</p><p></p><blockquote>Hi</blockquote>");
+            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><p>Best,<br>Jane</p><p></p><p></p><blockquote>Hi</blockquote>");
         });
 
         it("seeds the editor with just the quoted content when the mailbox has no matching default signature", async () => {
@@ -1523,7 +1523,7 @@ describe("ComposeWindow", () => {
                 />,
             );
 
-            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><blockquote>Hi</blockquote>");
+            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><p></p><blockquote>Hi</blockquote>");
         });
 
         it("falls back to just the quoted content when the signature list fails to load", async () => {
@@ -1536,7 +1536,7 @@ describe("ComposeWindow", () => {
                 />,
             );
 
-            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><blockquote>Hi</blockquote>");
+            expect(await screen.findByTestId("html-editor")).toHaveValue("<p></p><p></p><blockquote>Hi</blockquote>");
         });
 
         it("does not mount the editor until the signature lookup resolves", async () => {
@@ -1578,7 +1578,7 @@ describe("ComposeWindow", () => {
             renderSession(replySession);
 
             const editor = await screen.findByTestId("html-editor");
-            expect(editor).toHaveValue("<p></p><blockquote>Hi</blockquote>");
+            expect(editor).toHaveValue("<p></p><p></p><blockquote>Hi</blockquote>");
             expect(editor).toHaveAttribute("data-autofocus-start", "true");
             expect(screen.getByLabelText("To")).not.toHaveFocus();
             expect(screen.getByLabelText("Subject")).not.toHaveFocus();
@@ -1663,7 +1663,7 @@ describe("ComposeWindow", () => {
             await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
 
             await user.click(await screen.findByRole("button", { name: "fake-initialize" }));
-            expect(screen.getByTestId("html-editor")).toHaveValue("<p></p><blockquote><p>Hi</p></blockquote>");
+            expect(screen.getByTestId("html-editor")).toHaveValue("<p></p><p></p><blockquote><p>Hi</p></blockquote>");
             await new Promise((resolve) => setTimeout(resolve, 30));
             expect(fetchMock.mock.calls.filter(([url]) => url === "/api/mail/compose/m1/assemble")).toHaveLength(0);
 
@@ -1692,7 +1692,7 @@ describe("ComposeWindow", () => {
             renderSession({ signatureContext: "reply_forward", initialQuotedHtml: "<p>quoted</p>" });
 
             await user.click(await screen.findByRole("button", { name: "fake-initialize" }));
-            expect(screen.getByTestId("html-editor")).toHaveValue("<p></p><p>quoted</p>");
+            expect(screen.getByTestId("html-editor")).toHaveValue("<p></p><p></p><p>quoted</p>");
         });
 
         it("starts a reply to an encrypted message with Encrypt requested, and never autosaves it", async () => {

@@ -22,7 +22,12 @@ import {
     setMessagesRead,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
-import { ConversationListParams, ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
+import {
+    ConversationListParams,
+    ConversationSummary,
+    listConversationMessages,
+    listConversations,
+} from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
 import { parseSearchQuery, type ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
@@ -454,6 +459,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const lazyFoldersRef = useRef<Map<string, string>>(new Map());
     const [selectMode, setSelectMode] = useState(false);
     const [selectedUids, setSelectedUids] = useState<Set<string>>(new Set());
+    // Select mode over the *conversation* list ticks whole conversations rather than messages: the rows
+    // there are conversations, and a bulk action on one means "every message of it that is in this folder".
+    // Their messages are fetched (once, cached here) as each conversation is ticked, so the selection bar
+    // and every bulk action below keep working on the `Message[]` they already take.
+    const [selectedConversationIds, setSelectedConversationIds] = useState<Set<string>>(new Set());
+    const [conversationMessagesById, setConversationMessagesById] = useState<Record<string, Message[]>>({});
+    // A ticked conversation whose messages are still being fetched - every bulk action is held meanwhile,
+    // or it would act on a selection that is still arriving.
+    const [resolvingSelection, setResolvingSelection] = useState(0);
     const [bulkBusy, setBulkBusy] = useState(false);
     const [bulkError, setBulkError] = useState<string | null>(null);
     // Bumped to force the list effect below to re-run - a bulk update is deliberately neither atomic nor
@@ -463,12 +477,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const [searchInput, setSearchInput] = useState("");
     const [searchQuery, setSearchQuery] = useState("");
     const [snippets, setSnippets] = useState<Record<string, string>>({});
-    const [labels, setLabels] = useState<Label[]>([]);
-    // The *open mailbox's* labels, for the Filter menu's Labels submenu and select mode's Apply label.
-    // Separate from `labels` above, which follows whichever mailbox the *selected message* belongs to -
-    // in search and aggregate views that can be a different mailbox, whose labels must not be offered as
-    // a filter for this one.
+    // The *open mailbox's* labels, for the Filter menu's Labels submenu, select mode's Apply label, and -
+    // unless the selected message belongs to another mailbox - the reading pane's own Labels menu.
     const [mailboxLabels, setMailboxLabels] = useState<Label[]>([]);
+    // The selected message's own mailbox's labels, when that is a different mailbox from the open one: in
+    // search and aggregate views it can be, and its labels must not be offered as a filter for this one.
+    // Empty (and never fetched) otherwise - see `labels` below.
+    const [otherMailboxLabels, setOtherMailboxLabels] = useState<Label[]>([]);
     // Tier 2's own reported window coverage for the current search - undefined outside a search, or
     // before Tier 2 has resolved yet for this search pass.
     const [coverage, setCoverage] = useState<Coverage | undefined>(undefined);
@@ -701,22 +716,32 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // applied. The conversation view stays scoped to `activeMailboxUid`, the mailbox its threads come from.
     const selectedMessageMailboxUid = messages.find((m) => m.uid === selectedUid)?.mailboxUid;
     const labelsMailboxUid = preferences.showAsConversations ? activeMailboxUid : (selectedMessageMailboxUid ?? activeMailboxUid);
+    // Almost always the open mailbox's own labels, already fetched below - so `labels` reuses that list
+    // rather than asking for the identical one a second time (which is what this page did on every single
+    // view). Only a selected message from *another* mailbox - a search hit or an aggregate-view row - needs
+    // its own fetch, and only then is this state used at all.
+    const otherMailbox = labelsMailboxUid !== activeMailboxUid;
+    const labels = otherMailbox ? otherMailboxLabels : mailboxLabels;
     // `labelsMailboxUid` is always set: `MailShell` only renders this component once at least one mailbox
     // exists, so `activeMailboxUid` (its fallback) always resolves.
     useEffect(() => {
+        if (!otherMailbox) {
+            setOtherMailboxLabels([]);
+            return;
+        }
         let cancelled = false;
-        setLabels([]);
+        setOtherMailboxLabels([]);
         listLabels(labelsMailboxUid, { limit: 200 })
             .then((result) => {
                 if (!cancelled) {
-                    setLabels(result);
+                    setOtherMailboxLabels(result);
                 }
             })
             .catch(() => undefined);
         return () => {
             cancelled = true;
         };
-    }, [labelsMailboxUid]);
+    }, [labelsMailboxUid, otherMailbox]);
 
     useEffect(() => {
         let cancelled = false;
@@ -746,6 +771,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
         setOpenThread(null);
         setConversationPatches({});
         setSelectedUids(new Set());
+        setSelectedConversationIds(new Set());
+        setConversationMessagesById({});
         listedOffsetRef.current = 0;
         compositeCursorRef.current = undefined;
         setHasMore(false);
@@ -763,6 +790,25 @@ function InboxContent({ userUid }: { userUid?: string }) {
         const invalidate = () => {
             searchRunIdRef.current += 1;
         };
+
+        if (!folderUid && !aggregateFolderType) {
+            // The shell hasn't resolved this mailbox's folders yet (the render below says so). Listing
+            // anything now means a request whose answer is thrown away the moment the Inbox arrives - and
+            // for conversations a mailbox-wide grouping pass, the most expensive listing there is.
+            setMessages([]);
+            setConversations([]);
+            setLoading(false);
+            return;
+        }
+        if (aggregateFolderType && mailboxFolders.length === 0) {
+            // The same, for a merged view: it has no folder of its own, but it is built from every
+            // mailbox's folders, and this effect re-runs the moment they arrive. Listing twice is what
+            // that cost before.
+            setMessages([]);
+            setConversations([]);
+            setLoading(true);
+            return;
+        }
 
         if (preferences.showAsConversations) {
             // Conversations stay single-mailbox (not aggregated across mailboxes in this pass) - in
@@ -811,11 +857,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return invalidate;
         }
 
-        if (!folderUid) {
-            setMessages([]);
-            setLoading(false);
-            return;
-        }
         setLoading(true);
         setError(null);
 
@@ -908,7 +949,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return invalidate;
         }
 
-        listMessages(folderUid, listParams)
+        // Set: the guard at the top of this effect returned for a view with neither a folder nor an
+        // aggregate type, and the aggregate branch above returned for the one with an aggregate type.
+        listMessages(folderUid!, listParams)
             .then((results) => {
                 if (isCurrentRun()) {
                     setMessages(results);
@@ -1177,11 +1220,24 @@ function InboxContent({ userUid }: { userUid?: string }) {
         );
     }
 
-    const selectedMessages = messages.filter((m) => selectedUids.has(m.uid));
+    /** The conversation list's selection as plain messages: every message of every ticked conversation
+     * that is in the folder being listed. A conversation spans folders (an Inbox message and the Sent
+     * Items copy of its reply), and the list only ever showed this folder's half of it, so a bulk action
+     * from here must not reach into the other folders' copies either. */
+    const selectedConversationMessages = [...selectedConversationIds].flatMap((id) =>
+        (conversationMessagesById[id] ?? []).filter((m) => !folderUid || m.folderUid === folderUid),
+    );
+    const selectedMessages = preferences.showAsConversations
+        ? selectedConversationMessages
+        : messages.filter((m) => selectedUids.has(m.uid));
+    /** How many rows the list is actually showing - conversations or messages, whichever it lists. What the
+     * Select toggle is enabled by: there is nothing to select in a list with no rows. */
+    const listedRowCount = preferences.showAsConversations ? conversations.length : messages.length;
 
     function leaveSelectMode() {
         setSelectMode(false);
         setSelectedUids(new Set());
+        setSelectedConversationIds(new Set());
         setBulkError(null);
     }
 
@@ -1195,6 +1251,59 @@ function InboxContent({ userUid }: { userUid?: string }) {
             }
             return next;
         });
+    }
+
+    /** Loads (once) the messages behind each of `ids`, so a ticked conversation resolves to the messages
+     * every bulk action below acts on. If any of them fails to load, none of that batch stays ticked and
+     * the bar says why - better than acting on the part of a selection that happened to arrive. */
+    async function resolveConversations(ids: string[]) {
+        const missing = ids.filter((id) => !conversationMessagesById[id]);
+        if (missing.length === 0) {
+            return;
+        }
+        setResolvingSelection((n) => n + 1);
+        try {
+            const loaded = await Promise.all(
+                missing.map(async (id) => [id, await listConversationMessages(activeMailboxUid, id)] as const),
+            );
+            setConversationMessagesById((prev) => ({ ...prev, ...Object.fromEntries(loaded) }));
+        } catch (err) {
+            setBulkError(
+                err instanceof ApiRequestError ? err.message : "Could not load the messages in one of those conversations.",
+            );
+            setSelectedConversationIds((prev) => {
+                const next = new Set(prev);
+                for (const id of missing) {
+                    next.delete(id);
+                }
+                return next;
+            });
+        } finally {
+            setResolvingSelection((n) => n - 1);
+        }
+    }
+
+    function toggleConversationSelected(conversation: ConversationSummary) {
+        const id = conversation.conversationId;
+        const ticking = !selectedConversationIds.has(id);
+        setSelectedConversationIds((prev) => {
+            const next = new Set(prev);
+            if (ticking) {
+                next.add(id);
+            } else {
+                next.delete(id);
+            }
+            return next;
+        });
+        if (ticking) {
+            void resolveConversations([id]);
+        }
+    }
+
+    function selectAllConversations() {
+        const ids = conversations.map(conversationKey);
+        setSelectedConversationIds(new Set(ids));
+        void resolveConversations(ids);
     }
 
     /**
@@ -1211,7 +1320,14 @@ function InboxContent({ userUid }: { userUid?: string }) {
         setBulkError(null);
         try {
             const updated = await action(chosen);
-            if (removesRows) {
+            if (preferences.showAsConversations) {
+                // A conversation row is a summary of its messages - its count, unread count, participants
+                // and preview all move when a bulk action changes or empties part of it - so the list is
+                // reloaded rather than patched row by row.
+                setSelectedConversationIds(new Set());
+                setConversationMessagesById({});
+                setRefreshKey((n) => n + 1);
+            } else if (removesRows) {
                 removeListedMessages(new Set(chosen.map((m) => m.uid)));
             } else {
                 const byUid = new Map(updated.map((m) => [m.uid, m]));
@@ -1223,6 +1339,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 `${err instanceof ApiRequestError ? err.message : "Those messages couldn't all be updated."} Some of them may already have changed, so the list has been reloaded.`,
             );
             setSelectedUids(new Set());
+            setSelectedConversationIds(new Set());
+            setConversationMessagesById({});
             setRefreshKey((n) => n + 1);
         } finally {
             setBulkBusy(false);
@@ -1320,6 +1438,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
     /** Opens a conversation in the reading pane, positioned at one of its messages: the one a child row
      * stands for, or the latest for a parent row. The thread pane loads the thread itself. */
     function handleOpenConversation(conversation: ConversationSummary, uid: string) {
+        if (selectMode) {
+            // Same rule as `handleSelect()` for a message row: while selecting, a row's own button ticks
+            // the row rather than opening it.
+            toggleConversationSelected(conversation);
+            return;
+        }
         if (isMobile) {
             // No dedicated mobile thread route yet - the existing single-message detail route already
             // handles any message uid regardless of conversation grouping.
@@ -1346,8 +1470,19 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     <MailSelectionBar
                         selected={selectedMessages}
                         listed={messages}
-                        onSelectAll={() => setSelectedUids(new Set(messages.map((m) => m.uid)))}
-                        onClearSelection={() => setSelectedUids(new Set())}
+                        totals={
+                            preferences.showAsConversations
+                                ? { selected: selectedConversationIds.size, listed: conversations.length, noun: "conversation" }
+                                : undefined
+                        }
+                        onSelectAll={() =>
+                            preferences.showAsConversations
+                                ? selectAllConversations()
+                                : setSelectedUids(new Set(messages.map((m) => m.uid)))
+                        }
+                        onClearSelection={() =>
+                            preferences.showAsConversations ? setSelectedConversationIds(new Set()) : setSelectedUids(new Set())
+                        }
                         onCancel={leaveSelectMode}
                         folders={currentFolders}
                         currentFolderUid={folderUid}
@@ -1361,7 +1496,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         onMoveTo={(targetFolderUid) => void runBulkAction((chosen) => moveMessages(chosen, targetFolderUid), true)}
                         onReportJunk={() => moveSelectionToType("junk", "Junk Email")}
                         onDelete={() => moveSelectionToType("deleted_items", "Deleted Items")}
-                        busy={bulkBusy}
+                        busy={bulkBusy || resolvingSelection > 0}
                         error={bulkError}
                     />
                 ) : (
@@ -1393,11 +1528,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                     ? "This view merges the newest mail from every mailbox and is always listed by date."
                                     : undefined
                         }
-                        selectDisabled={preferences.showAsConversations || !!aggregateFolderType}
+                        selectDisabled={!!aggregateFolderType || loading || listedRowCount === 0}
                         selectDisabledReason={
-                            preferences.showAsConversations
-                                ? "Turn off Show as conversations to select messages"
-                                : "Open a mailbox's own folder to select messages"
+                            aggregateFolderType
+                                ? "Open a mailbox's own folder to select messages"
+                                : loading
+                                  ? "Wait for this folder to finish loading"
+                                  : "There is nothing here to select"
                         }
                     />
                 )}
@@ -1506,6 +1643,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             selectedUid={selectedUid}
                             messageOverrides={conversationPatches}
                             onOpenMessage={handleOpenConversation}
+                            selectMode={selectMode}
+                            selectedConversationIds={selectedConversationIds}
+                            onToggleSelected={toggleConversationSelected}
                         />
                         {hasMore && (
                             <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
@@ -1647,7 +1787,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     }}
                     labels={labels}
                     onLabelsChanged={patchListedMessage}
-                    onLabelCreated={(label) => setLabels((prev) => [...prev, label])}
+                    onLabelCreated={(label) =>
+                        (otherMailbox ? setOtherMailboxLabels : setMailboxLabels)((prev) => [...prev, label])
+                    }
                 />
                 )}
             </div>

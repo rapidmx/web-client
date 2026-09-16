@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { PropsWithChildren, createContext, useContext, useMemo, useState } from "react";
+import { DraftThreading } from "@rapidmx/react-shared/mail/mailApi.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import ComposeWindow from "./ComposeWindow.js";
 
@@ -19,6 +20,8 @@ export interface ComposeSession {
     initialQuotedHtml?: string;
     /** See `OpenComposeInput.encrypt`'s own doc comment. */
     initialEncrypt?: boolean;
+    /** See `OpenComposeInput.threading`'s own doc comment - handed to `createDraft()` by the window. */
+    threading?: DraftThreading;
     /** Which of a signature's two "default" flags to resolve against — `"new"` (the default) uses
      * `isDefaultForNewMessages`, `"reply_forward"` uses `isDefaultForReplyForward`. */
     signatureContext: "new" | "reply_forward";
@@ -53,6 +56,11 @@ export interface OpenComposeInput {
      * compose window starts with "Encrypt this message" requested, so it is never autosaved as a plaintext draft and
      * can't be sent unencrypted without the user explicitly choosing to. */
     encrypt?: boolean;
+    /** The thread this compose continues (`buildReplyThreading()` over the message being replied to or
+     * forwarded), recorded on the draft by `createDraft()`. Without it the message is relayed with no
+     * `In-Reply-To`/`References` at all and every mail system - the sender's own Sent Items included - files it
+     * as a new conversation rather than part of the thread. Absent for a fresh compose, which starts one. */
+    threading?: DraftThreading;
 }
 
 export interface ComposeContextValue {
@@ -78,7 +86,17 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
     const [sessions, setSessions] = useState<ComposeSession[]>([]);
     const isMobile = useIsMobile();
 
-    function openCompose({ mailboxUid, to, cc, subject, quotedHtml, signatureContext = "new", suppressSigning, encrypt }: OpenComposeInput) {
+    function openCompose({
+        mailboxUid,
+        to,
+        cc,
+        subject,
+        quotedHtml,
+        signatureContext = "new",
+        suppressSigning,
+        encrypt,
+        threading,
+    }: OpenComposeInput) {
         setSessions((prev) => [
             ...prev,
             {
@@ -89,6 +107,7 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
                 initialSubject: subject,
                 initialQuotedHtml: quotedHtml,
                 initialEncrypt: encrypt,
+                threading,
                 signatureContext,
                 suppressSigning,
                 minimized: false,

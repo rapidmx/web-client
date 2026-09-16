@@ -330,6 +330,8 @@ describe("MessageDetailPage", () => {
             render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
 
             await user.click(await screen.findByRole("button", { name: "Move to Other" }));
+            // The move is confirmed first - see `MessageDetailPane`'s own tests for the prompt itself.
+            await user.click(await screen.findByRole("button", { name: "Move" }));
             expect(await screen.findByRole("button", { name: "Move to Focused" })).toBeInTheDocument();
         });
     });

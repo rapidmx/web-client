@@ -39,6 +39,16 @@ describe("listPreferences", () => {
         expect(getMailListPreferences("mb2")).toEqual(DEFAULT_MAIL_LIST_PREFERENCES);
     });
 
+    it("opens a never-configured mailbox on Focused, shown as conversations", () => {
+        expect(getMailListPreferences("mb1")).toMatchObject({ filter: "focused", showAsConversations: true });
+    });
+
+    it("honours a stored flat, unfiltered arrangement rather than re-applying the defaults over it", () => {
+        setMailListPreferences("mb1", { ...DEFAULT_MAIL_LIST_PREFERENCES, filter: "all", showAsConversations: false });
+
+        expect(getMailListPreferences("mb1")).toMatchObject({ filter: "all", showAsConversations: false });
+    });
+
     it("keeps a Focused/Other filter, which the menu offers alongside the named ones", () => {
         setMailListPreferences("mb1", { ...DEFAULT_MAIL_LIST_PREFERENCES, filter: "other" });
         expect(getMailListPreferences("mb1").filter).toBe("other");

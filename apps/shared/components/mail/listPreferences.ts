@@ -42,13 +42,22 @@ export interface MailListPreferences {
  * with a 400, so a stored selection is trimmed to the cap rather than sent. */
 export const MAX_LABEL_FILTER_UIDS = MAX_MESSAGE_LABEL_FILTER;
 
-/** `listMessages()`'s own defaults, spelled out: newest received first, nothing filtered out, flat list. */
+/**
+ * What a mailbox nobody has configured yet opens on: newest received first, no label filter, and - like
+ * Outlook's own out-of-the-box arrangement - the Focused half of the Inbox, shown as conversations.
+ *
+ * Neither of those last two is `listMessages()`'s own default (`all`, and the flat list): they are this
+ * client's opinion about what a first-time reader should see, applied only where nothing has been stored
+ * (see `getMailListPreferences()`, which keeps a stored `false`/`all` exactly as it was). `focused` also
+ * only ever applies in an Inbox - every other folder falls back to `all` in `apps/www/index.tsx`, which is
+ * what `MessageListFilter`'s own "Inbox-only concept" note requires.
+ */
 export const DEFAULT_MAIL_LIST_PREFERENCES: MailListPreferences = {
     sortBy: "date",
     sortOrder: "desc",
-    filter: "all",
+    filter: "focused",
     labelUids: [],
-    showAsConversations: false,
+    showAsConversations: true,
 };
 
 /** Every sort key the server accepts, with the label the Sort menu shows for it - the order here is the
@@ -126,7 +135,14 @@ export function getMailListPreferences(mailboxUid: string): MailListPreferences 
         labelUids: Array.isArray(record.labelUids)
             ? record.labelUids.filter((uid): uid is string => typeof uid === "string").slice(0, MAX_LABEL_FILTER_UIDS)
             : [],
-        showAsConversations: record.showAsConversations === true,
+        // A stored `false` is a choice this reader made and is honoured; anything else (a record written
+        // before this field existed, or a corrupted value) falls back to the default like every other
+        // field here - which is what makes "Show as conversations" on by default only for a mailbox that
+        // has never been arranged.
+        showAsConversations:
+            typeof record.showAsConversations === "boolean"
+                ? record.showAsConversations
+                : DEFAULT_MAIL_LIST_PREFERENCES.showAsConversations,
     };
 }
 
