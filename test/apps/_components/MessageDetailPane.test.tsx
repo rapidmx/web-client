@@ -186,17 +186,29 @@ describe("MessageDetailPane", () => {
         expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
     });
 
-    it("grows the body to the pane on its own, and to the window inside a thread", () => {
-        // On its own the body is the flex column's growing child; in a thread there is no column to grow
-        // in (the pane is one item of a scrolling list), so it takes a height of its own instead of
-        // falling back to an iframe's 150px default. See `bodyClassName`.
+    it("grows the body to the whole pane, in a thread and out of one, with no height of its own", () => {
+        // The body is the flex column's one growing child either way - the height comes down the chain
+        // from the window (in a thread, through the row `ConversationThreadPane` gives `min-h-full`), never
+        // from a `vh` number written on the frame, which couldn't follow a resize. See `bodyClassName`.
         const { rerender } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
         expect(screen.getByTitle("Hello there").className).toContain("flex-1");
         expect(screen.getByTitle("Hello there").className).toContain("min-h-0");
+        expect(screen.getByTitle("Hello there").className).not.toMatch(/h-\[\d/);
 
         rerender(<MessageDetailPane inThread message={messageFixture()} attachments={[]} />);
-        expect(screen.getByTitle("Hello there").className).toContain("h-[65vh]");
-        expect(screen.getByTitle("Hello there").className).not.toContain("flex-1");
+        expect(screen.getByTitle("Hello there").className).toContain("flex-1");
+        expect(screen.getByTitle("Hello there").className).toContain("min-h-0");
+        expect(screen.getByTitle("Hello there").className).not.toMatch(/h-\[\d/);
+    });
+
+    it("draws each action as an icon alone, named only for assistive technology", () => {
+        render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
+        for (const name of ["Reply", "Reply All", "Forward", "Archive", "Move to Other"]) {
+            const button = screen.getByRole("button", { name });
+            expect(button).toHaveAttribute("title", name);
+            // The name is the accessible name and the tooltip - never text on screen, at any width.
+            expect(button).not.toHaveTextContent(name);
+        }
     });
 
     it("renders a back link when backHref is given", () => {

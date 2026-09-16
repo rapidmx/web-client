@@ -31,6 +31,12 @@ export interface ConversationListProps {
     /** The `conversationId`s currently ticked. */
     selectedConversationIds?: Set<string>;
     onToggleSelected?: (conversation: ConversationSummary) => void;
+    /**
+     * Whether a conversation's own messages read newest first, matching the order sense the rows themselves
+     * are in ("Newest on top"). `listConversationMessages()` always answers oldest first - the order a
+     * thread is read in - so this reverses that copy for display rather than asking for it differently.
+     */
+    newestFirst?: boolean;
 }
 
 function participantNames(conversation: ConversationSummary): string {
@@ -59,6 +65,7 @@ export default function ConversationList({
     selectMode,
     selectedConversationIds,
     onToggleSelected,
+    newestFirst,
 }: ConversationListProps) {
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     const [messagesById, setMessagesById] = useState<Record<string, Message[]>>({});
@@ -112,7 +119,10 @@ export default function ConversationList({
                 const id = conversation.conversationId;
                 const isExpanded = expanded.has(id);
                 const unread = conversation.unreadCount > 0;
-                const children = messagesById[id];
+                const loaded = messagesById[id];
+                // `listConversationMessages()` answers oldest first; the rows read in whichever sense the
+                // list itself is arranged in. Copied before reversing - the fetched array is cached.
+                const children = loaded && newestFirst ? [...loaded].reverse() : loaded;
                 const panelId = `conversation-messages-${id}`;
                 const ticked = selectedConversationIds?.has(id) ?? false;
                 return (

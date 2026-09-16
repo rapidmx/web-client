@@ -2112,3 +2112,71 @@ JP reported seven things against `yarn dev` after the toolbar/thread work landed
   A browser check after changing web-client needs `yarn build` in `server` too, or it silently exercises the previous
   build (which is how a reply with no `In-Reply-To` and a duplicate `listLabels()` both "survived" a fix that was
   already in the tree).
+
+### 2026-09-16 (continued) — Mail UX round 2: icon-only actions, a real height chain, conversation sorting
+
+JP's second pass over the same screens. Six items; the interesting ones are the height and the sort.
+
+- **Icon-only actions, everywhere.** `IconAction`'s `hidden xl:inline` label span is gone - the reading pane's
+  Reply/Reply All/Forward/Archive/Move to Other are the glyph alone at every width, with the name still in
+  `aria-label` *and* `title`. The Select toggle went the same way: `HiOutlineStop` (hi2's only plain outlined
+  rounded square, which is what Outlook's "select items" command looks like), `aria-label`/`title` "Select",
+  and a `bg-primary/10` background rather than only a colour for the pressed state. Its `title` becomes the
+  disabled reason while it is unavailable - with nothing written on the button, that is the more useful thing
+  to read at that moment.
+- **The height, and the trap that cost the first attempt.** The `h-[65vh]` from the previous round is gone;
+  the body is `flex-1 min-h-0 w-full` in a full-height flex column in *both* places, and the height comes down
+  the chain from the window:
+  `main` > `div.flex h-full min-h-0` > the reading pane column > `ConversationThreadPane` > `ul.flex-1
+  min-h-0 overflow-y-auto` > an expanded `li.flex flex-col min-h-full` > `div.flex-1 min-h-0 flex` >
+  `MessageDetailPane` > the `sandbox=""` iframe. `min-h-full` on the row is what replaces the `vh` number: it
+  is 100% of the *scrolling list's* own resolved height, so an expanded message is exactly one pane tall,
+  follows a resize, and its body reaches the bottom of the pane with the message scrolled to.
+  - **The trap:** `MessageDetailPane`'s root carried `h-full` unconditionally. An explicit height on a flex
+    item opts it out of `align-items: stretch`, and Chrome will *not* resolve that percentage against a parent
+    whose own height came out of the flex algorithm - so inside a thread the pane collapsed to its content
+    height and the iframe fell back to its 150px default again. Measured, not guessed: `heightprobe.mjs`
+    (scratchpad) walks `iframe` > `html` printing each ancestor's computed height, and showed 706px of parent
+    with a 293px pane inside it. `h-full` now applies **only outside a thread**, where the pane is rendered
+    straight into `MailShell`'s `<main>` - a *block* that stretches nothing, so there the percentage is the
+    only thing that sizes it. Everywhere else the flex chain stretches it. Same reason `apps/www/index.tsx`'s
+    reading-pane column has no `h-full` either.
+  - Measured at two window sizes (`uxcheck2.mjs`): 1400x900 - thread body 563px, single-message body 689px,
+    both 0-1px short of the pane's own bottom; 1000x1300 - 963px and 1089px, same 0-1px. A message longer than
+    the pane still scrolls in its own frame, which is unavoidable: the frame runs no scripts, so nothing inside
+    it can measure the document.
+- **Conversation sorting is the client's, because the endpoint has none.** `GET /mail/messages/conversations`
+  takes `filter`/`folderUid`/`labelUids`/`page`/`limit` and nothing else - no `sortBy`, no `sortOrder` - and
+  answers newest activity first. So `sortConversations()` (listPreferences.ts) orders the rows *already
+  fetched*, and the Sort menu says so in as many words. What a `ConversationSummary` can be ordered by:
+  **date** (`latestDate`), **from** (`latestFrom`, the latest message's sender - the one the row shows),
+  **subject** and **flagged**. What it can't: **sentDate** and **importance**, which belong to a message and
+  are simply not on the summary - `CONVERSATION_SORT_UNAVAILABLE` greys those two rows out with their reason
+  beside them (keep the reason under ~26 characters or `MenuButton`'s one-line description truncates it) and
+  leaves the server's own order alone rather than shuffling the rows by something meaningless. Ties break
+  newest-first whichever direction is in force.
+  - A conversation's own child rows follow the same order sense: `ConversationList` takes `newestFirst` and
+    reverses the (always oldest-first) `listConversationMessages()` copy for display. The *thread pane* stays
+    chronological - it is a reading view of one conversation, and its expand-from-the-opened-message-to-the-
+    newest rule is defined on that order.
+  - **`serverSortKey`** is why changing the order doesn't refetch: the list effect used to depend on
+    `preferences.sortBy`/`sortOrder` directly, so reordering conversations re-listed the identical page *and*
+    unmounted `ConversationList` (the list renders "Loading…" instead), collapsing whatever the reader had
+    expanded. The dependency is now empty while conversations are shown.
+- **No "All" tab.** The tab row is `MAIL_LIST_CLASSIFICATION_FILTERS` - Focused and Other. Nothing is migrated:
+  `all` is still a `MessageListFilter` and still the Filter menu's first item, so a mailbox that remembered it
+  still lists the whole Inbox with neither tab pressed. Migrating a stored `all` into Focused would silently
+  narrow someone's list; leaving it is both honest and a no-op.
+- **The unread chip.** A conversation row's count comes from the summary, which no reading-pane patch touches -
+  so a thread stayed at "2 unread" after both were read. `ConversationThreadPane`'s `onMessagePatched` now
+  takes `(updated, previous?)`, passing the unread copy it replaced from its own mark-as-read path only, and
+  `patchListedMessage()` decrements the containing conversation's `unreadCount` when `previous` was unread and
+  `updated` is read. The transition has to be reported rather than inferred: `updated.flags.read === true` is
+  also true for an already-read message being relabelled. The flat list needed nothing - its row *is* the
+  message. **Test impact:** `toHaveBeenCalledWith` compares arity, so the two thread-pane tests asserting on
+  `onMessagePatched` had to name the second argument (`undefined`, or the previous copy).
+- Verified against the real compiled server with `scratchpad/mailui/uxcheck2.mjs` (ports 38660+): 31/31,
+  including both window sizes, both sort directions with the child rows, the two-tab row at 1400px and 400px,
+  the Select glyph, and the chip going 3 -> 2 -> gone as the thread is read. The NOTES rule from the previous
+  round still bites: `yarn build` in `server` after refreshing the patch, or the browser check exercises the
+  previous bundle.

@@ -266,4 +266,32 @@ describe("MailListToolbar", () => {
         expect(disabled).toBeDisabled();
         expect(disabled).toHaveAttribute("title", "There is nothing here to select");
     });
+
+    it("draws Select as an icon alone, named only for assistive technology", () => {
+        renderToolbar();
+        const button = screen.getByRole("button", { name: "Select" });
+        expect(button).toHaveAttribute("title", "Select");
+        expect(button).not.toHaveTextContent("Select");
+        // The pressed state is its own background, not only a text colour, so it reads while toggled.
+        expect(button.className).not.toContain("bg-primary/10");
+        renderToolbar({ selectMode: true });
+        expect(screen.getAllByRole("button", { name: "Select" })[1].className).toContain("bg-primary/10");
+    });
+
+    it("greys out only the sort keys a conversation row has no value for, saying why on each", async () => {
+        const user = userEvent.setup();
+        renderToolbar({
+            showAsConversations: true,
+            unavailableSortKeys: { sentDate: "A thread has no sent date" },
+            sortKeysNote: "Ordered within the rows loaded so far.",
+        });
+
+        await user.click(screen.getByRole("button", { name: "Sort: Date" }));
+
+        expect(screen.getByRole("menuitemradio", { name: /^Date sent/ })).toBeDisabled();
+        expect(screen.getByText("A thread has no sent date")).toBeInTheDocument();
+        expect(screen.getByRole("menuitemradio", { name: /^Subject/ })).toBeEnabled();
+        // The order is still the reader's to pick - only the field it applies to is narrowed.
+        expect(screen.getByRole("menuitemradio", { name: "Newest on top" })).toBeEnabled();
+    });
 });

@@ -23,9 +23,12 @@ a send that writes a reply's `In-Reply-To`/`References` (all unreleased).
   messages. Select is still unavailable in the merged All Mailboxes views, and is greyed out - saying why - while a
   folder is still loading or has nothing in it.
 - **The reading pane's actions are icons.** Reply, Reply All, Forward, Archive and Move to Other/Focused are now icon
-  buttons in one row, each keeping its name as its tooltip and its accessible name, with the name shown beside the icon
-  on a wide window. The row fits the ~400px-wide reading pane beside the message list without wrapping or scrolling
-  sideways, and every message in a thread keeps its own.
+  buttons in one row, at every window size - each keeps its name as its tooltip and its accessible name, and nothing is
+  written beside the glyph. The row reads the same in the ~400px-wide reading pane beside the message list as in a
+  maximised window, without wrapping or scrolling sideways, and every message in a thread keeps its own.
+- **Select is an icon too.** The Select toggle is an outlined square, the way Outlook draws "select items", with
+  "Select" as its tooltip and its accessible name. While select mode is on the square sits on a tinted background, so
+  it still reads as pressed next to a greyed-out one.
 - **"Move to Other" asks first.** The loose "Always for this sender" checkbox that sat permanently beside the button is
   gone. Moving a message between Focused and Other now opens a small confirmation with "Always move mail from this
   sender to Other" (or Focused) in it, so the rule that outlives the message is a deliberate choice made at the moment
@@ -96,12 +99,27 @@ a send that writes a reply's `In-Reply-To`/`References` (all unreleased).
   folder twice - the second listing replacing the first the moment the shell knew which folder to list. Both are down
   to one request, and a merged "All Mailboxes" view no longer lists everything twice while each mailbox's folders
   arrive.
-- **The message body uses the whole reading pane.** An expanded message in a thread rendered its body in a 150px-tall
-  box with its own scrollbar - an `<iframe>`'s default height - leaving the rest of the pane empty below it. A single
-  message now fills the pane exactly, and a message in a thread gets a body two thirds of the window tall, so a normal
-  message is read whole. A very long one still scrolls inside its own frame: the frame runs no scripts (it renders mail
-  from strangers), and without a script inside it there is nothing that can measure the message and size the frame to
-  it.
+- **The message body uses the whole reading pane, at any window size.** An expanded message in a thread rendered its
+  body in a 150px-tall box with its own scrollbar - an `<iframe>`'s default height - leaving the rest of the pane empty
+  below it. The reading pane is now the height of the window, in a thread and out of one, and the body fills whatever
+  the message's own header leaves: it reaches the bottom of the pane in a tall window and in a short one, and follows a
+  resize, because the height is resolved from the window down rather than fixed to a proportion of it. A message longer
+  than the pane still scrolls inside its own frame: the frame runs no scripts (it renders mail from strangers), and
+  without a script inside it there is nothing that can measure the message and size the frame to it.
+- **Conversations follow the sort you picked.** The conversation list ignored the Sort menu entirely and always read in
+  the order the server happened to page them in. Date, From, Subject and Flag status now order the conversation rows,
+  both ways round, and a conversation's own messages read newest-first while the list does. Date sent and Importance are
+  greyed out while conversations are shown and say why - they belong to a message, not to a thread - and the menu says
+  that conversations are ordered within the rows loaded so far, since the conversations endpoint has no sort of its own.
+  Changing the order no longer re-fetches the same rows or collapses the conversations you had expanded.
+- **A conversation stops claiming unread mail you have just read.** Opening an unread message inside a conversation
+  left the row's "2 unread" chip - and its bold styling - exactly as they were until the whole folder was reloaded,
+  because that count belongs to the conversation summary rather than to any message the reading pane had patched. The
+  row's count now goes down as its messages are read.
+- **The "All" tab is gone.** The tab row above the message list is Focused and Other, as in Outlook. The whole Inbox is
+  still one pick away, under Filter > All, which is where every other named filter already lived and the only place
+  that can show which one is really in force - so a mailbox that remembered "All" still lists everything, with neither
+  tab shown as pressed.
 - **Replying and forwarding:**
   - Reply, Reply All and Forward now open with the caret on an empty line at the very top of the message, above your
     signature and the quoted original, so what you type goes above the quote - as in Outlook and Gmail. A new message

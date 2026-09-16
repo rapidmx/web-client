@@ -35,9 +35,16 @@ export interface ConversationThreadPaneProps {
     folders: Folder[];
     /** The mailbox's labels, passed through to every expanded message's own `MessageDetailPane`. */
     labels?: Label[];
-    /** A newer copy of one of the thread's messages - read, flagged, labelled, classified, recalled - for
-     * the caller's own list to stay in step with what was done in here. */
-    onMessagePatched: (updated: Message) => void;
+    /**
+     * A newer copy of one of the thread's messages - read, flagged, labelled, classified, recalled - for
+     * the caller's own list to stay in step with what was done in here.
+     *
+     * `previous` is the copy this pane held before the change, where it has one: the conversation row this
+     * thread came from is a *summary* (a message count, an unread count), so a list showing those rows has
+     * no way to tell "this message has just been read" from "this already-read message was relabelled"
+     * without it - which is what left a row reporting "2 unread" after both had been read.
+     */
+    onMessagePatched: (updated: Message, previous?: Message) => void;
     /** A message that left the folder being listed (archived, or a scheduled send sent back to Drafts). */
     onMessageRemoved: (updated: Message) => void;
     onLabelCreated?: (label: Label) => void;
@@ -241,7 +248,9 @@ export default function ConversationThreadPane({
                 setMessageRead(message, true)
                     .then((updated) => {
                         if (generation !== generationRef.current) return;
-                        patchMessage(updated);
+                        // `message` is the unread copy this pane just replaced - what tells the list's own
+                        // conversation row that its unread count has gone down by one.
+                        patchMessage(updated, message);
                     })
                     .catch(() => {
                         // Best-effort, as in `useMarkMessageRead`.
@@ -251,10 +260,11 @@ export default function ConversationThreadPane({
         }
     }, [expandedUids, messages]);
 
-    /** A newer copy of one of the thread's messages, kept here and handed to the list. */
-    function patchMessage(updated: Message) {
+    /** A newer copy of one of the thread's messages, kept here and handed to the list - with the copy it
+     * replaces where the caller was given one, so a conversation row can tell what actually changed. */
+    function patchMessage(updated: Message, previous?: Message) {
         setMessages((prev) => prev.map((message) => (message.uid === updated.uid ? updated : message)));
-        onMessagePatched(updated);
+        onMessagePatched(updated, previous);
     }
 
     /** A message that left the folder being listed - it leaves the thread too, as it left the list. */
@@ -296,8 +306,13 @@ export default function ConversationThreadPane({
     }
 
     return (
-        <div className="flex-1 min-w-0 flex flex-col overflow-y-auto">
-            <div className="border-b border-border p-4">
+        // The pane is the window's height, not the thread's: a full-height flex column whose heading is
+        // fixed and whose list of messages is the one scrolling, growing child (`min-h-0`, or the list
+        // would stretch the column past the pane instead of scrolling inside it). That is what gives an
+        // expanded message's own `min-h-full` row - and therefore its body iframe, which can't measure
+        // itself - a real height to resolve against at any window size.
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+            <div className="shrink-0 border-b border-border p-4">
                 <h1 className="text-lg font-bold tracking-tight">{conversation.subject || "(no subject)"}</h1>
                 <p className="text-sm text-text-muted mt-1">
                     {messages.length} message{messages.length === 1 ? "" : "s"}
@@ -309,7 +324,7 @@ export default function ConversationThreadPane({
                     </p>
                 )}
             </div>
-            <ul>
+            <ul className="flex-1 min-h-0 overflow-y-auto">
                 {messages.map((message) => {
                     const uid = message.uid;
                     const expanded = expandedUids.has(uid);
@@ -321,9 +336,14 @@ export default function ConversationThreadPane({
                             ref={(node) => {
                                 rowRefs.current[uid] = node;
                             }}
-                            className="border-b border-border"
+                            // An expanded message is as tall as the list it scrolls in - `min-h-full`
+                            // against the `<ul>`'s own resolved height - so its `MessageDetailPane` below
+                            // has a full pane of height to fill and its body reaches the bottom of the
+                            // window whatever that window's size is. `min-` rather than `h-`: a message
+                            // whose header alone is taller than the pane still gets the room it needs.
+                            className={["border-b border-border", expanded ? "flex flex-col min-h-full" : ""].join(" ")}
                         >
-                            <h2>
+                            <h2 className="shrink-0">
                                 <button
                                     type="button"
                                     ref={(node) => {
@@ -350,7 +370,7 @@ export default function ConversationThreadPane({
                                     )}
                                 </button>
                             </h2>
-                            <div id={bodyId} hidden={!expanded}>
+                            <div id={bodyId} hidden={!expanded} className={expanded ? "flex-1 min-h-0 flex" : undefined}>
                                 {expanded && (
                                     <MessageDetailPane
                                         inThread

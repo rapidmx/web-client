@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { HiOutlineAdjustmentsHorizontal, HiOutlineBarsArrowDown, HiOutlineCheckCircle } from "react-icons/hi2";
+import { HiOutlineAdjustmentsHorizontal, HiOutlineBarsArrowDown, HiOutlineStop } from "react-icons/hi2";
 import { MessageListFilter, MessageListSort, MessageSortOrder } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import MenuButton, { MenuSectionSpec } from "./MenuButton.js";
@@ -41,12 +41,16 @@ export interface MailListToolbarProps {
      * filters don't apply to them. */
     filterDisabled?: boolean;
     filterDisabledReason?: string;
-    /** Greys out the sort keys and order while something else decides the order: a search (ranked by
-     * relevance), an aggregate view (one page merged from each mailbox) or the conversation list (grouped
-     * by latest activity). The Sort button itself stays open, since "Show as conversations" lives in it. */
+    /** Greys out the sort keys and order while something else decides the order entirely: a search (ranked
+     * by relevance) or an aggregate view (one page merged from each mailbox). The Sort button itself stays
+     * open, since "Show as conversations" lives in it. */
     sortKeysDisabled?: boolean;
     /** Says why, under the sort keys. */
     sortKeysNote?: string;
+    /** Individual sort keys the current arrangement can't order by, each with the reason shown beside it -
+     * the conversation list's own case, where the rows are thread summaries carrying no value for some of
+     * these (see `CONVERSATION_SORT_UNAVAILABLE`). The rest stay pickable. */
+    unavailableSortKeys?: Partial<Record<MessageListSort, string>>;
     /** Select mode acts on the messages of one mailbox - so it is offered over both the message list and
      * the conversation list (where a ticked row means every message of that conversation in this folder),
      * but not over an aggregate view, whose rows come from several mailboxes whose folders a single Move
@@ -96,6 +100,7 @@ export default function MailListToolbar({
     filterDisabledReason,
     sortKeysDisabled,
     sortKeysNote,
+    unavailableSortKeys,
     selectDisabled,
     selectDisabledReason,
 }: MailListToolbarProps) {
@@ -173,9 +178,12 @@ export default function MailListToolbar({
             items: MAIL_LIST_SORTS.map((entry) => ({
                 key: entry.value,
                 label: entry.label,
+                // The reason a key is unavailable is shown on the row itself rather than folded into the
+                // group's note, so it sits beside the one key it explains.
+                description: unavailableSortKeys?.[entry.value],
                 role: "menuitemradio" as const,
                 checked: sortBy === entry.value,
-                disabled: sortKeysDisabled,
+                disabled: sortKeysDisabled || entry.value in (unavailableSortKeys ?? {}),
                 // Switching field resets the direction to the one that reads naturally for it, rather than
                 // carrying Date's newest-first over to Subject as a surprising Z-A.
                 onSelect: () => onSortChange(entry.value, defaultSortOrder(entry.value)),
@@ -235,15 +243,22 @@ export default function MailListToolbar({
                 type="button"
                 aria-pressed={selectMode}
                 disabled={selectDisabled}
-                title={selectDisabled ? selectDisabledReason : undefined}
+                // Icon-only, so the tooltip is the only thing naming it on screen - replaced by the reason
+                // while it is unavailable, which is the more useful thing to read at that moment.
+                title={selectDisabled ? selectDisabledReason : "Select"}
                 onClick={() => onSelectModeChange(!selectMode)}
+                aria-label="Select"
                 className={[
-                    "ml-auto shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent",
-                    selectMode ? "text-primary-dark font-semibold" : "text-text",
+                    // Icon-only, like Outlook's own "select items" command: the glyph carries it and the
+                    // name lives in `aria-label`/`title`. The pressed state is a filled, outlined box
+                    // rather than only a colour change, so it stays legible next to a disabled one.
+                    "ml-auto shrink-0 inline-flex items-center justify-center p-1.5 rounded-md hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent",
+                    selectMode ? "bg-primary/10 text-primary-dark" : "text-text-muted",
                 ].join(" ")}
             >
-                <HiOutlineCheckCircle size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
-                Select
+                {/* `hi2`'s plain outlined rounded square - the closest thing it has to Outlook's own
+                    "select items" glyph, and the only unfilled box in it. */}
+                <HiOutlineStop size={18} aria-hidden="true" className="shrink-0" />
             </button>
         </div>
     );

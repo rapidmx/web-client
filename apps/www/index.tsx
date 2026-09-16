@@ -49,7 +49,15 @@ import ConversationList from "../shared/components/mail/ConversationList.js";
 import ConversationThreadPane from "../shared/components/mail/ConversationThreadPane.js";
 import MailListToolbar from "../shared/components/mail/MailListToolbar.js";
 import MailSelectionBar from "../shared/components/mail/MailSelectionBar.js";
-import { MailListPreferences, getMailListPreferences, setMailListPreferences } from "../shared/components/mail/listPreferences.js";
+import {
+    CONVERSATION_SORT_NOTE,
+    CONVERSATION_SORT_UNAVAILABLE,
+    MAIL_LIST_CLASSIFICATION_FILTERS,
+    MailListPreferences,
+    getMailListPreferences,
+    setMailListPreferences,
+    sortConversations,
+} from "../shared/components/mail/listPreferences.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import { useUnlockPrompt } from "../shared/components/layout/UnlockPromptProvider.js";
@@ -567,6 +575,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // A dependency of the list effect and of `loadMore()`, which can't take the array itself (a new one
     // every render would refetch on every render).
     const labelFilterKey = preferences.labelUids.join(",");
+    /** The sort the *server* is being asked for, as one dependency value. Empty while conversations are
+     * shown: `GET /mail/messages/conversations` takes no sort parameters at all, so those rows are ordered
+     * in the browser (`sortConversations()`) and rearranging them must not refetch the identical page -
+     * which would also collapse whichever conversations the reader had expanded. */
+    const serverSortKey = preferences.showAsConversations ? "" : `${preferences.sortBy}:${preferences.sortOrder}`;
     /** The conversation list's own equivalent of `listParams` - a function because the page differs. */
     function conversationParams(page: number): ConversationListParams {
         return { folderUid, filter: effectiveFilter, ...labelFilter, page, limit: MESSAGE_PAGE_SIZE };
@@ -980,8 +993,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         // since a bulk update applies until its first rejection rather than all-or-nothing.
     }, [
         preferences.showAsConversations,
-        preferences.sortBy,
-        preferences.sortOrder,
+        serverSortKey,
         effectiveFilter,
         labelFilterKey,
         refreshKey,
@@ -1121,8 +1133,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         hasMore,
         loading,
         preferences.showAsConversations,
-        preferences.sortBy,
-        preferences.sortOrder,
+        serverSortKey,
         effectiveFilter,
         labelFilterKey,
         folderUid,
@@ -1171,13 +1182,30 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
     }, [appendedPageCount]);
 
-    /** Replaces one listed row - and, in the conversation list, the opened message and the child row
-     * standing for it - with a newer copy the reading pane just produced. */
-    function patchListedMessage(updated: Message) {
+    /**
+     * Replaces one listed row - and, in the conversation list, the opened message and the child row
+     * standing for it - with a newer copy the reading pane just produced.
+     *
+     * A conversation's *parent* row has no copy to replace: it is a summary of the whole thread, and its
+     * "2 unread" chip and bold styling come from a count the server worked out when the list was fetched.
+     * So when the reading pane reports a message it has just read (`previous` unread, `updated` read), that
+     * count is decremented here - otherwise a conversation kept claiming unread mail the reader had just
+     * read, until the whole list was reloaded.
+     */
+    function patchListedMessage(updated: Message, previous?: Message) {
         setMessages((prev) => prev.map((m) => (m.uid === updated.uid ? updated : m)));
         // `ConversationList` fetched its own copy of this message when the thread was expanded; hand it the
         // newer one so the child row doesn't keep showing a stale read/flag state.
         setConversationPatches((prev) => ({ ...prev, [updated.uid]: updated }));
+        if (previous && !previous.flags.read && updated.flags.read) {
+            setConversations((prev) =>
+                prev.map((conversation) =>
+                    conversation.messageUids.includes(updated.uid)
+                        ? { ...conversation, unreadCount: Math.max(0, conversation.unreadCount - 1) }
+                        : conversation,
+                ),
+            );
+        }
     }
 
     function removeListedMessages(uids: Set<string>) {
@@ -1233,6 +1261,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
     /** How many rows the list is actually showing - conversations or messages, whichever it lists. What the
      * Select toggle is enabled by: there is nothing to select in a list with no rows. */
     const listedRowCount = preferences.showAsConversations ? conversations.length : messages.length;
+    /** The conversation rows in the order the reader arranged them. The endpoint takes no sort parameters
+     * of its own (it pages by latest activity), so the arrangement is applied here, to the rows fetched so
+     * far - which the Sort menu says on screen. `conversations` itself stays in the order the pages
+     * arrived, so paging keeps appending to the same accumulated set. */
+    const listedConversations = sortConversations(conversations, preferences.sortBy, preferences.sortOrder);
 
     function leaveSelectMode() {
         setSelectMode(false);
@@ -1518,14 +1551,17 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         offerClassificationFilters={offerClassificationFilters}
                         filterDisabled={isSearching}
                         filterDisabledReason="Filters don't apply to search results"
-                        sortKeysDisabled={preferences.showAsConversations || isSearching || !!aggregateFolderType}
+                        sortKeysDisabled={isSearching || !!aggregateFolderType}
+                        // A conversation row is a thread summary, so only some of the keys have anything to
+                        // order by - the rest stay pickable and are applied to the rows already fetched.
+                        unavailableSortKeys={preferences.showAsConversations ? CONVERSATION_SORT_UNAVAILABLE : undefined}
                         sortKeysNote={
-                            preferences.showAsConversations
-                                ? "Conversations are always listed by latest activity."
-                                : isSearching
-                                  ? "Search results are ranked by relevance rather than sorted."
-                                  : aggregateFolderType
-                                    ? "This view merges the newest mail from every mailbox and is always listed by date."
+                            isSearching
+                                ? "Search results are ranked by relevance rather than sorted."
+                                : aggregateFolderType
+                                  ? "This view merges the newest mail from every mailbox and is always listed by date."
+                                  : preferences.showAsConversations
+                                    ? CONVERSATION_SORT_NOTE
                                     : undefined
                         }
                         selectDisabled={!!aggregateFolderType || loading || listedRowCount === 0}
@@ -1551,9 +1587,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         />
                     </div>
                 )}
+                {/* Two tabs, as Outlook has: Focused and Other. There is no "All" tab - the whole Inbox is
+                    still one pick away, in the Filter menu, which is where every other named filter lives
+                    and the only place that can show which of them is really in force. A stored `all` (or
+                    Unread, Flagged, ...) therefore still lists what it always did, with neither tab
+                    pressed, rather than being migrated into one of these two halves behind the reader's
+                    back - see `MAIL_LIST_FILTERS`, which still offers it. */}
                 {offerClassificationFilters && (
                     <div className="flex border-b border-border text-xs">
-                        {(["all", "focused", "other"] as const).map((value) => (
+                        {MAIL_LIST_CLASSIFICATION_FILTERS.map(({ value, label }) => (
                             <button
                                 key={value}
                                 type="button"
@@ -1566,7 +1608,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                         : "text-text-muted",
                                 ].join(" ")}
                             >
-                                {value === "all" ? "All" : value === "focused" ? "Focused" : "Other"}
+                                {label}
                             </button>
                         ))}
                     </div>
@@ -1638,7 +1680,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 ) : preferences.showAsConversations ? (
                     <>
                         <ConversationList
-                            conversations={conversations}
+                            conversations={listedConversations}
+                            newestFirst={preferences.sortBy === "date" && preferences.sortOrder === "desc"}
                             mailboxUid={activeMailboxUid}
                             selectedUid={selectedUid}
                             messageOverrides={conversationPatches}
@@ -1750,7 +1793,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     </>
                 )}
             </div>
-            <div className="hidden md:flex flex-1 min-w-0">
+            {/* The reading pane's own height: a row of the full-height mail view, stretched to it by the
+                flex chain rather than by a percentage (an explicit height would opt it out of that
+                stretching), with `min-h-0` so a long message scrolls inside it instead of pushing it past
+                the window. Everything below - the thread pane, each message's `MessageDetailPane`, the
+                body iframe that cannot measure itself - takes its height from here, never from a `vh`
+                number of its own. */}
+            <div className="hidden md:flex flex-1 min-w-0 min-h-0">
                 {preferences.showAsConversations ? (
                     <ConversationThreadPane
                         conversation={openThread?.conversation ?? null}

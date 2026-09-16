@@ -23,6 +23,7 @@ import {
     MessageListSort,
     MessageSortOrder,
 } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ConversationSummary } from "@rapidmx/react-shared/mail/conversationsApi.js";
 
 const STORAGE_KEY_PREFIX = "rapidmx:mail-list-preferences:";
 
@@ -97,6 +98,77 @@ export const SORT_ORDER_LABELS: Record<MessageListSort, { desc: string; asc: str
     importance: { desc: "Highest on top", asc: "Lowest on top" },
     flagged: { desc: "Flagged on top", asc: "Unflagged on top" },
 };
+
+/**
+ * The sort keys a *conversation* row can't be ordered by, and the reason the Sort menu shows beside each of
+ * them while the list is grouped into conversations.
+ *
+ * `GET /mail/messages/conversations` takes no `sortBy`/`sortOrder` at all - it returns one summary per
+ * thread, newest activity first - so every key here is applied to the rows this client has actually fetched
+ * (see `sortConversations()`). These two can't be applied even that far: a `ConversationSummary` describes
+ * a thread, and a thread has neither a sent date nor an importance - those belong to one message of it.
+ */
+export const CONVERSATION_SORT_UNAVAILABLE: Partial<Record<MessageListSort, string>> = {
+    sentDate: "A thread has no sent date",
+    importance: "A thread has no importance",
+};
+
+/** The keys `sortConversations()` can actually order conversation rows by - `MAIL_LIST_SORTS` minus
+ * `CONVERSATION_SORT_UNAVAILABLE`'s. */
+export const CONVERSATION_SORTS: MessageListSort[] = MAIL_LIST_SORTS.map((entry) => entry.value).filter(
+    (value) => !(value in CONVERSATION_SORT_UNAVAILABLE),
+);
+
+/** What the Sort menu says under its keys while conversations are shown - the honest scope of the ordering
+ * below, since the endpoint pages by latest activity and only the rows already fetched can be reordered. */
+export const CONVERSATION_SORT_NOTE =
+    "Conversations are ordered within the rows loaded so far - the server pages them by latest activity.";
+
+/** The name a conversation row is ordered by for "From": the latest message's sender, which is also the one
+ * whose subject, preview and date the row shows. */
+function latestSenderName(conversation: ConversationSummary): string {
+    return conversation.latestFrom.displayName || conversation.latestFrom.address;
+}
+
+/** One conversation row against another on `sortBy`, ascending. */
+function compareConversations(a: ConversationSummary, b: ConversationSummary, sortBy: MessageListSort): number {
+    switch (sortBy) {
+        case "from":
+            return latestSenderName(a).localeCompare(latestSenderName(b), undefined, { sensitivity: "base" });
+        case "subject":
+            return a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" });
+        case "flagged":
+            return Number(a.flagged) - Number(b.flagged);
+        default:
+            // `date` - the thread's latest activity, which is what the row itself shows.
+            return Date.parse(a.latestDate) - Date.parse(b.latestDate);
+    }
+}
+
+/**
+ * Orders conversation rows by the arrangement the reader picked, as far as a `ConversationSummary` allows:
+ * the endpoint itself takes no sort parameters, so this reorders the rows already fetched rather than the
+ * folder (see `CONVERSATION_SORT_NOTE`, which says so on screen).
+ *
+ * A key the summaries carry no value for (see `CONVERSATION_SORT_UNAVAILABLE`, greyed out in the menu) is
+ * left alone, so the rows keep the server's own latest-activity order rather than being shuffled into an
+ * order that would mean nothing. Ties break newest first whichever direction is in force, so two rows the
+ * key can't tell apart still read in a stable, familiar order.
+ */
+export function sortConversations(
+    conversations: ConversationSummary[],
+    sortBy: MessageListSort,
+    sortOrder: MessageSortOrder,
+): ConversationSummary[] {
+    if (!CONVERSATION_SORTS.includes(sortBy)) {
+        return conversations;
+    }
+    const direction = sortOrder === "asc" ? 1 : -1;
+    return [...conversations].sort((a, b) => {
+        const primary = direction * compareConversations(a, b, sortBy);
+        return primary !== 0 ? primary : Date.parse(b.latestDate) - Date.parse(a.latestDate);
+    });
+}
 
 /** The direction the server itself would pick for a key if none were sent (see `MessageSortOrder`) - what
  * this list switches to when the reader picks a different field, so changing "Date" to "Subject" reads A-Z

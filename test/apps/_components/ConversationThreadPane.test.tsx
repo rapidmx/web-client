@@ -179,6 +179,25 @@ describe("ConversationThreadPane", () => {
         expect(screen.getByText("3 messages")).toBeInTheDocument();
     });
 
+    it("gives an expanded message the height of the list it scrolls in, and no height of its own", async () => {
+        renderThread();
+        await screen.findByTestId("detail-m3");
+
+        // The scrolling list is the pane's one growing child...
+        const list = screen.getByTestId("detail-m3").closest("ul")!;
+        expect(list.className).toContain("flex-1");
+        expect(list.className).toContain("min-h-0");
+        expect(list.className).toContain("overflow-y-auto");
+        // ...and an expanded message is a full list's worth of it, resolved from the window down the flex
+        // chain rather than written as a `vh` number the body iframe couldn't follow on a resize.
+        const expandedRow = screen.getByTestId("detail-m3").closest("li")!;
+        expect(expandedRow.className).toContain("min-h-full");
+        expect(expandedRow.className).toContain("flex-col");
+        expect(expandedRow.className).not.toMatch(/h-\[\d/);
+        // A collapsed message takes only the room its one-line summary needs.
+        expect(header("Alice").closest("li")!.className).not.toContain("min-h-full");
+    });
+
     it("expands the run from the message that was opened through to the newest", async () => {
         renderThread({ selectedUid: "m2" });
 
@@ -356,7 +375,7 @@ describe("ConversationThreadPane", () => {
 
         await user.click(screen.getByRole("button", { name: "label-m3" }));
 
-        expect(onMessagePatched).toHaveBeenCalledWith(expect.objectContaining({ uid: "m3", labelUids: ["l1"] }));
+        expect(onMessagePatched).toHaveBeenCalledWith(expect.objectContaining({ uid: "m3", labelUids: ["l1"] }), undefined);
         // The pane keeps it too, so the next action carries the version the last one came back with.
         expect(screen.getByTestId("detail-m3")).toHaveTextContent("labels:1");
     });
@@ -532,7 +551,14 @@ describe("ConversationThreadPane", () => {
         await user.click(header("Alice"));
         await user.click(header("Alice"));
 
-        await waitFor(() => expect(onMessagePatched).toHaveBeenCalledWith(expect.objectContaining({ uid: "m1", version: 1 })));
+        await waitFor(() =>
+            // Marking read hands over the unread copy it replaced too - what a conversation row's own
+            // unread count is decremented from (see `onMessagePatched`'s own doc comment).
+            expect(onMessagePatched).toHaveBeenCalledWith(
+                expect.objectContaining({ uid: "m1", version: 1 }),
+                expect.objectContaining({ uid: "m1", flags: unread }),
+            ),
+        );
     });
 
     it("drops a mark-as-read that lands after the reader has moved to another conversation", async () => {

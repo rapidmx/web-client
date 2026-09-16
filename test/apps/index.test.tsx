@@ -501,7 +501,37 @@ describe("InboxPage", () => {
             expect(screen.queryByRole("button", { name: "Focused" })).not.toBeInTheDocument();
         });
 
-        it("filters the message list by Focused/Other, defaulting to All", async () => {
+        it("offers only Focused and Other as tabs - the whole Inbox is the Filter menu's All", async () => {
+            mockShellAndInbox([messageFixture({ uid: "m1", subject: "Focused message" })]);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Focused message");
+
+            expect(screen.getByRole("button", { name: "Focused" })).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Other" })).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "All" })).not.toBeInTheDocument();
+        });
+
+        it("keeps listing everything for a mailbox that remembered the All filter", async () => {
+            // "All" left the tab row, not the filter vocabulary - a stored `all` still lists the whole
+            // Inbox (with neither tab pressed) rather than being migrated into one of the two halves.
+            const fetchMock = mockShellAndInbox([
+                messageFixture({ uid: "m1", subject: "Focused message" }),
+                messageFixture({ uid: "m2", subject: "Other message", inferenceClassification: "other" }),
+            ]);
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", showAsConversations: false }),
+            );
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Focused message")).toBeInTheDocument();
+            expect(screen.getByText("Other message")).toBeInTheDocument();
+            expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("filter=all"), expect.anything());
+            expect(screen.getByRole("button", { name: "Focused" })).toHaveAttribute("aria-pressed", "false");
+            expect(screen.getByRole("button", { name: "Other" })).toHaveAttribute("aria-pressed", "false");
+        });
+
+        it("filters the message list by Focused/Other, and back to everything from the Filter menu", async () => {
             const focused = messageFixture({ uid: "m1", subject: "Focused message" });
             const other = messageFixture({ uid: "m2", subject: "Other message", inferenceClassification: "other" });
             mockShellAndInbox([focused, other]);
@@ -519,8 +549,9 @@ describe("InboxPage", () => {
             expect(screen.queryByText("Focused message")).not.toBeInTheDocument();
             expect(screen.getByText("Other message")).toBeInTheDocument();
 
-            await user.click(screen.getByRole("button", { name: "All" }));
-            expect(screen.getByText("Focused message")).toBeInTheDocument();
+            await openListMenu(user, "Filter");
+            await chooseMenuItem(user, "menuitemradio", "All");
+            expect(await screen.findByText("Focused message")).toBeInTheDocument();
             expect(screen.getByText("Other message")).toBeInTheDocument();
         });
 
@@ -1314,7 +1345,7 @@ describe("InboxPage", () => {
             expect(screen.getByRole("button", { name: "Select" })).toBeEnabled();
         });
 
-        it("disables the sort keys while conversations are shown and says why", async () => {
+        it("keeps the sort keys a thread has a value for, and says why the other two are unavailable", async () => {
             mockShellAndInbox([], undefined, [thread()]);
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
@@ -1323,8 +1354,94 @@ describe("InboxPage", () => {
 
             await openListMenu(user, "Sort");
 
-            expect(await screen.findByRole("menuitemradio", { name: "Subject" })).toBeDisabled();
-            expect(screen.getByText("Conversations are always listed by latest activity.")).toBeInTheDocument();
+            // A conversation row carries a subject, a latest sender, a latest date and a flag...
+            expect(await screen.findByRole("menuitemradio", { name: /^Subject/ })).toBeEnabled();
+            expect(screen.getByRole("menuitemradio", { name: /^From/ })).toBeEnabled();
+            expect(screen.getByRole("menuitemradio", { name: /^Flag status/ })).toBeEnabled();
+            // ...but no sent date and no importance of its own, and the menu says so on each row.
+            expect(screen.getByRole("menuitemradio", { name: /^Date sent/ })).toBeDisabled();
+            expect(screen.getByText("A thread has no sent date")).toBeInTheDocument();
+            expect(screen.getByRole("menuitemradio", { name: /^Importance/ })).toBeDisabled();
+            expect(screen.getByText("A thread has no importance")).toBeInTheDocument();
+            expect(
+                screen.getByText(
+                    "Conversations are ordered within the rows loaded so far - the server pages them by latest activity.",
+                ),
+            ).toBeInTheDocument();
+        });
+
+        it("orders the conversation rows by the arrangement the reader picked, both ways", async () => {
+            // The endpoint pages by latest activity and takes no sort parameters, so this is the client's
+            // own ordering of the rows it has - deliberately handed to it out of order to prove it happens.
+            const older = conversationFixture({
+                conversationId: "c2",
+                subject: "Older thread",
+                latestDate: "2026-01-01T00:00:00.000Z",
+                latestMessageUid: "m9",
+                messageUids: ["m9"],
+            });
+            const newer = { ...thread(), latestDate: "2026-03-01T00:00:00.000Z" };
+            mockShellAndInbox([], undefined, [older, newer]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await toggleConversations(user);
+            await screen.findByText("Thread subject");
+
+            const rowSubjects = () =>
+                screen
+                    .getAllByRole("button", { name: /conversation:/ })
+                    .map((button) => button.getAttribute("aria-label") ?? "");
+            expect(rowSubjects()[0]).toContain("Thread subject");
+
+            await openListMenu(user, "Sort");
+            await chooseMenuItem(user, "menuitemradio", "Oldest on top");
+
+            await waitFor(() => expect(rowSubjects()[0]).toContain("Older thread"));
+        });
+
+        it("reads a conversation's own messages in the same order sense as the rows", async () => {
+            mockShellAndInbox([], undefined, [thread()], { c1: threadMessages() });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await toggleConversations(user);
+            await screen.findByText("Thread subject");
+
+            await user.click(screen.getByRole("button", { name: /^Expand conversation:/ }));
+            await screen.findByText("The opening message");
+
+            // `listConversationMessages()` answers oldest first; "Newest on top" reverses that for display.
+            const senders = () => screen.getAllByText(/Sender$/).map((node) => node.textContent);
+            expect(senders()[0]).toBe("Newer Sender");
+
+            await openListMenu(user, "Sort");
+            await chooseMenuItem(user, "menuitemradio", "Oldest on top");
+
+            await waitFor(() => expect(senders()[0]).toBe("Older Sender"));
+        });
+
+        it("clears a conversation row's unread count as its messages are read in the thread pane", async () => {
+            const unread = { read: false, flagged: false, answered: false, forwarded: false };
+            const messages = threadMessages().map((message) => ({ ...message, flags: unread }));
+            // A second, fully-read conversation, so the row the read message isn't in is left alone.
+            const other = conversationFixture({ conversationId: "c2", subject: "Another thread", messageUids: ["m9"] });
+            const fetchMock = mockShellAndInbox(messages, undefined, [{ ...thread(), unreadCount: 2 }, other], {
+                c1: messages,
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await toggleConversations(user);
+            await screen.findByText("Thread subject");
+            expect(screen.getByText("2 unread")).toBeInTheDocument();
+
+            // Opening the oldest message expands the whole run, so both of them are marked read.
+            await user.click(screen.getByRole("button", { name: "Expand conversation: Thread subject" }));
+            await user.click((await screen.findAllByText("Older Sender"))[0]);
+
+            await waitFor(() => expect(screen.queryByText(/unread/)).not.toBeInTheDocument());
+            // Driven by what the reading pane reported, not by re-listing the folder.
+            expect(
+                fetchMock.mock.calls.filter((call) => String(call[0]).includes("/messages/conversations?")),
+            ).toHaveLength(1);
         });
 
         it("switching conversations back off re-fetches the per-folder message list", async () => {

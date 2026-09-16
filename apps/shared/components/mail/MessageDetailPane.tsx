@@ -179,9 +179,9 @@ function downloadMimeAttachment(attachment: MimeAttachment): void {
 /**
  * One of the reading pane's own actions - Reply, Reply All, Forward, Archive, Move to Other - as an icon
  * button. The action's name is its `aria-label` *and* its tooltip, so it has the same accessible name a
- * labelled button had, and is also shown beside the icon from `xl` up, where the pane is wide enough for
- * six of them; below that the row is icons only, because the reading pane beside the 384px message list
- * is about 396px wide and a row of labelled buttons doesn't fit it.
+ * labelled button had, and is never drawn beside the icon at any width: the row is icon-only everywhere,
+ * the way Outlook's own reading-pane command bar is, so it reads the same in the ~396px pane beside the
+ * message list and in a maximised window rather than changing shape at a breakpoint.
  *
  * A plain `<button>` rather than react-shared's `Button`, whose padding and minimum width are sized for a
  * text label. Ordinary DOM order, so the keyboard reaches these in the order they are read.
@@ -207,10 +207,9 @@ function IconAction({
             aria-busy={busy || undefined}
             disabled={disabled}
             onClick={onClick}
-            className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-border text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent"
+            className="inline-flex items-center justify-center p-1.5 rounded-md border border-border text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent"
         >
             {icon}
-            <span className="hidden xl:inline">{label}</span>
         </button>
     );
 }
@@ -864,21 +863,26 @@ function MessageDetailContent({
     /**
      * How tall the message body is - the one thing on this pane worth every pixel it can have.
      *
-     * On its own, the pane is a full-height flex column and the body is its one growing child, so it fills
-     * whatever the header leaves (`min-h-0` on both, or a tall body would stretch the column past the pane
-     * instead of scrolling inside it).
+     * The same rule in both places: the pane is a full-height flex column and the body is its one growing
+     * child, so it fills whatever the header leaves (`min-h-0` on both, or a tall body would stretch the
+     * column past the pane instead of scrolling inside it). Inside a thread that height comes from the
+     * message's own row, which `ConversationThreadPane` gives `min-h-full` of its scrolling list - so the
+     * height is still the window's, resolved down the flex chain rather than written here as a `vh`
+     * number, and it follows a resize with no breakpoint to cross.
      *
-     * Inside a thread the pane is one item of a scrolling list of messages rather than a flex column of
-     * its own, so there is no "available height" to grow into and the body would fall back to an
-     * `<iframe>`'s own 150px default - the short box with its own scrollbar this replaces. It gets a tall,
-     * viewport-proportional height instead: sizing it to its content would need the document *inside* the
-     * frame to measure and report itself, and these frames are `sandbox=""` - scripts off - because they
-     * render mail from strangers. That is not a trade worth making for a scrollbar, so a very long message
-     * keeps one and everything shorter than two thirds of the window shows whole.
+     * Why not size it to its content: that would need the document *inside* the frame to measure and
+     * report itself, and these frames are `sandbox=""` - scripts off - because they render mail from
+     * strangers. So a message longer than the pane keeps its own scrollbar, and everything shorter shows
+     * whole with the frame reaching the bottom of the pane either way.
      */
-    const bodyClassName = inThread ? "w-full h-[65vh] min-h-[16rem]" : "flex-1 min-h-0 w-full";
+    const bodyClassName = "flex-1 min-h-0 w-full";
 
     return (
+        // `h-full` outside a thread only: the standalone message route renders this pane straight into a
+        // *block* (`MailShell`'s own `<main>`), where nothing stretches it and a percentage of that block's
+        // own resolved height is the height. Inside a thread the parent is a flex row whose own height came
+        // out of the flex algorithm - Chrome won't resolve a percentage against that, and an explicit
+        // height would also opt the pane out of the stretching that does size it correctly there.
         <div className={`flex-1 min-w-0 min-h-0 flex flex-col${inThread ? "" : " h-full"}`}>
             <div className="border-b border-border p-4">
                 {backHref && (
