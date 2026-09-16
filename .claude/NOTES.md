@@ -1887,3 +1887,66 @@ recipients live in react-shared (see its NOTES for that half); this is the UI wi
   rather than a hand-built row. Then Reply (caret in the empty first paragraph, typing lands above the quote, full body
   quoted, tracker pixel and script dropped), Reply All (To = sender + original To, Cc = original Cc, no own address or
   alias, no Bcc) and Forward.
+
+### 2026-09-15 — Mail list UX: Sort/Filter/Select toolbar and nested conversations (phase 2 of the list overhaul)
+
+Phase 1 was the server + `@rapidmx/react-shared` API (restapi `d0e97eb`, react-shared `fa9755b`, both unpublished);
+this is the UI. The two tab rows above the message list ("By date / By conversation", "All / Focused / Other") became
+one Outlook-style toolbar. New files, all under `apps/shared/components/mail/`: `MenuButton.tsx`,
+`MailListToolbar.tsx`, `MailSelectionBar.tsx`, `listPreferences.ts`; `ConversationList.tsx` was rewritten and
+`ConversationThreadPane.tsx` deleted.
+
+- **Where things went, and why.** "Show as conversations" lives in the **Sort menu**, as in Outlook: it arranges the
+  list rather than acting on a message, and keeping it there leaves the toolbar three controls wide, which is what fits
+  a 400 px phone. The Focused/Other tab row **stayed** where it was (JP's own guidance) but is now the same state as
+  the Filter menu, so the menu always shows which filter is really in force.
+- **One filter at a time.** `listMessages()` takes a *single* `filter`, so Focused/Other and Unread/Flagged/... cannot
+  both apply. Rather than fake it, `preferences.filter` is one `MessageListFilter`: the Filter menu lists All/Unread/
+  Read/Flagged/Has attachments plus a "Focused Inbox" group (Inbox only), and the tab row is a shortcut into the same
+  value. A note in the menu says picking Focused or Other replaces the filter above. A remembered `focused`/`other`
+  degrades to `all` outside an Inbox (`effectiveFilter`) instead of silently narrowing Sent Items.
+- **Sorting is server-side and folder-wide** (`listParams` is built once and shared by the first page and every
+  `loadMore()` page, so they can't drift). Sort keys are greyed out - the menu still opens, because the conversation
+  toggle is in it - while a search (ranked), an aggregate view (one page merged per mailbox) or the conversation list
+  (grouped by latest activity) decides the order. **Trap:** the first version disabled the whole Sort *button* in
+  aggregate mode, which also hid the only way to turn conversations on there.
+- **Preferences are per mailbox in `localStorage`** (`rapidmx:mail-list-preferences:<mailboxUid>`), read *during
+  render* so the first listing already uses them. Held as `Record<mailboxUid, prefs>` with a `?? getMailListPreferences()`
+  fallback rather than one value plus a "did the mailbox change?" render-phase `setState` - same behaviour, no
+  unreachable branch, and it still works when storage is blocked (the store refuses the write; the session keeps the
+  value). **Test impact:** jsdom keeps one `localStorage` per file, so `test/apps/setup.ts` now clears it in `afterEach`
+  - without that, a test that picked a filter silently became the next test's starting state (two unrelated search
+  tests failed only in the full-file run).
+- **Select mode replaces the toolbar** with `MailSelectionBar` (count, Select all, Clear, Cancel, then Mark read/unread,
+  Flag/Unflag, Archive, Move to, Report junk, Delete). Delete/Report junk/Archive are `moveMessages()` to the folder of
+  that type - **never** the collection DELETE, which truncates the folder, and there is no bulk permanent delete.
+  An action whose target is the folder being viewed is disabled with a `title` saying why. Select is unavailable in the
+  conversation list (a conversation row isn't a message) and in an aggregate view (rows from several mailboxes, whose
+  folders one Move can't name).
+- **A mailbox often has no folder to move into yet.** The browser check's own mailbox was provisioned with just Inbox
+  and Drafts, so the first Delete/Report junk/Archive has nowhere to go. Archive has a server-side lazy-create route
+  (`POST /mail/messages/:uid/archive`), so `bulkArchive()` archives the *first* message that way and moves the rest into
+  the folder that call reports. Deleted Items and Junk have none, so `resolveFolderOfType()` creates them with
+  `createFolder()`. The shell fetched `mailboxFolders` once and never sees the new folder, so the uid is remembered in a
+  `Map` keyed `mailbox
+type` for the session - without that, a second Delete creates a *second* Deleted Items.
+- **Bulk failure = refetch.** `bulkUpdateMessages()` is not atomic and stops at the first rejection, so `runBulkAction()`
+  catches, clears the selection, bumps `refreshKey` (a dependency of the list effect) and shows "... Some of them may
+  already have changed, so the list has been reloaded." `bulkError` is deliberately **not** cleared by the list effect -
+  the refetch it triggers would wipe the message it was set alongside.
+- **Conversations are nested rows now.** `ConversationList` renders a parent row per `ConversationSummary`
+  (participants, subject, count, unread badge, attachment/flag hints, `latestPreview`) with its own chevron button
+  *beside* the row button (a button can't nest in a button), expanding into `listConversationMessages()` children,
+  fetched once per conversation. Parent click opens `latestMessageUid`, child click opens that message and hands the
+  record it already has, so no refetch (`onOpenMessage(uid, message?)`). `ConversationThreadPane` was deleted: with
+  every message listed and openable here, a second stacked copy of the thread in the reading pane showed the same
+  thing twice. The list is now scoped to `folderUid` and honours `filter`, and pages with the same sentinel the flat
+  list uses (`hasUnseenRows`/`appendUnseenRows` went generic over a key extractor). `messageOverrides` feeds the
+  reading pane's mark-as-read back into the child rows.
+- **`PopoverPortal` gotcha:** it renders `null` until its own positioning effect runs, so a focus effect keyed only on
+  `[open, activeIndex]` fires before the menu rows exist and focuses nothing. `MenuButton` keys the effect on the menu
+  node itself (a `useState` callback ref). A menu with nothing enabled focuses its own `tabIndex={-1}` container, since
+  a disabled row can't take focus. The portal has no auto-height, so `menuHeight()` adds up fixed per-row heights
+  (`h-5` label + `py-2` = 36, group label 24, separator 9, note 36, list padding 8) capped at 420.
+- **Deliberately not built** (nothing in the data model backs them): sort by Category/Flag due date/Size/Type, filter
+  To me/Mentions me/Has calendar invites, Sweep.

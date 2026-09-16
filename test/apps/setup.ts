@@ -11,6 +11,10 @@ if (typeof document !== "undefined") {
     const { cleanup } = await import("@testing-library/react");
     afterEach(() => {
         cleanup();
+        // jsdom keeps one `localStorage` for the whole file, so a preference a test leaves behind (the mail
+        // list's own sort/filter/conversation settings, the local-index byte budget) would silently become
+        // the *next* test's starting state - and did, before this line existed.
+        localStorage.clear();
     });
 
     // jsdom doesn't implement `window.matchMedia` at all (confirmed: it's simply `undefined`, not a

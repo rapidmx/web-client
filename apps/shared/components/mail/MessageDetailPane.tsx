@@ -282,9 +282,9 @@ function formatBytes(bytes: number): string {
 /**
  * A message's reading pane — header (subject/from/to/attachments) plus a sandboxed iframe for the body.
  * Shared by the desktop inline pane (`apps/www/index.tsx`, always visible alongside the message list),
- * the mobile detail route (`apps/www/messages/[uid].tsx`, a full page on its own reached by tapping
- * a message row), and `ConversationThreadPane` (one per expanded message in a thread) — see each call
- * site for how `message`/`attachments`/`isSentItems` are sourced.
+ * and the mobile detail route (`apps/www/messages/[uid].tsx`, a full page on its own reached by tapping
+ * a message row) — see each call site for how `message`/`attachments`/`isSentItems` are sourced. The
+ * desktop pane shows whichever message the list opened, including one opened from a conversation row.
  */
 export default function MessageDetailPane(props: MessageDetailPaneProps) {
     if (!props.message) {

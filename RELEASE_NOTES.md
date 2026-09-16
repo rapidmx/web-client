@@ -2,11 +2,39 @@
 
 ## Unreleased
 
-Needs `@rapidmx/react-shared` with `mail/directoryApi.js`, `mail/messageBodySanitizer.js` and `composeQuoting.js`'s
-`buildComposeBodyHtml()`/`buildReplyRecipients()`, and `@rapidmx/restapi` with `BaseDirectoryRoute` (all unreleased).
+Needs `@rapidmx/react-shared` with `mail/directoryApi.js`, `mail/messageBodySanitizer.js`, `composeQuoting.js`'s
+`buildComposeBodyHtml()`/`buildReplyRecipients()`, `listMessages()`'s `sortBy`/`sortOrder`/`filter`, the bulk message
+helpers and `mail/conversationsApi.js`'s `folderUid`/`filter` and `listConversationMessages()`; and `@rapidmx/restapi`
+with `BaseDirectoryRoute` and the sorted/filtered/bulk/conversation message routes (all unreleased).
 
 ### Features
 
+- **A mail list toolbar, as in Outlook.** The two rows of tabs above the message list ("By date / By conversation" and
+  "All / Focused / Other") are replaced by a toolbar with **Filter**, **Sort** and **Select**. The Focused/Other tabs
+  stay where they were, and now filter server-side.
+  - **Sort** offers Date, Date sent, From, Subject, Importance and Flag status, each with the order that reads
+    naturally for it ("Newest on top"/"Oldest on top", "A to Z"/"Z to A", "Highest on top", "Flagged on top"). Changing
+    the key resets the direction to that key's own.
+  - **Filter** offers All, Unread, Read, Flagged and Has attachments, plus Focused and Other in an Inbox. Only one
+    filter applies at a time, so picking Focused or Other replaces the filter above it, and the menu always shows which
+    one is in force.
+  - Both sort and filter are applied by the server across the **whole folder**, not just the page that happens to be
+    loaded, so scrolling further keeps them correct. Sorting isn't offered for search results (ranked by relevance) or
+    for the merged All Mailboxes views (one page from each mailbox, always by date); filtering still is, per mailbox.
+  - Your sort, filter and conversation choice are remembered per mailbox on this device, so reopening Mail lands where
+    you left it.
+- **Select several messages and act on them at once.** "Select" turns the list into a multi-select: a checkbox on each
+  row, a header counting what is ticked, Select all and Clear, and bulk Mark read, Mark unread, Flag, Unflag, Archive,
+  Move to, Report junk and Delete. Delete means *move to Deleted Items* - nothing is erased, and Deleted Items, Junk
+  and Archive are created for you the first time you need one. An action whose folder is the one you are already in is
+  greyed out and says why. If the server rejects part of a bulk change, the list reloads and says that some messages
+  may already have changed, rather than showing a list that no longer matches the server.
+- **Conversations are now nested rows in the list.** "Show as conversations" (in the Sort menu, as in Outlook) groups
+  the list into one row per conversation - participants, subject, message count, unread count, attachment and flag
+  hints and the latest message's preview - with a chevron that expands it into that conversation's own messages as
+  child rows. Opening a conversation row opens its latest message; opening a child row opens that message. Unlike the
+  old "By conversation" view, conversations now follow the folder selected in the sidebar and honour the current
+  filter, and can be scrolled past the first page.
 - **Recipient autocomplete in Compose:** the To, Cc and Bcc fields suggest your contacts and the server's directory
   (people, shared mailboxes, rooms, equipment and groups) as you type two or more characters of a name or address.
   Contacts come first, each address is listed once, and each entry shows its name, address and what it is. Use the

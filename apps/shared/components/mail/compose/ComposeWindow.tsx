@@ -493,7 +493,7 @@ export default function ComposeWindow({
     // below) — `RichTextEditor`'s own doc comment is explicit that `value` only seeds its *initial*
     // content and never re-syncs from a later prop change, so this has to resolve before that first
     // mount, not after. A signature-list failure is best-effort, same as every other supplementary,
-    // non-blocking fetch in this codebase (e.g. `ConversationThreadPane`'s attachment fetch) — no
+    // non-blocking fetch in this codebase (e.g. `ConversationList`'s own child-message fetch) — no
     // signature is a completely legitimate outcome, so this falls back to just the quoted content
     // (if any) rather than surfacing an error over what's a cosmetic nicety.
     useEffect(() => {
