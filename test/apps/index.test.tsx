@@ -74,6 +74,8 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         onReceiptHandled,
         onArchived,
         onLabelsChanged,
+        labels,
+        onLabelCreated,
     }: {
         message: Record<string, unknown> | null;
         isSentItems?: boolean;
@@ -86,10 +88,17 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         onReceiptHandled?: (updated: Record<string, unknown>) => void;
         onArchived?: (updated: Record<string, unknown>) => void;
         onLabelsChanged?: (updated: Record<string, unknown>) => void;
+        labels?: { uid: string; name: string }[];
+        onLabelCreated?: (label: { uid: string; name: string }) => void;
     }) => (
         <div data-testid="detail-pane">
             {message ? `message:${message.uid}` : "no-message"} sentItems:{String(!!isSentItems)} outbox:{String(!!isOutbox)}{" "}
-            inbox:{String(!!isInbox)} draftsFolderUid:{draftsFolderUid ?? "unset"}
+            inbox:{String(!!isInbox)} draftsFolderUid:{draftsFolderUid ?? "unset"} labels:{(labels ?? []).map((l) => l.name).join("/")}
+            {onLabelCreated && (
+                <button type="button" onClick={() => onLabelCreated({ uid: "l-new", name: "Made here" })}>
+                    simulate-label-created
+                </button>
+            )}
             {message && onRecalled && (
                 <button type="button" onClick={() => onRecalled({ ...message, recallRequestedAt: "2026-01-02T00:00:00.000Z" })}>
                     simulate-recall
@@ -244,7 +253,14 @@ function sortValue(message: any, sortBy: string): string | number {
 function applyListParams(messages: unknown[], url: string): unknown[] {
     const params = new URLSearchParams(url.split("?")[1] ?? "");
     const filter = params.get("filter");
-    const result = filter ? messages.filter((m) => matchesListFilter(m, filter)) : [...messages];
+    let result = filter ? messages.filter((m) => matchesListFilter(m, filter)) : [...messages];
+    // `?labelUids=a,b` is ORed across the set and ANDed with `filter`, as the server does it.
+    const labelUids = params.get("labelUids")?.split(",") ?? [];
+    if (labelUids.length > 0) {
+        result = result.filter((m) =>
+            ((m as { labelUids?: string[] }).labelUids ?? []).some((uid) => labelUids.includes(uid)),
+        );
+    }
     const sortBy = params.get("sortBy");
     if (!sortBy) {
         return result;
@@ -257,17 +273,33 @@ function applyListParams(messages: unknown[], url: string): unknown[] {
     });
 }
 
+function labelFixture(uid: string, name: string) {
+    return {
+        uid,
+        version: 0,
+        dateCreated: "2026-01-01T00:00:00.000Z",
+        dateModified: "2026-01-01T00:00:00.000Z",
+        mailboxUid: "mb1",
+        name,
+        color: "#ff0000",
+    };
+}
+
+const LABELS = [labelFixture("l1", "Invoices"), labelFixture("l2", "Travel")];
+
 function mockShellAndInbox(
     messages: unknown[],
     extra?: (url: string, init?: RequestInit) => Response | undefined,
     conversations: unknown[] = [],
     conversationMessages: Record<string, unknown[]> = {},
+    labels: unknown[] = LABELS,
 ) {
     return mockFetch((url, init) => {
         const custom = extra?.(url, init);
         if (custom) return custom;
         if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
         if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+        if (url.startsWith("/api/mail/labels")) return jsonResponse(200, labels);
         if (url.startsWith("/api/mail/messages/conversations/")) {
             const id = decodeURIComponent(url.slice("/api/mail/messages/conversations/".length).split("?")[0]);
             return jsonResponse(200, conversationMessages[id] ?? []);
@@ -415,6 +447,13 @@ describe("InboxPage", () => {
         render(<InboxPage userUid="u1" />);
         expect(await screen.findByText("Hello there")).toBeInTheDocument();
         expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message");
+    });
+
+    it("marks a row that has an attachment", async () => {
+        mockShellAndInbox([messageFixture({ hasAttachments: true })]);
+        render(<InboxPage userUid="u1" />);
+        await screen.findByText("Hello there");
+        expect(screen.getByLabelText("Has attachments")).toBeInTheDocument();
     });
 
     it("falls back to the raw address and '(no subject)' in the message list row", async () => {
@@ -1189,6 +1228,117 @@ describe("InboxPage", () => {
         });
     });
 
+    describe("filtering by label", () => {
+        it("narrows the list to the labels picked in the Filter menu, and remembers them", async () => {
+            const fetchMock = mockShellAndInbox([
+                messageFixture({ uid: "m1", subject: "Labelled", labelUids: ["l2"] }),
+                messageFixture({ uid: "m2", subject: "Plain" }),
+            ]);
+            const user = userEvent.setup();
+            const { unmount } = render(<InboxPage userUid="u1" />);
+            await screen.findByText("Plain");
+            const listings = () =>
+                fetchMock.mock.calls.filter(
+                    ([url, init]: [string, RequestInit]) =>
+                        String(url).startsWith("/api/mail/messages?") && (init?.method ?? "GET") === "GET",
+                ).length;
+            const before = listings();
+
+            await openListMenu(user, "Filter");
+            await chooseMenuItem(user, "menuitem", /^Labels/);
+            await chooseMenuItem(user, "menuitemcheckbox", "Invoices");
+            await chooseMenuItem(user, "menuitemcheckbox", "Travel");
+            await chooseMenuItem(user, "menuitem", "Apply labels");
+
+            // The picks are applied in one go, so two labels are one extra listing, not two.
+            await waitFor(() => expect(listings()).toBe(before + 1));
+            expect(fetchMock).toHaveBeenCalledWith(
+                expect.stringContaining("&labelUids=l1%2Cl2"),
+                expect.anything(),
+            );
+            // Filtered by the server, so the message carrying neither label is gone from the list.
+            await waitFor(() => expect(screen.queryByText("Plain")).not.toBeInTheDocument());
+            expect(screen.getByText("Labelled")).toBeInTheDocument();
+            expect(await screen.findByRole("button", { name: "Filter: 2 labels" })).toBeInTheDocument();
+
+            unmount();
+            render(<InboxPage userUid="u1" />);
+            expect(await screen.findByRole("button", { name: "Filter: 2 labels" })).toBeInTheDocument();
+        });
+
+        it("asks the server for conversations with any of the chosen labels", async () => {
+            const fetchMock = mockShellAndInbox([messageFixture()], undefined, []);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Hello there");
+            await toggleConversations(user);
+            await screen.findByText("No conversations in this folder.");
+
+            await openListMenu(user, "Filter");
+            await chooseMenuItem(user, "menuitem", /^Labels/);
+            await chooseMenuItem(user, "menuitemcheckbox", "Invoices");
+            await chooseMenuItem(user, "menuitemcheckbox", "Travel");
+            await chooseMenuItem(user, "menuitem", "Apply labels");
+
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith(
+                    expect.stringContaining(
+                        "/api/mail/messages/conversations?mailboxUid=mb1&folderUid=f1&filter=all&page=0&limit=50&labelUids=l1%2Cl2",
+                    ),
+                    expect.anything(),
+                ),
+            );
+        });
+
+        it("adds a label created from the Filter menu to the ones it offers", async () => {
+            mockShellAndInbox([messageFixture()], (url, init) =>
+                url === "/api/mail/labels" && init?.method === "POST"
+                    ? jsonResponse(200, labelFixture("l3", "Receipts"))
+                    : undefined,
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Hello there");
+
+            await openListMenu(user, "Filter");
+            await chooseMenuItem(user, "menuitem", /^Labels/);
+            await chooseMenuItem(user, "menuitem", "New label…");
+            const dialog = await screen.findByRole("dialog", { name: "New label" });
+            await user.type(within(dialog).getByLabelText("Name"), "Receipts");
+            await user.click(within(dialog).getByRole("button", { name: "Create" }));
+            await waitFor(() => expect(screen.queryByRole("dialog", { name: "New label" })).not.toBeInTheDocument());
+
+            await openListMenu(user, "Filter");
+            await chooseMenuItem(user, "menuitem", /^Labels/);
+            expect(await screen.findByRole("menuitemcheckbox", { name: "Receipts" })).toBeInTheDocument();
+        });
+
+        it("adds a label created from the reading pane to the ones it offers", async () => {
+            mockShellAndInbox([messageFixture()]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await user.click(await screen.findByText("Hello there"));
+
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Invoices/Travel");
+            await user.click(screen.getByText("simulate-label-created"));
+
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Invoices/Travel/Made here");
+        });
+
+        it("offers the open mailbox's own labels even while a message of another one is selected", async () => {
+            const fetchMock = mockShellAndInbox([messageFixture()]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Hello there");
+
+            await openListMenu(user, "Filter");
+            await chooseMenuItem(user, "menuitem", /^Labels/);
+
+            expect(await screen.findByRole("menuitemcheckbox", { name: "Invoices" })).toBeInTheDocument();
+            expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/mail/labels?"), expect.anything());
+        });
+    });
+
     describe("select mode and bulk actions", () => {
         const junkFolder = { ...inboxFolder, uid: "f5", name: "Junk Email", type: "junk" as const };
         const deletedFolder = { ...inboxFolder, uid: "f6", name: "Deleted Items", type: "deleted_items" as const };
@@ -1211,7 +1361,7 @@ describe("InboxPage", () => {
                     }
                     return jsonResponse(200, folders);
                 }
-                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, LABELS);
                 if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
                 if (url.match(/^\/api\/mail\/messages\/[^/]+\/archive$/)) {
                     const uid = url.split("/")[4];
@@ -1434,6 +1584,141 @@ describe("InboxPage", () => {
             expect(
                 fetchMock.mock.calls.some(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT"),
             ).toBe(false);
+        });
+
+        it("applies the labels ticked in Apply label to the whole selection in one bulk update", async () => {
+            const fetchMock = mockSelectable(twoMessages());
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await selectRows(user, "First", "Second");
+
+            await user.click(screen.getByRole("button", { name: "Apply label" }));
+            await chooseMenuItem(user, "menuitemcheckbox", "Invoices");
+            await chooseMenuItem(user, "menuitemcheckbox", "Travel");
+            await chooseMenuItem(user, "menuitem", "Apply");
+
+            await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+            const bulk = fetchMock.mock.calls.filter(
+                ([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT",
+            );
+            expect(bulk).toHaveLength(1);
+            expect(JSON.parse(bulk[0][1].body as string)).toEqual([
+                { uid: "m1", version: 0, labelUids: ["l1", "l2"] },
+                { uid: "m2", version: 0, labelUids: ["l1", "l2"] },
+            ]);
+        });
+
+        it("leaves a partially-applied label exactly as each message has it", async () => {
+            const messages = [
+                messageFixture({ uid: "m1", subject: "First", labelUids: ["l2"] }),
+                messageFixture({ uid: "m2", subject: "Second", labelUids: [] }),
+            ];
+            const fetchMock = mockSelectable(messages);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await selectRows(user, "First", "Second");
+
+            await user.click(screen.getByRole("button", { name: "Apply label" }));
+            // Travel is on one of the two, so it starts partially applied and is left alone; Invoices is
+            // ticked and therefore goes on both.
+            expect(screen.getByRole("menuitemcheckbox", { name: "Travel" })).toHaveAttribute("aria-checked", "mixed");
+            await chooseMenuItem(user, "menuitemcheckbox", "Invoices");
+            await chooseMenuItem(user, "menuitem", "Apply");
+
+            await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+            const bulk = fetchMock.mock.calls.find(
+                ([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT",
+            );
+            expect(JSON.parse(bulk![1].body as string)).toEqual([
+                { uid: "m1", version: 0, labelUids: ["l1", "l2"] },
+                { uid: "m2", version: 0, labelUids: ["l1"] },
+            ]);
+        });
+
+        it("adds a label created from Apply label to the ones it offers", async () => {
+            mockSelectable(twoMessages(), undefined, (url, init) =>
+                url === "/api/mail/labels" && init?.method === "POST"
+                    ? jsonResponse(200, labelFixture("l3", "Receipts"))
+                    : undefined,
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await selectRows(user, "First");
+
+            await user.click(screen.getByRole("button", { name: "Apply label" }));
+            await chooseMenuItem(user, "menuitem", "New label…");
+            const dialog = await screen.findByRole("dialog", { name: "New label" });
+            await user.type(within(dialog).getByLabelText("Name"), "Receipts");
+            await user.click(within(dialog).getByRole("button", { name: "Create" }));
+            await waitFor(() => expect(screen.queryByRole("dialog", { name: "New label" })).not.toBeInTheDocument());
+
+            await user.click(screen.getByRole("button", { name: "Apply label" }));
+            expect(await screen.findByRole("menuitemcheckbox", { name: "Receipts" })).toBeInTheDocument();
+        });
+
+        it("keeps a label this mailbox no longer defines, which the menu never offered", async () => {
+            const fetchMock = mockSelectable([messageFixture({ uid: "m1", subject: "First", labelUids: ["l-gone"] })]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await selectRows(user, "First");
+
+            await user.click(screen.getByRole("button", { name: "Apply label" }));
+            await chooseMenuItem(user, "menuitemcheckbox", "Invoices");
+            await chooseMenuItem(user, "menuitem", "Apply");
+
+            await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+            const bulk = fetchMock.mock.calls.find(
+                ([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT",
+            );
+            expect(JSON.parse(bulk![1].body as string)).toEqual([{ uid: "m1", version: 0, labelUids: ["l1", "l-gone"] }]);
+        });
+
+        it("still offers the load-more sentinel once a bulk move has emptied a full page", async () => {
+            const full = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Row ${i}` }));
+            mockSelectable(full);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Row 0");
+            await user.click(screen.getByRole("button", { name: "Select" }));
+            await user.click(screen.getByRole("button", { name: "Select all" }));
+
+            await user.click(screen.getByRole("button", { name: "Delete" }));
+
+            expect(await screen.findByText("No messages in this folder.")).toBeInTheDocument();
+            expect(screen.getByTestId("load-more-sentinel")).toBeInTheDocument();
+        });
+
+        it("reloads the list when a bulk label update is rejected", async () => {
+            const fetchMock = mockSelectable(twoMessages(), undefined, (url, init) => {
+                if (url === "/api/mail/messages" && init?.method === "PUT") {
+                    return jsonResponse(409, { message: "Message m2 has changed since it was read." });
+                }
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await selectRows(user, "First");
+            const listingsBefore = fetchMock.mock.calls.filter(([url, init]: [string, RequestInit]) =>
+                String(url).startsWith("/api/mail/messages?") && (init?.method ?? "GET") === "GET",
+            ).length;
+
+            await user.click(screen.getByRole("button", { name: "Apply label" }));
+            await chooseMenuItem(user, "menuitemcheckbox", "Invoices");
+            await chooseMenuItem(user, "menuitem", "Apply");
+
+            expect(await screen.findByText(/Message m2 has changed since it was read\./)).toBeInTheDocument();
+            await waitFor(() =>
+                expect(
+                    fetchMock.mock.calls.filter(([url, init]: [string, RequestInit]) =>
+                        String(url).startsWith("/api/mail/messages?") && (init?.method ?? "GET") === "GET",
+                    ).length,
+                ).toBe(listingsBefore + 1),
+            );
         });
 
         it("reloads the list and says so when a bulk action is rejected part-way", async () => {
@@ -3415,7 +3700,7 @@ describe("InboxPage", () => {
 
             await waitFor(() =>
                 expect(fetchMock).toHaveBeenCalledWith(
-                    "/api/mail/messages/conversations?mailboxUid=mb1&filter=all&limit=50",
+                    "/api/mail/messages/conversations?mailboxUid=mb1&filter=all&page=0&limit=50",
                     expect.anything(),
                 ),
             );

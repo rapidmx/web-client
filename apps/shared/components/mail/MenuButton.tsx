@@ -3,21 +3,42 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useEffect, useRef, useState } from "react";
-import { HiCheck, HiChevronDown } from "react-icons/hi2";
+import { HiCheck, HiChevronDown, HiChevronLeft, HiChevronRight, HiMinus } from "react-icons/hi2";
 import PopoverPortal from "@rapidmx/react-shared/components/overlays/PopoverPortal.js";
 
-/** One row of a menu. `checked` turns it into a radio/checkbox item (the caller says which via `role`) and
+/** What every row has. `checked` turns it into a radio/checkbox item (the caller says which via `role`) and
  * draws the checkmark column; without it the row is a plain command. */
-export interface MenuItemSpec {
+interface MenuItemBase {
     key: string;
     label: string;
     /** A one-line explanation under the label, for an item whose effect isn't obvious from its name. */
     description?: string;
     role?: "menuitem" | "menuitemradio" | "menuitemcheckbox";
-    checked?: boolean;
+    /** `"mixed"` is ARIA's third checkbox state - some of the things this row acts on have it and some
+     * don't, which is what a label applied to only part of a multi-message selection looks like. */
+    checked?: boolean | "mixed";
+    /** A colour swatch before the label - a label's own colour. */
+    swatchColor?: string;
     disabled?: boolean;
-    onSelect: () => void;
+    /** Leaves the menu open after choosing this row, for a multi-select list where several rows are ticked
+     * before one command commits them all. */
+    keepOpen?: boolean;
 }
+
+/** A row that does something when chosen. */
+export interface MenuCommandSpec extends MenuItemBase {
+    onSelect: () => void;
+    submenu?: never;
+}
+
+/** A row that opens a submenu instead: choosing it replaces the menu's contents with these sections, under
+ * a Back row. One level deep, which is all any menu here needs - so it has nothing of its own to do. */
+export interface MenuSubmenuSpec extends MenuItemBase {
+    submenu: MenuSectionSpec[];
+    onSelect?: never;
+}
+
+export type MenuItemSpec = MenuCommandSpec | MenuSubmenuSpec;
 
 /** A labelled group of items. Groups after the first are drawn with a separator above them. */
 export interface MenuSectionSpec {
@@ -29,19 +50,34 @@ export interface MenuSectionSpec {
 }
 
 // `PopoverPortal` positions a fixed-size box (it has no auto-height mode), so the menu's height is
-// computed from its own contents rather than measured. These are the exact heights the classes below
+// computed from its own contents rather than measured - from whichever level is *shown*, so a submenu
+// isn't left standing in the parent menu's taller box. These are the exact heights the classes below
 // render at, so the box is never short enough to clip its last row: an item is `h-9`, a group label
-// `h-6`, a note two `leading-4` lines, a separator a 1px rule inside `my-1`, and the list itself `py-1`.
+// `h-6`, a note as many `leading-4` lines as it wraps to, a separator a 1px rule inside `my-1`, and the
+// list itself `py-1`.
 const ITEM_HEIGHT = 36;
 const ITEM_DESCRIPTION_HEIGHT = 16;
 const GROUP_LABEL_HEIGHT = 24;
-const NOTE_HEIGHT = 36;
+const NOTE_LINE_HEIGHT = 16;
+const NOTE_PADDING = 4;
+/** A note wraps, so its height depends on how much of it fits a line: `text-xs` averages a little over 6px
+ * a character, and the note sits inside the list's `px-3`. Rounded so the estimate is never *under* the
+ * lines the browser actually draws - a box a few pixels too tall shows blank space, one too short clips. */
+const NOTE_CHAR_WIDTH = 6.4;
+const NOTE_PADDING_X = 24;
 const SEPARATOR_HEIGHT = 9;
 const LIST_PADDING = 8;
 const MENU_MAX_HEIGHT = 460;
+const DEFAULT_MENU_WIDTH = 248;
+
+/** How tall `note` renders at `width`, wrapped. */
+function noteHeight(note: string, width: number): number {
+    const charsPerLine = Math.max(1, Math.floor((width - NOTE_PADDING_X) / NOTE_CHAR_WIDTH));
+    return Math.ceil(note.length / charsPerLine) * NOTE_LINE_HEIGHT + NOTE_PADDING;
+}
 
 /** The height `PopoverPortal` is asked for - exact for a short menu, capped (the list scrolls) for a long one. */
-export function menuHeight(sections: MenuSectionSpec[]): number {
+export function menuHeight(sections: MenuSectionSpec[], width: number = DEFAULT_MENU_WIDTH): number {
     let height = LIST_PADDING;
     sections.forEach((section, index) => {
         if (index > 0) {
@@ -54,7 +90,7 @@ export function menuHeight(sections: MenuSectionSpec[]): number {
             height += ITEM_HEIGHT + (item.description ? ITEM_DESCRIPTION_HEIGHT : 0);
         }
         if (section.note) {
-            height += NOTE_HEIGHT;
+            height += noteHeight(section.note, width);
         }
     });
     return Math.min(height, MENU_MAX_HEIGHT);
@@ -73,6 +109,9 @@ export interface MenuButtonProps {
     width?: number;
     /** Extra classes for the trigger, on top of the shared toolbar-button styling. */
     className?: string;
+    /** Told whenever the menu opens or closes - how a caller resets a draft it keeps for the menu's own
+     * multi-select rows (see `useLabelDraft()`). */
+    onOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -92,12 +131,16 @@ export default function MenuButton({
     disabled,
     title,
     sections,
-    width = 248,
+    width = DEFAULT_MENU_WIDTH,
     className = "",
     "aria-label": ariaLabel,
+    onOpenChange,
 }: MenuButtonProps) {
     const [open, setOpen] = useState(false);
     const [activeIndex, setActiveIndex] = useState(0);
+    // The key of the item whose submenu is showing, or `null` at the top level. Held as a key, not as the
+    // item itself, because `sections` is rebuilt on every render.
+    const [submenuKey, setSubmenuKey] = useState<string | null>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
     // State, not a ref: `PopoverPortal` renders nothing at all until its own positioning effect has run, so
@@ -105,19 +148,68 @@ export default function MenuButton({
     // menu node itself makes it run again once they do.
     const [menuNode, setMenuNode] = useState<HTMLDivElement | null>(null);
 
-    const items = sections.flatMap((section) => section.items);
+    const openSubmenu = sections
+        .flatMap((section) => section.items)
+        .find((item): item is MenuSubmenuSpec => item.key === submenuKey && !!item.submenu);
+    /** The row that leaves a submenu again - synthesized rather than asked of the caller, so every submenu
+     * has the same way back however it was built. */
+    const backItem: MenuCommandSpec = {
+        key: "__back",
+        label: `Back to ${ariaLabel}`,
+        keepOpen: true,
+        onSelect: () => leaveSubmenu(),
+    };
+    const shownSections: MenuSectionSpec[] = openSubmenu
+        ? [{ key: "__back", items: [backItem] }, ...openSubmenu.submenu]
+        : sections;
+    const items = shownSections.flatMap((section) => section.items);
     const enabledIndexes = items.map((item, index) => (item.disabled ? -1 : index)).filter((index) => index !== -1);
 
+    /** The row focus starts on: the current choice where there is one, else the first row that can take focus. */
+    function initialActiveIndex(within: MenuItemSpec[]): number {
+        const checked = within.findIndex((item) => item.checked === true && !item.disabled);
+        const enabled = within.map((item, index) => (item.disabled ? -1 : index)).filter((index) => index !== -1);
+        return checked === -1 ? (enabled[0] ?? 0) : checked;
+    }
+
     function openMenu() {
-        const checked = items.findIndex((item) => item.checked && !item.disabled);
-        setActiveIndex(checked === -1 ? (enabledIndexes[0] ?? 0) : checked);
+        setSubmenuKey(null);
+        setActiveIndex(initialActiveIndex(sections.flatMap((section) => section.items)));
         setOpen(true);
+        onOpenChange?.(true);
     }
 
     function closeMenu(returnFocus: boolean) {
         setOpen(false);
+        setSubmenuKey(null);
+        onOpenChange?.(false);
         if (returnFocus) {
             triggerRef.current?.focus();
+        }
+    }
+
+    function enterSubmenu(item: MenuSubmenuSpec) {
+        setSubmenuKey(item.key);
+        // Past the Back row, onto the first row of the submenu itself.
+        setActiveIndex(1 + initialActiveIndex(item.submenu.flatMap((section) => section.items)));
+    }
+
+    function leaveSubmenu() {
+        // Back on the row the submenu was opened from.
+        const parentIndex = sections.flatMap((section) => section.items).findIndex((item) => item.key === submenuKey);
+        setSubmenuKey(null);
+        setActiveIndex(parentIndex);
+    }
+
+    /** What a row does when it is chosen: open its submenu, or run it and close unless it asked to stay. */
+    function selectItem(item: MenuItemSpec) {
+        if (item.submenu) {
+            enterSubmenu(item);
+            return;
+        }
+        item.onSelect();
+        if (!item.keepOpen) {
+            closeMenu(true);
         }
     }
 
@@ -133,7 +225,9 @@ export default function MenuButton({
                 itemRefs.current[activeIndex]?.focus();
             }
         }
-    }, [open, activeIndex, menuNode]);
+        // `submenuKey` too: drilling in or out can land on the same index in the other level's list, and
+        // the row that index *means* is a different button, which the effect must move focus to.
+    }, [open, activeIndex, submenuKey, menuNode]);
 
     function moveActive(delta: number) {
         if (enabledIndexes.length === 0) {
@@ -156,6 +250,14 @@ export default function MenuButton({
         } else if (e.key === "End") {
             e.preventDefault();
             setActiveIndex(enabledIndexes[enabledIndexes.length - 1] ?? 0);
+        } else if (e.key === "ArrowRight" && items[activeIndex]?.submenu) {
+            e.preventDefault();
+            enterSubmenu(items[activeIndex]);
+        } else if ((e.key === "ArrowLeft" || e.key === "Escape") && openSubmenu) {
+            // ARIA's own submenu behaviour: Escape leaves the submenu for its parent menu rather than
+            // dismissing the whole thing.
+            e.preventDefault();
+            leaveSubmenu();
         } else if (e.key === "Escape" || e.key === "Tab") {
             e.preventDefault();
             closeMenu(true);
@@ -199,7 +301,7 @@ export default function MenuButton({
                     anchorRef={triggerRef}
                     onClose={() => closeMenu(false)}
                     width={width}
-                    height={menuHeight(sections)}
+                    height={menuHeight(shownSections, width)}
                     aria-label={ariaLabel}
                 >
                     <div
@@ -210,7 +312,7 @@ export default function MenuButton({
                         onKeyDown={handleMenuKeyDown}
                         className="flex-1 overflow-y-auto py-1"
                     >
-                        {sections.map((section, sectionIndex) => (
+                        {shownSections.map((section, sectionIndex) => (
                             <div key={section.key} role="group" aria-label={section.label} className={sectionIndex > 0 ? "border-t border-border mt-1 pt-1" : ""}>
                                 {section.label && (
                                     <div aria-hidden="true" className="h-6 flex items-center px-3 text-xs font-semibold uppercase tracking-wide text-text-muted">
@@ -231,24 +333,43 @@ export default function MenuButton({
                                             role={role}
                                             disabled={item.disabled}
                                             tabIndex={index === activeIndex ? 0 : -1}
-                                            {...(role === "menuitem" ? {} : { "aria-checked": !!item.checked })}
-                                            onClick={() => {
-                                                item.onSelect();
-                                                closeMenu(true);
-                                            }}
+                                            {...(role === "menuitem"
+                                                ? {}
+                                                : { "aria-checked": item.checked === "mixed" ? ("mixed" as const) : !!item.checked })}
+                                            {...(item.submenu ? { "aria-haspopup": "menu" as const, "aria-expanded": false } : {})}
+                                            onClick={() => selectItem(item)}
                                             className="w-full flex items-start gap-2 px-3 py-2 text-left text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent"
                                         >
                                             <span className="w-4 shrink-0 flex justify-center pt-0.5">
-                                                {item.checked && <HiCheck size={14} aria-hidden="true" className="text-primary-dark" />}
+                                                {item.key === "__back" && (
+                                                    <HiChevronLeft size={14} aria-hidden="true" className="text-text-muted" />
+                                                )}
+                                                {item.checked === "mixed" ? (
+                                                    <HiMinus size={14} aria-hidden="true" className="text-primary-dark" />
+                                                ) : (
+                                                    item.checked && <HiCheck size={14} aria-hidden="true" className="text-primary-dark" />
+                                                )}
                                             </span>
                                             <span className="min-w-0 flex-1">
-                                                <span className="block h-5 truncate">{item.label}</span>
+                                                <span className="flex h-5 items-center gap-1.5">
+                                                    {item.swatchColor && (
+                                                        <span
+                                                            aria-hidden="true"
+                                                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                                                            style={{ backgroundColor: item.swatchColor }}
+                                                        />
+                                                    )}
+                                                    <span className="truncate">{item.label}</span>
+                                                </span>
                                                 {item.description && (
                                                     <span className="block h-4 text-xs leading-4 text-text-muted truncate font-normal">
                                                         {item.description}
                                                     </span>
                                                 )}
                                             </span>
+                                            {item.submenu && (
+                                                <HiChevronRight size={14} aria-hidden="true" className="shrink-0 mt-0.5 text-text-muted" />
+                                            )}
                                         </button>
                                     );
                                 })}

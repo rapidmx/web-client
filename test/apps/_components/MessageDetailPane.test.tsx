@@ -428,17 +428,16 @@ describe("MessageDetailPane", () => {
             expect(chips.map((el) => el.textContent)).toEqual(["Later", "Important"]);
         });
 
-        it("falls back to the default label color for a label with no color, in both the chip and the Labels modal", async () => {
-            const uncolored = { ...labels[0], uid: "l3", name: "Uncolored", color: undefined };
-            const user = userEvent.setup();
-            render(<MessageDetailPane message={messageFixture({ labelUids: ["l3"] }) as any} attachments={[]} labels={[uncolored]} />);
-
-            const chipSwatch = screen.getByText("Uncolored").querySelector("span")!;
-            expect(chipSwatch).toHaveStyle({ backgroundColor: "#6366f1" });
-
-            await user.click(screen.getByRole("button", { name: "Labels" }));
-            const modalSwatch = screen.getByRole("checkbox", { name: /Uncolored/ }).nextElementSibling!;
-            expect(modalSwatch).toHaveStyle({ backgroundColor: "#6366f1" });
+        it("falls back to the default label color for a label with no color", () => {
+            render(
+                <MessageDetailPane
+                    message={messageFixture({ labelUids: ["l3"] }) as any}
+                    attachments={[]}
+                    labels={[...labels, { ...labels[0], uid: "l3", name: "Uncolored", color: undefined }]}
+                />,
+            );
+            const swatch = screen.getByText("Uncolored").parentElement!.querySelector("span[style]") as HTMLElement;
+            expect(swatch).toHaveStyle({ backgroundColor: "rgb(99, 102, 241)" });
         });
 
         it("shows no chip row at all when the message has no labelUids", () => {
@@ -446,7 +445,7 @@ describe("MessageDetailPane", () => {
             expect(screen.queryByText("Important")).not.toBeInTheDocument();
         });
 
-        it("opens the Labels modal, checking only the boxes for labels already applied", async () => {
+        it("opens the Labels menu with only the applied labels ticked, and Apply held until something changes", async () => {
             const user = userEvent.setup();
             render(
                 <MessageDetailPane message={messageFixture({ labelUids: ["l1"] }) as any} attachments={[]} labels={labels} />,
@@ -454,13 +453,14 @@ describe("MessageDetailPane", () => {
 
             await user.click(screen.getByRole("button", { name: "Labels" }));
 
-            expect(screen.getByRole("dialog", { name: "Labels" })).toBeInTheDocument();
-            expect(screen.getByRole("checkbox", { name: /Important/ })).toBeChecked();
-            expect(screen.getByRole("checkbox", { name: /Later/ })).not.toBeChecked();
+            expect(screen.getByRole("menu", { name: "Labels" })).toBeInTheDocument();
+            expect(screen.getByRole("menuitemcheckbox", { name: "Important" })).toHaveAttribute("aria-checked", "true");
+            expect(screen.getByRole("menuitemcheckbox", { name: "Later" })).toHaveAttribute("aria-checked", "false");
+            expect(screen.getByRole("menuitem", { name: "Apply" })).toBeDisabled();
         });
 
-        it("checking a label's box adds it and calls onLabelsChanged with the server's updated copy", async () => {
-            const updated = messageFixture({ labelUids: ["l2"] });
+        it("ticks several labels with the menu staying open and applies them in one request", async () => {
+            const updated = messageFixture({ labelUids: ["l1", "l2"] });
             const fetchMock = mockFetch(() => jsonResponse(200, updated));
             const onLabelsChanged = vi.fn();
             const user = userEvent.setup();
@@ -474,19 +474,41 @@ describe("MessageDetailPane", () => {
             );
 
             await user.click(screen.getByRole("button", { name: "Labels" }));
-            await user.click(screen.getByRole("checkbox", { name: /Later/ }));
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Important" }));
+            // Still open, with the first tick remembered.
+            expect(screen.getByRole("menu", { name: "Labels" })).toBeInTheDocument();
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Later" }));
+            expect(screen.getByRole("menuitemcheckbox", { name: "Important" })).toHaveAttribute("aria-checked", "true");
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
 
-            expect(fetchMock).toHaveBeenCalledWith(
-                "/api/mail/messages/m1",
-                expect.objectContaining({
-                    method: "PUT",
-                    body: JSON.stringify({ uid: "m1", version: 0, labelUids: ["l2"] }),
-                }),
-            );
+            const puts = fetchMock.mock.calls.filter(([url]: [string]) => url === "/api/mail/messages/m1");
+            expect(puts).toHaveLength(1);
+            expect(puts[0][1].body).toBe(JSON.stringify({ uid: "m1", version: 0, labelUids: ["l1", "l2"] }));
             await waitFor(() => expect(onLabelsChanged).toHaveBeenCalledWith(updated));
         });
 
-        it("unchecking an applied label's box removes only that uid", async () => {
+        it("unticking an applied label removes only that uid", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture({ labelUids: ["l2"] })));
+            const user = userEvent.setup();
+            render(
+                <MessageDetailPane
+                    message={messageFixture({ labelUids: ["l1", "l2"] }) as any}
+                    attachments={[]}
+                    labels={labels}
+                />,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Important" }));
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
+
+            expect(fetchMock).toHaveBeenCalledWith(
+                "/api/mail/messages/m1",
+                expect.objectContaining({ body: JSON.stringify({ uid: "m1", version: 0, labelUids: ["l2"] }) }),
+            );
+        });
+
+        it("removes every label at once", async () => {
             const fetchMock = mockFetch(() => jsonResponse(200, messageFixture({ labelUids: [] })));
             const user = userEvent.setup();
             render(
@@ -498,26 +520,42 @@ describe("MessageDetailPane", () => {
             );
 
             await user.click(screen.getByRole("button", { name: "Labels" }));
-            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
+            await user.click(screen.getByRole("menuitem", { name: "Remove all labels" }));
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
 
             expect(fetchMock).toHaveBeenCalledWith(
                 "/api/mail/messages/m1",
-                expect.objectContaining({ body: JSON.stringify({ uid: "m1", version: 0, labelUids: ["l2"] }) }),
+                expect.objectContaining({ body: JSON.stringify({ uid: "m1", version: 0, labelUids: [] }) }),
             );
         });
 
-        it("shows an error message in the modal when toggling a label fails", async () => {
+        it("throws the draft away when the menu is dismissed instead of applied", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture()));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
+
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Important" }));
+            await user.keyboard("{Escape}");
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+
+            expect(screen.getByRole("menuitemcheckbox", { name: "Important" })).toHaveAttribute("aria-checked", "false");
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it("shows an error message when saving labels fails", async () => {
             mockFetch(() => jsonResponse(500, { message: "boom" }));
             const user = userEvent.setup();
             render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
 
             await user.click(screen.getByRole("button", { name: "Labels" }));
-            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Important" }));
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
 
             expect(await screen.findByText("boom")).toBeInTheDocument();
         });
 
-        it("shows a generic error message when toggling a label fails with a non-API error", async () => {
+        it("shows a generic error message when saving labels fails with a non-API error", async () => {
             mockFetch(() => {
                 throw new TypeError("network down");
             });
@@ -525,72 +563,58 @@ describe("MessageDetailPane", () => {
             render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
 
             await user.click(screen.getByRole("button", { name: "Labels" }));
-            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Important" }));
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
 
             expect(await screen.findByText("Could not update this message's labels.")).toBeInTheDocument();
         });
 
-        it("disables every label checkbox while one toggle is in flight", async () => {
-            let resolvePut: ((response: Response) => void) | undefined;
-            mockFetch(() => new Promise<Response>((resolve) => (resolvePut = resolve)));
-            const user = userEvent.setup();
-            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
-
-            await user.click(screen.getByRole("button", { name: "Labels" }));
-            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
-
-            expect(screen.getByRole("checkbox", { name: /Important/ })).toBeDisabled();
-            expect(screen.getByRole("checkbox", { name: /Later/ })).toBeDisabled();
-
-            resolvePut!(jsonResponse(200, messageFixture({ version: 1, labelUids: ["l1"] })));
-            await waitFor(() => expect(screen.getByRole("checkbox", { name: /Later/ })).not.toBeDisabled());
-        });
-
-        it("builds a follow-up toggle on the previous toggle's server response even when the caller never patches the message", async () => {
-            const bodies: { version: number; labelUids: string[] }[] = [];
-            mockFetch((_url, init) => {
-                const body = JSON.parse(init.body as string);
-                bodies.push(body);
-                return jsonResponse(200, messageFixture({ version: body.version + 1, labelUids: body.labelUids }));
+        it("builds a follow-up save on the previous save's server response even when the caller never patches the message", async () => {
+            let call = 0;
+            const fetchMock = mockFetch(() => {
+                call += 1;
+                return jsonResponse(200, messageFixture({ version: call, labelUids: call === 1 ? ["l1"] : ["l1", "l2"] }));
             });
             const user = userEvent.setup();
             render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
 
             await user.click(screen.getByRole("button", { name: "Labels" }));
-            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
-            await waitFor(() => expect(screen.getByRole("checkbox", { name: /Important/ })).toBeChecked());
-            await user.click(screen.getByRole("checkbox", { name: /Later/ }));
-
-            await waitFor(() => expect(bodies).toHaveLength(2));
-            expect(bodies[0]).toEqual({ uid: "m1", version: 0, labelUids: ["l1"] });
-            // Not `["l2"]` at version 0 from the stale prop - the first toggle's result is the base.
-            expect(bodies[1]).toEqual({ uid: "m1", version: 1, labelUids: ["l1", "l2"] });
-            await waitFor(() => expect(screen.getByRole("checkbox", { name: /Later/ })).toBeChecked());
-        });
-
-        it("prefers a newer message copy from the caller over the popover's own last-saved copy", async () => {
-            mockFetch(() => jsonResponse(200, messageFixture({ version: 1, labelUids: ["l1"] })));
-            const user = userEvent.setup();
-            const { rerender } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Important" }));
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
+            await screen.findByText("Important");
 
             await user.click(screen.getByRole("button", { name: "Labels" }));
-            await user.click(screen.getByRole("checkbox", { name: /Important/ }));
-            await waitFor(() => expect(screen.getByRole("checkbox", { name: /Important/ })).toBeChecked());
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Later" }));
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
 
-            rerender(<MessageDetailPane message={messageFixture({ version: 2, labelUids: ["l2"] })} attachments={[]} labels={labels} />);
-            expect(screen.getByRole("checkbox", { name: /Important/ })).not.toBeChecked();
-            expect(screen.getByRole("checkbox", { name: /Later/ })).toBeChecked();
+            // The second save carries the version the first one came back with, and both labels.
+            expect(fetchMock.mock.calls[1][1].body).toBe(JSON.stringify({ uid: "m1", version: 1, labelUids: ["l1", "l2"] }));
         });
 
-        it("closes the Labels modal via its own close button", async () => {
+        it("prefers a newer message copy from the caller over the menu's own last-saved copy", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture({ version: 1, labelUids: ["l1"] })));
             const user = userEvent.setup();
-            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />);
+            const { rerender } = render(
+                <MessageDetailPane message={messageFixture() as any} attachments={[]} labels={labels} />,
+            );
 
             await user.click(screen.getByRole("button", { name: "Labels" }));
-            expect(screen.getByRole("dialog", { name: "Labels" })).toBeInTheDocument();
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Important" }));
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
+            await screen.findByText("Important");
 
-            await user.click(screen.getByRole("button", { name: "Close" }));
-            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+            rerender(
+                <MessageDetailPane
+                    message={messageFixture({ version: 5, labelUids: ["l2"] })}
+                    attachments={[]}
+                    labels={labels}
+                />,
+            );
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            await user.click(screen.getByRole("menuitemcheckbox", { name: "Important" }));
+            await user.click(screen.getByRole("menuitem", { name: "Apply" }));
+
+            expect(fetchMock.mock.calls[1][1].body).toBe(JSON.stringify({ uid: "m1", version: 5, labelUids: ["l2", "l1"] }));
         });
     });
 

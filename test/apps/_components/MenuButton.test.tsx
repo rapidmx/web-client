@@ -193,6 +193,101 @@ describe("MenuButton", () => {
         expect(screen.getByRole("menu")).toHaveFocus();
     });
 
+    it("keeps the menu open for a row that asks to stay, and shows a partially-applied row as mixed", async () => {
+        const onSelect = vi.fn();
+        const user = userEvent.setup();
+        render(
+            <MenuButton
+                label="Apply label"
+                aria-label="Apply label"
+                sections={[
+                    {
+                        key: "labels",
+                        items: [
+                            { key: "a", label: "Invoices", role: "menuitemcheckbox", checked: "mixed", keepOpen: true, onSelect },
+                            { key: "b", label: "Travel", role: "menuitemcheckbox", swatchColor: "#ff0000", keepOpen: true, onSelect },
+                        ],
+                    },
+                ]}
+            />,
+        );
+        await user.click(screen.getByRole("button", { name: "Apply label" }));
+
+        expect(screen.getByRole("menuitemcheckbox", { name: "Invoices" })).toHaveAttribute("aria-checked", "mixed");
+        await user.click(screen.getByRole("menuitemcheckbox", { name: "Invoices" }));
+        await user.click(screen.getByRole("menuitemcheckbox", { name: "Travel" }));
+
+        expect(onSelect).toHaveBeenCalledTimes(2);
+        expect(screen.getByRole("menu")).toBeInTheDocument();
+    });
+
+    it("drills into a submenu and back, by click and by keyboard", async () => {
+        const onSelect = vi.fn();
+        const user = userEvent.setup();
+        render(
+            <MenuButton
+                label="Filter"
+                aria-label="Filter"
+                sections={[
+                    { key: "f", items: [{ key: "all", label: "All", role: "menuitemradio", checked: true, onSelect }] },
+                    {
+                        key: "more",
+                        items: [
+                            {
+                                key: "labels",
+                                label: "Labels",
+                                submenu: [{ key: "l", label: "Labels", items: [{ key: "l1", label: "Invoices", onSelect }] }],
+                                onSelect,
+                            },
+                        ],
+                    },
+                ]}
+            />,
+        );
+        await user.click(screen.getByRole("button", { name: "Filter" }));
+        const parent = screen.getByRole("menuitem", { name: "Labels" });
+        expect(parent).toHaveAttribute("aria-haspopup", "menu");
+
+        await user.click(parent);
+        expect(screen.getByRole("menuitem", { name: "Invoices" })).toHaveFocus();
+        expect(screen.queryByRole("menuitemradio", { name: "All" })).not.toBeInTheDocument();
+
+        // Escape leaves the submenu rather than the whole menu, putting focus back on the row it opened.
+        await user.keyboard("{Escape}");
+        expect(screen.getByRole("menuitem", { name: "Labels" })).toHaveFocus();
+
+        // Arrow Right opens it again, Arrow Left leaves it, Back does the same by click.
+        await user.keyboard("{ArrowRight}");
+        expect(await screen.findByRole("menuitem", { name: "Invoices" })).toBeInTheDocument();
+        await user.keyboard("{ArrowLeft}");
+        expect(screen.getByRole("menuitem", { name: "Labels" })).toHaveFocus();
+        await user.keyboard("{ArrowRight}");
+        await user.click(screen.getByRole("menuitem", { name: "Back to Filter" }));
+        expect(screen.getByRole("menuitemradio", { name: "All" })).toBeInTheDocument();
+
+        // And the whole menu closes from the top level, forgetting the submenu it was in.
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    });
+
+    it("tells its caller when it opens and closes", async () => {
+        const onOpenChange = vi.fn();
+        const user = userEvent.setup();
+        render(
+            <MenuButton
+                label="Filter"
+                aria-label="Filter"
+                onOpenChange={onOpenChange}
+                sections={[{ key: "f", items: [{ key: "a", label: "All", onSelect: vi.fn() }] }]}
+            />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Filter" }));
+        expect(onOpenChange).toHaveBeenLastCalledWith(true);
+        await user.click(screen.getByRole("menuitem", { name: "All" }));
+        expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    });
+
     it("sizes the popup from its own contents and caps a long menu", () => {
         expect(menuHeight([{ key: "a", items: [{ key: "1", label: "One", onSelect: vi.fn() }] }])).toBe(8 + 36);
         expect(
@@ -200,8 +295,17 @@ describe("MenuButton", () => {
                 { key: "a", label: "Group", items: [{ key: "1", label: "One", description: "why", onSelect: vi.fn() }] },
                 { key: "b", note: "a note", items: [{ key: "2", label: "Two", onSelect: vi.fn() }] },
             ]),
-        ).toBe(8 + 24 + 36 + 16 + 9 + 36 + 36);
+        ).toBe(8 + 24 + 36 + 16 + 9 + 36 + 20);
         const many = Array.from({ length: 40 }, (_, i) => ({ key: `k${i}`, label: `Item ${i}`, onSelect: vi.fn() }));
         expect(menuHeight([{ key: "a", items: many }])).toBe(460);
+    });
+
+    it("gives a note room for every line it wraps to, at the width the menu is drawn at", () => {
+        const note = "x".repeat(100);
+        const sections = [{ key: "a", note, items: [{ key: "1", label: "One", onSelect: vi.fn() }] }];
+        // 35 characters a line at the default 248px: three lines.
+        expect(menuHeight(sections)).toBe(8 + 36 + 3 * 16 + 4);
+        // Half the width fits half as much, so the same note needs twice the lines.
+        expect(menuHeight(sections, 136)).toBe(8 + 36 + 6 * 16 + 4);
     });
 });

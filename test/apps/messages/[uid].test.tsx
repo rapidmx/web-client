@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -101,6 +101,32 @@ describe("MessageDetailPage", () => {
         await screen.findByRole("heading", { name: "Hello there" });
         await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/mail\/labels\?.*mailboxUid=mb-shared/), expect.anything()));
         expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/mail\/labels\?.*mailboxUid=mb1/), expect.anything());
+    });
+
+    it("adds a label created from the Labels menu to the ones it offers", async () => {
+        const user = userEvent.setup();
+        mockShell((url, init) => {
+            if (url === "/api/mail/messages/m1") return jsonResponse(200, message);
+            if (url.startsWith("/api/mail/labels") && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, [{ uid: "l1", version: 0, mailboxUid: "mb1", name: "Invoices" }]);
+            }
+            if (url === "/api/mail/labels" && init?.method === "POST") {
+                return jsonResponse(200, { uid: "l2", version: 0, mailboxUid: "mb1", name: "Receipts" });
+            }
+            return undefined;
+        });
+        render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Hello there" });
+
+        await user.click(await screen.findByRole("button", { name: "Labels" }));
+        await user.click(screen.getByRole("menuitem", { name: "New label…" }));
+        const dialog = await screen.findByRole("dialog", { name: "New label" });
+        await user.type(within(dialog).getByLabelText("Name"), "Receipts");
+        await user.click(within(dialog).getByRole("button", { name: "Create" }));
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "New label" })).not.toBeInTheDocument());
+
+        await user.click(screen.getByRole("button", { name: "Labels" }));
+        expect(await screen.findByRole("menuitemcheckbox", { name: "Receipts" })).toBeInTheDocument();
     });
 
     it("ignores a labels response that lands after the page unmounted", async () => {

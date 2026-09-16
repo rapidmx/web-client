@@ -12,6 +12,7 @@ import {
     MessageListFilter,
     MessageListParams,
     archiveMessage,
+    bulkUpdateMessages,
     createFolder,
     getMessage,
     getMessageRawContent,
@@ -21,7 +22,7 @@ import {
     setMessagesRead,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
-import { ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
+import { ConversationListParams, ConversationSummary, listConversations } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
 import { parseSearchQuery, type ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
@@ -463,6 +464,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const [searchQuery, setSearchQuery] = useState("");
     const [snippets, setSnippets] = useState<Record<string, string>>({});
     const [labels, setLabels] = useState<Label[]>([]);
+    // The *open mailbox's* labels, for the Filter menu's Labels submenu and select mode's Apply label.
+    // Separate from `labels` above, which follows whichever mailbox the *selected message* belongs to -
+    // in search and aggregate views that can be a different mailbox, whose labels must not be offered as
+    // a filter for this one.
+    const [mailboxLabels, setMailboxLabels] = useState<Label[]>([]);
     // Tier 2's own reported window coverage for the current search - undefined outside a search, or
     // before Tier 2 has resolved yet for this search pass.
     const [coverage, setCoverage] = useState<Coverage | undefined>(undefined);
@@ -531,6 +537,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
         (preferences.filter === "focused" || preferences.filter === "other") && !offerClassificationFilters
             ? "all"
             : preferences.filter;
+    // Left out entirely rather than sent empty, so a list with no label filter asks for exactly the URL it
+    // always did.
+    const labelFilter = preferences.labelUids.length > 0 ? { labelUids: preferences.labelUids } : {};
     // Every server-side list parameter the toolbar controls, in one place so the first page and each
     // `loadMore()` page can't drift apart.
     const listParams: MessageListParams = {
@@ -538,7 +547,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
         sortBy: preferences.sortBy,
         sortOrder: preferences.sortOrder,
         filter: effectiveFilter,
+        ...labelFilter,
     };
+    // A dependency of the list effect and of `loadMore()`, which can't take the array itself (a new one
+    // every render would refetch on every render).
+    const labelFilterKey = preferences.labelUids.join(",");
+    /** The conversation list's own equivalent of `listParams` - a function because the page differs. */
+    function conversationParams(page: number): ConversationListParams {
+        return { folderUid, filter: effectiveFilter, ...labelFilter, page, limit: MESSAGE_PAGE_SIZE };
+    }
     // How far into the folder's *current* server-side listing the rows fetched so far reach. Offset
     // paging, not a cursor (`listMessages()` has none): a row removed locally (archived, scheduled send
     // cancelled) also left the folder server-side, shifting every later message back by one - so each
@@ -701,6 +718,21 @@ function InboxContent({ userUid }: { userUid?: string }) {
         };
     }, [labelsMailboxUid]);
 
+    useEffect(() => {
+        let cancelled = false;
+        setMailboxLabels([]);
+        listLabels(activeMailboxUid, { limit: 200 })
+            .then((result) => {
+                if (!cancelled) {
+                    setMailboxLabels(result);
+                }
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [activeMailboxUid]);
+
     // Debounce the raw input into the query actually searched, so every keystroke doesn't fire a request.
     useEffect(() => {
         const handle = setTimeout(() => setSearchQuery(searchInput.trim()), SEARCH_DEBOUNCE_MS);
@@ -740,7 +772,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             // conversation list matches the folder the sidebar has selected rather than the whole mailbox.
             setLoading(true);
             setError(null);
-            listConversations(activeMailboxUid, { folderUid, filter: effectiveFilter, limit: MESSAGE_PAGE_SIZE })
+            listConversations(activeMailboxUid, conversationParams(0))
                 .then((result) => {
                     if (isCurrentRun()) {
                         setConversations(result);
@@ -908,6 +940,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         preferences.sortBy,
         preferences.sortOrder,
         effectiveFilter,
+        labelFilterKey,
         refreshKey,
         folderUid,
         mailboxUid,
@@ -968,12 +1001,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         try {
             if (preferences.showAsConversations) {
                 const page = Math.floor(listedOffsetRef.current / MESSAGE_PAGE_SIZE);
-                const more = await listConversations(activeMailboxUid, {
-                    folderUid,
-                    filter: effectiveFilter,
-                    page,
-                    limit: MESSAGE_PAGE_SIZE,
-                });
+                const more = await listConversations(activeMailboxUid, conversationParams(page));
                 if (!isCurrentRun()) {
                     return;
                 }
@@ -1053,6 +1081,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         preferences.sortBy,
         preferences.sortOrder,
         effectiveFilter,
+        labelFilterKey,
         folderUid,
         isSearching,
         searchQuery,
@@ -1235,6 +1264,29 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return created.uid;
     }
 
+    /**
+     * Sets every selected message's labels in one bulk update: each ends up with `labelUids`, plus the
+     * ones left partially applied (`keepPartial`) that it already had, plus any label this mailbox no
+     * longer defines - a label the menu couldn't show isn't one the reader chose to remove.
+     *
+     * `bulkUpdateMessages()` rather than `setMessagesLabels()`, which is its one-list-for-everyone special
+     * case: with a partially-applied row each message keeps a *different* list.
+     */
+    function applyLabelsToSelection(labelUids: string[], keepPartial: string[]) {
+        void runBulkAction(
+            (chosen) =>
+                bulkUpdateMessages(
+                    chosen.map((message) => {
+                        const kept = (message.labelUids ?? []).filter(
+                            (uid) => keepPartial.includes(uid) || !mailboxLabels.some((label) => label.uid === uid),
+                        );
+                        return { uid: message.uid, version: message.version, labelUids: [...new Set([...labelUids, ...kept])] };
+                    }),
+                ),
+            false,
+        );
+    }
+
     function moveSelectionToType(type: Folder["type"], name: string) {
         void runBulkAction(async (chosen) => moveMessages(chosen, await resolveFolderOfType(type, name)), true);
     }
@@ -1310,6 +1362,10 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         onCancel={leaveSelectMode}
                         folders={currentFolders}
                         currentFolderUid={folderUid}
+                        labels={mailboxLabels}
+                        mailboxUid={activeMailboxUid}
+                        onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
+                        onApplyLabels={applyLabelsToSelection}
                         onSetRead={(read) => void runBulkAction((chosen) => setMessagesRead(chosen, read), false)}
                         onSetFlagged={(flagged) => void runBulkAction((chosen) => setMessagesFlagged(chosen, flagged), false)}
                         onArchive={() => void runBulkAction(bulkArchive, true)}
@@ -1324,6 +1380,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         sortBy={preferences.sortBy}
                         sortOrder={preferences.sortOrder}
                         filter={preferences.filter}
+                        labelUids={preferences.labelUids}
+                        labels={mailboxLabels}
+                        mailboxUid={activeMailboxUid}
+                        onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
+                        onLabelUidsChange={(nextLabelUids) => updatePreferences({ labelUids: nextLabelUids })}
                         showAsConversations={preferences.showAsConversations}
                         onSortChange={(sortBy, sortOrder) => updatePreferences({ sortBy, sortOrder })}
                         onFilterChange={(filter) => updatePreferences({ filter })}
@@ -1585,6 +1646,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     }}
                     labels={labels}
                     onLabelsChanged={patchListedMessage}
+                    onLabelCreated={(label) => setLabels((prev) => [...prev, label])}
                 />
             </div>
         </div>

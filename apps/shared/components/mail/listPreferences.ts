@@ -17,7 +17,12 @@
  * contexts) - and every write swallows its own failure, so a blocked store only means the preference
  * doesn't survive a reload.
  */
-import { MessageListFilter, MessageListSort, MessageSortOrder } from "@rapidmx/react-shared/mail/mailApi.js";
+import {
+    MAX_MESSAGE_LABEL_FILTER,
+    MessageListFilter,
+    MessageListSort,
+    MessageSortOrder,
+} from "@rapidmx/react-shared/mail/mailApi.js";
 
 const STORAGE_KEY_PREFIX = "rapidmx:mail-list-preferences:";
 
@@ -25,15 +30,24 @@ export interface MailListPreferences {
     sortBy: MessageListSort;
     sortOrder: MessageSortOrder;
     filter: MessageListFilter;
+    /** Labels the list is narrowed to, applied *alongside* `filter` with OR semantics between them: a
+     * message is listed when it carries any one of these. Empty means no label filter at all. Kept per
+     * mailbox because a label uid only means anything inside its own mailbox. */
+    labelUids: string[];
     /** Outlook's "Show as conversations" - the nested conversation list rather than the flat message list. */
     showAsConversations: boolean;
 }
+
+/** How many labels the list may be narrowed to at once. `@rapidmx/restapi` refuses a longer `?labelUids=`
+ * with a 400, so a stored selection is trimmed to the cap rather than sent. */
+export const MAX_LABEL_FILTER_UIDS = MAX_MESSAGE_LABEL_FILTER;
 
 /** `listMessages()`'s own defaults, spelled out: newest received first, nothing filtered out, flat list. */
 export const DEFAULT_MAIL_LIST_PREFERENCES: MailListPreferences = {
     sortBy: "date",
     sortOrder: "desc",
     filter: "all",
+    labelUids: [],
     showAsConversations: false,
 };
 
@@ -109,6 +123,9 @@ export function getMailListPreferences(mailboxUid: string): MailListPreferences 
         sortBy,
         sortOrder: record.sortOrder === "asc" || record.sortOrder === "desc" ? record.sortOrder : defaultSortOrder(sortBy),
         filter,
+        labelUids: Array.isArray(record.labelUids)
+            ? record.labelUids.filter((uid): uid is string => typeof uid === "string").slice(0, MAX_LABEL_FILTER_UIDS)
+            : [],
         showAsConversations: record.showAsConversations === true,
     };
 }

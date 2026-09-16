@@ -4,8 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { Folder, Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import MenuButton, { MenuSectionSpec } from "./MenuButton.js";
+import LabelMenuButton from "./labelMenu.js";
 
 /** The folder types a message can be moved *into* from this bar - Outbox is a transient send queue the
  * server owns, and the non-mail folders (`calendar`/`contacts`/`tasks`/`notes`) aren't message folders at
@@ -22,6 +24,15 @@ export interface MailSelectionBarProps {
     onCancel: () => void;
     folders: Folder[];
     currentFolderUid?: string;
+    /** Every label this mailbox has, for the Apply label action. */
+    labels: Label[];
+    /** The mailbox a label created from Apply label belongs to. */
+    mailboxUid: string;
+    onLabelCreated: (label: Label) => void;
+    /** Sets the selection's labels: every message ends up with `labelUids`, plus whichever of
+     * `keepPartial` it already had (those rows were left partially applied, so each message keeps what
+     * it has). */
+    onApplyLabels: (labelUids: string[], keepPartial: string[]) => void;
     onSetRead: (read: boolean) => void;
     onSetFlagged: (flagged: boolean) => void;
     onArchive: () => void;
@@ -56,6 +67,10 @@ export default function MailSelectionBar({
     onCancel,
     folders,
     currentFolderUid,
+    labels,
+    mailboxUid,
+    onLabelCreated,
+    onApplyLabels,
     onSetRead,
     onSetFlagged,
     onArchive,
@@ -76,6 +91,13 @@ export default function MailSelectionBar({
     const archiveReason = currentType === "archive" ? "These messages are already in Archive" : undefined;
     const junkReason = currentType === "junk" ? "These messages are already in Junk" : undefined;
     const deleteReason = currentType === "deleted_items" ? "These messages are already in Deleted Items" : undefined;
+
+    // A label every selected message already carries starts ticked; one only some of them carry starts
+    // partially applied, and is left exactly as it is unless the reader touches that row.
+    const appliedToAll = labels.filter((label) => !none && selected.every((m) => m.labelUids?.includes(label.uid)));
+    const appliedToSome = labels.filter(
+        (label) => selected.some((m) => m.labelUids?.includes(label.uid)) && !appliedToAll.includes(label),
+    );
 
     const moveSections: MenuSectionSpec[] = [
         {
@@ -128,6 +150,27 @@ export default function MailSelectionBar({
                 >
                     Archive
                 </button>
+                <LabelMenuButton
+                    aria-label="Apply label"
+                    label="Apply label"
+                    className="text-sm"
+                    labels={labels}
+                    mailboxUid={mailboxUid}
+                    onLabelCreated={onLabelCreated}
+                    applied={appliedToAll.map((label) => label.uid)}
+                    partial={appliedToSome.map((label) => label.uid)}
+                    onCommit={onApplyLabels}
+                    busy={busy}
+                    disabled={none || busy}
+                    note={
+                        selected.length === 1
+                            ? "Ticked labels are applied, unticked ones removed."
+                            : "Ticked labels are applied to every selected message and unticked ones removed from all of them; a dash means only some have that label, and leaving it alone keeps it that way."
+                    }
+                    emptyNote="This mailbox has no labels yet."
+                    commit={{ label: "Apply" }}
+                    clear={{ label: "Remove all labels" }}
+                />
                 <MenuButton
                     aria-label="Move to"
                     label="Move to"

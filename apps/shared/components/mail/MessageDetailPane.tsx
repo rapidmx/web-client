@@ -55,6 +55,7 @@ import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
 import { moveLocalEntity } from "../../search/localIndexRpcClient.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import LabelMenuButton from "./labelMenu.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 /** Labels/styling for `specs/end-to-end_encryption.md`'s "Message Security Indicators" table - kept as
@@ -271,6 +272,9 @@ export interface MessageDetailPaneProps {
      * a label — always patches in place, never removes from a caller's list (unlike `onArchived`):
      * changing labels never moves a message between folders. */
     onLabelsChanged?: (updated: Message) => void;
+    /** Handed a label created from the Labels menu, for the caller to add to `labels`. Without it the menu
+     * offers no "New label" row, only the link to where labels are managed. */
+    onLabelCreated?: (label: Label) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -319,6 +323,7 @@ function MessageDetailContent({
     onArchived,
     labels,
     onLabelsChanged,
+    onLabelCreated,
 }: MessageDetailPaneProps & { message: Message }) {
     // A copy re-read from the server after an Outbox action was refused (409/403) or a send lease ran out - see
     // `reloadMessage()`. A prop copy newer by `version` wins; an equal-version reload is kept, since claiming a send
@@ -333,8 +338,7 @@ function MessageDetailContent({
     const [canceling, setCanceling] = useState(false);
     const [archiving, setArchiving] = useState(false);
     const [archiveError, setArchiveError] = useState<string | null>(null);
-    const [labelsOpen, setLabelsOpen] = useState(false);
-    const [togglingLabelUid, setTogglingLabelUid] = useState<string | null>(null);
+    const [savingLabels, setSavingLabels] = useState(false);
     const [labelsError, setLabelsError] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     // Kept separate from `error` (the Recall flow's own state) since this renders inline in the main
@@ -689,33 +693,26 @@ function MessageDetailContent({
         }
     }
 
-    // Only ever invoked from a checkbox in the Labels popover below, which itself only renders once
-    // `message` is loaded — auto-saves on every toggle (no separate "Save" step), computing the full
-    // new `labelUids` set from the message's current one since `setMessageLabels()` replaces the whole
-    // list rather than patching a single entry.
+    // Only ever invoked from the Labels menu below, which itself only renders once `message` is loaded.
+    // Several labels are ticked in the menu and saved together here, in one `setMessageLabels()` call:
+    // that call replaces the whole `labelUids` list rather than patching one entry, so a menu that saved
+    // per tick would send a request (and burn an optimistic-lock `version`) for every single tick.
     //
-    // Toggles are serialized (every checkbox is disabled while one is in flight - React flushes a
-    // discrete input event's state update synchronously, so a second change can't slip in first), and
-    // each one reads the latest known copy (`latestLabelsMessageRef`, never a stale render closure) - so
-    // two quick toggles can never compute their full list, or send their optimistic-lock `version`, from
-    // the same stale snapshot.
-    async function handleToggleLabel(labelUid: string) {
-        setTogglingLabelUid(labelUid);
+    // The list is computed from the newest copy known (`latestLabelsMessageRef`, never a stale render
+    // closure), so a save that follows another still carries the `version` the server last handed back.
+    async function handleApplyLabels(labelUids: string[]) {
+        setSavingLabels(true);
         setLabelsError(null);
         try {
-            // Read through the ref (not this render's closure) so a toggle fired from a not-yet-re-rendered
-            // handler still sees the previous toggle's server response.
             const base = message.version >= latestLabelsMessageRef.current.version ? message : latestLabelsMessageRef.current;
-            const current = base.labelUids ?? [];
-            const next = current.includes(labelUid) ? current.filter((uid) => uid !== labelUid) : [...current, labelUid];
-            const updated = await setMessageLabels(base, next);
+            const updated = await setMessageLabels(base, labelUids);
             latestLabelsMessageRef.current = updated;
             setLabelsMessage(updated);
             onLabelsChanged?.(updated);
         } catch (err) {
             setLabelsError(err instanceof ApiRequestError ? err.message : "Could not update this message's labels.");
         } finally {
-            setTogglingLabelUid(null);
+            setSavingLabels(false);
         }
     }
 
@@ -1050,14 +1047,31 @@ function MessageDetailContent({
                         </Button>
                     )}
                     {labels && labels.length > 0 && (
-                        <Button type="button" variant="secondary" className="!w-auto" onClick={() => setLabelsOpen(true)}>
-                            Labels
-                        </Button>
+                        <LabelMenuButton
+                            aria-label="Labels"
+                            label="Labels"
+                            className="border border-border py-1.5"
+                            labels={labels}
+                            mailboxUid={message.mailboxUid}
+                            onLabelCreated={onLabelCreated}
+                            applied={currentLabelsMessage.labelUids ?? []}
+                            onCommit={(labelUids) => void handleApplyLabels(labelUids)}
+                            busy={savingLabels}
+                            note="Ticked labels are applied to this message and unticked ones removed."
+                            emptyNote="This mailbox has no labels yet."
+                            commit={{ label: "Apply" }}
+                            clear={{ label: "Remove all labels" }}
+                        />
                     )}
                 </div>
                 {archiveError && (
                     <div className="mt-2">
                         <Alert>{archiveError}</Alert>
+                    </div>
+                )}
+                {labelsError && (
+                    <div className="mt-2">
+                        <Alert>{labelsError}</Alert>
                     </div>
                 )}
                 {labels && (currentLabelsMessage.labelUids?.length ?? 0) > 0 && (
@@ -1288,28 +1302,6 @@ function MessageDetailContent({
                         </Button>
                     </div>
                 </div>
-            </Modal>
-            <Modal open={labelsOpen} onClose={() => setLabelsOpen(false)} title="Labels">
-                {labelsError && <Alert>{labelsError}</Alert>}
-                <ul className="flex flex-col gap-1">
-                    {(labels ?? []).map((l) => {
-                        const checked = currentLabelsMessage.labelUids?.includes(l.uid) ?? false;
-                        return (
-                            <li key={l.uid}>
-                                <label className="flex items-center gap-2 py-1.5 px-1 text-sm rounded-sm hover:bg-surface-alt">
-                                    <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        disabled={togglingLabelUid !== null}
-                                        onChange={() => handleToggleLabel(l.uid)}
-                                    />
-                                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: l.color ?? "#6366f1" }} />
-                                    {l.name}
-                                </label>
-                            </li>
-                        );
-                    })}
-                </ul>
             </Modal>
         </div>
     );

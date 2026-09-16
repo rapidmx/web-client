@@ -1950,3 +1950,42 @@ type` for the session - without that, a second Delete creates a *second* Deleted
   (`h-5` label + `py-2` = 36, group label 24, separator 9, note 36, list padding 8) capped at 420.
 - **Deliberately not built** (nothing in the data model backs them): sort by Category/Flag due date/Size/Type, filter
   To me/Mentions me/Has calendar invites, Sweep.
+
+### 2026-09-15 (same pass) — Labels: one multi-select menu for filtering, bulk apply and the reading pane
+
+JP asked for a label filter in the Filter menu, and for Apply Label as both a bulk action and a message-view action -
+all multi-select, with the menu staying open and one command committing.
+
+- **One component, three places.** `labelMenu.tsx` has `useLabelDraft()` (the ticked/partially-applied state, reset
+  every time the menu opens, so dismissing discards), `labelSections()` (the rows, as `MenuSectionSpec[]`, so the same
+  list can be a menu *or* a submenu) and `LabelMenuButton` (the standalone button). Used by Filter > Labels, select
+  mode's Apply label and `MessageDetailPane`'s Labels - so the keyboard handling and the checkmarks are literally the
+  same code.
+- **`MenuButton` grew three things for it:** `keepOpen` (a row that doesn't close the menu - the whole multi-select
+  model), `checked: "mixed"` (ARIA's third state, a dash, for a label only some of a selection carries) and `submenu`
+  (a one-level drill-down with a synthesized "Back to <menu>" row; Arrow Right/Left and Escape-to-parent as ARIA
+  specifies). **Trap:** the roving-focus effect also needs `submenuKey` in its deps - drilling in or out can land on
+  the *same* index in the other level's list, and the button that index means is a different DOM node.
+- **Mixed semantics, and why.** Ticking applies to every selected message, unticking removes from all, and a row left
+  as a dash leaves each message exactly as it is. That is the only rule that lets a mixed selection be edited without
+  silently flattening it. Because each message then ends up with a *different* list, the bulk write is
+  `bulkUpdateMessages()` with a per-message `labelUids` rather than `setMessagesLabels()` (which is its
+  one-list-for-everyone special case). Labels this mailbox no longer defines are preserved too - a label the menu
+  couldn't show isn't one the reader chose to drop.
+- **The reading pane's Labels dialog became this menu.** It used to auto-save on every tick (a PUT and an
+  optimistic-lock `version` per tick); it now drafts and saves once. `latestLabelsMessageRef` stays, so a second save
+  still carries the `version` the first came back with.
+- **The filter's own labels come from the open mailbox** (`mailboxLabels`, fetched for `activeMailboxUid`), not the
+  existing `labels` state, which follows the *selected message's* mailbox and in search/aggregate views can be a
+  different one whose labels must not be offered as a filter here.
+- **Creating a label from a menu** goes through `NewLabelDialog` (also in `labelMenu.tsx`): the "New label" row closes
+  the menu and opens it, because a `role="menu"` has nowhere to put a text field. It asks only for a name (colour is
+  Settings > Labels' business) and hands the created `Label` back so the owner can extend its own list -
+  `apps/www/index.tsx` for the toolbar/selection bar, `MessageDetailPane`'s caller for the reading pane. A "Manage
+  labels..." row links to `/settings/labels` either way.
+- **Server contract:** `?labelUids=a,b` (comma-separated, OR, capped at 20, combinable with `filter`/sort/paging).
+  Built first against the documented contract, since `listMessages()` builds a fixed query and would have dropped the
+  param; react-shared 1c2e38e then landed `labelUids` on `MessageListParams`/`ConversationListParams` and exported
+  `MAX_MESSAGE_LABEL_FILTER`, so the two local `LabelFilter*Params` aliases are gone and `MAX_LABEL_FILTER_UIDS` in
+  `listPreferences.ts` re-exports the package's cap rather than repeating the number. An empty selection is left out
+  of the query entirely rather than sent as `labelUids=`.

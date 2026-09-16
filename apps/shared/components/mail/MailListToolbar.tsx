@@ -2,10 +2,12 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React from "react";
+import React, { useState } from "react";
 import { HiOutlineAdjustmentsHorizontal, HiOutlineBarsArrowDown, HiOutlineCheckCircle } from "react-icons/hi2";
 import { MessageListFilter, MessageListSort, MessageSortOrder } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import MenuButton, { MenuSectionSpec } from "./MenuButton.js";
+import { NewLabelDialog, labelSections, useLabelDraft } from "./labelMenu.js";
 import {
     MAIL_LIST_CLASSIFICATION_FILTERS,
     MAIL_LIST_FILTERS,
@@ -18,6 +20,15 @@ export interface MailListToolbarProps {
     sortBy: MessageListSort;
     sortOrder: MessageSortOrder;
     filter: MessageListFilter;
+    /** The labels the list is currently narrowed to - any of them, not all. */
+    labelUids: string[];
+    /** Every label this mailbox has, for the Filter menu's own Labels submenu. */
+    labels: Label[];
+    onLabelUidsChange: (labelUids: string[]) => void;
+    /** The mailbox a label created from the Filter menu belongs to. */
+    mailboxUid: string;
+    /** Handed a label just created from the Filter menu, for the caller to add to `labels`. */
+    onLabelCreated: (label: Label) => void;
     showAsConversations: boolean;
     onSortChange: (sortBy: MessageListSort, sortOrder: MessageSortOrder) => void;
     onFilterChange: (filter: MessageListFilter) => void;
@@ -68,6 +79,11 @@ export default function MailListToolbar({
     sortBy,
     sortOrder,
     filter,
+    labelUids,
+    labels,
+    onLabelUidsChange,
+    mailboxUid,
+    onLabelCreated,
     showAsConversations,
     onSortChange,
     onFilterChange,
@@ -84,6 +100,18 @@ export default function MailListToolbar({
 }: MailListToolbarProps) {
     const activeFilter = filterLabel(filter);
     const orderLabels = SORT_ORDER_LABELS[sortBy];
+    // The label picks are drafted while the Filter menu is open and applied in one go, so narrowing to
+    // three labels is one refetch rather than three.
+    const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+    const [creatingLabel, setCreatingLabel] = useState(false);
+    const labelDraft = useLabelDraft(labelUids, [], filterMenuOpen);
+    const chosenLabelName = labels.find((l) => l.uid === labelUids[0])?.name;
+    // What the button says it is set to: the named filter, the labels, or both.
+    const activeParts = [
+        ...(activeFilter ? [activeFilter] : []),
+        ...(labelUids.length === 1 ? [chosenLabelName ?? "1 label"] : labelUids.length > 1 ? [`${labelUids.length} labels`] : []),
+    ];
+    const filterButtonLabel = activeParts.length > 0 ? `Filter: ${activeParts.join(", ")}` : "Filter";
 
     const filterSections: MenuSectionSpec[] = [
         {
@@ -112,6 +140,29 @@ export default function MailListToolbar({
             })),
         });
     }
+
+    filterSections.push({
+        key: "labels",
+        items: [
+            {
+                key: "labels",
+                label: labelUids.length > 0 ? `Labels (${labelUids.length})` : "Labels",
+                description: "Show only messages with the labels you pick",
+                // A submenu rather than another group: a mailbox can have far more labels than the rest of
+                // this menu has rows, and they are picked several at a time rather than one instead of another.
+                submenu: labelSections({
+                    labels,
+                    state: labelDraft,
+                    note: "Shows messages with any of the ticked labels.",
+                    emptyNote: "This mailbox has no labels yet.",
+                    commit: { label: "Apply labels", onSelect: () => onLabelUidsChange(labelDraft.draft), disabled: !labelDraft.dirty },
+                    onCreate: () => setCreatingLabel(true),
+                    // Clearing the label filter is worth doing in one step, so this applies straight away.
+                    clear: { label: "Clear labels", keepOpen: false, disabled: labelUids.length === 0, onSelect: () => onLabelUidsChange([]) },
+                }),
+            },
+        ],
+    });
 
     const sortSections: MenuSectionSpec[] = [
         {
@@ -158,10 +209,17 @@ export default function MailListToolbar({
 
     return (
         <div className="flex items-center gap-0.5 px-1.5 py-1 border-b border-border">
+            <NewLabelDialog
+                open={creatingLabel}
+                onClose={() => setCreatingLabel(false)}
+                mailboxUid={mailboxUid}
+                onCreated={onLabelCreated}
+            />
             <MenuButton
-                aria-label={activeFilter ? `Filter: ${activeFilter}` : "Filter"}
-                label={activeFilter ? `Filter: ${activeFilter}` : "Filter"}
+                aria-label={filterButtonLabel}
+                label={filterButtonLabel}
                 icon={<HiOutlineAdjustmentsHorizontal size={16} aria-hidden="true" className="shrink-0 text-text-muted" />}
+                onOpenChange={setFilterMenuOpen}
                 sections={filterSections}
                 disabled={filterDisabled}
                 title={filterDisabled ? filterDisabledReason : undefined}

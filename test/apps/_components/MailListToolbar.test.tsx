@@ -8,18 +8,37 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import MailListToolbar from "../../../apps/shared/components/mail/MailListToolbar.js";
 
+function labelFixture(uid: string, name: string, color?: string) {
+    return {
+        uid,
+        version: 0,
+        dateCreated: "2026-01-01T00:00:00.000Z",
+        dateModified: "2026-01-01T00:00:00.000Z",
+        mailboxUid: "mb1",
+        name,
+        color,
+    };
+}
+
+const LABELS = [labelFixture("l1", "Invoices", "#ff0000"), labelFixture("l2", "Travel")];
+
 function renderToolbar(props: Partial<React.ComponentProps<typeof MailListToolbar>> = {}) {
     const handlers = {
         onSortChange: vi.fn(),
         onFilterChange: vi.fn(),
         onShowAsConversationsChange: vi.fn(),
         onSelectModeChange: vi.fn(),
+        onLabelUidsChange: vi.fn(),
+        onLabelCreated: vi.fn(),
     };
     render(
         <MailListToolbar
             sortBy="date"
             sortOrder="desc"
             filter="all"
+            labelUids={[]}
+            labels={LABELS}
+            mailboxUid="mb1"
             showAsConversations={false}
             selectMode={false}
             offerClassificationFilters={false}
@@ -152,6 +171,79 @@ describe("MailListToolbar", () => {
         expect(screen.getByRole("menuitemradio", { name: "Oldest on top" })).toBeDisabled();
         expect(screen.getByRole("menuitemcheckbox", { name: /^Show as conversations/ })).toBeEnabled();
         expect(screen.getByText("Search results are ranked by relevance rather than sorted.")).toBeInTheDocument();
+    });
+
+    it("narrows the list to several labels at once, from the Filter menu's own Labels submenu", async () => {
+        const user = userEvent.setup();
+        const { onLabelUidsChange } = renderToolbar();
+
+        await user.click(screen.getByRole("button", { name: "Filter" }));
+        await user.click(screen.getByRole("menuitem", { name: /^Labels/ }));
+
+        expect(screen.getByRole("menuitemcheckbox", { name: "Invoices" })).toBeInTheDocument();
+        expect(screen.getByText("Shows messages with any of the ticked labels.")).toBeInTheDocument();
+        await user.click(screen.getByRole("menuitemcheckbox", { name: "Invoices" }));
+        await user.click(screen.getByRole("menuitemcheckbox", { name: "Travel" }));
+        await user.click(screen.getByRole("menuitem", { name: "Apply labels" }));
+
+        expect(onLabelUidsChange).toHaveBeenCalledWith(["l1", "l2"]);
+    });
+
+    it("names the chosen labels on the Filter button, alongside any named filter", () => {
+        const { unmount } = render(
+            <MailListToolbar
+                sortBy="date"
+                sortOrder="desc"
+                filter="all"
+                labelUids={["l1"]}
+                labels={LABELS}
+                mailboxUid="mb1"
+                showAsConversations={false}
+                selectMode={false}
+                offerClassificationFilters={false}
+                onSortChange={vi.fn()}
+                onFilterChange={vi.fn()}
+                onShowAsConversationsChange={vi.fn()}
+                onSelectModeChange={vi.fn()}
+                onLabelUidsChange={vi.fn()}
+                onLabelCreated={vi.fn()}
+            />,
+        );
+        expect(screen.getByRole("button", { name: "Filter: Invoices" })).toBeInTheDocument();
+        unmount();
+
+        renderToolbar({ filter: "unread", labelUids: ["l1", "l2"] });
+        expect(screen.getByRole("button", { name: "Filter: Unread, 2 labels" })).toBeInTheDocument();
+    });
+
+    it("falls back to a count for a chosen label this mailbox no longer has", () => {
+        renderToolbar({ labelUids: ["gone"] });
+        expect(screen.getByRole("button", { name: "Filter: 1 label" })).toBeInTheDocument();
+    });
+
+    it("clears the label filter in one step", async () => {
+        const user = userEvent.setup();
+        const { onLabelUidsChange } = renderToolbar({ labelUids: ["l1"] });
+
+        await user.click(screen.getByRole("button", { name: "Filter: Invoices" }));
+        await user.click(screen.getByRole("menuitem", { name: /^Labels/ }));
+        await user.click(screen.getByRole("menuitem", { name: "Clear labels" }));
+
+        expect(onLabelUidsChange).toHaveBeenCalledWith([]);
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    });
+
+    it("says so when the mailbox has no labels to filter by", async () => {
+        const user = userEvent.setup();
+        renderToolbar({ labels: [] });
+
+        await user.click(screen.getByRole("button", { name: "Filter" }));
+        await user.click(screen.getByRole("menuitem", { name: /^Labels/ }));
+
+        expect(screen.getByText("This mailbox has no labels yet.")).toBeInTheDocument();
+        // Still a way to make one, and a way to the page that manages them.
+        expect(screen.getByRole("menuitem", { name: "New label…" })).toBeInTheDocument();
+        expect(screen.getByRole("menuitem", { name: "Manage labels…" })).toBeInTheDocument();
     });
 
     it("disables Filter with a reason", () => {

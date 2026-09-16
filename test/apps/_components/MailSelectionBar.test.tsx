@@ -43,6 +43,20 @@ function folderFixture(uid: string, name: string, type: string) {
     };
 }
 
+function labelFixture(uid: string, name: string, color?: string) {
+    return {
+        uid,
+        version: 0,
+        dateCreated: "2026-01-01T00:00:00.000Z",
+        dateModified: "2026-01-01T00:00:00.000Z",
+        mailboxUid: "mb1",
+        name,
+        color,
+    };
+}
+
+const LABELS = [labelFixture("l1", "Invoices", "#ff0000"), labelFixture("l2", "Travel")];
+
 const FOLDERS = [
     folderFixture("f1", "Inbox", "inbox"),
     folderFixture("f2", "Junk Email", "junk"),
@@ -62,6 +76,8 @@ function renderBar(props: Partial<React.ComponentProps<typeof MailSelectionBar>>
         onMoveTo: vi.fn(),
         onReportJunk: vi.fn(),
         onDelete: vi.fn(),
+        onApplyLabels: vi.fn(),
+        onLabelCreated: vi.fn(),
     };
     const listed = [messageFixture("m1"), messageFixture("m2")];
     render(
@@ -70,6 +86,8 @@ function renderBar(props: Partial<React.ComponentProps<typeof MailSelectionBar>>
             listed={listed}
             folders={FOLDERS}
             currentFolderUid="f1"
+            labels={LABELS}
+            mailboxUid="mb1"
             busy={false}
             error={null}
             {...handlers}
@@ -126,6 +144,45 @@ describe("MailSelectionBar", () => {
         expect(handlers.onArchive).toHaveBeenCalled();
         expect(handlers.onReportJunk).toHaveBeenCalled();
         expect(handlers.onDelete).toHaveBeenCalled();
+    });
+
+    it("applies several labels to the whole selection at once", async () => {
+        const user = userEvent.setup();
+        const handlers = renderBar();
+
+        await user.click(screen.getByRole("button", { name: "Apply label" }));
+        await user.click(screen.getByRole("menuitemcheckbox", { name: "Invoices" }));
+        await user.click(screen.getByRole("menuitemcheckbox", { name: "Travel" }));
+        await user.click(screen.getByRole("menuitem", { name: "Apply" }));
+
+        expect(handlers.onApplyLabels).toHaveBeenCalledWith(["l1", "l2"], []);
+    });
+
+    it("shows a label only some of the selection carries as partially applied, and says what Apply does", async () => {
+        const listed = [
+            { ...messageFixture("m1"), labelUids: ["l1", "l2"] },
+            { ...messageFixture("m2"), labelUids: ["l1"] },
+        ];
+        const user = userEvent.setup();
+        renderBar({ selected: listed, listed });
+
+        await user.click(screen.getByRole("button", { name: "Apply label" }));
+
+        expect(screen.getByRole("menuitemcheckbox", { name: "Invoices" })).toHaveAttribute("aria-checked", "true");
+        expect(screen.getByRole("menuitemcheckbox", { name: "Travel" })).toHaveAttribute("aria-checked", "mixed");
+        expect(screen.getByText(/a dash means only some have that label/)).toBeInTheDocument();
+    });
+
+    it("words the note for a single selected message", async () => {
+        const user = userEvent.setup();
+        renderBar();
+        await user.click(screen.getByRole("button", { name: "Apply label" }));
+        expect(screen.getByText("Ticked labels are applied, unticked ones removed.")).toBeInTheDocument();
+    });
+
+    it("disables Apply label with nothing selected", () => {
+        renderBar({ selected: [] });
+        expect(screen.getByRole("button", { name: "Apply label" })).toBeDisabled();
     });
 
     it("moves to another folder of this mailbox, never to the one being viewed or to Outbox", async () => {

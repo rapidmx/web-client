@@ -21,12 +21,19 @@ describe("listPreferences", () => {
     });
 
     it("round-trips a saved preference, per mailbox", () => {
-        setMailListPreferences("mb1", { sortBy: "subject", sortOrder: "asc", filter: "unread", showAsConversations: true });
+        setMailListPreferences("mb1", {
+            sortBy: "subject",
+            sortOrder: "asc",
+            filter: "unread",
+            labelUids: ["l1", "l2"],
+            showAsConversations: true,
+        });
 
         expect(getMailListPreferences("mb1")).toEqual({
             sortBy: "subject",
             sortOrder: "asc",
             filter: "unread",
+            labelUids: ["l1", "l2"],
             showAsConversations: true,
         });
         expect(getMailListPreferences("mb2")).toEqual(DEFAULT_MAIL_LIST_PREFERENCES);

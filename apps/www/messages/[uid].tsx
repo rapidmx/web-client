@@ -95,6 +95,7 @@ function MessageDetailContent({ uid }: { uid: string }) {
             onArchived={setMessage}
             labels={labels}
             onLabelsChanged={setMessage}
+            onLabelCreated={(label) => setLabels((prev) => [...prev, label])}
         />
     );
 }
