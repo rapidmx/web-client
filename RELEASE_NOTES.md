@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.7.0
 
 Needs `@rapidmx/react-shared` with `mail/directoryApi.js`, `mail/messageBodySanitizer.js`, `composeQuoting.js`'s
 `buildComposeBodyHtml()`/`buildReplyRecipients()`/`buildReplyThreading()`, `listMessages()`'s

@@ -7,6 +7,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-17
+
+### Added
+- Added an embedded mode to PluginsManager, BrandingForm and the encryption, retention and mailbox policy forms, so the setup wizard no longer repeats their page titles and introductions under its step heading
+- Added RecipientInput for Compose's To, Cc and Bcc fields, showing recipients as removable chips and suggesting contacts and server directory entries while typing through react-shared's fetchRecipientSuggestions
+- Added an accessible combobox to the recipient fields with arrow key, Enter, Tab, Escape and mouse selection, a 150 ms debounce, aborted stale requests, contacts listed first, one entry per address and a kind hint on each entry
+- Added recipients.ts to split recipient lists at commas and semicolons outside quoted names and angle brackets, parse and format Name <address> recipients and flag invalid addresses
+- Added MenuButton, an accessible ARIA menu over react-shared's PopoverPortal, with a checkmark on the current choice, roving focus, Enter/Space or Arrow Down to open, arrows and Home/End to move, Escape or Tab to close with focus returning to the trigger, and a click outside to dismiss
+- Added MailSelectionBar and a Select toggle that turns the list into a multi-select: a checkbox per row, the number selected, Select all, Clear and Cancel, and bulk Mark read, Mark unread, Flag, Unflag, Archive, Move to, Report junk and Delete
+- Added labelMenu.tsx, the one multi-select label list behind the Filter menu's Labels submenu, select mode's Apply label and the reading pane's Labels button, so all three tick several labels with the menu staying open and commit them with a single command
+- Added keepOpen, a mixed checked state and one level of submenu to MenuButton, with a synthesized Back row, Arrow Right to open a submenu and Arrow Left or Escape to leave it for its parent menu as ARIA specifies
+- Added inThread to MessageDetailPane, which drops its subject from an h1 to an h3 because a document has one h1 and inside a thread that is the conversation's own subject
+
+### Changed
+- Scan @rapidmx/react-shared's published dist for Tailwind classes, both under this package's node_modules and hoisted beside it in a consumer's node_modules/@rapidmx, instead of a src path that never existed, so Modal, Button, Alert and FormField are styled and dialogs get their backdrop again
+- Head each setup step with a "Step N of 6" eyebrow over its title, mark completed step pills with a check, and show the server settings and branding forms in panels
+- Merge the installed plugins' State and Servers columns into one Status column, show Enable/Disable, Settings and Upgrade as buttons with Change version and Uninstall below, and stack each plugin row on narrow screens
+- Keep the plugin settings dialog's Save and Cancel in view while its settings scroll, lay checkbox help beside the checkbox, and match the admin forms' input styling
+- Test the embedded plugins manager and wizard headings, and closing the plugin settings dialog with its close button, Escape and a backdrop click
+- Document the fix and the browser screenshot workflow in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Send recipients typed or picked as Name <address> with their display name instead of as the address, and run key discovery as soon as a suggestion is picked
+- Commit typed recipients as chips on a separator, Enter, paste or leaving the field, and remove the last chip with Backspace in an empty field
+- Test the recipient input, the recipient parsing and the Compose integration, and read prefilled recipients from chips in the Compose, message and contacts tests
+- Document recipient autocomplete in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Open a reply or forward with the caret on an empty line at the top of the body, above the signature and the quoted original, so what is typed goes above the quote, by seeding the body through react-shared's buildComposeBodyHtml and focusing the editor at the start of the document
+- Focus a new message's To field, or its Subject when a recipient is already prefilled, and never the body
+- Move the caret only once per compose session, so restoring a minimized window doesn't move it again
+- Take the editor's own serialization of the seeded body as the autosave baseline, since TipTap appends a paragraph after a trailing quote and drops attributes its schema doesn't hold on its first transaction, which made an untouched reply count as edited and be autosaved as a plaintext draft
+- Quote the message's full body, loaded by the new loadOriginalMessage: the decrypted or verified content the pane shows, else the server's sanitized HTML body, else the text part of the raw message, with the truncated preview only as a fallback
+- Quote nothing for an encrypted message this device can't open, and never its ciphertext
+- Start a reply to or forward of an encrypted message with encryption requested, so a decrypted quote is never saved as a plaintext draft and can't go out unencrypted without an explicit choice
+- Leave the replying mailbox's own address and aliases out of Reply All's To and Cc, repeat no address, carry no Bcc recipient over and keep display names, so a reply no longer comes back to the sender
+- Recover the original To and Cc for Reply All from a verified message's protected headers or the raw message's own headers, since a delivered message records only the envelope recipient
+- Reply to the original recipients, rather than back to itself, for a message the mailbox sent
+- Sanitize a quoted body with react-shared's messageBodySanitizer, which MessageDetailPane's own purifier moved into, and indent the quote in the compose editor
+- Disable Reply, Reply All and Forward while the body to quote loads
+- Test the caret and focus behaviour, the untouched reply, the quoted body sources, the encrypted reply and every reply recipient case
+- Document the reply and forward changes in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Replace the mail list's "By date / By conversation" and "All / Focused / Other" tab rows with an Outlook-style toolbar - a Filter menu, a Sort menu and a Select toggle - keeping the Focused/Other tabs as a shortcut into the same filter
+- Sort the whole folder server-side by date, date sent, from, subject, importance or flag status, each offering the order that reads naturally for it, and reset the direction when the key changes rather than carrying Date's newest-first over to Subject
+- Filter the whole folder server-side by all, unread, read, flagged or has attachments, plus Focused and Other in an Inbox - one filter at a time, which is all listMessages() accepts, and the menu says so
+- Ask the server for the Focused or Other half of the Inbox instead of filtering the loaded page in the browser, which was wrong for every page after the first
+- Grey out the sort keys, but not the menu that carries "Show as conversations", while a search, an aggregate view or the conversation list is what decides the order
+- Remember the sort, filter and conversation choice per mailbox in localStorage, read while rendering so the very first listing already uses them
+- Delete by moving to Deleted Items, never through the collection DELETE that truncates a folder, and create Deleted Items, Junk or Archive on demand for a mailbox that has none yet, remembering what was created so a second delete doesn't create a second folder
+- Reload the list, and say that some messages may already have changed, when a bulk update is rejected - it is applied element by element and stops at the first failure
+- Replace the flat "By conversation" list with nested conversation rows showing participants, subject, message count, unread count, attachment and flag hints and the latest message's preview, expanding through their own chevron into the conversation's own messages, fetched once with listConversationMessages
+- Open a conversation's latest message from its row and that message from a child row, and remove ConversationThreadPane, whose merged thread pane showed the same messages the list now lists
+- Scope the conversation list to the selected folder and the current filter, and page it with the same sentinel the message list uses
+- Clear localStorage between tests, since jsdom keeps one per file and a preference a test left behind silently became the next test's starting state
+- Test the toolbar menus, their keyboard support and their persistence, the server-driven Focused/Other split, select mode and each bulk action including a rejected one, and conversation rendering, expansion and paging
+- Document the mail list overhaul in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Filter the list by label from a Labels submenu of the Filter menu, ticking as many as wanted and applying them together as one request, with a message listed when it carries any of them, the Filter button naming what was picked and Clear labels dropping the filter in one step
+- Remember the chosen labels per mailbox alongside the sort, filter and conversation preference, and leave an empty selection out of the query entirely rather than sending it empty
+- Take the labelUids parameter and its MAX_MESSAGE_LABEL_FILTER cap from react-shared now that both have landed, so the stored selection is trimmed to the same number the server refuses a longer list with
+- Apply labels to a whole selection from select mode, writing each message's own resulting list in one bulk update rather than one identical list for every message, so a label only some of them carry can be left exactly as it is
+- Show a label only part of a selection carries as partially applied, with a dash and aria-checked="mixed", and say what Apply does to the rest: ticking applies to every selected message, unticking removes from all, and leaving the dash alone keeps each message as it is
+- Preserve labels this mailbox no longer defines, which the menu couldn't show and the reader therefore never chose to remove
+- Replace the reading pane's Labels dialog, which saved a request and burned an optimistic-lock version on every single tick, with the same menu saving once
+- Create a label from any of the label menus through NewLabelDialog, which the New label row opens because a role="menu" has nowhere to put a text field, and link to Settings > Labels for renaming, recolouring and deleting
+- Key MenuButton's roving-focus effect on the open submenu too, since drilling in or out can land on the same index in the other level's list, where that index means a different button
+- Size a menu's fixed popup box from the level actually shown rather than always from the top level, so a submenu no longer stands in the taller box its parent menu needed
+- Give a note as many lines as it wraps to at the width the menu is drawn at, instead of assuming two, which cut the last rows off a label menu whose note explains what a partially-applied label does
+- Read the Filter menu's labels from the open mailbox rather than from the selected message's, which in search and aggregate views can be another mailbox whose labels must not be offered as a filter here
+- Test the shared label menu, its draft and partially-applied semantics, label filtering end to end, the bulk apply over a mixed selection, a rejected bulk label update refetching, and creating a label from the menu
+- Document the label work in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Open a conversation as the whole thread in the reading pane rather than the single message its row stands for, bringing back ConversationThreadPane - a parent row opens it at the newest message, a child row at that message, so picking 5 of 10 opens the thread at 5 of 10
+- Expand every message from the one that was opened through to the newest and collapse everything older to a one-line summary of its sender, date and preview, which means opening the newest message shows exactly that message expanded and opening the oldest shows the whole thread
+- Give each message's header a button carrying aria-expanded and aria-controls, so the run can be changed from the keyboard, and hand focus to the message the thread was opened at
+- Render every expanded message as a MessageDetailPane of its own instead of reimplementing it, so the signature and verification badges, the verification-seal and decryption behaviour, the labels chips and menu, the attachments and Reply, Reply All, Forward and Archive are identical to the single-message pane and each acts on the message it belongs to
+- Mount nothing for a collapsed message, whose body iframe, attachments request and mark-as-read would otherwise all be paid for up front in a long thread
+- Scroll to the opened message's own element with scrollIntoView block nearest, which moves the least that brings it into view and nothing at all when it is already there, rather than computing an offset from row heights that aren't known until the messages above it have been laid out
+- Put a message whose header was just clicked back where it was on screen afterwards, measured on whichever ancestor actually scrolls, so expanding a message above the one being read doesn't shove it off the screen
+- Sit out the render that has a new conversation with the previous one's messages still in state, or the thread anchors on a message from another conversation and scrolls to a row that is about to unmount
+- Key the expansion run on the conversation and the opened message in a ref, since the thread arrives after the click that selected one of its messages and a patched copy would otherwise re-expand what the reader had just collapsed
+- Load a thread with listConversationMessages in pages of 100 up to 500 messages, which is also the number the server groups into a conversation at most, and say which messages are shown if it ever stops there
+- Keep the message list in step with the thread: a newer copy from marking read, labelling, classifying or recalling patches the listed row and the conversation's child row, and archiving or sending a scheduled message back to Drafts removes it from both
+- Wrap the reading pane's action row, which at the width the pane has beside the message list is six controls on one line
+- Test opening at the newest message, opening at a child, the expanded-and-collapsed rule including the oldest message, the scroll and focus, per-message actions, the paging and its cap, and every response that lands after the reader has moved on
+- Document the thread pane in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Open a mailbox nobody has arranged yet on Focused and shown as conversations, the way Outlook does out of the box, while honouring a stored arrangement exactly as it was - a stored flat list or a stored All is a choice someone made, and only a record that never carried the field falls back to the new default
+- Enable Select over the conversation list, which was greyed out whenever conversations were shown and, with them now on by default, therefore always
+- Tick whole conversations in select mode, resolving each ticked conversation to its own messages with listConversationMessages() as it is ticked and caching them per conversation, so the selection bar and every bulk action keep taking the Message[] they always took
+- Act only on the messages of a ticked conversation that are in the folder being listed, never on the Sent Items copy of a reply that list never showed
+- Reload the conversation list after a bulk action instead of patching a row, since a conversation row is a summary of its messages - its count, unread count, participants and preview all move when part of it changes
+- Count what was ticked in the selection bar through MailSelectionBar's new totals ("3 conversations selected") while what the actions act on stays the messages, and hold those actions while a tick's own fetch is still in flight
+- Untick a whole batch, saying why, when any of its conversations' messages can't be loaded, rather than acting on the part of a selection that happened to arrive
+- Grey out Select, each with its own reason, only for an aggregate view, a folder still loading and a list with no rows to tick
+- Fill the reading pane with the message body, which inside a thread sat in a 150px box with its own scrollbar - an iframe's own default height, since flex-1 there has no flex column to grow in
+- Give a message in a thread a body two thirds of the window tall rather than sizing it to its content, which would need a script inside a frame that deliberately runs none because it renders mail from strangers
+- Replace Reply, Reply All, Forward, Archive and Move to Other with icon buttons keeping each action's name as both its tooltip and its accessible name, showing the name beside the icon on a wide window and icons alone in the ~396px pane beside the message list
+- Draw Reply All as the reply arrow doubled, the conventional glyph, since hi2 has no reply-all icon and nothing else in it means "answer everyone"
+- Ask before moving a message between Focused and Other, carrying "Always move mail from this sender" in the prompt instead of as a loose checkbox parked beside the button, and report a failed move beside the button that would retry it
+- Record the thread a reply, Reply All or forward continues on the draft it creates - buildReplyThreading() through OpenComposeInput, the compose session and createDraft() - so the message is relayed with In-Reply-To and References and is filed into the conversation it answers rather than one of its own, which is what made a thread show as one row per message, each reporting one message
+- Ask for the open mailbox's labels once per view instead of twice, deriving the reading pane's list from the one the toolbar already fetched and only fetching separately for a selected message that belongs to another mailbox
+- List a folder once per view instead of twice, by listing nothing until the shell has resolved which folder to list - in conversation mode the discarded first listing was a mailbox-wide grouping pass - and, in a merged view, until every mailbox's folders have arrived
+- Test the new defaults and that a stored arrangement still wins, conversation select mode end to end including a conversation whose messages can't be loaded and a rejected bulk action, the Select toggle's own states, the selection bar's conversation counting, the move prompt, the body's height, the threading a reply and a forward record, and that one view makes one request of each kind
+- Store the flat, unfiltered arrangement in index.test.tsx's beforeEach, since every test there was written against the list an unconfigured mailbox used to open on
+- Document the round in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Draw the reading pane's Reply, Reply All, Forward, Archive and Move to Other as icons alone at every width, rather than showing each action's name beside its glyph on a wide window, keeping the name as both the tooltip and the accessible name
+- Draw Select as an outlined rounded square with no word beside it, the way Outlook draws its own "select items" command, keeping "Select" as its tooltip and accessible name and giving the pressed state its own background so it reads next to a greyed-out one
+- Fill the reading pane with the message body at any window size, in a thread and out of one, by resolving the height down the flex chain from the window instead of giving a message in a thread two thirds of the viewport
+- Give an expanded message in a thread a row as tall as the scrolling list it sits in, which is what a body iframe that deliberately runs no script - it renders mail from strangers - can take a height from
+- Take h-full off the pane inside a thread, since an explicit height opts a flex item out of the stretching that actually sizes it there and Chrome won't resolve that percentage against a parent whose own height came out of the flex algorithm - which left the body back at an iframe's own 150px default
+- Keep h-full for the standalone message route, where the pane is rendered into a block that stretches nothing
+- Order the conversation rows by the sort the reader picked - date, the latest sender, subject or flag status, both ways round - applied to the rows already fetched, since the conversations endpoint takes no sort parameters of its own and pages them by latest activity
+- Grey out Date sent and Importance while conversations are shown, each saying that a thread has neither of its own, rather than reordering the rows by something a thread summary doesn't carry
+- Read a conversation's own messages in the same order sense as the rows, newest first while the list is
+- Stop re-listing the folder when only the order of the conversation rows changes, which fetched the identical page and collapsed whichever conversations the reader had expanded
+- Take a conversation row's unread count down as its messages are read in the thread pane, which reports the unread copy it replaced so a summary can tell a message being read from an already-read message being relabelled
+- Test the icon-only action row and Select toggle, the body's height in a thread and out of one, conversation ordering in both directions with its own messages, the two-tab row and a stored All filter, and the unread count clearing
+- Document the round in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Read the conversation thread pane newest first always, independent of the list's own sort order
+- Expand the opened message together with everything newer than it in that order, and scroll/focus to it correctly
+- Replace the reading pane's Move to Other/Focused action and its per-sender override with a Move to folder picker shared with the bulk action
+- Let the folder picker create a new folder and move into it in one step, refusing an empty, too-long, separator-containing, or duplicate name
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Upgraded react-shared dep
+
+### Removed
+- Removed the All tab, leaving Focused and Other, and leave a remembered All filter exactly as it is - it is still the Filter menu's own first item, so that mailbox still lists the whole Inbox with neither tab pressed
+- Removed the Focused Inbox settings page and its per-sender rules, now that Focused/Other classification is purely automatic
+
 ## [0.6.0] - 2026-09-15
 
 ### Changed
@@ -590,7 +721,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/rapidmx/web-client/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rapidmx/web-client/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rapidmx/web-client/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rapidmx/web-client/compare/v0.3.1...v0.4.0
