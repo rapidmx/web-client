@@ -3,10 +3,15 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { jsonResponse, mockFetch } from "../testUtils.js";
 import MailSelectionBar from "../../../apps/shared/components/mail/MailSelectionBar.js";
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 function messageFixture(uid: string) {
     return {
@@ -73,11 +78,12 @@ function renderBar(props: Partial<React.ComponentProps<typeof MailSelectionBar>>
         onSetRead: vi.fn(),
         onSetFlagged: vi.fn(),
         onArchive: vi.fn(),
-        onMoveTo: vi.fn(),
+        onMoveTo: vi.fn(async () => undefined),
         onReportJunk: vi.fn(),
         onDelete: vi.fn(),
         onApplyLabels: vi.fn(),
         onLabelCreated: vi.fn(),
+        onFolderCreated: vi.fn(),
     };
     const listed = [messageFixture("m1"), messageFixture("m2")];
     render(
@@ -185,31 +191,55 @@ describe("MailSelectionBar", () => {
         expect(screen.getByRole("button", { name: "Apply label" })).toBeDisabled();
     });
 
-    it("moves to another folder of this mailbox, never to the one being viewed or to Outbox", async () => {
+    it("moves to another folder of this mailbox through the same prompt the reading pane opens", async () => {
         const user = userEvent.setup();
         const handlers = renderBar();
 
         await user.click(screen.getByRole("button", { name: "Move to" }));
 
-        expect(screen.queryByRole("menuitem", { name: "Inbox" })).not.toBeInTheDocument();
-        expect(screen.queryByRole("menuitem", { name: "Outbox" })).not.toBeInTheDocument();
-        await user.click(screen.getByRole("menuitem", { name: "Project X" }));
+        // The folder the selection is already in is shown, disabled; Outbox is never a destination.
+        expect(screen.getByRole("button", { name: /^Inbox/ })).toBeDisabled();
+        expect(screen.queryByRole("button", { name: /^Outbox/ })).not.toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: /^Project X/ }));
         expect(handlers.onMoveTo).toHaveBeenCalledWith("f4");
     });
 
-    it("disables Move to, with a note, when there is nowhere else to move", async () => {
+    it("counts what is being moved in the prompt's own title", async () => {
         const user = userEvent.setup();
-        renderBar({ folders: [FOLDERS[0]] });
+        renderBar({ selected: [messageFixture("m1"), messageFixture("m2")] });
 
-        const button = screen.getByRole("button", { name: "Move to" });
-        expect(button).toBeDisabled();
-        expect(button).toHaveAttribute("title", "There is no other folder in this mailbox to move to");
+        await user.click(screen.getByRole("button", { name: "Move to" }));
 
-        // With nothing selected the button is disabled for that reason too, so the note is asserted through
-        // a rendering of the menu itself.
-        renderBar({ folders: [FOLDERS[0], folderFixture("f9", "Archive", "archive")] });
-        await user.click(screen.getAllByRole("button", { name: "Move to" })[1]);
-        expect(screen.getByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
+        expect(screen.getByRole("dialog", { name: "Move 2 messages to" })).toBeInTheDocument();
+    });
+
+    it("creates a folder from the prompt and moves the selection into it", async () => {
+        const created = { uid: "f7", mailboxUid: "mb1", name: "Trips", type: "user", version: 0 };
+        const fetchMock = mockFetch((url, init) =>
+            url === "/api/mail/folders" && init?.method === "POST" ? jsonResponse(200, created) : undefined,
+        );
+        const user = userEvent.setup();
+        const handlers = renderBar();
+
+        await user.click(screen.getByRole("button", { name: "Move to" }));
+        await user.click(screen.getByRole("button", { name: /New folder/ }));
+        await user.type(screen.getByLabelText("New folder name"), "Trips");
+        await user.click(screen.getByRole("button", { name: "Create and move" }));
+
+        await waitFor(() => expect(handlers.onMoveTo).toHaveBeenCalledWith("f7"));
+        expect(handlers.onFolderCreated).toHaveBeenCalledWith(expect.objectContaining({ uid: "f7" }));
+        expect(fetchMock.mock.calls.some(([url, init]: any) => url === "/api/mail/folders" && init?.method === "POST")).toBe(true);
+    });
+
+    it("says so in the prompt when this mailbox has nowhere else to move to", async () => {
+        const user = userEvent.setup();
+        renderBar({ folders: [folderFixture("f9", "Outbox", "outbox")] });
+
+        await user.click(screen.getByRole("button", { name: "Move to" }));
+
+        expect(screen.getByText("This mailbox has no folders to move to yet.")).toBeInTheDocument();
+        // Still offered: a mailbox with no folder to move to is exactly when one has to be created.
+        expect(screen.getByRole("button", { name: /New folder/ })).toBeInTheDocument();
     });
 
     it("disables the actions whose target folder is the one already being viewed", () => {

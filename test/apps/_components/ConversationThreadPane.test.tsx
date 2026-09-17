@@ -17,7 +17,6 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         message,
         attachments,
         isSentItems,
-        isInbox,
         isOutbox,
         draftsFolderUid,
         inThread,
@@ -28,7 +27,6 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         message: { uid: string; labelUids?: string[] } | null;
         attachments: { filename: string }[];
         isSentItems?: boolean;
-        isInbox?: boolean;
         isOutbox?: boolean;
         draftsFolderUid?: string;
         inThread?: boolean;
@@ -38,7 +36,7 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
     }) => (
         <div data-testid={`detail-${message!.uid}`}>
             body:{message!.uid} attachments:{attachments.map((a) => a.filename).join(",")} sentItems:
-            {String(!!isSentItems)} inbox:{String(!!isInbox)} outbox:{String(!!isOutbox)} drafts:
+            {String(!!isSentItems)} outbox:{String(!!isOutbox)} drafts:
             {draftsFolderUid ?? "unset"} inThread:{String(!!inThread)} labels:{(labels ?? []).length}
             <button type="button" onClick={() => onArchived!({ ...message, folderUid: "f-archive" })}>
                 archive-{message!.uid}
@@ -144,6 +142,26 @@ function header(sender: string) {
     return screen.getByRole("button", { name: new RegExp(`^${sender}`) });
 }
 
+/** The uids of the thread's entries, in the order the pane actually renders them. */
+function renderedOrder(): string[] {
+    return screen
+        .getAllByRole("button")
+        .map((button) => button.getAttribute("aria-controls"))
+        .filter((controls): controls is string => !!controls?.startsWith("thread-message-"))
+        .map((controls) => controls.replace("thread-message-", ""));
+}
+
+/** Each entry's uid paired with whether it is expanded, in rendered order. */
+function renderedPattern(): [string, string | null][] {
+    return screen
+        .getAllByRole("button")
+        .filter((button) => button.getAttribute("aria-controls")?.startsWith("thread-message-"))
+        .map((button) => [
+            button.getAttribute("aria-controls")!.replace("thread-message-", ""),
+            button.getAttribute("aria-expanded"),
+        ]);
+}
+
 afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -177,6 +195,56 @@ describe("ConversationThreadPane", () => {
         expect(header("Carol")).not.toHaveTextContent("Preview of m3");
         expect(screen.getByRole("heading", { level: 1, name: "Project Zeus" })).toBeInTheDocument();
         expect(screen.getByText("3 messages")).toBeInTheDocument();
+    });
+
+    it("lists the thread newest first, whatever the list it was opened from is sorted by", async () => {
+        // The pane's order is the pane's own - the reading order for mail - not the arrangement the message
+        // list happens to be in, so the message a conversation row stands for is always the top entry.
+        renderThread();
+        await screen.findByTestId("detail-m3");
+
+        expect(renderedOrder()).toEqual(["m3", "m2", "m1"]);
+        // The newest is the one expanded, and it is the entry at the top.
+        expect(renderedPattern()).toEqual([
+            ["m3", "true"],
+            ["m2", "false"],
+            ["m1", "false"],
+        ]);
+    });
+
+    it("expands the opened message and everything above it, collapsing what is below", async () => {
+        renderThread({ selectedUid: "m2" });
+        await screen.findByTestId("detail-m2");
+
+        expect(renderedPattern()).toEqual([
+            ["m3", "true"],
+            ["m2", "true"],
+            ["m1", "false"],
+        ]);
+    });
+
+    it("expands every entry when the oldest - the bottom one - was opened", async () => {
+        renderThread({ selectedUid: "m1" });
+        await screen.findByTestId("detail-m1");
+
+        expect(renderedPattern()).toEqual([
+            ["m3", "true"],
+            ["m2", "true"],
+            ["m1", "true"],
+        ]);
+    });
+
+    it("reverses a paged thread once, so page order never reaches the reader", async () => {
+        // The pages arrive oldest first (and the 500-message cap has to apply in that order - it is the
+        // oldest that are dropped), so the reversal happens after the last page, not per page.
+        const many = Array.from({ length: 120 }, (_, i) => messageFixture(`x${i}`, `Sender${i}`));
+        renderThread({ selectedUid: "x119" }, many);
+        await screen.findByTestId("detail-x119");
+
+        const order = renderedOrder();
+        expect(order[0]).toBe("x119");
+        expect(order[1]).toBe("x118");
+        expect(order[order.length - 1]).toBe("x0");
     });
 
     it("gives an expanded message the height of the list it scrolls in, and no height of its own", async () => {
@@ -221,20 +289,72 @@ describe("ConversationThreadPane", () => {
         expect(screen.queryByTestId("detail-m2")).not.toBeInTheDocument();
     });
 
-    it("scrolls the message it opened at into view and gives it focus", async () => {
-        const scrolled: { element: Element; options: unknown }[] = [];
-        vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element, options: unknown) {
-            scrolled.push({ element: this, options });
-        });
+    it("gives the message it opened at focus, leaving the page alone when nothing inside the pane scrolls", async () => {
+        const intoView = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => undefined);
         renderThread({ selectedUid: "m2" });
 
         await screen.findByTestId("detail-m2");
 
-        // The message's own element, not a computed offset, and only as far as it takes to see it.
-        expect(scrolled).toHaveLength(1);
-        expect(scrolled[0].element).toBe(header("Bob").closest("li"));
-        expect(scrolled[0].options).toEqual({ block: "nearest" });
         expect(document.activeElement).toBe(header("Bob"));
+        // Never `scrollIntoView()`, which scrolls every scrollable ancestor - the window included.
+        expect(intoView).not.toHaveBeenCalled();
+        expect(document.documentElement.scrollTop).toBe(0);
+    });
+
+    /** Makes `node` the element `scrollingAncestor()` resolves to: jsdom has neither styles nor layout. */
+    function makeScroller(node: HTMLElement, top: number, clientHeight: number) {
+        node.style.overflowY = "auto";
+        Object.defineProperty(node, "scrollHeight", { value: 4000, configurable: true });
+        Object.defineProperty(node, "clientHeight", { value: clientHeight, configurable: true });
+        node.getBoundingClientRect = () => ({ top }) as DOMRect;
+    }
+
+    it("scrolls the thread's own list to a message opened below the fold, and nothing else", async () => {
+        const { rerender, container } = renderThread({ selectedUid: "m3" });
+        await screen.findByTestId("detail-m3");
+        const list = container.querySelector("ul") as HTMLElement;
+        makeScroller(list, 100, 500);
+        list.scrollTop = 0;
+        // The oldest message sits 800px below the list's own top - well past its 500px of view.
+        header("Alice").closest("li")!.getBoundingClientRect = () => ({ top: 900, height: 400 }) as DOMRect;
+
+        rerender(
+            <ConversationThreadPane
+                conversation={conversationFixture()}
+                mailboxUid="mb1"
+                selectedUid="m1"
+                folders={FOLDERS}
+                onMessagePatched={vi.fn()}
+                onMessageRemoved={vi.fn()}
+            />,
+        );
+        await screen.findByTestId("detail-m1");
+
+        expect(list.scrollTop).toBe(800);
+        expect(document.documentElement.scrollTop).toBe(0);
+    });
+
+    it("leaves the thread's list where it is when the opened message is already in view", async () => {
+        const { rerender, container } = renderThread({ selectedUid: "m3" });
+        await screen.findByTestId("detail-m3");
+        const list = container.querySelector("ul") as HTMLElement;
+        makeScroller(list, 0, 500);
+        list.scrollTop = 30;
+        header("Alice").closest("li")!.getBoundingClientRect = () => ({ top: 10, height: 100 }) as DOMRect;
+
+        rerender(
+            <ConversationThreadPane
+                conversation={conversationFixture()}
+                mailboxUid="mb1"
+                selectedUid="m1"
+                folders={FOLDERS}
+                onMessagePatched={vi.fn()}
+                onMessageRemoved={vi.fn()}
+            />,
+        );
+        await screen.findByTestId("detail-m1");
+
+        expect(list.scrollTop).toBe(30);
     });
 
     it("re-opens at another message of the same thread without reloading it", async () => {
@@ -342,16 +462,18 @@ describe("ConversationThreadPane", () => {
             return undefined;
         });
 
-        expect(await screen.findByTestId("detail-m2")).toHaveTextContent("attachments:notes.txt");
+        // `findByTestId` resolves the moment the row mounts, which is before its attachments request has
+        // landed - the assertion has to be the thing that retries, or this races under full-suite load.
+        await waitFor(() => expect(screen.getByTestId("detail-m2")).toHaveTextContent("attachments:notes.txt"));
     });
 
     it("tells each message's own pane which folder that message is in", async () => {
         const thread = [messageFixture("m1", "Alice", { folderUid: "f2" }), messageFixture("m2", "Bob")];
         renderThread({ selectedUid: "m1" }, thread);
 
-        expect(await screen.findByTestId("detail-m1")).toHaveTextContent("sentItems:true inbox:false");
+        expect(await screen.findByTestId("detail-m1")).toHaveTextContent("sentItems:true");
         expect(screen.getByTestId("detail-m1")).toHaveTextContent("drafts:f3");
-        expect(screen.getByTestId("detail-m2")).toHaveTextContent("sentItems:false inbox:true");
+        expect(screen.getByTestId("detail-m2")).toHaveTextContent("sentItems:false");
         expect(screen.getByTestId("detail-m2")).toHaveTextContent("inThread:true");
     });
 

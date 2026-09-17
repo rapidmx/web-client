@@ -9,26 +9,25 @@ import {
     HiOutlineArrowUturnRight,
     HiOutlineCheck,
     HiOutlineExclamationTriangle,
-    HiOutlineInbox,
-    HiOutlineInboxArrowDown,
+    HiOutlineFolderArrowDown,
     HiOutlineLockClosed,
 } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attachment,
+    Folder,
     Message,
-    MessageClassification,
     ReceiptType,
     Recipient,
     approveReceipt,
     archiveMessage,
     attachmentContentUrl,
     cancelScheduledSend,
-    classifyMessage,
     declineReceipt,
     getMailbox,
     getMessage,
     getMessageRawContent,
+    moveMessage,
     recallMessage,
     setMessageLabels,
 } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -42,6 +41,7 @@ import {
     replySubject,
 } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import { sanitizeMessageBodyHtml } from "@rapidmx/react-shared/mail/messageBodySanitizer.js";
+import MoveToFolderDialog from "./MoveToFolderDialog.js";
 import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
 import {
     MessageSecurityResult,
@@ -293,18 +293,21 @@ export interface MessageDetailPaneProps {
     /** Called with the server's updated copy (now back in Drafts, `scheduledSendTime` cleared) after
      * successfully canceling a scheduled send. */
     onScheduledSendCanceled?: (updated: Message) => void;
-    /** Whether `message` currently lives in the Inbox — Focused/Other classification is an Inbox-only
-     * concept (`FocusedInboxUtils.classifyMessage()` short-circuits to Focused for every other folder), so
-     * the "Move to Other"/"Move to Focused" control below only renders here, the same
-     * each-caller-computes-its-own-folder-type pattern `isSentItems`/`isOutbox` already use. */
-    isInbox?: boolean;
-    /** Called with the server's updated copy (carrying the new `inferenceClassification`) after a
-     * successful classify — mirrors `onRecalled`'s identical shape. */
-    onClassified?: (updated: Message) => void;
+    /** Every folder of this message's own mailbox, for the Move to prompt's destination list. Absent or
+     * empty simply hides the control — there is nowhere to move to. Each caller already resolves this to
+     * work out `isSentItems`/`isOutbox`/`draftsFolderUid`, so nothing new is fetched for it. */
+    folders?: Folder[];
+    /** Called with the server's updated copy (now in the chosen folder) after a successful Move to. A move
+     * takes the message out of whichever folder is being listed, so callers remove it from their list
+     * rather than patching it — unlike `onClassified`, which this replaces. */
+    onMoved?: (updated: Message) => void;
+    /** A folder created from the Move to prompt, so the caller's own list and the folder sidebar pick it up
+     * without a page load. */
+    onFolderCreated?: (folder: Folder) => void;
     /** Called with the server's updated copy after approving/declining a pending delivery/read receipt —
-     * mirrors `onRecalled`'s identical shape. No gating prop needed (unlike `isSentItems`/`isOutbox`/
-     * `isInbox`): `deliveryReceiptPending`/`readReceiptPending` already live directly on `message` and are
-     * only ever `true` on a real delivered copy, so the banner below is self-gating. */
+     * mirrors `onRecalled`'s identical shape. No gating prop needed (unlike `isSentItems`/`isOutbox`):
+     * `deliveryReceiptPending`/`readReceiptPending` already live directly on `message` and are only ever
+     * `true` on a real delivered copy, so the banner below is self-gating. */
     onReceiptHandled?: (updated: Message) => void;
     /** Called with the server's updated copy (now filed under the mailbox's Archive folder) after a
      * successful archive — mirrors `onRecalled`'s identical shape. Archiving itself is offered for any
@@ -369,8 +372,9 @@ function MessageDetailContent({
     isOutbox,
     draftsFolderUid,
     onScheduledSendCanceled,
-    isInbox,
-    onClassified,
+    folders,
+    onMoved,
+    onFolderCreated,
     onReceiptHandled,
     onArchived,
     labels,
@@ -397,13 +401,7 @@ function MessageDetailContent({
     // Kept separate from `error` (the Recall flow's own state) since this renders inline in the main
     // pane rather than inside a confirmation modal — the two flows never need to share one message.
     const [cancelError, setCancelError] = useState<string | null>(null);
-    const [classifying, setClassifying] = useState(false);
-    const [classifyError, setClassifyError] = useState<string | null>(null);
-    const [alwaysForSender, setAlwaysForSender] = useState(false);
-    // Moving a message between the Focused and Other halves of the Inbox is confirmed first, because the
-    // same step optionally carries "always do this for this sender" - a rule that outlives this one
-    // message and had no business sitting permanently beside the button as a loose checkbox.
-    const [classifyPrompt, setClassifyPrompt] = useState(false);
+    const [movePrompt, setMovePrompt] = useState(false);
     // Names which pending receipt (`"delivery"`/`"read"`) is currently being approved/declined, if any —
     // `deliveryReceiptPending`/`readReceiptPending` can both be true independently, so a single boolean
     // wouldn't distinguish which row's buttons should show a loading state.
@@ -780,22 +778,18 @@ function MessageDetailContent({
         }
     }
 
-    // Only ever invoked from the classification button below, which itself only renders once `message`
-    // is loaded and `isInbox` is true — the non-null assertion reflects the same real invariant as
-    // `handleRecall`/`handleCancelScheduledSend` above.
-    async function handleClassify(classifyAs: MessageClassification) {
-        setClassifying(true);
-        setClassifyError(null);
-        try {
-            const updated = await classifyMessage(message.uid, classifyAs, alwaysForSender);
-            setClassifyPrompt(false);
-            setAlwaysForSender(false);
-            onClassified?.(updated);
-        } catch (err) {
-            setClassifyError(err instanceof ApiRequestError ? err.message : "Could not reclassify this message.");
-        } finally {
-            setClassifying(false);
-        }
+    /**
+     * Moves this message into the folder picked in the Move to prompt. Deliberately *not* caught here:
+     * `MoveToFolderDialog` shows a failure beside the destination that would retry it, and closes only
+     * once the move has actually landed.
+     *
+     * The move is awaited on its own line rather than written as `onMoved?.(await moveMessage(...))` -
+     * an optional call whose callee is absent never evaluates its arguments at all, so a caller that
+     * passes no `onMoved` would have had nothing moved while the prompt closed as if it had.
+     */
+    async function handleMove(folderUid: string) {
+        const updated = await moveMessage(message, folderUid);
+        onMoved?.(updated);
     }
 
     // Only ever invoked from the pending-receipt banner below, which itself only renders once `message`
@@ -857,9 +851,6 @@ function MessageDetailContent({
             : undefined;
 
     const shownSubject = (protectedSubject ?? message.subject) || "(no subject)";
-    /** Which half of the Inbox the Move control would move this message to - the other one from where it
-     * is now (absent `inferenceClassification` means Focused, see `Message`'s own doc comment). */
-    const classifyTarget: MessageClassification = message.inferenceClassification === "other" ? "focused" : "other";
     /**
      * How tall the message body is - the one thing on this pane worth every pixel it can have.
      *
@@ -1140,24 +1131,13 @@ function MessageDetailContent({
                             onClick={handleArchive}
                         />
                     )}
-                    {isInbox &&
-                        (message.inferenceClassification === "other" ? (
-                            <IconAction
-                                icon={<HiOutlineInbox size={16} aria-hidden="true" />}
-                                label="Move to Focused"
-                                busy={classifying}
-                                disabled={classifying}
-                                onClick={() => setClassifyPrompt(true)}
-                            />
-                        ) : (
-                            <IconAction
-                                icon={<HiOutlineInboxArrowDown size={16} aria-hidden="true" />}
-                                label="Move to Other"
-                                busy={classifying}
-                                disabled={classifying}
-                                onClick={() => setClassifyPrompt(true)}
-                            />
-                        ))}
+                    {folders && folders.length > 0 && (
+                        <IconAction
+                            icon={<HiOutlineFolderArrowDown size={16} aria-hidden="true" />}
+                            label="Move to"
+                            onClick={() => setMovePrompt(true)}
+                        />
+                    )}
                     {labels && labels.length > 0 && (
                         <LabelMenuButton
                             aria-label="Labels"
@@ -1322,49 +1302,15 @@ function MessageDetailContent({
                 />
             )}
 
-            <Modal
-                open={classifyPrompt}
-                onClose={() => !classifying && setClassifyPrompt(false)}
-                title={classifyTarget === "other" ? "Move this message to Other?" : "Move this message to Focused?"}
-            >
-                <p className="text-sm text-text-muted mb-4">
-                    {classifyTarget === "other"
-                        ? "It moves out of your Focused Inbox and into Other. It stays in this folder either way - only which half of the Inbox it is listed in changes."
-                        : "It moves into your Focused Inbox. It stays in this folder either way - only which half of the Inbox it is listed in changes."}
-                </p>
-                <label className="flex items-start gap-2 text-sm mb-4">
-                    <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={alwaysForSender}
-                        onChange={(e) => setAlwaysForSender(e.target.checked)}
-                    />
-                    <span>
-                        Always move mail from this sender to {classifyTarget === "other" ? "Other" : "Focused"}
-                    </span>
-                </label>
-                {classifyError && <Alert>{classifyError}</Alert>}
-                <div className="flex gap-3">
-                    <Button
-                        type="button"
-                        className="!w-auto"
-                        loading={classifying}
-                        disabled={classifying}
-                        onClick={() => void handleClassify(classifyTarget)}
-                    >
-                        Move
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        className="!w-auto"
-                        disabled={classifying}
-                        onClick={() => setClassifyPrompt(false)}
-                    >
-                        Cancel
-                    </Button>
-                </div>
-            </Modal>
+            <MoveToFolderDialog
+                open={movePrompt}
+                onClose={() => setMovePrompt(false)}
+                mailboxUid={message.mailboxUid}
+                folders={folders ?? []}
+                currentFolderUid={message.folderUid}
+                onMove={handleMove}
+                onFolderCreated={onFolderCreated}
+            />
             <Modal open={confirming} onClose={() => setConfirming(false)} title="Recall this message?">
                 <p className="text-sm text-text-muted mb-4">
                     This asks every original recipient's mail system to delete their copy, but only if it's

@@ -447,7 +447,7 @@ export default function InboxPage(props: MailShellProps) {
 }
 
 function InboxContent({ userUid }: { userUid?: string }) {
-    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType } = useMailShell();
+    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated } = useMailShell();
     const isMobile = useIsMobile();
     const { requestUnlock } = useUnlockPrompt();
     const [messages, setMessages] = useState<Message[]>([]);
@@ -547,7 +547,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // to span an arbitrary number of mailboxes is out of scope for this pass (see the aggregate-fetch
     // branch below, which the search effect never reaches while `folderUid` is unset).
     const isSearching = !preferences.showAsConversations && searchQuery.length > 0 && !aggregateFolderType;
-    // Focused/Other is an Inbox-only concept (see `MessageDetailPane`'s own `isInbox` doc comment), and
+    // Focused/Other is an Inbox-only concept (`FocusedInboxUtils.classifyMessage()` short-circuits to
+    // Focused for every other folder), and
     // search results are ranked across folders rather than listed from one, so neither tab is offered
     // there. Not offered for an aggregate view either (each mailbox classifies independently; merging
     // that is out of scope).
@@ -1235,7 +1236,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const folders = mailboxFolders.find((mf) => mf.mailbox.uid === selectedMailboxUid)?.folders ?? [];
     const isSentItems = folders.find((f) => f.uid === selectedFolderUid)?.type === "sent_items";
     const isOutbox = folders.find((f) => f.uid === selectedFolderUid)?.type === "outbox";
-    const isInbox = folders.find((f) => f.uid === selectedFolderUid)?.type === "inbox";
     const draftsFolderUid = folders.find((f) => f.type === "drafts")?.uid;
 
     /** What a row actually shows as its subject - the decrypted one where this device recovered it, a
@@ -1522,11 +1522,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         labels={mailboxLabels}
                         mailboxUid={activeMailboxUid}
                         onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
+                        onFolderCreated={onFolderCreated}
                         onApplyLabels={applyLabelsToSelection}
                         onSetRead={(read) => void runBulkAction((chosen) => setMessagesRead(chosen, read), false)}
                         onSetFlagged={(flagged) => void runBulkAction((chosen) => setMessagesFlagged(chosen, flagged), false)}
                         onArchive={() => void runBulkAction(bulkArchive, true)}
-                        onMoveTo={(targetFolderUid) => void runBulkAction((chosen) => moveMessages(chosen, targetFolderUid), true)}
+                        onMoveTo={(targetFolderUid) => runBulkAction((chosen) => moveMessages(chosen, targetFolderUid), true)}
                         onReportJunk={() => moveSelectionToType("junk", "Junk Email")}
                         onDelete={() => moveSelectionToType("deleted_items", "Deleted Items")}
                         busy={bulkBusy || resolvingSelection > 0}
@@ -1810,6 +1811,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         onMessagePatched={patchListedMessage}
                         onMessageRemoved={(updated) => removeListedMessage(updated.uid)}
                         onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
+                        onFolderCreated={onFolderCreated}
                     />
                 ) : (
                 <MessageDetailPane
@@ -1818,10 +1820,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     isSentItems={isSentItems}
                     onRecalled={patchListedMessage}
                     isOutbox={isOutbox}
-                    isInbox={isInbox}
-                    onClassified={patchListedMessage}
                     onReceiptHandled={patchListedMessage}
                     draftsFolderUid={draftsFolderUid}
+                    folders={folders}
+                    onMoved={(updated) => {
+                        // Same reasoning as onArchived below - a move takes the message out of the folder
+                        // being listed, so it leaves the list rather than being patched in place.
+                        removeListedMessage(updated.uid);
+                    }}
+                    onFolderCreated={onFolderCreated}
                     onScheduledSendCanceled={(updated) => {
                         // The message moved out of the currently-viewed Outbox folder (into Drafts)
                         // - unlike a recall, which patches a message in place, this removes it from

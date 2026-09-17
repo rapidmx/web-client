@@ -645,4 +645,59 @@ describe("MailShell", () => {
 
         expect(await screen.findByText("mb-a/f-inbox/1/2")).toBeInTheDocument();
     });
+
+    describe("onFolderCreated()", () => {
+        /** Renders a button that files `folder` into the shell's own tree, plus the folder names it holds. */
+        function FolderProbe({ folder }: { folder: Record<string, unknown> }) {
+            const { mailboxFolders, onFolderCreated } = useMailShell();
+            return (
+                <>
+                    <button type="button" onClick={() => onFolderCreated(folder as never)}>
+                        create
+                    </button>
+                    <span>{`folders:${mailboxFolders.map((mf) => mf.folders.map((f) => f.name).join(",")).join("|")}`}</span>
+                </>
+            );
+        }
+
+        it("adds a folder to its own mailbox's tree, so the sidebar has it with no reload", async () => {
+            const user = userEvent.setup();
+            mockMailboxesAndFolders([mailboxA], [inboxFolder]);
+            render(
+                <MailShell userUid="u1">
+                    <FolderProbe folder={{ uid: "f-new", mailboxUid: "mb-a", name: "Receipts", type: "user" }} />
+                </MailShell>,
+            );
+            await screen.findByText("folders:Inbox");
+
+            await user.click(screen.getByRole("button", { name: "create" }));
+
+            expect(screen.getByText("folders:Inbox,Receipts")).toBeInTheDocument();
+            expect(await screen.findByRole("link", { name: /Receipts/ })).toBeInTheDocument();
+        });
+
+        it("ignores a folder type this sidebar never lists", async () => {
+            const user = userEvent.setup();
+            mockMailboxesAndFolders([mailboxA], [inboxFolder]);
+            render(
+                <MailShell userUid="u1">
+                    <FolderProbe folder={{ uid: "f-cal", mailboxUid: "mb-a", name: "Team calendar", type: "calendar" }} />
+                </MailShell>,
+            );
+            await screen.findByText("folders:Inbox");
+
+            await user.click(screen.getByRole("button", { name: "create" }));
+
+            expect(screen.getByText("folders:Inbox")).toBeInTheDocument();
+        });
+
+        it("does nothing outside a shell, where there is no tree to file it into", async () => {
+            const user = userEvent.setup();
+            render(<FolderProbe folder={{ uid: "f-new", mailboxUid: "mb-a", name: "Receipts", type: "user" }} />);
+
+            await user.click(screen.getByRole("button", { name: "create" }));
+
+            expect(screen.getByText("folders:")).toBeInTheDocument();
+        });
+    });
 });

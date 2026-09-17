@@ -68,10 +68,11 @@ a send that writes a reply's `In-Reply-To`/`References` (all unreleased).
   hints and the latest message's preview - with a chevron that expands it into that conversation's own messages as
   child rows. Unlike the old "By conversation" view, conversations now follow the folder selected in the sidebar and
   honour the current filter, and can be scrolled past the first page.
-- **Opening a conversation opens the whole thread.** The reading pane shows every message in the conversation, oldest
+- **Opening a conversation opens the whole thread.** The reading pane shows every message in the conversation, newest
   at the top, positioned at the one you opened: a conversation row opens it at the newest message, a child row opens it
   at that message (picking 5 of 10 scrolls to 5 of 10). Everything from the message you opened through to the newest is
-  expanded; older ones are a one-line summary - sender, date and preview - that expands when you click it or press
+  expanded - in this order, that message and the entries above it; the older ones below are a one-line summary - sender,
+  date and preview - that expands when you click it or press
   Enter, and expanding one above what you are reading leaves what you are reading where it was on screen. Each message
   keeps its own security badges, labels, attachments and Reply/Reply All/Forward/Archive, acting on that message, and
   anything you do there is reflected in the list. Messages are read in pages of 100, up to 500 for one conversation -
@@ -106,6 +107,25 @@ a send that writes a reply's `In-Reply-To`/`References` (all unreleased).
   resize, because the height is resolved from the window down rather than fixed to a proportion of it. A message longer
   than the pane still scrolls inside its own frame: the frame runs no scripts (it renders mail from strangers), and
   without a script inside it there is nothing that can measure the message and size the frame to it.
+- **A conversation always reads newest first.** The thread in the reading pane used to be listed oldest at the top. It
+  now opens with the newest message at the top whatever the message list is sorted by - the list's order arranges rows
+  to pick from, while the pane is one conversation being read, and the message a conversation row stands for should be
+  the first thing in it every time. The expand/collapse rule is unchanged in meaning: the message you opened and
+  everything newer than it (the entries above) are expanded, everything older (below) is collapsed - so opening a
+  conversation row expands just the top entry, and opening its oldest message expands the whole thread. The quoted
+  history inside each message is untouched.
+- **"Move to" moves a message to a folder.** The reading pane's Focused/Other control is gone, and in its place is a
+  Move to action that asks which folder to move the message into - every folder of its mailbox, with the one it is
+  already in shown but not selectable, a filter box once there are more folders than fit a glance, and "New folder…"
+  to create one and move into it in a single step. A new folder is created at the top level of the mailbox and appears
+  in the folder list straight away, with no reload. The same prompt now backs select mode's bulk Move to, so both offer
+  the same destinations and the same way to create one; a refused move or a refused creation is reported inside the
+  prompt, beside the button that would try again.
+- **Focused and Other are entirely automatic.** The "Move to Other"/"Move to Focused" button, its "Always move mail
+  from this sender" confirmation and the Settings > Focused Inbox page of per-sender rules are all removed. Which half
+  of the Inbox a message lands in is decided on delivery, from who you correspond with, whether the sender is internal
+  and the spam score - nothing to configure and nothing to keep in step. The Focused and Other tabs stay exactly where
+  they were and now simply show what that automatic classification decided.
 - **Conversations follow the sort you picked.** The conversation list ignored the Sort menu entirely and always read in
   the order the server happened to page them in. Date, From, Subject and Flag status now order the conversation rows,
   both ways round, and a conversation's own messages read newest-first while the list does. Date sent and Importance are

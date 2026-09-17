@@ -24,7 +24,7 @@ export default function MessageDetailPage(props: MailShellProps & { params: { ui
 }
 
 function MessageDetailContent({ uid }: { uid: string }) {
-    const { mailboxFolders, mailboxUid } = useMailShell();
+    const { mailboxFolders, mailboxUid, onFolderCreated } = useMailShell();
     const [message, setMessage] = useState<Message | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -77,7 +77,6 @@ function MessageDetailContent({ uid }: { uid: string }) {
     const backHref = `/?mailboxUid=${encodeURIComponent(message.mailboxUid)}&folderUid=${encodeURIComponent(message.folderUid)}`;
     const isSentItems = folders.find((f) => f.uid === message.folderUid)?.type === "sent_items";
     const isOutbox = folders.find((f) => f.uid === message.folderUid)?.type === "outbox";
-    const isInbox = folders.find((f) => f.uid === message.folderUid)?.type === "inbox";
     const draftsFolderUid = folders.find((f) => f.type === "drafts")?.uid;
     return (
         <MessageDetailPane
@@ -87,10 +86,11 @@ function MessageDetailContent({ uid }: { uid: string }) {
             isSentItems={isSentItems}
             onRecalled={setMessage}
             isOutbox={isOutbox}
-            isInbox={isInbox}
-            onClassified={setMessage}
             onReceiptHandled={setMessage}
             draftsFolderUid={draftsFolderUid}
+            folders={folders}
+            onMoved={setMessage}
+            onFolderCreated={onFolderCreated}
             onScheduledSendCanceled={setMessage}
             onArchived={setMessage}
             labels={labels}

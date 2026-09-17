@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, PropsWithChildren, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3 } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
@@ -54,9 +54,21 @@ export interface MailShellContextValue {
     /** Every accessible mailbox's own mail folders - replaces the old single-mailbox `folders: Folder[]`
      * now that every mailbox's tree renders at once (see `MailboxFolders`'s own doc comment). */
     mailboxFolders: MailboxFolders[];
+    /**
+     * Adds a folder a page has just created (the Move to prompt's "New folder") to the tree this shell
+     * already fetched, so it appears in the sidebar and in every folder picker without a reload - this
+     * framework has no client-side router, so a reload is a whole page load.
+     *
+     * A no-op on the default context value, which is only ever read outside a real shell.
+     */
+    onFolderCreated: (folder: Folder) => void;
 }
 
-const MailShellContext = createContext<MailShellContextValue>({ mailboxes: [], mailboxFolders: [] });
+const MailShellContext = createContext<MailShellContextValue>({
+    mailboxes: [],
+    mailboxFolders: [],
+    onFolderCreated: () => undefined,
+});
 
 /** Reads the mailbox/folder a page is currently showing, as resolved by the enclosing `MailShell`. */
 export function useMailShell(): MailShellContextValue {
@@ -236,9 +248,22 @@ export default function MailShell({
     const defaultMailboxUid = mailboxes.find((mb) => mb.ownerUserUid === userUid)?.uid ?? mailboxes[0]?.uid;
     const activeMailboxUid = mailboxUid ?? defaultMailboxUid;
 
+    /** Files a newly created folder under its own mailbox, leaving every other mailbox's list untouched -
+     * and ignoring a type this sidebar doesn't list at all, the same filter the fetch above applies. */
+    const onFolderCreated = useCallback((folder: Folder) => {
+        if (!MAIL_FOLDER_TYPES.has(folder.type)) {
+            return;
+        }
+        setMailboxFolders((prev) =>
+            prev.map((entry) =>
+                entry.mailbox.uid === folder.mailboxUid ? { ...entry, folders: [...entry.folders, folder] } : entry,
+            ),
+        );
+    }, []);
+
     const contextValue = useMemo<MailShellContextValue>(
-        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders }),
-        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders],
+        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated }),
+        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated],
     );
 
     // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else for a

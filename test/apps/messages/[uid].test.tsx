@@ -301,38 +301,45 @@ describe("MessageDetailPage", () => {
         });
     });
 
-    describe("classify", () => {
-        it("does not show the classify control for a message outside the Inbox", async () => {
-            mockFetch((url) => {
-                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
-                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
-                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [sentItemsFolder]);
-                if (url === "/api/mail/messages/m1") return jsonResponse(200, { ...message, folderUid: "f2" });
-                throw new Error(`unexpected ${url}`);
-            });
-            render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
-
-            await screen.findByRole("heading", { name: "Hello there" });
-            expect(screen.queryByRole("button", { name: /Move to/ })).not.toBeInTheDocument();
-        });
-
-        it("classifies the message in the Inbox and updates the page's own state", async () => {
+    describe("Move to a folder", () => {
+        it("offers this mailbox's own folders, and no Focused/Other control at all", async () => {
             mockShell((url, init) => {
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder, sentItemsFolder]);
                 if (url === "/api/mail/messages/m1" && (init?.method ?? "GET") === "GET") {
                     return jsonResponse(200, { ...message, flags: { ...message.flags, read: true } });
-                }
-                if (url === "/api/mail/messages/m1/classify" && init?.method === "POST") {
-                    return jsonResponse(200, { ...message, flags: { ...message.flags, read: true }, inferenceClassification: "other" });
                 }
                 return undefined;
             });
             const user = userEvent.setup();
             render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
 
-            await user.click(await screen.findByRole("button", { name: "Move to Other" }));
-            // The move is confirmed first - see `MessageDetailPane`'s own tests for the prompt itself.
-            await user.click(await screen.findByRole("button", { name: "Move" }));
-            expect(await screen.findByRole("button", { name: "Move to Focused" })).toBeInTheDocument();
+            await user.click(await screen.findByRole("button", { name: "Move to" }));
+
+            expect(await screen.findByRole("button", { name: /^Sent Items/ })).toBeEnabled();
+            expect(screen.getByRole("button", { name: /^Inbox/ })).toBeDisabled();
+            expect(screen.queryByRole("button", { name: "Move to Other" })).not.toBeInTheDocument();
+        });
+
+        it("moves the message and updates the page's own state", async () => {
+            mockShell((url, init) => {
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder, sentItemsFolder]);
+                if (url === "/api/mail/messages/m1" && (init?.method ?? "GET") === "GET") {
+                    return jsonResponse(200, { ...message, flags: { ...message.flags, read: true } });
+                }
+                if (url === "/api/mail/messages/m1" && init?.method === "PUT") {
+                    return jsonResponse(200, { ...message, flags: { ...message.flags, read: true }, folderUid: "f2", version: 1 });
+                }
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
+
+            await user.click(await screen.findByRole("button", { name: "Move to" }));
+            await user.click(await screen.findByRole("button", { name: /^Sent Items/ }));
+
+            // It is in Sent Items now, so that is the entry the prompt marks as where it already is.
+            await user.click(await screen.findByRole("button", { name: "Move to" }));
+            expect(await screen.findByRole("button", { name: /^Sent Items/ })).toBeDisabled();
         });
     });
 

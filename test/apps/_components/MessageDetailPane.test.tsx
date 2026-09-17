@@ -202,8 +202,14 @@ describe("MessageDetailPane", () => {
     });
 
     it("draws each action as an icon alone, named only for assistive technology", () => {
-        render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
-        for (const name of ["Reply", "Reply All", "Forward", "Archive", "Move to Other"]) {
+        render(
+            <MessageDetailPane
+                message={messageFixture() as any}
+                attachments={[]}
+                folders={[{ uid: "f5", mailboxUid: "mb1", name: "Receipts", type: "user" }] as never}
+            />,
+        );
+        for (const name of ["Reply", "Reply All", "Forward", "Archive", "Move to"]) {
             const button = screen.getByRole("button", { name });
             expect(button).toHaveAttribute("title", name);
             // The name is the accessible name and the tooltip - never text on screen, at any width.
@@ -1281,139 +1287,276 @@ describe("MessageDetailPane", () => {
         });
     });
 
-    describe("classify", () => {
-        it("shows neither the button nor the sender checkbox when isInbox is not set", () => {
+    describe("Move to a folder", () => {
+        const FOLDERS = [
+            { uid: "f1", mailboxUid: "mb1", name: "Inbox", type: "inbox" },
+            { uid: "f2", mailboxUid: "mb1", name: "Sent Items", type: "sent_items" },
+            { uid: "f5", mailboxUid: "mb1", name: "Receipts", type: "user" },
+            { uid: "f9", mailboxUid: "mb1", name: "Outbox", type: "outbox" },
+        ] as never;
+
+        const MANY = [
+            { uid: "f1", mailboxUid: "mb1", name: "Inbox", type: "inbox" },
+            { uid: "f5", mailboxUid: "mb1", name: "Receipts", type: "user" },
+            ...Array.from({ length: 8 }, (_, i) => ({ uid: `u${i}`, mailboxUid: "mb1", name: `Project ${i}`, type: "user" })),
+        ] as never;
+
+        it("offers nothing to move to when the caller passes no folders", () => {
             render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
-            expect(screen.queryByRole("button", { name: /Move to/ })).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Move to" })).not.toBeInTheDocument();
         });
 
-        it("shows 'Move to Other' when the message has no inferenceClassification (defaults to Focused)", () => {
-            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
-            expect(screen.getByRole("button", { name: "Move to Other" })).toBeInTheDocument();
+        it("lists the mailbox's message folders, marking the one the message is already in", async () => {
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+
+            expect(screen.getByRole("button", { name: /^Sent Items/ })).toBeEnabled();
+            expect(screen.getByRole("button", { name: /^Receipts/ })).toBeEnabled();
+            // Where it already is - shown, but not a destination, so the list keeps its shape per folder.
+            expect(screen.getByRole("button", { name: /^Inbox/ })).toBeDisabled();
+            // Outbox is the server's own send queue, never a destination.
+            expect(screen.queryByRole("button", { name: /^Outbox/ })).not.toBeInTheDocument();
         });
 
-        it("shows 'Move to Focused' when the message is classified Other", () => {
-            render(
-                <MessageDetailPane
-                    message={messageFixture({ inferenceClassification: "other" }) as any}
-                    attachments={[]}
-                    isInbox
-                />,
+        it("moves the message into the folder that was picked and hands back the server's copy", async () => {
+            const moved = messageFixture({ folderUid: "f5", version: 1 });
+            const fetchMock = mockFetch((url, init) =>
+                url === "/api/mail/messages/m1" && init?.method === "PUT" ? jsonResponse(200, moved) : undefined,
             );
-            expect(screen.getByRole("button", { name: "Move to Focused" })).toBeInTheDocument();
-        });
-
-        it("asks before moving, and moves once the prompt is confirmed", async () => {
-            const updated = messageFixture({ inferenceClassification: "other" });
-            const fetchMock = mockFetch(() => jsonResponse(200, updated));
-            const onClassified = vi.fn();
+            const onMoved = vi.fn();
             const user = userEvent.setup();
             render(
-                <MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox onClassified={onClassified} />,
+                <MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} onMoved={onMoved} />,
             );
 
-            await user.click(screen.getByRole("button", { name: "Move to Other" }));
-            // Nothing is sent until the prompt is confirmed.
-            expect(screen.getByRole("dialog", { name: "Move this message to Other?" })).toBeInTheDocument();
-            expect(fetchMock).not.toHaveBeenCalled();
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /^Receipts/ }));
 
-            await user.click(screen.getByRole("button", { name: "Move" }));
+            await waitFor(() => expect(onMoved).toHaveBeenCalledWith(expect.objectContaining({ folderUid: "f5" })));
+            const put = fetchMock.mock.calls.find(
+                ([url, init]: any) => url === "/api/mail/messages/m1" && init?.method === "PUT",
+            )!;
+            expect(JSON.parse((put[1] as RequestInit).body as string)).toEqual({ uid: "m1", version: 0, folderUid: "f5" });
+            // Done - the prompt closes rather than leaving the reader in it.
+            await waitFor(() => expect(screen.queryByRole("button", { name: /^Receipts/ })).not.toBeInTheDocument());
+        });
 
-            expect(fetchMock).toHaveBeenCalledWith(
-                "/api/mail/messages/m1/classify",
-                expect.objectContaining({
-                    method: "POST",
-                    body: JSON.stringify({ classifyAs: "other", applyToSender: false }),
-                }),
+        it("shows a failed move in the prompt, beside the destination that would retry it", async () => {
+            const fetchMock = mockFetch((url, init) =>
+                url === "/api/mail/messages/m1" && init?.method === "PUT"
+                    ? jsonResponse(409, { message: "changed since read" })
+                    : undefined,
             );
-            await vi.waitFor(() => expect(onClassified).toHaveBeenCalledWith(updated));
-            await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-        });
-
-        it("sends nothing when the prompt is cancelled", async () => {
-            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture()));
             const user = userEvent.setup();
-            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
 
-            await user.click(screen.getByRole("button", { name: "Move to Other" }));
-            await user.click(screen.getByRole("button", { name: "Cancel" }));
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /^Receipts/ }));
 
-            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-            expect(fetchMock).not.toHaveBeenCalled();
+            expect(await screen.findByText("changed since read")).toBeInTheDocument();
+            // The move was really attempted - an early version passed `onMoved?.(await moveMessage(...))`,
+            // which with no `onMoved` never evaluated its own argument and moved nothing at all.
+            expect(
+                fetchMock.mock.calls.some(([url, init]: any) => url === "/api/mail/messages/m1" && init?.method === "PUT"),
+            ).toBe(true);
+            expect(screen.getByRole("button", { name: /^Receipts/ })).toBeInTheDocument();
         });
 
-        it("closes the prompt from the dialog's own close control, sending nothing", async () => {
-            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture()));
-            const user = userEvent.setup();
-            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
-
-            await user.click(screen.getByRole("button", { name: "Move to Other" }));
-            await user.click(screen.getByRole("button", { name: "Close" }));
-
-            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-            expect(fetchMock).not.toHaveBeenCalled();
-        });
-
-        it("classifies back to Focused when the message is currently Other", async () => {
-            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture({ inferenceClassification: "focused" })));
-            const user = userEvent.setup();
-            render(
-                <MessageDetailPane
-                    message={messageFixture({ inferenceClassification: "other" }) as any}
-                    attachments={[]}
-                    isInbox
-                />,
-            );
-
-            await user.click(screen.getByRole("button", { name: "Move to Focused" }));
-            expect(screen.getByRole("dialog", { name: "Move this message to Focused?" })).toBeInTheDocument();
-            expect(screen.getByLabelText("Always move mail from this sender to Focused")).toBeInTheDocument();
-            await user.click(screen.getByRole("button", { name: "Move" }));
-
-            expect(fetchMock).toHaveBeenCalledWith(
-                "/api/mail/messages/m1/classify",
-                expect.objectContaining({ body: JSON.stringify({ classifyAs: "focused", applyToSender: false }) }),
-            );
-        });
-
-        it("includes applyToSender when the prompt's checkbox is ticked", async () => {
-            const fetchMock = mockFetch(() => jsonResponse(200, messageFixture()));
-            const user = userEvent.setup();
-            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
-
-            await user.click(screen.getByRole("button", { name: "Move to Other" }));
-            await user.click(screen.getByLabelText("Always move mail from this sender to Other"));
-            await user.click(screen.getByRole("button", { name: "Move" }));
-
-            expect(fetchMock).toHaveBeenCalledWith(
-                "/api/mail/messages/m1/classify",
-                expect.objectContaining({ body: JSON.stringify({ classifyAs: "other", applyToSender: true }) }),
-            );
-        });
-
-        it("shows an error message in the prompt when classifying fails, and keeps it open", async () => {
-            mockFetch(() => jsonResponse(500, { message: "boom" }));
-            const user = userEvent.setup();
-            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
-
-            await user.click(screen.getByRole("button", { name: "Move to Other" }));
-            await user.click(screen.getByRole("button", { name: "Move" }));
-
-            expect(await screen.findByText("boom")).toBeInTheDocument();
-            expect(screen.getByRole("dialog")).toBeInTheDocument();
-        });
-
-        it("shows a generic error message when classifying fails with a non-API error", async () => {
+        it("says something generic when the move fails with a non-API error", async () => {
             mockFetch(() => {
                 throw new TypeError("network down");
             });
             const user = userEvent.setup();
-            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isInbox />);
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
 
-            await user.click(screen.getByRole("button", { name: "Move to Other" }));
-            await user.click(screen.getByRole("button", { name: "Move" }));
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /^Receipts/ }));
 
-            expect(await screen.findByText("Could not reclassify this message.")).toBeInTheDocument();
+            expect(await screen.findByText("Could not move to that folder.")).toBeInTheDocument();
+        });
+
+        it("creates a folder and moves into it in one step, telling the caller about both", async () => {
+            const created = { uid: "f7", mailboxUid: "mb1", name: "Trips", type: "user", version: 0 };
+            const fetchMock = mockFetch((url, init) => {
+                if (url === "/api/mail/folders" && init?.method === "POST") return jsonResponse(200, created);
+                if (url === "/api/mail/messages/m1" && init?.method === "PUT") {
+                    return jsonResponse(200, messageFixture({ folderUid: "f7", version: 1 }));
+                }
+                return undefined;
+            });
+            const onMoved = vi.fn();
+            const onFolderCreated = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <MessageDetailPane
+                    message={messageFixture() as any}
+                    attachments={[]}
+                    folders={FOLDERS}
+                    onMoved={onMoved}
+                    onFolderCreated={onFolderCreated}
+                />,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+            await user.type(screen.getByLabelText("New folder name"), "Trips");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+
+            await waitFor(() => expect(onMoved).toHaveBeenCalledWith(expect.objectContaining({ folderUid: "f7" })));
+            expect(onFolderCreated).toHaveBeenCalledWith(expect.objectContaining({ uid: "f7", name: "Trips" }));
+            const post = fetchMock.mock.calls.find(
+                ([url, init]: any) => url === "/api/mail/folders" && init?.method === "POST",
+            )!;
+            // At the top level of the mailbox, typed `user` - never nested under the folder it left.
+            expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual(
+                expect.objectContaining({ mailboxUid: "mb1", name: "Trips", type: "user" }),
+            );
+            expect(JSON.parse((post[1] as RequestInit).body as string).parentFolderUid).toBeUndefined();
+        });
+
+        it("refuses a name this mailbox already has rather than creating a second folder", async () => {
+            const fetchMock = mockFetch(() => undefined);
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+            await user.type(screen.getByLabelText("New folder name"), "receipts");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+
+            expect(
+                await screen.findByText(
+                    'This mailbox already has a folder called "Receipts". Pick it from the list instead.',
+                ),
+            ).toBeInTheDocument();
+            expect(
+                fetchMock.mock.calls.some(([url, init]: any) => url === "/api/mail/folders" && init?.method === "POST"),
+            ).toBe(false);
+        });
+
+        it("refuses an empty name, one with a path separator, and one that is too long", async () => {
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+
+            await user.type(screen.getByLabelText("New folder name"), "   ");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+            expect(await screen.findByText("Enter a name for the new folder.")).toBeInTheDocument();
+
+            await user.clear(screen.getByLabelText("New folder name"));
+            await user.type(screen.getByLabelText("New folder name"), "Trips/2026");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+            expect(await screen.findByText("A folder name can't contain / or \\.")).toBeInTheDocument();
+        });
+
+        it("shows a failed creation in the prompt and moves nothing", async () => {
+            const fetchMock = mockFetch((url, init) =>
+                url === "/api/mail/folders" && init?.method === "POST"
+                    ? jsonResponse(400, { message: "folder limit reached" })
+                    : undefined,
+            );
+            const onMoved = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} onMoved={onMoved} />,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+            await user.type(screen.getByLabelText("New folder name"), "Trips");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+
+            expect(await screen.findByText("folder limit reached")).toBeInTheDocument();
+            expect(onMoved).not.toHaveBeenCalled();
+            expect(
+                fetchMock.mock.calls.some(([url, init]: any) => url === "/api/mail/messages/m1" && init?.method === "PUT"),
+            ).toBe(false);
+        });
+
+        it("says something generic when creating the folder fails with a non-API error", async () => {
+            mockFetch(() => {
+                throw new TypeError("network down");
+            });
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+            await user.type(screen.getByLabelText("New folder name"), "Trips");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+
+            expect(await screen.findByText("Could not create that folder.")).toBeInTheDocument();
+        });
+
+        it("goes back to the destination list from the new-folder form", async () => {
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+
+            await user.click(screen.getByRole("button", { name: "Back" }));
+
+            expect(screen.getByRole("button", { name: /^Receipts/ })).toBeInTheDocument();
+        });
+
+        it("offers a filter once the mailbox has more folders than fit a glance, and narrows the list", async () => {
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={MANY} />);
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+
+            await user.type(screen.getByLabelText("Filter folders"), "project 3");
+
+            expect(screen.getByRole("button", { name: /^Project 3/ })).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: /^Receipts/ })).not.toBeInTheDocument();
+
+            await user.clear(screen.getByLabelText("Filter folders"));
+            await user.type(screen.getByLabelText("Filter folders"), "nothing like this");
+            expect(screen.getByText("No folder matches that.")).toBeInTheDocument();
+        });
+
+        it("offers no filter for a list short enough to read at a glance", async () => {
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+
+            expect(screen.queryByLabelText("Filter folders")).not.toBeInTheDocument();
+        });
+
+        it("says so when the mailbox has no folder that can hold a message", async () => {
+            const user = userEvent.setup();
+            render(
+                <MessageDetailPane
+                    message={messageFixture() as any}
+                    attachments={[]}
+                    folders={[{ uid: "f9", mailboxUid: "mb1", name: "Outbox", type: "outbox" }] as never}
+                />,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+
+            expect(screen.getByText("This mailbox has no folders to move to yet.")).toBeInTheDocument();
+        });
+
+        it("closes the prompt from its own close control, moving nothing", async () => {
+            const fetchMock = mockFetch(() => undefined);
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+
+            await user.click(screen.getByRole("button", { name: "Close" }));
+
+            expect(screen.queryByRole("button", { name: /^Receipts/ })).not.toBeInTheDocument();
+            expect(fetchMock.mock.calls.some(([, init]: any) => init?.method === "PUT")).toBe(false);
+        });
+
+        it("has no Focused/Other control of its own any more - classification is automatic", () => {
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} />);
+            expect(screen.queryByRole("button", { name: "Move to Other" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Move to Focused" })).not.toBeInTheDocument();
         });
     });
 

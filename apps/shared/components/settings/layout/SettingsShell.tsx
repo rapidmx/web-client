@@ -25,7 +25,6 @@ export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     { id: "filters", href: "/settings/filters", label: "Mail Filters" },
     { id: "signatures", href: "/settings/signatures", label: "Signatures" },
     { id: "labels", href: "/settings/labels", label: "Labels" },
-    { id: "focused-inbox", href: "/settings/focused-inbox", label: "Focused Inbox" },
     { id: "read-receipts", href: "/settings/read-receipts", label: "Read Receipts" },
     { id: "encryption", href: "/settings/encryption", label: "Encryption" },
     { id: "sharing", href: "/settings/sharing", label: "Sharing" },

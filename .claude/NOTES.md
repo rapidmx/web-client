@@ -2156,9 +2156,8 @@ JP's second pass over the same screens. Six items; the interesting ones are the 
   leaves the server's own order alone rather than shuffling the rows by something meaningless. Ties break
   newest-first whichever direction is in force.
   - A conversation's own child rows follow the same order sense: `ConversationList` takes `newestFirst` and
-    reverses the (always oldest-first) `listConversationMessages()` copy for display. The *thread pane* stays
-    chronological - it is a reading view of one conversation, and its expand-from-the-opened-message-to-the-
-    newest rule is defined on that order.
+    reverses the (always oldest-first) `listConversationMessages()` copy for display. The *thread pane* is
+    newest-first **always**, whatever the list is sorted by - see the entry below, which revised this.
   - **`serverSortKey`** is why changing the order doesn't refetch: the list effect used to depend on
     `preferences.sortBy`/`sortOrder` directly, so reordering conversations re-listed the identical page *and*
     unmounted `ConversationList` (the list renders "Loading…" instead), collapsing whatever the reader had
@@ -2180,3 +2179,78 @@ JP's second pass over the same screens. Six items; the interesting ones are the 
   the Select glyph, and the chip going 3 -> 2 -> gone as the thread is read. The NOTES rule from the previous
   round still bites: `yarn build` in `server` after refreshing the patch, or the browser check exercises the
   previous bundle.
+
+### 2026-09-16 (continued) — Mail UX round 3: a newest-first thread pane, and Move to a real folder
+
+Two follow-ups from JP on the round above.
+
+- **The thread pane reads newest first, always.** Round 2 left it chronological on the reasoning that a thread is
+  read oldest-to-newest; JP's rule is simpler and is now the one implemented: the pane's order is the pane's own,
+  never the list's, and the message a conversation row stands for is the top entry every time. `loadThread()`
+  collects its pages oldest-first (the endpoint has no order to ask for, and `THREAD_MESSAGE_LIMIT` has to apply in
+  that direction - it is the oldest that get dropped) and reverses **once** at the end, so nothing downstream has
+  to know about page order. Two knock-on changes, both in `expandedFrom()`'s neighbourhood:
+  - the run is `messages.slice(0, anchor + 1)` rather than `slice(anchor)` - the opened message plus everything
+    *above* it - and a `selectedUid` this thread doesn't hold anchors on index 0 rather than the last index;
+  - `pendingFocusUid` is the run's **last** entry (`[...expanded][expanded.size - 1]`), because the message that
+    was opened is now at the bottom of the expanded run. Getting that wrong scrolls to and focuses the newest
+    message instead of the one clicked, which is invisible in a two-message thread - hence the tests below pinning
+    the rendered order and the expanded pattern by position, not just which panes exist.
+  - **Test shape that catches this:** `renderedOrder()`/`renderedPattern()` read each row's `aria-controls`
+    (`thread-message-<uid>`), so they assert the DOM order rather than set membership. Every older test matched
+    messages by sender name and passed unchanged under a reversed list - which is exactly why they missed it.
+- **"Move to" is a folder picker now, and Focused/Other has no UI at all.** JP: the Focused/Other split "shouldn't
+  be explicit but instead purely implicit". So `classifyMessage()`/`FocusedInboxOverride` have no caller in this
+  package any more:
+  - `MessageDetailPane` lost `isInbox`/`onClassified`, the two classify `IconAction`s and the "Always move mail from
+    this sender" confirmation, and gained `folders`/`onMoved`/`onFolderCreated` plus one `Move to` icon;
+  - `apps/www/settings/focused-inbox/` (the per-sender rules page) and its `SETTINGS_SECTIONS` entry are deleted -
+    it was the remaining UI that wrote an override;
+  - **dead client code this leaves:** react-shared still exports `mail/focusedInboxOverridesApi.js` (now unused by
+    this package) and `classifyMessage()`/`MessageClassification` (still used by nothing here; `Message.
+    inferenceClassification` is still *read*, by the Focused/Other filter). Left alone deliberately - react-shared
+    is a shared library and restapi still serves both endpoints; reported up rather than pruned from here.
+- **`MoveToFolderDialog` is one component for both places** (the reading pane and `MailSelectionBar`), which is what
+  keeps the destination rules and the create-a-folder step from drifting. A `Modal`, not a `MenuButton`: creating a
+  folder needs a text field and a `role="menu"` has nowhere to put one (the same reason `NewLabelDialog` exists).
+  - `MOVE_TARGET_TYPES` moved here from `MailSelectionBar`. The folder being moved out of is **disabled, not
+    hidden**, so the list doesn't change shape between folders; Outbox is never offered.
+  - A new folder is created at the **top level of the mailbox**, typed `user`, never under the current folder:
+    `Folder.parentFolderUid` exists, but `MailShell`'s sidebar lists folders flat (`FOLDER_ORDER` + user folders),
+    so a subfolder would go into a hierarchy nothing renders.
+  - **Validation, all client-side and next to the field** (`folderNameError()`): non-empty after trimming, at most
+    255 characters, no `/` or `\` (folders are a tree, not paths - a separator would be a character in the name,
+    reading as a hierarchy this app never made), and no case-insensitive duplicate of an existing folder, refused by
+    naming the folder that already exists rather than creating a second one.
+  - `onFolderCreated` is called **before** the move, so a folder that was created survives a move that then fails;
+    it threads up to `MailShell`'s new `MailShellContext.onFolderCreated`, which files the folder under its own
+    mailbox in `mailboxFolders` - that is what puts it in the sidebar and in every picker without a page load.
+  - **Error split, deliberately:** the reading pane's `onMove` rejects and the prompt shows it; the bulk one always
+    resolves, because a bulk update applies element by element and its partial-failure story (reload the list, say
+    some may already have changed) belongs in `MailSelectionBar`, not in a prompt claiming nothing happened.
+- **Real bug, found by a test that looked like a test bug.** `handleMove()` was first written as
+  `onMoved?.(await moveMessage(message, folderUid))`. An optional call whose callee is nullish **does not evaluate
+  its arguments at all** - so with no `onMoved` the message was never moved, and the prompt closed as if it had.
+  Two tests failed with "no fetch calls at all and the dialog closed", which read like a click-target problem;
+  the answer was the short-circuit. Always `const updated = await ...;` then `cb?.(updated)`.
+- **Scrolling to a message now moves the thread's list, never the window.** `scrollIntoView({block:"nearest"})`
+  scrolls *every* scrollable ancestor - and with a run of full-height messages expanded, `AppShell`'s root is
+  content-based (`min-h-screen`, so its height is `auto` with a 100vh floor), the page really is taller than the
+  window, and the browser duly scrolled the header and the app rail off the screen. Opening the *oldest* message
+  of a thread is the case that shows it, which is exactly what the newest-first order made reachable. The
+  layout effect now puts the adjustment on `scrollingAncestor(row)` - the same helper the collapse/expand
+  anchor already used - and leaves the page alone when that resolves to `document.documentElement` (nothing
+  inside the pane scrolls, so the row is already in view). Measured before and after in `uxcheck3.mjs`:
+  `document.body.scrollTop` 149 -> 0.
+  - **Tried and rejected:** `h-screen` on `AppShell`'s root, which is the real fix for the page still being
+    1163px tall in that state - `CalendarShell`, `ContactsShell`, `TasksShell` and `SettingsShell` all render
+    their content into a `flex-1 min-w-0 flex flex-col` with **no** `overflow-y-auto`, so pinning the shell to
+    the viewport would clip those four apps instead of scrolling them. Doing it properly means giving each of
+    those shells a scrolling content pane - worth doing, but its own change. Also tried `h-0` alongside
+    `flex-1` on the thread list to stop it contributing to the shell's intrinsic height; it does not, because
+    the contribution comes through the expanded rows' own `min-height: 100%`, which is treated as `auto` while
+    the ancestor is being intrinsically sized.
+- Also fixed while here: `ConversationThreadPane.test.tsx`'s attachments test asserted on `await findByTestId(...)`
+  and then checked its text once - the row mounts before its attachments request lands, so it raced under
+  full-suite load (it failed there while passing in isolation). The `waitFor` has to wrap the *assertion*.
+

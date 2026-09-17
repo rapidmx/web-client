@@ -69,8 +69,9 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isOutbox,
         draftsFolderUid,
         onScheduledSendCanceled,
-        isInbox,
-        onClassified,
+        folders,
+        onMoved,
+        onFolderCreated,
         onReceiptHandled,
         onArchived,
         onLabelsChanged,
@@ -83,8 +84,9 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isOutbox?: boolean;
         draftsFolderUid?: string;
         onScheduledSendCanceled?: (updated: Record<string, unknown>) => void;
-        isInbox?: boolean;
-        onClassified?: (updated: Record<string, unknown>) => void;
+        folders?: { uid: string; name: string }[];
+        onMoved?: (updated: Record<string, unknown>) => void;
+        onFolderCreated?: (folder: Record<string, unknown>) => void;
         onReceiptHandled?: (updated: Record<string, unknown>) => void;
         onArchived?: (updated: Record<string, unknown>) => void;
         onLabelsChanged?: (updated: Record<string, unknown>) => void;
@@ -93,7 +95,8 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
     }) => (
         <div data-testid="detail-pane">
             {message ? `message:${message.uid}` : "no-message"} sentItems:{String(!!isSentItems)} outbox:{String(!!isOutbox)}{" "}
-            inbox:{String(!!isInbox)} draftsFolderUid:{draftsFolderUid ?? "unset"} labels:{(labels ?? []).map((l) => l.name).join("/")}
+            draftsFolderUid:{draftsFolderUid ?? "unset"} folders:{(folders ?? []).map((f) => f.name).join("/")} labels:
+            {(labels ?? []).map((l) => l.name).join("/")}
             {onLabelCreated && (
                 <button type="button" onClick={() => onLabelCreated({ uid: "l-new", name: "Made here" })}>
                     simulate-label-created
@@ -112,9 +115,17 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
                     simulate-cancel-scheduled-send
                 </button>
             )}
-            {message && onClassified && (
-                <button type="button" onClick={() => onClassified({ ...message, inferenceClassification: "other" })}>
-                    simulate-classify
+            {message && onMoved && (
+                <button type="button" onClick={() => onMoved({ ...message, folderUid: "f7" })}>
+                    simulate-move
+                </button>
+            )}
+            {onFolderCreated && (
+                <button
+                    type="button"
+                    onClick={() => onFolderCreated({ uid: "f-new", name: "Made here", type: "user", mailboxUid: "mb1" })}
+                >
+                    simulate-folder-created
                 </button>
             )}
             {message && onReceiptHandled && (
@@ -480,14 +491,14 @@ describe("InboxPage", () => {
     });
 
     describe("Focused/Other", () => {
-        it("passes isInbox to the detail pane when the active folder is the Inbox", async () => {
+        it("hands the reading pane the mailbox's folders, for its own Move to prompt", async () => {
             mockShellAndInbox([messageFixture()]);
             render(<InboxPage userUid="u1" />);
             await screen.findByText("Hello there");
-            expect(screen.getByTestId("detail-pane")).toHaveTextContent("inbox:true");
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("folders:Inbox");
         });
 
-        it("does not pass isInbox, and shows no sub-tabs, for a non-Inbox folder", async () => {
+        it("shows no sub-tabs for a non-Inbox folder", async () => {
             window.history.pushState(null, "", "/?mailboxUid=mb1&folderUid=f2");
             mockFetch((url) => {
                 if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
@@ -497,7 +508,7 @@ describe("InboxPage", () => {
             });
             render(<InboxPage userUid="u1" />);
             await screen.findByText("Hello there");
-            expect(screen.getByTestId("detail-pane")).toHaveTextContent("inbox:false");
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("folders:Inbox/Sent Items");
             expect(screen.queryByRole("button", { name: "Focused" })).not.toBeInTheDocument();
         });
 
@@ -566,7 +577,7 @@ describe("InboxPage", () => {
             expect(screen.getByText("No messages here.")).toBeInTheDocument();
         });
 
-        it("patches the reclassified message in place and leaves the rest of the list listed", async () => {
+        it("takes a moved message out of the list, leaving the rest of it listed", async () => {
             const msg = messageFixture();
             const other = messageFixture({ uid: "m2", subject: "Untouched message" });
             mockShellAndInbox([msg, other]);
@@ -574,13 +585,22 @@ describe("InboxPage", () => {
             render(<InboxPage userUid="u1" />);
 
             await user.click(await screen.findByText("Hello there"));
-            await user.click(screen.getByText("simulate-classify"));
+            await user.click(screen.getByText("simulate-move"));
 
-            // The row is replaced, not removed - which half it now belongs to is the server's to decide on
-            // the next listing, since Focused/Other is a server-side filter.
-            expect(screen.getByText("Hello there")).toBeInTheDocument();
+            // It left the folder being listed, so it leaves the list too - the same rule Archive follows.
+            expect(screen.queryByText("Hello there")).not.toBeInTheDocument();
             expect(screen.getByText("Untouched message")).toBeInTheDocument();
-            expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:m1");
+        });
+
+        it("adds a folder created from the reading pane to the ones its own prompt offers", async () => {
+            mockShellAndInbox([messageFixture()]);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await user.click(await screen.findByText("Hello there"));
+
+            await user.click(screen.getByText("simulate-folder-created"));
+
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("folders:Inbox/Made here");
         });
     });
 
@@ -1168,7 +1188,9 @@ describe("InboxPage", () => {
             await user.click(await screen.findByText("The opening message"));
 
             await waitFor(() => expect(screen.getAllByTestId("detail-pane")).toHaveLength(2));
-            expect(screen.getAllByTestId("detail-pane")[0]).toHaveTextContent("message:m1");
+            // The pane reads newest first, so the opened message is the *last* of the expanded run.
+            expect(screen.getAllByTestId("detail-pane")[0]).toHaveTextContent("message:m2");
+            expect(screen.getAllByTestId("detail-pane")[1]).toHaveTextContent("message:m1");
             // The thread scrolls to and focuses the message it opened at.
             expect(document.activeElement).toBe(threadHeader(/^Older Sender/));
             // The thread pane loads the thread itself rather than the individual message the row stands for.
@@ -1201,7 +1223,8 @@ describe("InboxPage", () => {
             await waitFor(() => expect(screen.getAllByTestId("detail-pane")).toHaveLength(2));
 
             // Archiving from inside the thread takes the message out of the thread and out of the list.
-            await user.click(screen.getAllByRole("button", { name: "simulate-archive" })[0]);
+            // The oldest of the run is the last entry now that the pane reads newest first.
+            await user.click(screen.getAllByRole("button", { name: "simulate-archive" })[1]);
 
             await waitFor(() => expect(screen.getAllByTestId("detail-pane")).toHaveLength(1));
             expect(threadHeader(/^Older Sender/)).toBeUndefined();
@@ -2098,8 +2121,8 @@ describe("InboxPage", () => {
             await screen.findByText("First");
             await selectRows(user, "First");
 
-            await openListMenu(user, "Move to");
-            await chooseMenuItem(user, "menuitem", "Project X");
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(await screen.findByRole("button", { name: /^Project X/ }));
 
             await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
             const bulk = fetchMock.mock.calls.find(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT");

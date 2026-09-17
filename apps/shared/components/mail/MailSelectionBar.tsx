@@ -2,17 +2,12 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React from "react";
+import React, { useState } from "react";
 import { Folder, Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import MenuButton, { MenuSectionSpec } from "./MenuButton.js";
 import LabelMenuButton from "./labelMenu.js";
-
-/** The folder types a message can be moved *into* from this bar - Outbox is a transient send queue the
- * server owns, and the non-mail folders (`calendar`/`contacts`/`tasks`/`notes`) aren't message folders at
- * all, so neither is offered. */
-const MOVE_TARGET_TYPES = new Set(["inbox", "drafts", "sent_items", "junk", "archive", "deleted_items", "user"]);
+import MoveToFolderDialog, { MOVE_TARGET_TYPES } from "./MoveToFolderDialog.js";
 
 export interface MailSelectionBarProps {
     selected: Message[];
@@ -34,6 +29,8 @@ export interface MailSelectionBarProps {
     /** The mailbox a label created from Apply label belongs to. */
     mailboxUid: string;
     onLabelCreated: (label: Label) => void;
+    /** A folder created from the Move to prompt, for the caller's own folder list and the sidebar. */
+    onFolderCreated: (folder: Folder) => void;
     /** Sets the selection's labels: every message ends up with `labelUids`, plus whichever of
      * `keepPartial` it already had (those rows were left partially applied, so each message keeps what
      * it has). */
@@ -41,7 +38,11 @@ export interface MailSelectionBarProps {
     onSetRead: (read: boolean) => void;
     onSetFlagged: (flagged: boolean) => void;
     onArchive: () => void;
-    onMoveTo: (folderUid: string) => void;
+    /** Moves the selection into `folderUid`, resolving once the bulk update has settled. It resolves
+     * whether or not that update was rejected: a bulk update is applied element by element, so a failure
+     * is explained in this bar (along with the reload it triggers) rather than in the prompt, which would
+     * be claiming the move simply didn't happen. */
+    onMoveTo: (folderUid: string) => Promise<void>;
     onReportJunk: () => void;
     onDelete: () => void;
     /** A bulk action is in flight - every action is held until it settles, since the next one would send
@@ -76,6 +77,7 @@ export default function MailSelectionBar({
     labels,
     mailboxUid,
     onLabelCreated,
+    onFolderCreated,
     onApplyLabels,
     onSetRead,
     onSetFlagged,
@@ -94,6 +96,9 @@ export default function MailSelectionBar({
     const allSelected = listedCount > 0 && selectedCount === listedCount;
     const currentType = folders.find((folder) => folder.uid === currentFolderUid)?.type;
     const moveTargets = folders.filter((folder) => MOVE_TARGET_TYPES.has(folder.type) && folder.uid !== currentFolderUid);
+    // The same prompt the reading pane's own Move to opens, so one list of destinations and one way to
+    // create a folder serve both.
+    const [movePrompt, setMovePrompt] = useState(false);
 
     // None of the three needs its folder to exist first - the caller creates or lazily provisions it (see
     // `resolveFolderOfType()` and `bulkArchive()` in `apps/www/index.tsx`) - so the only thing that disables
@@ -109,21 +114,19 @@ export default function MailSelectionBar({
         (label) => selected.some((m) => m.labelUids?.includes(label.uid)) && !appliedToAll.includes(label),
     );
 
-    const moveSections: MenuSectionSpec[] = [
-        {
-            key: "folders",
-            label: "Move to folder",
-            note: moveTargets.length === 0 ? "There is no other folder in this mailbox to move to." : undefined,
-            items: moveTargets.map((folder) => ({
-                key: folder.uid,
-                label: folder.name,
-                onSelect: () => onMoveTo(folder.uid),
-            })),
-        },
-    ];
 
     return (
         <div className="border-b border-border">
+            <MoveToFolderDialog
+                open={movePrompt}
+                onClose={() => setMovePrompt(false)}
+                mailboxUid={mailboxUid}
+                folders={folders}
+                currentFolderUid={currentFolderUid}
+                count={selected.length}
+                onMove={onMoveTo}
+                onFolderCreated={onFolderCreated}
+            />
             <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-alt">
                 <span aria-live="polite" className="text-sm font-semibold text-text">
                     {selectedCount}
@@ -182,13 +185,14 @@ export default function MailSelectionBar({
                     commit={{ label: "Apply" }}
                     clear={{ label: "Remove all labels" }}
                 />
-                <MenuButton
-                    aria-label="Move to"
-                    label="Move to"
-                    sections={moveSections}
-                    disabled={none || busy || moveTargets.length === 0}
-                    title={moveTargets.length === 0 ? "There is no other folder in this mailbox to move to" : undefined}
-                />
+                <button
+                    type="button"
+                    onClick={() => setMovePrompt(true)}
+                    disabled={none || busy}
+                    className={actionClassName()}
+                >
+                    Move to
+                </button>
                 <button
                     type="button"
                     onClick={onReportJunk}

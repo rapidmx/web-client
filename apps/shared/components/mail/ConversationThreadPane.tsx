@@ -48,16 +48,23 @@ export interface ConversationThreadPaneProps {
     /** A message that left the folder being listed (archived, or a scheduled send sent back to Drafts). */
     onMessageRemoved: (updated: Message) => void;
     onLabelCreated?: (label: Label) => void;
+    /** A folder created from a message's own Move to prompt, for the folder sidebar to pick up. */
+    onFolderCreated?: (folder: Folder) => void;
 }
 
-/** Every message from `selectedUid` through to the newest - the run the reader is reading. Anything older
- * stays collapsed to its one-line summary. Selecting the newest message therefore expands just that one. */
+/**
+ * Every message from `selectedUid` through to the newest - the run the reader is reading. Anything older
+ * stays collapsed to its one-line summary. Selecting the newest message therefore expands just that one.
+ *
+ * The pane lists newest first (see `loadThread()`), so that run is the opened message together with
+ * everything *above* it, and the opened message is the set's **last** entry rather than its first.
+ */
 function expandedFrom(messages: Message[], selectedUid: string | null): Set<string> {
     const index = messages.findIndex((message) => message.uid === selectedUid);
     // `messages` is never empty here (the callers below check), so -1 means "not in this thread" and the
-    // newest message is the anchor, exactly as a parent row's own click means.
-    const anchor = index === -1 ? messages.length - 1 : index;
-    return new Set(messages.slice(anchor).map((message) => message.uid));
+    // newest message - the first entry - is the anchor, exactly as a parent row's own click means.
+    const anchor = index === -1 ? 0 : index;
+    return new Set(messages.slice(0, anchor + 1).map((message) => message.uid));
 }
 
 /**
@@ -77,7 +84,15 @@ function scrollingAncestor(node: HTMLElement): HTMLElement {
     return document.documentElement;
 }
 
-/** The thread's messages, oldest first, in pages of `THREAD_PAGE_SIZE` up to `THREAD_MESSAGE_LIMIT`. */
+/**
+ * The thread's messages, **newest first**, in pages of `THREAD_PAGE_SIZE` up to `THREAD_MESSAGE_LIMIT`.
+ *
+ * `listConversationMessages()` pages oldest first and has no order of its own to ask for, so the pages are
+ * collected in that order - which is also the order the `THREAD_MESSAGE_LIMIT` cap has to apply in, since it
+ * is the oldest messages that are dropped when a thread is too long to load - and reversed once at the end.
+ * The pane reads newest first always, whatever the *list* is sorted by: it is the reading order for mail,
+ * and it means the message a conversation row stands for is the entry at the top.
+ */
 async function loadThread(mailboxUid: string, conversationId: string): Promise<{ messages: Message[]; truncated: boolean }> {
     const messages: Message[] = [];
     let more = true;
@@ -90,14 +105,20 @@ async function loadThread(mailboxUid: string, conversationId: string): Promise<{
         // A short page is the last one; a full page means asking for another.
         more = page.length === THREAD_PAGE_SIZE;
     }
+    messages.reverse();
     return { messages, truncated: more };
 }
 
 /**
- * The reading pane for the conversation list: the whole thread, oldest at the top, opened at the message
- * the reader picked. Every message from that one through to the newest is expanded and the older ones are
- * collapsed to a one-line summary (sender, date, preview) that expands on click or Enter, so opening the
- * newest message shows just it, and opening 5 of 10 shows 5 through 10.
+ * The reading pane for the conversation list: the whole thread, **newest at the top**, opened at the message
+ * the reader picked. Every message from that one through to the newest is expanded - which in this order is
+ * the opened message and the entries above it - and the older ones, below it, are collapsed to a one-line
+ * summary (sender, date, preview) that expands on click or Enter. So opening the newest message shows just
+ * the top entry expanded, and opening 5 of 10 expands 10 down to 5.
+ *
+ * Newest first regardless of how the *list* is sorted: the list's own order arranges rows to pick from,
+ * while this is one conversation being read, and the entry a conversation row stands for - its latest
+ * message - is the one that should be at the top of the pane every time it is opened.
  *
  * Each *expanded* message is a `MessageDetailPane` of its own rather than a reimplementation of it, so the
  * signature and verification badges, the verification-seal and decryption behaviour, the labels chips and
@@ -114,6 +135,7 @@ export default function ConversationThreadPane({
     onMessagePatched,
     onMessageRemoved,
     onLabelCreated,
+    onFolderCreated,
 }: ConversationThreadPaneProps) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [attachmentsByUid, setAttachmentsByUid] = useState<Record<string, Attachment[]>>({});
@@ -190,8 +212,9 @@ export default function ConversationThreadPane({
         appliedSelectionRef.current = key;
         const expanded = expandedFrom(messages, selectedUid);
         setExpandedUids(expanded);
-        // The oldest expanded message is the one that was opened - `expandedFrom()`'s own anchor.
-        setPendingFocusUid([...expanded][0]);
+        // The oldest expanded message is the one that was opened - `expandedFrom()`'s own anchor - which in
+        // this newest-first order is the *last* of the run, not the first.
+        setPendingFocusUid([...expanded][expanded.size - 1]);
     }, [conversationId, selectedUid, messages]);
 
     useLayoutEffect(() => {
@@ -199,11 +222,21 @@ export default function ConversationThreadPane({
         // The row is always rendered by now: this runs after the DOM update that added the message it
         // names, and that message came out of `messages` in the first place.
         //
-        // The element itself, never a computed offset - the messages above it have only just been laid
-        // out. `"nearest"` scrolls the least that brings it into view and nothing at all when it is
-        // already there, so opening a thread that fits on screen doesn't move the page under the reader;
-        // a message taller than the view (which an expanded one usually is) ends up at the top.
-        rowRefs.current[pendingFocusUid]!.scrollIntoView({ block: "nearest" });
+        // Scrolled inside the thread's own list and nowhere else. `scrollIntoView()` scrolls *every*
+        // scrollable ancestor, the window included, which with a run of full-height messages expanded
+        // took the app header and the folder rail off the screen - so the adjustment goes on whichever
+        // ancestor actually scrolls, exactly as the toggle below already does it. When that is the page
+        // itself, nothing inside the pane scrolls and the row is already in view, so it is left alone.
+        const row = rowRefs.current[pendingFocusUid]!;
+        const scroller = scrollingAncestor(row);
+        if (scroller !== document.documentElement) {
+            const rect = row.getBoundingClientRect();
+            const top = rect.top - scroller.getBoundingClientRect().top;
+            // "nearest": the least that brings it into view, and nothing at all when it is already there.
+            if (top < 0 || top + rect.height > scroller.clientHeight) {
+                scroller.scrollTop += top;
+            }
+        }
         // `preventScroll` so focusing doesn't scroll it somewhere else again.
         headerRefs.current[pendingFocusUid]!.focus({ preventScroll: true });
         setPendingFocusUid(null);
@@ -378,10 +411,11 @@ export default function ConversationThreadPane({
                                         attachments={attachmentsByUid[uid] ?? []}
                                         isSentItems={folderTypeOf(message) === "sent_items"}
                                         isOutbox={folderTypeOf(message) === "outbox"}
-                                        isInbox={folderTypeOf(message) === "inbox"}
                                         draftsFolderUid={folders.find((folder) => folder.type === "drafts")?.uid}
+                                        folders={folders}
+                                        onMoved={removeMessage}
+                                        onFolderCreated={onFolderCreated}
                                         onRecalled={patchMessage}
-                                        onClassified={patchMessage}
                                         onReceiptHandled={patchMessage}
                                         onScheduledSendCanceled={removeMessage}
                                         onArchived={removeMessage}
