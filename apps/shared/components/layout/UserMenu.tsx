@@ -3,11 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef, useState } from "react";
-import { formatProfileName, getMyProfile, Profile, profileInitials } from "@rapidmx/react-shared/auth/profileApi.js";
+import { formatProfileName, getMyProfile, getMyUsername, Profile, profileInitials } from "@rapidmx/react-shared/auth/profileApi.js";
 
 export interface UserMenuProps {
     userUid: string;
-    /** auth-server's base URL — where the caller's own profile (name/avatar) is fetched from, if configured. */
+    /** auth-server's base URL — where the caller's own profile (name/avatar) and username are fetched from, and what
+     * the "Account" item links into, if configured. Without it the menu shows the bare uid and has no "Account" item. */
     authServerUrl?: string;
     onSignOut: () => void;
     /** Shows an "Admin" item linking to `/admin`, above "Sign Out" — pass only for a trusted-role caller. */
@@ -40,25 +41,48 @@ function Avatar({ profile, initials, large }: { profile?: Profile; initials: str
 }
 
 /**
- * The top-right "who am I" menu shared by `MailShell` and `AdminShell`: an avatar-button trigger that opens a
- * dropdown showing the caller's avatar/name, an optional "Admin" link (trusted-role callers only), and
- * "Sign Out". Name/avatar come from auth-server's own profile endpoint (`GET /api/profiles/me`) — this
- * service has no local user directory (see `.claude/NOTES.md`) — and fall back to the bare uid/its first
- * letter when unset or unreachable, which is a fully valid, expected state for most password-registered
- * accounts (only OIDC sign-in currently populates a real avatar).
+ * The top-right "who am I" menu shared by every shell (`AppShell`, `AdminShell`, `EscrowShell`): an avatar-button
+ * trigger that opens a dropdown showing the caller's avatar/name, an "Account" link to auth-server's account page,
+ * an optional "Settings" and "Admin" link, and "Sign Out". This service has no local user directory (see
+ * `.claude/NOTES.md`), so the name and avatar come from auth-server, and the displayed name (and the initials badge)
+ * falls back down a chain: the profile's name (`GET /api/profiles/me`), else the caller's username - their first
+ * verified `name` alias (`GET /api/aliases?type=name`, asked for only when the profile gave no name) - else the bare
+ * uid. Either lookup can fail (auth-server's CORS list not including this origin, or no profile document at all - a
+ * 404 for some accounts) and neither ever surfaces as an error. The avatar image comes from the profile alone.
  */
 export default function UserMenu({ userUid, authServerUrl, onSignOut, showAdminLink, showSettingsLink }: UserMenuProps) {
     const [open, setOpen] = useState(false);
     const [profile, setProfile] = useState<Profile | undefined>(undefined);
+    const [username, setUsername] = useState<string | undefined>(undefined);
     const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (!authServerUrl) {
             return;
         }
-        getMyProfile(authServerUrl)
-            .then(setProfile)
-            .catch(() => undefined);
+        let cancelled = false;
+        void (async () => {
+            let loaded: Profile | undefined;
+            try {
+                loaded = await getMyProfile(authServerUrl);
+            } catch {
+                // Unreachable, blocked, or no profile document (404) - fall through to the username.
+            }
+            if (cancelled) {
+                return;
+            }
+            setProfile(loaded);
+            // The username is only the fallback for a missing name - no second request when the profile has one.
+            if (!formatProfileName(loaded)) {
+                const alias = await getMyUsername(authServerUrl);
+                if (!cancelled) {
+                    setUsername(alias);
+                }
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
     }, [authServerUrl]);
 
     useEffect(() => {
@@ -83,8 +107,10 @@ export default function UserMenu({ userUid, authServerUrl, onSignOut, showAdminL
         };
     }, [open]);
 
-    const name = formatProfileName(profile) ?? userUid;
-    const initials = profileInitials(profile, userUid);
+    const name = formatProfileName(profile) ?? username ?? userUid;
+    const initials = profileInitials(profile, userUid, username);
+    // Tolerates a configured URL with a trailing slash, which would otherwise produce `//account`.
+    const accountUrl = authServerUrl ? `${authServerUrl.replace(/\/+$/, "")}/account` : undefined;
 
     return (
         <div className="relative" ref={containerRef}>
@@ -117,6 +143,15 @@ export default function UserMenu({ userUid, authServerUrl, onSignOut, showAdminL
                         <Avatar profile={profile} initials={initials} large />
                         <span className="text-sm font-semibold text-text truncate">{name}</span>
                     </div>
+                    {accountUrl && (
+                        <a
+                            role="menuitem"
+                            href={accountUrl}
+                            className="block px-3.5 py-2 text-sm text-text hover:bg-surface-alt"
+                        >
+                            Account
+                        </a>
+                    )}
                     {showSettingsLink && (
                         <a
                             role="menuitem"

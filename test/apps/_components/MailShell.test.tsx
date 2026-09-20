@@ -3,12 +3,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import MailShell, { MAILBOX_LIST_LIMIT, useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
 import { getKeyVault } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { resetPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 
 // MailShell now wraps its content in KeyEnrollmentGate (see that component), which checks
@@ -698,6 +699,121 @@ describe("MailShell", () => {
             await user.click(screen.getByRole("button", { name: "create" }));
 
             expect(screen.getByText("folders:")).toBeInTheDocument();
+        });
+    });
+
+    describe("live updates", () => {
+        /** A stand-in for the push WebSocket, driven by hand. */
+        class FakePushSocket {
+            static instances: FakePushSocket[] = [];
+            readyState = 1;
+            onopen: unknown = null;
+            onmessage: ((e: { data: unknown }) => void) | null = null;
+            onclose: unknown = null;
+            onerror: unknown = null;
+            constructor(public url: string) {
+                FakePushSocket.instances.push(this);
+            }
+            send() {
+                // Nothing is ever delivered.
+            }
+            close() {
+                // Nothing to close.
+            }
+            receive(frame: unknown) {
+                this.onmessage?.({ data: JSON.stringify(frame) });
+            }
+        }
+
+        function LiveProbe() {
+            const { live } = useMailShell();
+            return <span data-testid="live">{`tick:${live.tick} folders:${live.folderUids ? [...live.folderUids].join(",") : "any"}`}</span>;
+        }
+
+        /** Folder lists whose unread counts a test can change between refreshes. */
+        function mockLiveFolders(mailboxes: { uid: string }[], unread: { current: Record<string, number> }) {
+            return mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, mailboxes);
+                if (url.startsWith("/api/mail/folders")) {
+                    const mailbox = mailboxes.find((mb) => url.includes(`mailboxUid=${mb.uid}`))!;
+                    const uid = `f-inbox-${mailbox.uid}`;
+                    return jsonResponse(200, [{ ...inboxFolder, uid, mailboxUid: mailbox.uid, unreadCount: unread.current[uid] ?? 3 }]);
+                }
+                throw new Error(`unexpected ${url}`);
+            });
+        }
+
+        // Earlier tests in this file replace window.location (mockLocation) and never put it back; the push URL is built
+        // from its origin.
+        beforeEach(() => {
+            Object.defineProperty(window, "location", { configurable: true, writable: true, value: new URL("http://localhost:3000/") });
+        });
+
+        afterEach(() => {
+            FakePushSocket.instances = [];
+            resetPushClient();
+        });
+
+        it("updates a folder's unread badge, and the All Mailboxes total, when a push event says mail arrived - without a reload", async () => {
+            vi.stubGlobal("WebSocket", FakePushSocket);
+            const unread = { current: {} as Record<string, number> };
+            mockLiveFolders([mailboxA, mailboxB], unread);
+            render(
+                <MailShell userUid="u1">
+                    <LiveProbe />
+                </MailShell>,
+            );
+            await screen.findAllByText("Mailbox A");
+            // 3 unread in each inbox; All Mailboxes sums them.
+            expect((await screen.findAllByText("6")).length).toBeGreaterThan(0);
+            expect(screen.getByTestId("live")).toHaveTextContent("tick:0");
+
+            unread.current = { "f-inbox-mb-a": 4, "f-inbox-mb-b": 3 };
+            const socket = FakePushSocket.instances[0];
+            socket.receive({ id: 0, type: "SUBSCRIBED", data: ["u1"] });
+            act(() => socket.receive({ type: "MessageMongo", action: "create", data: { uid: "m9", folderUid: "f-inbox-mb-a" } }));
+
+            await waitFor(() => expect(screen.getByTestId("live")).toHaveTextContent("tick:1 folders:f-inbox-mb-a"), { timeout: 3000 });
+            await waitFor(() => expect(screen.getAllByText("7").length).toBeGreaterThan(0), { timeout: 3000 });
+            expect(screen.getAllByText("4").length).toBeGreaterThan(0);
+        });
+
+        it("shows a folder another client just created, once", async () => {
+            vi.stubGlobal("WebSocket", FakePushSocket);
+            mockLiveFolders([mailboxA], { current: {} });
+            render(<MailShell userUid="u1">content</MailShell>);
+            await screen.findAllByText("Inbox");
+            const socket = FakePushSocket.instances[0];
+            socket.receive({ id: 0, type: "SUBSCRIBED", data: ["u1"] });
+
+            const created = { ...inboxFolder, uid: "f-receipts", mailboxUid: "mb-a", name: "Receipts", type: "user" as const, unreadCount: 0 };
+            act(() => {
+                socket.receive({ type: "FolderMongo", action: "create", data: created });
+                socket.receive({ type: "FolderMongo", action: "create", data: created });
+            });
+            // Once per sidebar rendering - the same number as the Inbox, not doubled by the second event.
+            const receipts = await screen.findAllByText("Receipts");
+            expect(receipts).toHaveLength(screen.getAllByText("Inbox").length);
+        });
+
+        it("keeps working, on the safety-net poll alone, when the push socket can't be opened", async () => {
+            vi.stubGlobal(
+                "WebSocket",
+                class {
+                    constructor() {
+                        throw new Error("blocked");
+                    }
+                },
+            );
+            mockLiveFolders([mailboxA], { current: {} });
+            render(
+                <MailShell userUid="u1">
+                    <LiveProbe />
+                </MailShell>,
+            );
+            expect((await screen.findAllByText("Inbox")).length).toBeGreaterThan(0);
+            expect(screen.getByTestId("live")).toHaveTextContent("tick:0");
         });
     });
 });

@@ -743,6 +743,153 @@ describe("ComposeWindow", () => {
         expect(await screen.findByText("Could not send this message.")).toBeInTheDocument();
     });
 
+    describe("a failed send", () => {
+        const details = {
+            message: "The message could not be delivered.",
+            code: "api-500",
+            details: {
+                recipients: [
+                    { address: "b@example.com", smtpCode: 550, enhancedStatus: "5.1.1", response: "No such user here" },
+                    { address: "c@example.com", smtpCode: 452, response: "Mailbox full" },
+                ],
+                transportError: "connect ECONNREFUSED 10.0.0.5:25",
+            },
+        };
+
+        /** Types a recipient and clicks Send against a server whose send endpoint answers `sendResponse`. */
+        async function sendAndFail(sendResponse: () => Response, onClose = vi.fn()) {
+            const fetchMock = mockCompose((url, init) => {
+                if (url === "/api/mail/compose/m1/assemble" && (init?.method ?? "GET") === "POST") return jsonResponse(200, draft);
+                if (url === "/api/mail/messages/m1/send") return sendResponse();
+                if (init?.method === "DELETE") return new Response(null, { status: 204 });
+                return undefined;
+            });
+            const user = userEvent.setup();
+            const view = render(<ComposeWindow session={session()} onClose={onClose} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+            await user.type(screen.getByLabelText("To"), "b@example.com");
+            await user.click(screen.getByRole("button", { name: "Send" }));
+            return { fetchMock, user, onClose, view };
+        }
+
+        it("keeps the window open with the draft, shows the message prominently and puts the details in a collapsed Technical details block", async () => {
+            const { fetchMock, onClose } = await sendAndFail(() => jsonResponse(502, details));
+
+            const banner = await screen.findByRole("alert");
+            expect(within(banner).getByText("The message could not be delivered.")).toBeInTheDocument();
+            const summary = within(banner).getByText("Technical details", { selector: "summary" });
+            expect(summary.closest("details")).not.toHaveAttribute("open");
+
+            const lines = within(banner).getAllByRole("listitem").map((item) => item.textContent);
+            expect(lines).toEqual([
+                "recipients 1: address=b@example.com smtpCode=550 enhancedStatus=5.1.1 response=No such user here",
+                "recipients 2: address=c@example.com smtpCode=452 response=Mailbox full",
+                "transportError: connect ECONNREFUSED 10.0.0.5:25",
+            ]);
+
+            // Nothing was closed, discarded or overwritten: the window is still there, ready to send again.
+            expect(onClose).not.toHaveBeenCalled();
+            expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
+            expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled();
+            expect(screen.getByLabelText("To")).toBeInTheDocument();
+        });
+
+        it("expands to the monospace lines, and copies them all in one go", async () => {
+            const writeText = vi.fn().mockResolvedValue(undefined);
+            const { user } = await sendAndFail(() => jsonResponse(502, details));
+            Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+            const banner = await screen.findByRole("alert");
+            await user.click(within(banner).getByText("Technical details", { selector: "summary" }));
+            expect(within(banner).getByRole("list", { name: "Technical details" })).toBeVisible();
+            expect(within(banner).getByRole("list", { name: "Technical details" }).className).toContain("font-mono");
+
+            await user.click(within(banner).getByRole("button", { name: "Copy technical details" }));
+            expect(writeText).toHaveBeenCalledWith(
+                [
+                    "recipients 1: address=b@example.com smtpCode=550 enhancedStatus=5.1.1 response=No such user here",
+                    "recipients 2: address=c@example.com smtpCode=452 response=Mailbox full",
+                    "transportError: connect ECONNREFUSED 10.0.0.5:25",
+                ].join("\n"),
+            );
+            expect(await within(banner).findByText("Copied")).toBeInTheDocument();
+            Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+        });
+
+        it("shows just the message when the response has no details to parse", async () => {
+            await sendAndFail(() => jsonResponse(500, { message: "Relay access denied" }));
+
+            const banner = await screen.findByRole("alert");
+            expect(within(banner).getByText("Relay access denied")).toBeInTheDocument();
+            expect(within(banner).queryByText("Technical details")).not.toBeInTheDocument();
+            expect(within(banner).queryByRole("button", { name: "Copy technical details" })).not.toBeInTheDocument();
+        });
+
+        it("clears the details with the message when Send is tried again", async () => {
+            let calls = 0;
+            const { user } = await sendAndFail(() => (++calls === 1 ? jsonResponse(502, details) : jsonResponse(500, { message: "Try later" })));
+            await screen.findByText("Technical details");
+
+            await user.click(screen.getByRole("button", { name: "Send" }));
+            expect(await screen.findByText("Try later")).toBeInTheDocument();
+            expect(screen.queryByText("Technical details")).not.toBeInTheDocument();
+        });
+
+        it("asks before Close, since closing would keep the draft and say nothing - and Keep editing leaves the window as it was", async () => {
+            const { user, onClose } = await sendAndFail(() => jsonResponse(502, details));
+            await screen.findByText("Technical details");
+
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            const dialog = await screen.findByRole("dialog", { name: "This message wasn't sent" });
+            expect(within(dialog).getByText(/Sending it failed \(The message could not be delivered\)\. Closing keeps it as a draft, unsent/)).toBeInTheDocument();
+
+            await user.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+            expect(screen.queryByRole("dialog", { name: "This message wasn't sent" })).not.toBeInTheDocument();
+            expect(onClose).not.toHaveBeenCalled();
+            expect(screen.getByText("The message could not be delivered.")).toBeInTheDocument();
+        });
+
+        it("closes, keeping the draft, once that is chosen - without deleting it", async () => {
+            const { user, onClose, fetchMock } = await sendAndFail(() => jsonResponse(502, details));
+            await screen.findByText("Technical details");
+
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            const dialog = await screen.findByRole("dialog", { name: "This message wasn't sent" });
+            await user.click(within(dialog).getByRole("button", { name: "Close, keep draft" }));
+
+            await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+            expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
+        });
+
+        it("still offers Discard from that prompt", async () => {
+            const { user, onClose } = await sendAndFail(() => jsonResponse(502, details));
+            await screen.findByText("Technical details");
+
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            const dialog = await screen.findByRole("dialog", { name: "This message wasn't sent" });
+            await user.click(within(dialog).getByRole("button", { name: "Discard" }));
+            await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+        });
+
+        it("says Not sent on the minimized bar, where the banner can't be seen", async () => {
+            const { view, onClose } = await sendAndFail(() => jsonResponse(502, details));
+            await screen.findByText("Technical details");
+
+            view.rerender(<ComposeWindow session={session({ minimized: true })} onClose={onClose} onToggleMinimize={vi.fn()} />);
+            expect(screen.getByText("Not sent")).toBeInTheDocument();
+        });
+
+        it("shows no Not sent marker on a minimized window that hasn't failed", async () => {
+            const fetchMock = mockCompose();
+            render(<ComposeWindow session={session({ minimized: true })} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            // Let the draft be created, so nothing settles after the test.
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/messages")).toBe(true));
+            await act(async () => undefined);
+            expect(screen.getByRole("button", { name: "Restore" })).toBeInTheDocument();
+            expect(screen.queryByText("Not sent")).not.toBeInTheDocument();
+        });
+    });
+
     it("uploads a selected attachment against the draft and lists it", async () => {
         const attachment = {
             uid: "a1",

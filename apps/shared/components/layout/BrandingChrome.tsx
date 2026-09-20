@@ -51,8 +51,9 @@ function BrandingHtml({ html }: { html: string | undefined }) {
 }
 
 /**
- * Renders the admin-configured `Branding.headerHtml`/`footerHtml` (see `useBranding()`), sanitized - shared by
- * the webmail and admin chromes. The escrow console deliberately renders no branding HTML at all.
+ * Renders the admin-configured `Branding.headerHtml`/`footerHtml` (see `useBranding()`), sanitized. The webmail
+ * chrome (`AppShell`) shows both; the admin console shows only the footer - its header is the console's own - and the
+ * escrow console deliberately renders no branding HTML at all.
  */
 export function BrandingHeader({ branding }: { branding: Branding | null }) {
     return <BrandingHtml html={branding?.headerHtml} />;

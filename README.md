@@ -32,7 +32,7 @@ any release.
 | --- | --- |
 | `shared/components/layout/AppShell.js` | Chrome for webmail apps: app rail, header, user menu, impersonation banner, compose and unlock providers. `active` is a core app or the plugin's `appRail` item id. |
 | `shared/components/settings/layout/SettingsShell.js` | Settings chrome with the section list and mailbox switcher. `active` is the plugin's `settingsSections` item id. `useSettingsShell()` gives the selected `mailboxUid` and the accessible `mailboxes`. |
-| `shared/components/admin/layout/AdminShell.js` | Admin console chrome, gated on administrator access. `active` is the plugin's `adminNav` item id. |
+| `shared/components/admin/layout/AdminShell.js` | Admin console chrome, gated on administrator access - an administrator whose session isn't elevated is sent to auth-server's `/auth/elevate` page and returned. `active` is the plugin's `adminNav` item id. |
 | `shared/components/layout/BrandingChrome.js` | `BrandingHeader` and `BrandingFooter`, for pages that don't use a shell, such as public pages. |
 | `shared/plugins/pluginNav.js` | The `PluginNav`, `PluginUiNavItem` and `PluginNavProps` types. |
 

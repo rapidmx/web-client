@@ -7,6 +7,7 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { DnsRecordCheck, Domain, getDnsSetup, getDomain, verifyDomain } from "@rapidmx/react-shared/admin/domainsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import CopyButton from "@rapidmx/react-shared/components/buttons/CopyButton.js";
 
 const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
     ownership: "Ownership (TXT)",
@@ -15,6 +16,31 @@ const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
     dkim: "DKIM",
     dmarc: "DMARC",
 };
+
+/** How each record is named in a Copy button's accessible name ("Copy value for the SPF record"). */
+const RECORD_TYPE_NAMES: Record<DnsRecordCheck["type"], string> = {
+    ownership: "ownership TXT",
+    mx: "MX",
+    spf: "SPF",
+    dkim: "DKIM",
+    dmarc: "DMARC",
+};
+
+/** An MX record's recommended value is `"<priority> <mail server>"` - two separate fields in a DNS provider's form. */
+function splitMxValue(value: string): { priority: string; server: string } | null {
+    const match = /^(\d+)\s+(\S+)$/.exec(value.trim());
+    return match ? { priority: match[1], server: match[2] } : null;
+}
+
+/** A value to type into a DNS provider's form, shown in full (long DKIM keys wrap) with a Copy button beside it. */
+function CopyableValue({ value, copyLabel }: { value: string; copyLabel: string }) {
+    return (
+        <div className="flex items-start gap-2">
+            <code className="flex-1 min-w-0 text-xs break-all">{value}</code>
+            <CopyButton value={value} label={copyLabel} />
+        </div>
+    );
+}
 
 export interface DomainDnsSetupProps {
     uid: string;
@@ -33,7 +59,6 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
     const [error, setError] = useState<string | null>(null);
     const [verifying, setVerifying] = useState(false);
     const [verifyError, setVerifyError] = useState<string | null>(null);
-    const [copied, setCopied] = useState(false);
 
     function reload(id: string) {
         setLoading(true);
@@ -71,16 +96,6 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
         }
     }
 
-    async function handleCopy(value: string) {
-        try {
-            await navigator.clipboard.writeText(value);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        } catch {
-            // Clipboard access can be denied by the browser — the value is still selectable/copyable by hand.
-        }
-    }
-
     if (loading) {
         return <p className="text-sm text-text-muted">Loading&hellip;</p>;
     }
@@ -88,8 +103,9 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
         return <Alert>{error ?? "Domain not found."}</Alert>;
     }
 
-    const ownershipValue =
-        dnsSetup.find((c) => c.type === "ownership")?.recommendedValue ?? `rapidmx-domain-verification=${domain.verificationToken}`;
+    const ownership = dnsSetup.find((c) => c.type === "ownership");
+    const ownershipValue = ownership?.recommendedValue ?? `rapidmx-domain-verification=${domain.verificationToken}`;
+    const ownershipName = ownership?.recordName || domain.name;
 
     return (
         <div className="flex flex-col gap-5">
@@ -118,14 +134,18 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                         <p className="text-sm mb-2">
                             Add the following TXT record to <strong>{domain.name}</strong> to prove ownership, then verify:
                         </p>
-                        <div className="flex items-center gap-2">
-                            <code className="flex-1 text-xs bg-surface-alt border border-border rounded-sm py-2 px-3 overflow-x-auto whitespace-nowrap">
-                                {ownershipValue}
-                            </code>
-                            <Button type="button" variant="secondary" className="!w-auto shrink-0" onClick={() => handleCopy(ownershipValue)}>
-                                {copied ? "Copied" : "Copy"}
-                            </Button>
-                        </div>
+                        <dl className="grid grid-cols-[auto_1fr] items-start gap-x-4 gap-y-2 text-sm">
+                            <dt className="text-text-muted py-2">Type</dt>
+                            <dd className="py-2">TXT</dd>
+                            <dt className="text-text-muted py-2">Name / host</dt>
+                            <dd className="bg-surface-alt border border-border rounded-sm py-1.5 px-3">
+                                <CopyableValue value={ownershipName} copyLabel="Copy name for the ownership TXT record" />
+                            </dd>
+                            <dt className="text-text-muted py-2">Value</dt>
+                            <dd className="bg-surface-alt border border-border rounded-sm py-1.5 px-3">
+                                <CopyableValue value={ownershipValue} copyLabel="Copy value for the ownership TXT record" />
+                            </dd>
+                        </dl>
                         {verifyError && (
                             <div className="mt-3">
                                 <Alert>{verifyError}</Alert>
@@ -145,7 +165,7 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                         <table className="w-full text-sm border-collapse">
                             <thead>
                                 <tr>
-                                    {["Record", "Status", "Recommended value"].map((h) => (
+                                    {["Record", "Status", "Name / host", "Recommended value"].map((h) => (
                                         <th
                                             key={h}
                                             className="text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border"
@@ -158,7 +178,10 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                             <tbody>
                                 {dnsSetup.map((check) => (
                                     <tr key={check.type}>
-                                        <td className="py-2.5 px-2.5 border-b border-border">{RECORD_TYPE_LABELS[check.type]}</td>
+                                        <td className="py-2.5 px-2.5 border-b border-border">
+                                            {RECORD_TYPE_LABELS[check.type]}
+                                            <div className="text-xs text-text-muted">Type: {check.recordKind}</div>
+                                        </td>
                                         <td className="py-2.5 px-2.5 border-b border-border">
                                             {!check.configured ? (
                                                 <span className="text-xs text-text-muted">Not configured</span>
@@ -173,15 +196,54 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                                             )}
                                         </td>
                                         <td className="py-2.5 px-2.5 border-b border-border text-text-muted">
-                                            <code className="text-xs">{check.recommendedValue ?? "—"}</code>
+                                            {check.recordName ? (
+                                                <CopyableValue
+                                                    value={check.recordName}
+                                                    copyLabel={`Copy name for the ${RECORD_TYPE_NAMES[check.type]} record`}
+                                                />
+                                            ) : (
+                                                <code className="text-xs">—</code>
+                                            )}
+                                        </td>
+                                        <td className="py-2.5 px-2.5 border-b border-border text-text-muted">
+                                            {check.recommendedValue ? (
+                                                <DnsRecordValue check={check} value={check.recommendedValue} />
+                                            ) : (
+                                                <code className="text-xs">—</code>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
                     </div>
+                    <p className="text-xs text-text-muted mt-3">
+                        Some DNS providers want the name relative to the domain (for example <code>@</code> for the domain itself) rather
+                        than the full name.
+                    </p>
                 </div>
             )}
+        </div>
+    );
+}
+
+/** The value cell of a checklist row: an MX value as its two form fields (priority and mail server), anything else whole. */
+function DnsRecordValue({ check, value }: { check: DnsRecordCheck; value: string }) {
+    const recordName = RECORD_TYPE_NAMES[check.type];
+    const mx = check.type === "mx" ? splitMxValue(value) : null;
+    if (!mx) {
+        return <CopyableValue value={value} copyLabel={`Copy value for the ${recordName} record`} />;
+    }
+    return (
+        <div className="flex flex-col gap-1.5">
+            <div className="flex items-start gap-2">
+                <span className="text-xs w-20 shrink-0 pt-1">Priority</span>
+                <CopyableValue value={mx.priority} copyLabel={`Copy priority for the ${recordName} record`} />
+            </div>
+            <div className="flex items-start gap-2">
+                <span className="text-xs w-20 shrink-0 pt-1">Mail server</span>
+                <CopyableValue value={mx.server} copyLabel={`Copy mail server for the ${recordName} record`} />
+            </div>
         </div>
     );
 }

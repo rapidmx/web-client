@@ -471,6 +471,19 @@ describe("InboxPage", () => {
         expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message");
     });
 
+    it("shows the sender's address beside their name in each row, and just the address for a sender with no name", async () => {
+        mockShellAndInbox([
+            messageFixture(),
+            messageFixture({ uid: "m2", subject: "No name", from: { address: "anon@example.org", type: "to" as const } }),
+        ]);
+        render(<InboxPage userUid="u1" />);
+        await screen.findByText("Hello there");
+
+        expect(screen.getByText("Sender One <sender@example.com>", { selector: ".sr-only" })).toBeInTheDocument();
+        expect(screen.getByText("Sender One")).toBeInTheDocument();
+        expect(screen.getByText("anon@example.org", { selector: ".sr-only" })).toBeInTheDocument();
+    });
+
     it("marks a row that has an attachment", async () => {
         mockShellAndInbox([messageFixture({ hasAttachments: true })]);
         render(<InboxPage userUid="u1" />);
@@ -4302,6 +4315,423 @@ describe("InboxPage", () => {
                 ),
             ).toBe(false);
             mockLocation();
+        });
+    });
+
+    describe("live updates", () => {
+        /** A stand-in for the push WebSocket, driven by hand. */
+        class FakePushSocket {
+            static instances: FakePushSocket[] = [];
+            readyState = 1;
+            onopen: unknown = null;
+            onmessage: ((e: { data: unknown }) => void) | null = null;
+            onclose: unknown = null;
+            onerror: unknown = null;
+            constructor(public url: string) {
+                FakePushSocket.instances.push(this);
+            }
+            send() {
+                // Nothing is ever delivered.
+            }
+            close() {
+                // Nothing to close.
+            }
+            receive(frame: unknown) {
+                this.onmessage?.({ data: JSON.stringify(frame) });
+            }
+        }
+
+        /** Delivers a message event, as the server publishes it, for `folderUid`. */
+        function pushMessage(folderUid: string | undefined, action = "create") {
+            act(() => FakePushSocket.instances[0].receive({ type: "MessageMongo", action, data: { uid: "pushed", folderUid } }));
+        }
+
+        function listCalls(fetchMock: ReturnType<typeof mockFetch>, folderUid = "f1") {
+            return fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/mail/messages?") && String(url).includes(`folderUid=${folderUid}`));
+        }
+
+        beforeEach(() => {
+            // Earlier tests replace window.location without an origin; the push URL is built from it.
+            Object.defineProperty(window, "location", { configurable: true, writable: true, value: new URL("http://localhost:3000/") });
+            vi.stubGlobal("WebSocket", FakePushSocket);
+        });
+
+        afterEach(() => {
+            FakePushSocket.instances = [];
+            Object.defineProperty(window, "location", { configurable: true, writable: true, value: new URL("http://localhost:3000/") });
+            mockLocation();
+        });
+
+        it("shows new mail in the open folder as it arrives, without a reload, keeping the selection and marking nothing read", async () => {
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "First" })];
+            const fetchMock = mockShellAndInbox(messages);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await user.click(await screen.findByText("First"));
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:m1");
+            // Nothing about the arrival marks it read: no update is ever sent for the new message.
+            const putsFor = (uid: string) =>
+                fetchMock.mock.calls.filter(([url, init]) => (init as RequestInit | undefined)?.method === "PUT" && String(url).includes(uid)).length;
+
+            messages.unshift(messageFixture({ uid: "m2", subject: "Just arrived", receivedDate: "2026-01-02T00:00:00.000Z" }));
+            pushMessage("f1");
+
+            expect(await screen.findByText("Just arrived", {}, { timeout: 3000 })).toBeInTheDocument();
+            // Newest first, the reader's message still open, and the new one not touched.
+            const rows = screen.getAllByRole("listitem").map((li) => li.textContent);
+            expect(rows[0]).toContain("Just arrived");
+            expect(rows[1]).toContain("First");
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:m1");
+            expect(putsFor("m2")).toBe(0);
+        });
+
+        it("replaces the list with the fresh page when the folder fits on one, so what was deleted elsewhere goes too", async () => {
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "Stays" }), messageFixture({ uid: "m2", subject: "Deleted elsewhere" })];
+            mockShellAndInbox(messages);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Deleted elsewhere");
+
+            messages.splice(1, 1);
+            pushMessage("f1", "delete");
+
+            await waitFor(() => expect(screen.queryByText("Deleted elsewhere")).not.toBeInTheDocument(), { timeout: 3000 });
+            expect(screen.getByText("Stays")).toBeInTheDocument();
+        });
+
+        it("keeps the older rows already paged in, and pages on from where it was, when a full first page has new mail on top", async () => {
+            const page = (from: number, count: number) =>
+                Array.from({ length: count }, (_, i) =>
+                    messageFixture({ uid: `m${from + i}`, subject: `Message ${from + i}`, receivedDate: new Date(Date.UTC(2026, 0, 1, 0, 0, 100 - (from + i))).toISOString() }),
+                );
+            // 60 messages: the first page is 50 (a full page), 10 more behind it.
+            const messages: any[] = page(0, 60);
+            const fetchMock = mockShellAndInbox(messages, (url) => {
+                if (url.startsWith("/api/mail/messages?")) {
+                    const params = new URLSearchParams(url.split("?")[1]);
+                    const pageNumber = Number(params.get("page") ?? 0);
+                    return jsonResponse(200, messages.slice(pageNumber * 50, pageNumber * 50 + 50));
+                }
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Message 0");
+            await user.click(screen.getByText("Message 3"));
+
+            // Two new messages arrive ahead of everything.
+            messages.unshift(...[messageFixture({ uid: "n2", subject: "New two" }), messageFixture({ uid: "n1", subject: "New one" })]);
+            pushMessage("f1");
+
+            expect(await screen.findByText("New one", {}, { timeout: 3000 })).toBeInTheDocument();
+            expect(screen.getByText("New two")).toBeInTheDocument();
+            expect(screen.getByText("Message 49")).toBeInTheDocument();
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:m3");
+            expect(listCalls(fetchMock).length).toBeGreaterThanOrEqual(2);
+        });
+
+        it("ignores an event about a folder the list isn't showing, and refreshes for one with no folder at all", async () => {
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "First" })];
+            const fetchMock = mockShellAndInbox(messages);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            const before = listCalls(fetchMock).length;
+
+            pushMessage("some-other-folder");
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            expect(listCalls(fetchMock).length).toBe(before);
+
+            messages.unshift(messageFixture({ uid: "m2", subject: "Folderless event" }));
+            pushMessage(undefined);
+            expect(await screen.findByText("Folderless event", {}, { timeout: 3000 })).toBeInTheDocument();
+        });
+
+        it("refreshes when the tab comes back to the front - the poll's and the refocus's shared path", async () => {
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "First" })];
+            mockShellAndInbox(messages);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+
+            messages.unshift(messageFixture({ uid: "m2", subject: "While away" }));
+            act(() => {
+                document.dispatchEvent(new Event("visibilitychange"));
+            });
+            expect(await screen.findByText("While away", {}, { timeout: 3000 })).toBeInTheDocument();
+        });
+
+        it("keeps the list it has, quietly, when the refresh fails", async () => {
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "First" })];
+            let fail = false;
+            const fetchMock = mockShellAndInbox(messages, (url) => {
+                if (fail && url.startsWith("/api/mail/messages?")) return jsonResponse(500, { message: "boom" });
+                return undefined;
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            const before = listCalls(fetchMock).length;
+
+            fail = true;
+            pushMessage("f1");
+            await waitFor(() => expect(listCalls(fetchMock).length).toBe(before + 1), { timeout: 3000 });
+            expect(screen.getByText("First")).toBeInTheDocument();
+            expect(screen.queryByText("boom")).not.toBeInTheDocument();
+            expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        });
+
+        it("does not refresh while a search is showing, or while the list is still loading its first page", async () => {
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "First" })];
+            const fetchMock = mockShellAndInbox(messages, (url) => (url.startsWith("/api/mail/search") ? jsonResponse(200, { results: [] }) : undefined));
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+
+            await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/mail/search"))).toBe(true));
+            const before = listCalls(fetchMock).length;
+            pushMessage("f1");
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            expect(listCalls(fetchMock).length).toBe(before);
+        });
+
+        it("keeps only the latest of two refreshes that overlap", async () => {
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "First" })];
+            const resolvers: ((r: Response) => void)[] = [];
+            let hold = false;
+            mockShellAndInbox(messages, (url) => {
+                if (hold && url.startsWith("/api/mail/messages?")) return new Promise<Response>((resolve) => resolvers.push(resolve)) as never;
+                return undefined;
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+
+            hold = true;
+            pushMessage("f1");
+            await waitFor(() => expect(resolvers).toHaveLength(1), { timeout: 3000 });
+            pushMessage("f1");
+            await waitFor(() => expect(resolvers).toHaveLength(2), { timeout: 3000 });
+
+            // The newer one lands first with the newer list; the older, stale one must not put the old list back.
+            await act(async () => {
+                resolvers[1](jsonResponse(200, [messageFixture({ uid: "m2", subject: "Newest" }), messages[0]]));
+            });
+            await screen.findByText("Newest");
+            await act(async () => {
+                resolvers[0](jsonResponse(200, [messages[0]]));
+            });
+            expect(screen.getByText("Newest")).toBeInTheDocument();
+        });
+
+        it("keeps a row the reader just changed, rather than putting back the older copy a refresh fetched", async () => {
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "First", version: 3, flags: { read: true, flagged: false, answered: false, forwarded: false } })];
+            let stale = false;
+            mockShellAndInbox(messages, (url) => {
+                if (stale && url.startsWith("/api/mail/messages?")) {
+                    return jsonResponse(200, [{ ...messages[0], version: 2, flags: { read: false, flagged: false, answered: false, forwarded: false } }]);
+                }
+                return undefined;
+            });
+            const { container } = render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            const row = () => container.querySelector("li button")!;
+            expect(row().className).not.toContain("font-semibold");
+
+            stale = true;
+            pushMessage("f1");
+            await new Promise((resolve) => setTimeout(resolve, 900));
+            expect(row().className).not.toContain("font-semibold");
+        });
+
+        it("refreshes a conversation list too, whichever folder the event is about, since a conversation can span folders", async () => {
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: true }),
+            );
+            const conversations: any[] = [conversationFixture({ conversationId: "c1", subject: "Old thread" })];
+            mockShellAndInbox([], undefined, conversations);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Old thread");
+
+            conversations.unshift(conversationFixture({ conversationId: "c2", subject: "Fresh thread", latestMessageUid: "m9" }));
+            pushMessage("f2");
+
+            expect(await screen.findByText("Fresh thread", {}, { timeout: 3000 })).toBeInTheDocument();
+            expect(screen.getByText("Old thread")).toBeInTheDocument();
+        });
+
+        it("refreshes the merged All Mailboxes view when a folder it is made of gets mail", async () => {
+            const sharedMailbox = { ...mailbox, uid: "mb2", ownerUserUid: undefined, displayName: "Support", primarySmtpAddress: "support@example.com" };
+            const sharedInbox = { ...inboxFolder, uid: "f-shared-inbox", mailboxUid: "mb2" };
+            const byFolder: Record<string, any[]> = { f1: [messageFixture({ uid: "m-own", subject: "Own" })], "f-shared-inbox": [] };
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages?") || url === "/api/mail/messages") {
+                    return jsonResponse(200, byFolder[new URLSearchParams(url.split("?")[1]).get("folderUid") ?? ""] ?? []);
+                }
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            Object.defineProperty(window, "location", { configurable: true, writable: true, value: new URL("http://localhost:3000/?aggregate=inbox") });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Own");
+
+            byFolder["f-shared-inbox"].push(messageFixture({ uid: "m-shared", subject: "Support request", folderUid: "f-shared-inbox", mailboxUid: "mb2", receivedDate: "2026-02-01T00:00:00.000Z" }));
+            pushMessage("f-shared-inbox");
+            expect(await screen.findByText("Support request", {}, { timeout: 3000 })).toBeInTheDocument();
+
+            // An event for a folder that isn't part of the merged view is left alone.
+            byFolder.f1.push(messageFixture({ uid: "m-ignored", subject: "Not refreshed" }));
+            pushMessage("f-other");
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            expect(screen.queryByText("Not refreshed")).not.toBeInTheDocument();
+        });
+
+        it("folds a full first page of conversations in above the older ones already shown", async () => {
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: true }),
+            );
+            const conversations: any[] = Array.from({ length: 50 }, (_, i) =>
+                conversationFixture({ conversationId: `c${i}`, subject: `Thread ${i}`, latestMessageUid: `m${i}` }),
+            );
+            mockShellAndInbox([], undefined, conversations);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Thread 0");
+
+            conversations.unshift(conversationFixture({ conversationId: "c-new", subject: "Thread new", latestMessageUid: "m-new" }));
+            pushMessage("f1");
+
+            expect(await screen.findByText("Thread new", {}, { timeout: 3000 })).toBeInTheDocument();
+            expect(screen.getByText("Thread 49")).toBeInTheDocument();
+        });
+
+        it("keeps only the latest of two overlapping refreshes of a conversation list, and of the merged All Mailboxes view", async () => {
+            // Conversations.
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: true }),
+            );
+            const conversationResolvers: ((r: Response) => void)[] = [];
+            let hold = false;
+            mockShellAndInbox([], (url) =>
+                hold && url.startsWith("/api/mail/messages/conversations") ? (new Promise<Response>((resolve) => conversationResolvers.push(resolve)) as never) : undefined,
+            [conversationFixture({ conversationId: "c1", subject: "Old thread" })],
+            );
+            const first = render(<InboxPage userUid="u1" />);
+            await screen.findByText("Old thread");
+
+            hold = true;
+            pushMessage("f1");
+            await waitFor(() => expect(conversationResolvers).toHaveLength(1), { timeout: 3000 });
+            pushMessage("f1");
+            await waitFor(() => expect(conversationResolvers).toHaveLength(2), { timeout: 3000 });
+            await act(async () => {
+                conversationResolvers[1](jsonResponse(200, [conversationFixture({ conversationId: "c2", subject: "Newest thread" })]));
+            });
+            await screen.findByText("Newest thread");
+            await act(async () => {
+                conversationResolvers[0](jsonResponse(200, [conversationFixture({ conversationId: "c3", subject: "Stale thread" })]));
+            });
+            expect(screen.queryByText("Stale thread")).not.toBeInTheDocument();
+            expect(screen.getByText("Newest thread")).toBeInTheDocument();
+            first.unmount();
+
+            // The merged view, as a flat list again.
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: false }),
+            );
+            const sharedMailbox = { ...mailbox, uid: "mb2", ownerUserUid: undefined, displayName: "Support", primarySmtpAddress: "support@example.com" };
+            const sharedInbox = { ...inboxFolder, uid: "f-shared-inbox", mailboxUid: "mb2" };
+            const aggregateResolvers: ((r: Response) => void)[] = [];
+            let holdAggregate = false;
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages?") || url === "/api/mail/messages") {
+                    if (holdAggregate && url.includes("folderUid=f1")) return new Promise<Response>((resolve) => aggregateResolvers.push(resolve));
+                    return jsonResponse(200, url.includes("folderUid=f1") ? [messageFixture({ uid: "m-own", subject: "Own" })] : []);
+                }
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            Object.defineProperty(window, "location", { configurable: true, writable: true, value: new URL("http://localhost:3000/?aggregate=inbox") });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Own");
+
+            holdAggregate = true;
+            pushMessage("f1");
+            await waitFor(() => expect(aggregateResolvers).toHaveLength(1), { timeout: 3000 });
+            pushMessage("f1");
+            await waitFor(() => expect(aggregateResolvers).toHaveLength(2), { timeout: 3000 });
+            await act(async () => {
+                aggregateResolvers[1](jsonResponse(200, [messageFixture({ uid: "m-new", subject: "Newest own" })]));
+            });
+            await screen.findByText("Newest own");
+            await act(async () => {
+                aggregateResolvers[0](jsonResponse(200, [messageFixture({ uid: "m-stale", subject: "Stale own" })]));
+            });
+            expect(screen.queryByText("Stale own")).not.toBeInTheDocument();
+        });
+
+        it("stands aside while the first page is still loading, and while the shell has no folder to list yet", async () => {
+            let resolveList: ((r: Response) => void) | undefined;
+            const fetchMock = mockShellAndInbox([messageFixture({ uid: "m1", subject: "First" })], (url) =>
+                url.startsWith("/api/mail/messages?") ? (new Promise<Response>((resolve) => (resolveList = resolve)) as never) : undefined,
+            );
+            const { unmount } = render(<InboxPage userUid="u1" />);
+            await waitFor(() => expect(resolveList).toBeDefined());
+            act(() => {
+                document.dispatchEvent(new Event("visibilitychange"));
+            });
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            // Still just the one (held) listing - the refresh didn't start a second.
+            expect(listCalls(fetchMock)).toHaveLength(1);
+            unmount();
+
+            // The same with folders that never arrive: nothing is listed, so nothing is refreshed.
+            const fetchMock2 = mockShellAndInbox([messageFixture()], (url) =>
+                url.startsWith("/api/mail/folders") ? (new Promise<Response>(() => undefined) as never) : undefined,
+            );
+            render(<InboxPage userUid="u1" />);
+            await waitFor(() => expect(fetchMock2.mock.calls.some(([url]) => String(url).startsWith("/api/mail/folders"))).toBe(true));
+            act(() => {
+                document.dispatchEvent(new Event("visibilitychange"));
+            });
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            expect(listCalls(fetchMock2)).toHaveLength(0);
+        });
+
+        it("stands aside while a load-more is in flight, so the page it is fetching isn't fought over", async () => {
+            const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Message ${i}` }));
+            const io = mockIntersectionObserver();
+            let resolvePageOne: ((value: Response) => void) | undefined;
+            const fetchMock = mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    if (url.includes("page=1")) return new Promise((resolve) => (resolvePageOne = resolve));
+                    return jsonResponse(200, firstPage);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Message 0");
+            io.trigger();
+            await screen.findByText("Loading more…");
+            const before = listCalls(fetchMock).length;
+
+            act(() => {
+                document.dispatchEvent(new Event("visibilitychange"));
+            });
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            expect(listCalls(fetchMock).length).toBe(before);
+
+            resolvePageOne!(jsonResponse(200, [messageFixture({ uid: "m99", subject: "Message 99" })]));
+            expect(await screen.findByText("Message 99")).toBeInTheDocument();
         });
     });
 });

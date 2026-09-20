@@ -60,6 +60,8 @@ import { KEY_CHANGE_STALE_MESSAGE, sameFingerprint } from "../contacts/contactKe
 import { useCompose } from "./compose/ComposeContext.js";
 import { loadOriginalMessage } from "./compose/quotedBody.js";
 import { formatRecipient } from "./compose/recipients.js";
+import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
+import { RecipientLine } from "./MailAddress.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
 import { moveLocalEntity } from "../../search/localIndexRpcClient.js";
@@ -834,8 +836,8 @@ function MessageDetailContent({
     const senderAddress = (signatureShown ? extractAddresses(security.protectedHeaders?.from)[0] : undefined) ?? message.from.address;
     const senderName = message.from.displayName;
     const senderNameCheck = checkSenderName(senderName, senderAddress);
-    const showSenderAddress = !!senderName && (signatureShown || senderNameCheck.looksLikeAddress);
-    const senderLabel = showSenderAddress ? `${senderName} <${senderAddress}>` : senderName || senderAddress;
+    // Always `Name <address>` (or the bare address): a name alone hides who a message is really from.
+    const senderLabel = formatMailAddress({ displayName: senderName, address: senderAddress });
     // Offered only for a valid signature from a certificate nobody pinned for this sender - never to replace a pin.
     // A recorded signing-key conflict for this sender is resolved from the contact, never by trusting another key.
     const pendingConflict = senderUnpinned && senderKeyState?.conflict !== undefined;
@@ -1082,8 +1084,9 @@ function MessageDetailContent({
                         been forwarded or re-sent to you unchanged, or you were Bcc&rsquo;d.
                     </p>
                 )}
-                <p className="text-sm text-text-muted mt-1">
-                    From {senderLabel} &middot; {new Date(message.receivedDate).toLocaleString()}
+                <p className="text-sm text-text-muted mt-1 break-words">
+                    From <span className="font-medium text-text">{senderLabel}</span> &middot;{" "}
+                    {new Date(message.receivedDate).toLocaleString()}
                 </p>
                 {senderNameCheck.misleading && (
                     <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
@@ -1091,9 +1094,10 @@ function MessageDetailContent({
                         sent from <span className="font-medium">{senderAddress}</span>. Don&rsquo;t trust it based on the name.
                     </p>
                 )}
-                <p className="text-sm text-text-muted">
-                    To {message.recipients.map((r) => r.displayName || r.address).join(", ")}
-                </p>
+                {/* Every recipient with their address, grouped as the sender addressed them; a long list folds. */}
+                <RecipientLine label="To" recipients={message.recipients.filter((r) => r.type !== "cc" && r.type !== "bcc")} />
+                <RecipientLine label="Cc" recipients={message.recipients.filter((r) => r.type === "cc")} />
+                <RecipientLine label="Bcc" recipients={message.recipients.filter((r) => r.type === "bcc")} />
                 {/* Wraps: in a thread the pane can be as narrow as the reading pane gets (the list takes
                     384px of it), and these are six controls. */}
                 <div className="flex flex-wrap gap-1 mt-3">

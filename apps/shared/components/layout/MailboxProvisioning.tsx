@@ -10,6 +10,28 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 type Status = "checking" | "needs_selection" | "creating" | "unavailable" | "retryable";
 
+/** What the "Retry" screen says: the server couldn't read its provisioning policy (503) ... */
+const RETRY_POLICY_TEXT = "We couldn\u2019t check whether a mailbox can be set up for you. Please try again.";
+/** ... or couldn't reach the identity service (auth-server) it looks the caller's username up in (502). */
+const RETRY_IDENTITY_TEXT = "We couldn\u2019t reach the identity service to set up your mailbox. Please try again.";
+
+/** The longest server message shown as the reason a mailbox isn't available - a real reason is a sentence. */
+const MAX_REASON_LENGTH = 200;
+
+/**
+ * The reason to show under "No mailbox available": the server's own message, for a refusal it made on purpose - a
+ * 4xx such as 404 "Automatic mailbox provisioning is not enabled." or 404 "No username is registered for this account."
+ * Never for a 5xx (whose message is whatever went wrong inside the server) or a failure that never reached it (a network
+ * error's message is browser jargon), and only its first line, capped in length. `null` when there's nothing safe to show.
+ */
+function unavailableReason(err: unknown): string | null {
+    if (!(err instanceof ApiRequestError) || err.status < 400 || err.status >= 500) {
+        return null;
+    }
+    const line = err.message.split(/\r?\n/)[0].trim();
+    return line ? line.slice(0, MAX_REASON_LENGTH) : null;
+}
+
 /**
  * Rendered by each app's shell (Mail/Calendar/Contacts/Tasks) *instead of* the normal `AppShell`
  * chrome (icon rail, header, folder tree, ...) when the caller has no mailbox — a full-screen,
@@ -18,14 +40,20 @@ type Status = "checking" | "needs_selection" | "creating" | "unavailable" | "ret
  * auto-provisioning — see `BaseMailboxRoute.autoProvision()`'s own doc comment in `@rapidmx/restapi`
  * for the full contract — which is itself a no-op (a 404) unless an admin has both turned it on
  * (`mail:auto_provision:enabled`) and configured at least one domain (`mail:domains`). Safe to render
- * unconditionally in that place: any failure (disabled, no registered username, the identity service
- * unreachable) just falls back to the same plain "no mailbox" message this replaces.
+ * unconditionally in that place: a failure ends in one of two screens. A 502 (the identity service couldn't be
+ * reached) or 503 (the server couldn't read its provisioning policy) is transient and offers "Retry". Anything
+ * else is "No mailbox available - ask an administrator", now with the server's own reason above that advice when it
+ * refused deliberately (a 4xx, e.g. "Automatic mailbox provisioning is not enabled.") so the caller and the
+ * administrator they ask can tell why - see `unavailableReason()`.
  */
 export default function MailboxProvisioning() {
     const [status, setStatus] = useState<Status>("checking");
     const [options, setOptions] = useState<MailboxAutoProvisionAliasOption[]>([]);
     const [selected, setSelected] = useState("");
     const [error, setError] = useState<string | null>(null);
+    // Why the caller has no mailbox (see `unavailableReason()`), and what the retry screen says.
+    const [reason, setReason] = useState<string | null>(null);
+    const [retryText, setRetryText] = useState(RETRY_POLICY_TEXT);
 
     // Bumped by "Retry" to re-run the check below.
     const [attempt, setAttempt] = useState(0);
@@ -48,9 +76,18 @@ export default function MailboxProvisioning() {
                     window.location.reload();
                 }
             })
-            // A 503 means the server couldn't read its own provisioning policy right now - not that there's no
-            // mailbox to be had - so it gets a retry instead of the permanent "ask an administrator" message.
-            .catch((err) => setStatus(err instanceof ApiRequestError && err.status === 503 ? "retryable" : "unavailable"));
+            // A 503 means the server couldn't read its own provisioning policy right now, and a 502 that it couldn't
+            // reach the identity service - neither says there's no mailbox to be had - so they get a retry instead of
+            // the permanent "ask an administrator" message.
+            .catch((err) => {
+                if (err instanceof ApiRequestError && (err.status === 503 || err.status === 502)) {
+                    setRetryText(err.status === 502 ? RETRY_IDENTITY_TEXT : RETRY_POLICY_TEXT);
+                    setStatus("retryable");
+                } else {
+                    setReason(unavailableReason(err));
+                    setStatus("unavailable");
+                }
+            });
     }, [attempt]);
 
     async function handleConfirm() {
@@ -100,7 +137,7 @@ export default function MailboxProvisioning() {
         content = (
             <>
                 <h1 className="text-lg font-bold uppercase tracking-wide">Couldn&rsquo;t check right now</h1>
-                <p className="text-sm text-text-muted">We couldn&rsquo;t check whether a mailbox can be set up for you. Please try again.</p>
+                <p className="text-sm text-text-muted">{retryText}</p>
                 <Button type="button" onClick={() => setAttempt((n) => n + 1)} className="!w-auto self-center">
                     Retry
                 </Button>
@@ -110,6 +147,7 @@ export default function MailboxProvisioning() {
         content = (
             <>
                 <h1 className="text-lg font-bold uppercase tracking-wide">No mailbox available</h1>
+                {reason && <p className="text-sm">{reason}</p>}
                 <p className="text-sm text-text-muted">Ask an administrator to create one for you.</p>
             </>
         );

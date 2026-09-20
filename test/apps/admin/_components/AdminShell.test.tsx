@@ -8,11 +8,25 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
 import AdminShell from "../../../../apps/shared/components/admin/layout/AdminShell.js";
+import {
+    ELEVATION_ATTEMPT_KEY,
+    ELEVATION_RETRY_WINDOW_MS,
+    elevationUrl,
+} from "../../../../apps/shared/components/admin/elevation.js";
 
 const AUTH_SERVER_URL = "https://auth.example.com";
+const ADMIN_URL = "https://mail.example.com/admin/domains?tab=dns";
+const ELEVATE_URL = elevationUrl(AUTH_SERVER_URL, ADMIN_URL);
+
+/** A canary that answers as `@RequiresElevation()` does for a caller whose token isn't elevated. */
+function mockNeedsElevation() {
+    return mockFetch(() => jsonResponse(403, { code: "api-104", message: "Requires elevation." }));
+}
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    sessionStorage.clear();
 });
 
 describe("AdminShell", () => {
@@ -41,6 +55,163 @@ describe("AdminShell", () => {
         );
         expect(await screen.findByText("You do not have administrator access.")).toBeInTheDocument();
         expect(screen.queryByText("content")).not.toBeInTheDocument();
+    });
+
+    it("shows the access-denied message when the /admin canary returns 401", async () => {
+        mockFetch(() => jsonResponse(401, { code: "api-100", message: "Authentication required." }));
+        render(
+            <AdminShell active="mailboxes" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AdminShell>,
+        );
+        expect(await screen.findByText("You do not have administrator access.")).toBeInTheDocument();
+    });
+
+    describe("elevation", () => {
+        it("sends an administrator whose token is not elevated (403 api-104) to auth-server to elevate, returning to this page", async () => {
+            mockNeedsElevation();
+            const location = mockLocation();
+            location.href = ADMIN_URL;
+            const before = Date.now();
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+
+            await waitFor(() => expect(location.href).toBe(ELEVATE_URL));
+            expect(ELEVATE_URL).toBe(`${AUTH_SERVER_URL}/auth/elevate?return_to=${encodeURIComponent(ADMIN_URL)}`);
+            // It says so meanwhile, rather than flashing "no administrator access" or the console.
+            expect(screen.getByRole("status")).toHaveTextContent("Redirecting to confirm your identity");
+            expect(screen.queryByText("You do not have administrator access.")).not.toBeInTheDocument();
+            expect(screen.queryByText("content")).not.toBeInTheDocument();
+            // ... and remembers having done so.
+            expect(Number(sessionStorage.getItem(ELEVATION_ATTEMPT_KEY))).toBeGreaterThanOrEqual(before);
+        });
+
+        it("does not send the browser round again while an attempt is recent, and explains that elevation did not take effect", async () => {
+            mockNeedsElevation();
+            const location = mockLocation();
+            location.href = ADMIN_URL;
+            sessionStorage.setItem(ELEVATION_ATTEMPT_KEY, String(Date.now() - 30_000));
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+
+            expect(await screen.findByRole("alert")).toHaveTextContent("didn\u2019t take effect");
+            expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+            expect(location.href).toBe(ADMIN_URL);
+            expect(screen.queryByText("content")).not.toBeInTheDocument();
+        });
+
+        it("'Try again' clears the marker and sends the browser to elevate once more, recording the new attempt", async () => {
+            mockNeedsElevation();
+            const location = mockLocation();
+            location.href = ADMIN_URL;
+            const stale = Date.now() - 30_000;
+            sessionStorage.setItem(ELEVATION_ATTEMPT_KEY, String(stale));
+            const user = userEvent.setup();
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+
+            await user.click(await screen.findByRole("button", { name: "Try again" }));
+
+            expect(location.href).toBe(ELEVATE_URL);
+            expect(screen.getByRole("status")).toHaveTextContent("Redirecting to confirm your identity");
+            expect(Number(sessionStorage.getItem(ELEVATION_ATTEMPT_KEY))).toBeGreaterThan(stale);
+        });
+
+        it("elevates again once the last attempt is older than the retry window", async () => {
+            mockNeedsElevation();
+            const location = mockLocation();
+            location.href = ADMIN_URL;
+            sessionStorage.setItem(ELEVATION_ATTEMPT_KEY, String(Date.now() - ELEVATION_RETRY_WINDOW_MS - 1_000));
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+
+            await waitFor(() => expect(location.href).toBe(ELEVATE_URL));
+        });
+
+        it("shows the denied message, and goes nowhere, when auth-server's URL is not configured", async () => {
+            mockNeedsElevation();
+            const location = mockLocation();
+            location.href = ADMIN_URL;
+            render(
+                <AdminShell active="domains" userUid="admin-1">
+                    content
+                </AdminShell>,
+            );
+
+            expect(await screen.findByText("You do not have administrator access.")).toBeInTheDocument();
+            expect(location.href).toBe(ADMIN_URL);
+            expect(sessionStorage.getItem(ELEVATION_ATTEMPT_KEY)).toBeNull();
+        });
+
+        it("does not elevate for api-103 (already elevated, not an administrator) or any other 403", async () => {
+            const location = mockLocation();
+            location.href = ADMIN_URL;
+            mockFetch(() => jsonResponse(403, { code: "api-103", message: "User does not have permission." }));
+            const { unmount } = render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+            expect(await screen.findByText("You do not have administrator access.")).toBeInTheDocument();
+            unmount();
+
+            mockFetch(() => jsonResponse(403, { message: "Forbidden" }));
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+            expect(await screen.findByText("You do not have administrator access.")).toBeInTheDocument();
+            expect(location.href).toBe(ADMIN_URL);
+            expect(sessionStorage.getItem(ELEVATION_ATTEMPT_KEY)).toBeNull();
+        });
+
+        it("forgets an earlier attempt once the console loads elevated, so a later expiry can elevate again", async () => {
+            mockFetch((url) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url === "/api/system/setup") return jsonResponse(200, { required: false });
+                throw new Error(`unexpected ${url}`);
+            });
+            sessionStorage.setItem(ELEVATION_ATTEMPT_KEY, String(Date.now()));
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+
+            expect(await screen.findByText("content")).toBeInTheDocument();
+            expect(sessionStorage.getItem(ELEVATION_ATTEMPT_KEY)).toBeNull();
+        });
+
+        it("still sends the browser to elevate when storage is unavailable", async () => {
+            for (const method of ["getItem", "setItem", "removeItem"] as const) {
+                vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+                    throw new DOMException("blocked", "SecurityError");
+                });
+            }
+            mockNeedsElevation();
+            const location = mockLocation();
+            location.href = ADMIN_URL;
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+
+            await waitFor(() => expect(location.href).toBe(ELEVATE_URL));
+        });
     });
 
     it("shows an error message when the authorization check fails for a reason other than 401/403", async () => {
@@ -258,6 +429,30 @@ describe("AdminShell", () => {
             expect(screen.queryByRole("link", { name: "Bookings" })).not.toBeInTheDocument();
             expect(within(screen.getByRole("navigation", { name: "Admin sections" })).queryByRole("link", { current: "page" })).toBeNull();
         });
+    });
+
+    it("renders the admin-configured footer but not the admin-configured header", async () => {
+        mockFetch((url) => {
+            if (url === "/api/system/branding") {
+                return jsonResponse(200, {
+                    companyName: "Acme",
+                    title: "Acme Mail",
+                    headerHtml: '<div data-testid="brand-header">Acme banner</div>',
+                    footerHtml: '<div data-testid="brand-footer">Acme footer</div>',
+                });
+            }
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            throw new Error(`unexpected ${url}`);
+        });
+        render(
+            <AdminShell active="mailboxes" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AdminShell>,
+        );
+
+        expect(await screen.findByTestId("brand-footer")).toHaveTextContent("Acme footer");
+        expect(screen.getByText("content")).toBeInTheDocument();
+        expect(screen.queryByTestId("brand-header")).not.toBeInTheDocument();
     });
 
     it("hides the icon rail below md, shows it at md and above", async () => {

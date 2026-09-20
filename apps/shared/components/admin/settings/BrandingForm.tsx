@@ -131,7 +131,8 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
                     <h1 className="text-xl font-bold uppercase tracking-wide mb-1">Branding</h1>
                     <p className="text-sm text-text-muted mb-5">
                         Customize the logo, nav-header icon, product name, and chrome shown to every visitor of the
-                        webmail and admin console — including anonymous booking-page visitors.
+                        webmail and admin console — including anonymous booking-page visitors. The header appears on the
+                        webmail and public pages, not in the admin console; the footer appears in both.
                     </p>
                 </>
             )}

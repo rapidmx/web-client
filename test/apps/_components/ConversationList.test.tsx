@@ -96,6 +96,44 @@ describe("ConversationList", () => {
         expect(screen.getByRole("button", { name: "Expand conversation: (no subject)" })).toBeInTheDocument();
     });
 
+    it("shows the first participant's name and address in full, and the rest as a count with everyone's address in its tooltip", () => {
+        renderList({
+            conversations: [
+                conversationFixture({
+                    participants: [
+                        { address: "sender@example.com", displayName: "Sender One", type: "to" },
+                        { address: "bob@example.com", displayName: "Doe, Bob", type: "to" },
+                        { address: "carol@example.com", type: "to" },
+                    ],
+                }),
+            ],
+        });
+        expect(screen.getByText("Sender One <sender@example.com>", { selector: ".sr-only" })).toBeInTheDocument();
+        const more = screen.getByText("+2", { exact: false });
+        expect(more).toHaveAttribute("title", 'Sender One <sender@example.com>, "Doe, Bob" <bob@example.com>, carol@example.com');
+        expect(more).toHaveTextContent('more: Sender One <sender@example.com>, "Doe, Bob" <bob@example.com>, carol@example.com');
+    });
+
+    it("shows no count for a single participant, and the latest sender when the summary lists no participants", () => {
+        const { rerender } = renderList();
+        expect(screen.queryByText(/^\+\d/)).not.toBeInTheDocument();
+
+        rerender(
+            <ConversationList
+                conversations={[
+                    conversationFixture({
+                        participants: [],
+                        latestFrom: { address: "latest@example.com", displayName: "Latest Sender", type: "to" },
+                    }),
+                ] as never}
+                mailboxUid="mb1"
+                selectedUid={null}
+                onOpenMessage={vi.fn()}
+            />,
+        );
+        expect(screen.getByText("Latest Sender <latest@example.com>", { selector: ".sr-only" })).toBeInTheDocument();
+    });
+
     it("shows the message count only when there is more than one message", () => {
         const { rerender } = renderList({ conversations: [conversationFixture({ messageCount: 1 })] });
         expect(screen.queryByText(/messages$/)).not.toBeInTheDocument();

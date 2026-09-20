@@ -103,7 +103,7 @@ describe("MessageDetailPane (round 6)", () => {
             renderSecure({ from: { address: "x@corp-pay.com", displayName: "ceo@corp.com", type: "to" } });
 
             expect(await screen.findByText("Signed & verified")).toBeInTheDocument();
-            expect(fromLine()).toHaveTextContent("From ceo@corp.com <x@corp-pay.com>");
+            expect(fromLine()).toHaveTextContent('From "ceo@corp.com" <x@corp-pay.com>');
             expect(screen.getByText(/looks like an email address, but this message was/)).toHaveTextContent(
                 "The sender’s name “ceo@corp.com” looks like an email address, but this message was sent from x@corp-pay.com.",
             );
@@ -141,9 +141,9 @@ describe("MessageDetailPane (round 6)", () => {
             expect(fromLine()).toHaveTextContent(/^From sender@example\.com ·/);
         });
 
-        it("keeps just the name for an unprotected or encrypted-only message with an ordinary name", async () => {
+        it("shows the name and the address for an unprotected or encrypted-only message with an ordinary name", async () => {
             render(<MessageDetailPane message={messageFixture({ hasAttachments: false }) as never} attachments={[]} />);
-            expect(fromLine()).toHaveTextContent(/^From Sender One ·/);
+            expect(fromLine()).toHaveTextContent(/^From Sender One <sender@example\.com> ·/);
         });
 
         it("shows the address, with a warning, for any message whose name uses a look-alike @", () => {
@@ -153,10 +153,10 @@ describe("MessageDetailPane (round 6)", () => {
                     attachments={[]}
                 />,
             );
-            expect(fromLine()).toHaveTextContent("From ceo＠corp.com <x@corp-pay.com>");
+            expect(fromLine()).toHaveTextContent('From "ceo＠corp.com" <x@corp-pay.com>');
             expect(screen.getByText(/looks like an email address/)).toHaveTextContent("sent from x@corp-pay.com");
             // The receipt banner names the sender the same way.
-            expect(screen.getByText(/requested a delivery receipt/)).toHaveTextContent("ceo＠corp.com <x@corp-pay.com> requested a delivery receipt");
+            expect(screen.getByText(/requested a delivery receipt/)).toHaveTextContent('"ceo＠corp.com" <x@corp-pay.com> requested a delivery receipt');
         });
 
         it("shows the address without a warning when an @ in the name isn't another address", () => {
@@ -166,7 +166,7 @@ describe("MessageDetailPane (round 6)", () => {
                     attachments={[]}
                 />,
             );
-            expect(fromLine()).toHaveTextContent("From Bob @ Corp <bob@corp.com>");
+            expect(fromLine()).toHaveTextContent('From "Bob @ Corp" <bob@corp.com>');
             expect(screen.queryByText(/looks like an email address/)).not.toBeInTheDocument();
         });
     });

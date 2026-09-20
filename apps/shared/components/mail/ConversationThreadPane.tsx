@@ -8,6 +8,7 @@ import { Attachment, Folder, Message, listAttachments, setMessageRead } from "@r
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import MailAddress from "./MailAddress.js";
 import MessageDetailPane from "./MessageDetailPane.js";
 
 /** One request's worth of the thread. The server's own default for `listConversationMessages()`. */
@@ -362,7 +363,6 @@ export default function ConversationThreadPane({
                     const uid = message.uid;
                     const expanded = expandedUids.has(uid);
                     const bodyId = `thread-message-${uid}`;
-                    const sender = message.from.displayName || message.from.address;
                     return (
                         <li
                             key={uid}
@@ -391,7 +391,7 @@ export default function ConversationThreadPane({
                                     ].join(" ")}
                                 >
                                     <span className="flex items-center justify-between gap-2 text-sm">
-                                        <span className="truncate">{sender}</span>
+                                        <MailAddress recipient={message.from} />
                                         <span className="text-xs text-text-muted shrink-0">
                                             {new Date(message.receivedDate).toLocaleString()}
                                         </span>

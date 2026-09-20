@@ -26,9 +26,17 @@ import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
 import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
-import { BrandingFooter, BrandingHeader } from "../../layout/BrandingChrome.js";
+import { BrandingFooter } from "../../layout/BrandingChrome.js";
 import UserMenu from "../../layout/UserMenu.js";
+import {
+    clearElevationAttempt,
+    elevationAttemptedRecently,
+    elevationUrl,
+    isElevationRequired,
+    recordElevationAttempt,
+} from "../elevation.js";
 import { signOutOfConsole } from "../signOut.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../../plugins/pluginNav.js";
 
@@ -68,7 +76,9 @@ export interface AdminShellProps extends PluginNavProps {
     impersonationBaseUrl?: string;
 }
 
-type Status = "checking" | "denied" | "error" | "authorized";
+/** `elevating`: the browser is being sent to auth-server to confirm the user's identity. `elevationFailed`: it was
+ * sent a moment ago and the console still isn't elevated - see `elevation.ts`. */
+type Status = "checking" | "denied" | "elevating" | "elevationFailed" | "error" | "authorized";
 
 /** Sections shown in the persistent icon rail / mobile tab bar — every admin area reachable from
  * anywhere in the console. Deliberately excludes `quarantine`/`ingestQueue`: those are scoped to a
@@ -148,14 +158,24 @@ export function adminNavItems(pluginNav?: PluginNav): NavItem[] {
 }
 
 /**
- * Gates every `apps/admin` page behind the `admin` trusted role. Uses `GET /api/admin/release-notes` (any
- * `BaseAdminRoute` endpoint works — this one is side-effect-free) purely as a canary: a 200 means the
- * caller's JWT carries a trusted role, a 403 means it doesn't. There is no local step-up/elevation flow
- * (that would need a cross-origin call to auth-server's own elevation endpoint — not wired up yet).
+ * Gates every `apps/admin` page behind the `admin` trusted role, and behind an elevated session. Uses
+ * `GET /api/admin/release-notes` (any `BaseAdminRoute` endpoint works — this one is side-effect-free) purely as a
+ * canary. The endpoint is class-level `@RequiresElevation()`, checked *before* the trusted-role check, so a 200 means the
+ * caller's JWT is elevated and carries a trusted role: show the console. Otherwise:
+ *
+ * 403 `api-104` means the JWT isn't elevated (an administrator's normal sign-in). There is no local step-up form; the
+ * browser is sent to auth-server's `/auth/elevate?return_to=<this page>`, which returns it here once the user has
+ * confirmed their identity (or to its own account page if they cancel). Sent at most once per
+ * `ELEVATION_RETRY_WINDOW_MS`, so an elevated cookie that never reaches this origin can't bounce the browser back
+ * and forth - see `elevation.ts`, and the "didn't take effect" alert with its own "Try again" below.
+ *
+ * 403 `api-103` (elevated, but not an administrator), any other 403, and 401 mean "no administrator access".
  */
 export default function AdminShell({ active, userUid, authServerUrl, pluginNav, children }: PropsWithChildren<AdminShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
+    // `branding` only feeds the footer below: the admin-configured header is for the webmail and public pages, not the
+    // console. `useBranding()` is still what injects the custom stylesheet and supplies the rail's icon.
     const { branding, iconSrc } = useBranding();
 
     useRedirectIfUnauthenticated(userUid, authServerUrl);
@@ -166,6 +186,8 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
         }
         apiFetch("/admin/release-notes")
             .then(async () => {
+                // Elevated (or elevation isn't needed): a later expiry of the elevation may send the user round again.
+                clearElevationAttempt();
                 // Until first-run setup is finished, every other admin page sends the admin to the wizard. A failed
                 // check never blocks the console - the admin can still reach setup from the Mailboxes page.
                 if (active !== "setup") {
@@ -181,6 +203,17 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                 setStatus("authorized");
             })
             .catch((err) => {
+                if (isElevationRequired(err)) {
+                    // Without auth-server's URL there is nowhere to send the browser to elevate.
+                    if (!authServerUrl) {
+                        setStatus("denied");
+                    } else if (elevationAttemptedRecently()) {
+                        setStatus("elevationFailed");
+                    } else {
+                        startElevation(authServerUrl);
+                    }
+                    return;
+                }
                 if (err instanceof ApiRequestError && (err.status === 403 || err.status === 401)) {
                     setStatus("denied");
                     return;
@@ -190,6 +223,18 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
             });
     }, [userUid]);
 
+    /** Remembers the attempt, then sends the browser to auth-server to confirm the user's identity. */
+    function startElevation(authServer: string) {
+        recordElevationAttempt();
+        setStatus("elevating");
+        window.location.href = elevationUrl(authServer, window.location.href);
+    }
+
+    function handleRetryElevation() {
+        clearElevationAttempt();
+        startElevation(authServerUrl!);
+    }
+
     function handleSignOut() {
         // Ends the auth-server session and tells other tabs, not just navigates - see `signOutOfConsole()`.
         void signOutOfConsole(authServerUrl);
@@ -198,6 +243,28 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
     let content: ReactNode;
     if (!userUid || status === "checking") {
         content = <div className="min-h-screen" />;
+    } else if (status === "elevating") {
+        content = (
+            <div className="min-h-screen flex items-center justify-center p-8">
+                <p role="status" className="text-sm text-text-muted">
+                    Redirecting to confirm your identity&hellip;
+                </p>
+            </div>
+        );
+    } else if (status === "elevationFailed") {
+        content = (
+            <div className="min-h-screen flex items-center justify-center p-8">
+                <div className="w-full max-w-md flex flex-col items-start">
+                    <Alert>
+                        Confirming your identity didn&rsquo;t take effect, so the administrator console is still locked. Try again,
+                        and if this keeps happening, sign out and sign back in.
+                    </Alert>
+                    <Button type="button" className="!w-auto" onClick={handleRetryElevation}>
+                        Try again
+                    </Button>
+                </div>
+            </div>
+        );
     } else if (status === "denied") {
         content = (
             <div className="min-h-screen flex items-center justify-center p-8">
@@ -260,7 +327,6 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
 
     return (
         <>
-            <BrandingHeader branding={branding} />
             {content}
             <BrandingFooter branding={branding} />
         </>

@@ -168,6 +168,13 @@ afterEach(() => {
 });
 
 describe("ConversationThreadPane", () => {
+    it("shows each message's sender with their address in the entry's header", async () => {
+        renderThread();
+        await screen.findAllByRole("heading", { level: 2 });
+        expect(screen.getByText("Alice <alice@example.com>", { selector: ".sr-only" })).toBeInTheDocument();
+        expect(screen.getByText("Carol <carol@example.com>", { selector: ".sr-only" })).toBeInTheDocument();
+    });
+
     it("says what to do with no conversation open", () => {
         render(
             <ConversationThreadPane

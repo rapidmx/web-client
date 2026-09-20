@@ -14,6 +14,7 @@ import KeyEnrollmentGate from "../../layout/KeyEnrollmentGate.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { useCompose } from "../compose/ComposeContext.js";
 import LocalIndexLifecycle from "../../../search/LocalIndexLifecycle.js";
+import { LiveUpdates, NO_LIVE_UPDATES, useMailLiveUpdates } from "../../../mail/useMailLiveUpdates.js";
 
 export type MailShellProps = Omit<AppShellProps, "active">;
 
@@ -62,12 +63,19 @@ export interface MailShellContextValue {
      * A no-op on the default context value, which is only ever read outside a real shell.
      */
     onFolderCreated: (folder: Folder) => void;
+    /**
+     * Bumped whenever new mail (or another change to a message) may have arrived - a push event, a reconnect or the safety-net
+     * poll - so the list on screen can quietly refetch its first page. See `useMailLiveUpdates()`. Never changes on the default
+     * context value, which is only ever read outside a real shell.
+     */
+    live: LiveUpdates;
 }
 
 const MailShellContext = createContext<MailShellContextValue>({
     mailboxes: [],
     mailboxFolders: [],
     onFolderCreated: () => undefined,
+    live: NO_LIVE_UPDATES,
 });
 
 /** Reads the mailbox/folder a page is currently showing, as resolved by the enclosing `MailShell`. */
@@ -105,8 +113,16 @@ function sortedFoldersOf(folders: Folder[]): Folder[] {
     return [...folders].sort((a, b) => folderSortKey(a) - folderSortKey(b) || a.name.localeCompare(b.name));
 }
 
-function aggregateUnreadCount(mailboxFolders: MailboxFolders[], type: AggregateFolderType): number {
-    return mailboxFolders.reduce((total, mf) => total + (mf.folders.find((f) => f.type === type)?.unreadCount ?? 0), 0);
+/** A folder's unread count: the refreshed one when live updates have read it since load, else the one it was listed with. */
+function unreadOf(folder: Folder, unreadCounts: Record<string, number>): number {
+    return unreadCounts[folder.uid] ?? folder.unreadCount;
+}
+
+function aggregateUnreadCount(mailboxFolders: MailboxFolders[], type: AggregateFolderType, unreadCounts: Record<string, number>): number {
+    return mailboxFolders.reduce((total, mf) => {
+        const folder = mf.folders.find((f) => f.type === type);
+        return total + (folder ? unreadOf(folder, unreadCounts) : 0);
+    }, 0);
 }
 
 type Status = "checking" | "error" | "ready";
@@ -256,14 +272,22 @@ export default function MailShell({
         }
         setMailboxFolders((prev) =>
             prev.map((entry) =>
-                entry.mailbox.uid === folder.mailboxUid ? { ...entry, folders: [...entry.folders, folder] } : entry,
+                // Not one already there: another client's create event can arrive after (or twice, or alongside) our own.
+                entry.mailbox.uid === folder.mailboxUid && !entry.folders.some((existing) => existing.uid === folder.uid)
+                    ? { ...entry, folders: [...entry.folders, folder] }
+                    : entry,
             ),
         );
     }, []);
 
+    // New mail without a reload: push events for every folder, plus a safety-net poll. Held in state beside `mailboxFolders`
+    // rather than written into it, so a refreshed unread count never looks like a change of folders to the list on screen
+    // (which reloads, and forgets its selection, whenever the folders do).
+    const { live, unreadCounts } = useMailLiveUpdates({ userUid, mailboxes, mailboxFolders, onFolderCreated });
+
     const contextValue = useMemo<MailShellContextValue>(
-        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated }),
-        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated],
+        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, live }),
+        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, live],
     );
 
     // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else for a
@@ -314,7 +338,7 @@ export default function MailShell({
                                 </div>
                                 <div className="flex flex-col gap-0.5">
                                     {AGGREGATE_FOLDER_TYPES.map((type) => {
-                                        const unread = aggregateUnreadCount(mailboxFolders, type);
+                                        const unread = aggregateUnreadCount(mailboxFolders, type, unreadCounts);
                                         return (
                                             <a
                                                 key={type}
@@ -350,7 +374,9 @@ export default function MailShell({
                                     </div>
                                 )}
                                 <div className="flex flex-col gap-0.5">
-                                    {sortedFoldersOf(folders).map((folder) => (
+                                    {sortedFoldersOf(folders).map((folder) => {
+                                        const unread = unreadOf(folder, unreadCounts);
+                                        return (
                                         <a
                                             key={folder.uid}
                                             href={`/?mailboxUid=${encodeURIComponent(mailbox.uid)}&folderUid=${encodeURIComponent(folder.uid)}`}
@@ -362,13 +388,14 @@ export default function MailShell({
                                             ].join(" ")}
                                         >
                                             <span>{FOLDER_LABELS[folder.type] ?? folder.name}</span>
-                                            {folder.unreadCount > 0 && (
+                                            {unread > 0 && (
                                                 <span className="text-xs font-bold rounded-pill py-0.5 px-1.5 bg-surface-alt text-text-muted">
-                                                    {folder.unreadCount}
+                                                    {unread}
                                                 </span>
                                             )}
                                         </a>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         ))}

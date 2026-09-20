@@ -2268,3 +2268,89 @@ Two follow-ups from JP on the round above.
   unaffected (the field is only read at runtime). Not worked around with a cast.
 - Tests: `test/apps/admin/mailbox-policy/index.test.tsx` (reset of each of the three fields, nothing sent before Save, no
   button at the config value, no button without `defaults`); the file is at full coverage.
+
+### 2026-09-20 — Elevation redirect, DNS copy buttons, no admin header, provisioning reasons, user menu, live inbox, addresses, send failures
+
+Not committed. Needs the sibling `react-shared` changes of the same date (see its NOTES), which are unpublished.
+
+- **How this repo sees unpublished `react-shared` (no patch, no portal).** `@rapidmx/react-shared` is a plain registry
+  dependency (`^0.8.0`, 0.8.0 installed, no `.yarn/patches`, no `resolutions`). To type-check and test against the sibling's
+  source: `yarn build` in `react-shared`, then `cp -r dist/. ../web-client/node_modules/@rapidmx/react-shared/dist/`. A fresh
+  build of the sibling's `HEAD` differs from the installed 0.8.0 `dist` only by the new work (checked with `diff -rq`), so the overlay
+  is faithful. Nothing tracked changes (`node_modules` is ignored): `package.json`, `yarn.lock` and `.yarn` are untouched. Until
+  JP publishes react-shared and this repo's dependency is bumped, a plain `yarn install` (or a fresh checkout) has the registry
+  copy and `tsc`/vitest fail on the missing modules (`util/clipboard`... `mail/pushClient`, `mail/mailAddress`, `mail/sendFailure`,
+  `components/buttons/CopyButton`, `getMyUsername`); re-run the copy above to get going again. (The 2026-09-19 entry's `tsc` failure is
+  gone - 0.8.0 is published.)
+- **Admin console elevation.** `AdminShell`'s canary (`GET /admin/release-notes`) is class-level `@RequiresElevation()`, checked before
+  the trusted-role check: a non-elevated admin gets 403 `api-104`. `admin/elevation.ts` (`isElevationRequired`, `elevationUrl`,
+  `elevationAttemptedRecently`, `recordElevationAttempt`, `clearElevationAttempt`) holds the logic; the shell sends the browser to
+  `${authServerUrl}/auth/elevate?return_to=<href>`. Loop guard: the attempt time goes in `sessionStorage`
+  (`rapidmx-admin-elevation-attempt`); within `ELEVATION_RETRY_WINDOW_MS` (2 min) a second `api-104` shows an Alert ("didn't take
+  effect") with "Try again" (clears, records, redirects) instead of redirecting; a successful canary clears the marker so a later
+  expiry can elevate again. Every storage access is in try/catch; **with storage unavailable the redirect still happens** (loop
+  protection is lost, but each round trip needs the user to confirm on auth-server, so it is human-paced) - a deliberate choice,
+  the alternative being a manual "confirm identity" button. `api-103`, other 403s and 401 keep "no administrator access"; no
+  `authServerUrl` shows it too. **`EscrowShell` was not changed**: it gates on `listMatters()` (200 for any signed-in caller), not a
+  canary that can 403, so it doesn't share the pattern.
+- **DNS checklist copy buttons** (`DomainDnsSetup`, used by the domain page and the setup wizard). Every pasteable value has a
+  `CopyButton` (react-shared): ownership TXT name and value, and per row the record name and value; an MX value
+  `"10 mx.host"` is split into priority and mail server (two buttons, as providers' forms have two fields; a value that doesn't
+  parse gets one). The table now shows each record's type and name (`recordName`, which it never did) and a note that some
+  providers want relative names. Type isn't copyable (a dropdown in every DNS form); TTL isn't shown by the server.
+- **Admin console has no custom header.** `AdminShell` no longer renders `BrandingHeader`; the **footer stays** (self-contained legal/
+  contact markup; nothing in the branding files opens a container the footer closes) and `useBranding()` is still needed for it, the
+  stylesheet injection and the rail icon. `AppShell` keeps both. The Branding page's intro text now says which is shown where.
+- **Mailbox provisioning (task narrowed by the coordinator):** contract unchanged (`needs_username` and the username form were written
+  and reverted). `MailboxProvisioning` shows the server's reason above "Ask an administrator..." only for a 4xx (first line, 200
+  chars max) - never a 5xx message or a network error's; a 502 now offers Retry like a 503, with its own "couldn't reach the identity
+  service" text.
+- **User menu.** Name and initials fall back profile name -> username (`getMyUsername()`: first verified `name` alias from
+  `GET {auth}/api/aliases?type=name`; asked for only when the profile gave no name) -> uid; some accounts have no profile document
+  (404) and the deployed auth-server's CORS list once blocked `/profiles/me`. Added an "Account" item (first) linking to
+  `${authServerUrl}/account` (trailing slashes stripped; `authServerUrl` is set by the chart with none, but a hand-written config
+  could); it appears in every shell that uses `UserMenu`, escrow included.
+- **Live inbox (`shared/mail/useMailLiveUpdates.ts`, wired in `MailShell`; `InboxContent` does the quiet refresh).** Verified against
+  `@rapidrest/service-core`'s `BasePushRoute`/`RouteUtils`, which differs from what the docs say: **the WebSocket is `/push`, not
+  `/push/connect`** (`@WebSocket()` has an empty sub-path); it authenticates from the `jwt` cookie on the upgrade; on connect the server
+  sends `{id:0,type:"SUBSCRIBED",data:[...]}`; **events are the raw `NotificationUtils` JSON `{type,action,data}` with no channel** (the
+  `{type:"MESSAGE",channel,data}` wrapper is only for `POST /push/:id`), so the folder comes from `data.folderUid`; `type` is the model
+  class name (`MessageMongo`/`MessageSQL`, matched `/^Message/`) and `data` is the whole `Message`. Limits: 10 sockets and **50 channels per
+  user across all tabs, duplicates counting** - a tab asks for at most 40 (inboxes first, then other folders, then mailbox uids).
+  Ingest publishes only to the receiving folder's uid (`ScanQueueJob` ~991, ~1053), so there is no mailbox-level mail event.
+  - What it does: one shared `getPushClient()` per tab; message events (create/update/delete) -> debounced (400 ms) bump of
+    `useMailShell().live` plus a re-read of every mailbox's folder unread counts (kept in a separate `unreadCounts` overlay, **not** in
+    `mailboxFolders`, because the list effect reloads - and forgets the selection - whenever `mailboxFolders` changes); a `Folder` create
+    event calls `onFolderCreated` (now deduplicated by uid); a 45 s poll while `document.visibilityState === "visible"`, plus refocus,
+    `visibilitychange` and `online`, plus every reconnect, use the same path with "folder unknown"; sign-out (heard on
+    `SIGN_OUT_CHANNEL`, which `destroyAllLocalIndexes()` also announces to this tab's own other channel objects - so **`AppShell`'s
+    sign-out is unchanged**) closes the client for good.
+  - `InboxContent`'s effect on `live.tick` fetches page 0 and folds it in with `mergeFirstPage()`: a short page is the whole listing and
+    replaces the list; a full page goes first and the older loaded rows follow (a delete elsewhere from a long, partly-paged list stays until
+    the next real load); a row present in both keeps the higher `version` (so a just-read message isn't reverted by an older fetch);
+    `listedOffsetRef` advances by the number of new rows so "load more" neither skips nor repeats. It skips while searching, loading, a
+    load-more is in flight, or the event's folder isn't shown (a conversation list refreshes for any folder). Failures are silent.
+  - **Not done, found:** the Tier 2 local index (`LocalIndexLifecycle`/`localIndexBuilder`) ingests by its own `listFolders/listMessages`
+    walk, started once per unlock (a 5 s timer only watches for key destruction and (re)unlock) - so mail delivered later is not added to
+    it until the next page load or re-unlock. Only encrypted messages are indexed, so this affects only Tier 2 search of new encrypted mail.
+    A nudge (re-running `buildLocalIndex()`, which compares indexed versions, on a message-create event for the active mailbox while
+    unlocked) would fit here; left alone rather than guessed at. Likewise an open conversation thread (`ConversationThreadPane`) doesn't
+    refetch its own messages when mail joins it.
+  - Test gotchas: `test/apps/setup.ts` now replaces `WebSocket` with a never-connecting stub (jsdom's really connects) and resets the push
+    singleton after each test; **`mockLocation()` leaves `window.location` without an `origin`**, so `pushUrl()` is undefined and nothing
+    connects - the live tests set a real `URL` in `beforeEach`.
+- **Addresses (`MailAddress.tsx`, `formatMailAddress()` in react-shared).** Rows show `Name <address>` with the name shrinking a thousand
+  times faster than the address's local part and the `@domain` never shrinking; the two visible halves are `aria-hidden` and one `sr-only`
+  span carries the full text (tests use `getByText(..., { selector: ".sr-only" })`). The pane header always shows the address (it used to
+  only when signed or the name had an `@`) with `checkSenderName()`'s warning kept; To/Cc/Bcc are separate `RecipientLine`s that fold after 3.
+  A conversation row shows its first participant in full plus `+N` (tooltip and sr-only text list everyone). `composeQuoting`'s forward
+  quote lists To recipients with addresses; `recipientDisplayName()` (which drops a name that is another address) is unchanged there.
+- **Send failures.** `ApiRequestError.details` (whole parsed body) -> `describeSendFailure()` -> `SendFailureAlert` (message + collapsed "Technical
+  details" list + `CopyButton`) in `ComposeWindow`, which already stayed open on failure. The restapi `details` shape wasn't final, so the parser
+  is generic (`details` object/list/text, else the body's other keys; capped). Close after a failed send now asks ("Close, keep draft" /
+  "Keep editing" / "Discard"); a minimized window shows "Not sent". Nothing else in the send/autosave path changed.
+- Test-suite state: `tsconfig.test.json` has ~100 pre-existing type errors (`mockFetch` signature etc.) - the gates are `tsc` (app config),
+  `yarn lint` and vitest.
+- Verified (with the `react-shared` `dist` copy described above): `yarn tsc --noEmit` clean, `yarn lint` clean, `yarn vitest run --coverage` 167 files / 2628
+  tests passing, coverage 100 / 99.92 / 100 / 100 (statements / branches / functions / lines). The 5 uncovered branches are old ones (`MoveToFolderDialog` 223,
+  `ComposeWindow` two, `index.tsx` two); nothing new is uncovered.

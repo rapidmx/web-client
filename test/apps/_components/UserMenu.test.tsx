@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -142,5 +142,161 @@ describe("UserMenu", () => {
 
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         await waitFor(() => expect(screen.getByText("jane")).toBeInTheDocument());
+    });
+
+    describe("displayed name fallback chain", () => {
+        const PROFILE_URL = `${AUTH_SERVER_URL}/api/profiles/me`;
+        const ALIASES_URL = `${AUTH_SERVER_URL}/api/aliases?type=name`;
+
+        it("uses the profile's name and never asks for the username when the profile has one", async () => {
+            const fetchMock = mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(200, { uid: "u1", givenName: "Jane", familyName: "Doe" });
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
+            expect(screen.getAllByText("JD")).toHaveLength(2);
+            expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([PROFILE_URL]);
+        });
+
+        it("falls back to the username, and its initial, when the profile is a 404 (no profile document)", async () => {
+            const fetchMock = mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                if (url === ALIASES_URL) return jsonResponse(200, [{ alias: "arthur", type: "name", verified: true }]);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="b1c2d3" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("arthur")).toBeInTheDocument();
+            expect(screen.queryByText("b1c2d3")).not.toBeInTheDocument();
+            expect(screen.getAllByText("A")).toHaveLength(2);
+            expect(fetchMock).toHaveBeenCalledWith(ALIASES_URL, expect.objectContaining({ credentials: "include" }));
+        });
+
+        it("falls back to the username when the profile fetch is blocked outright (CORS)", async () => {
+            mockFetch((url) => {
+                if (url === PROFILE_URL) throw new TypeError("Failed to fetch");
+                return jsonResponse(200, [{ alias: "arthur", type: "name", verified: true }]);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="b1c2d3" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("arthur")).toBeInTheDocument();
+        });
+
+        it("asks for the username when the profile exists but has no name, and keeps the profile's avatar image", async () => {
+            mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(200, { uid: "u1", avatar: "https://example.com/a.png" });
+                if (url === ALIASES_URL) return jsonResponse(200, [{ alias: "arthur", type: "name", verified: true }]);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("arthur")).toBeInTheDocument();
+            const images = document.querySelectorAll("img");
+            expect(images.length).toBe(2);
+            images.forEach((img) => expect(img).toHaveAttribute("src", "https://example.com/a.png"));
+        });
+
+        it("falls back to the uid when the profile and the username both fail, without surfacing an error", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(500, { message: "boom" }));
+            const user = userEvent.setup();
+            render(<UserMenu userUid="b1c2d3" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+            expect(screen.getByText("b1c2d3")).toBeInTheDocument();
+            expect(screen.getAllByText("B")).toHaveLength(2);
+            expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        });
+
+        it("falls back to the uid when the caller has no verified username", async () => {
+            const fetchMock = mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                return jsonResponse(200, [{ alias: "pending", type: "name", verified: false }]);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="b1c2d3" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+            expect(screen.getByText("b1c2d3")).toBeInTheDocument();
+        });
+
+        it("ignores a profile response that lands after the menu is gone, and does not go on to ask for the username", async () => {
+            let resolveProfile: (response: Response) => void = () => undefined;
+            const fetchMock = mockFetch(() => new Promise<Response>((resolve) => (resolveProfile = resolve)));
+            const { unmount } = render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+            unmount();
+
+            await act(async () => {
+                resolveProfile(jsonResponse(404, { message: "Not found." }));
+            });
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        });
+
+        it("ignores a username response that lands after the menu is gone", async () => {
+            let resolveAliases: (response: Response) => void = () => undefined;
+            const fetchMock = mockFetch((url) =>
+                url === PROFILE_URL
+                    ? Promise.resolve(jsonResponse(404, { message: "Not found." }))
+                    : new Promise<Response>((resolve) => (resolveAliases = resolve)),
+            );
+            const { unmount } = render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+            unmount();
+
+            await act(async () => {
+                resolveAliases(jsonResponse(200, [{ alias: "arthur", type: "name", verified: true }]));
+            });
+            expect(screen.queryByText("arthur")).not.toBeInTheDocument();
+        });
+    });
+
+    describe("Account item", () => {
+        it("links to auth-server's account page, in the same tab, when authServerUrl is set", async () => {
+            mockFetch(() => jsonResponse(200, {}));
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            const account = screen.getByRole("menuitem", { name: "Account" });
+            expect(account).toHaveAttribute("href", "https://auth.example.com/account");
+            expect(account).not.toHaveAttribute("target");
+        });
+
+        it("does not double the slash when authServerUrl carries trailing slashes", async () => {
+            mockFetch(() => jsonResponse(200, {}));
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" authServerUrl="https://auth.example.com//" onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.getByRole("menuitem", { name: "Account" })).toHaveAttribute("href", "https://auth.example.com/account");
+        });
+
+        it("is left out without authServerUrl", async () => {
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showSettingsLink showAdminLink />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitem", { name: "Account" })).not.toBeInTheDocument();
+        });
+
+        it("comes first among the items, above Settings, Admin and Sign Out", async () => {
+            mockFetch(() => jsonResponse(200, {}));
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} showSettingsLink showAdminLink />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Account", "Settings", "Admin", "Sign Out"]);
+        });
     });
 });

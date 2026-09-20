@@ -171,10 +171,48 @@ describe("MessageDetailPane", () => {
         render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
 
         expect(screen.getByRole("heading", { name: "Hello there" })).toBeInTheDocument();
-        expect(screen.getByText(/From Sender One/)).toBeInTheDocument();
-        expect(screen.getByText("To Me")).toBeInTheDocument();
+        expect(screen.getByText(/^From /)).toHaveTextContent("From Sender One <sender@example.com>");
+        expect(screen.getByText("To").parentElement).toHaveTextContent("To Me <u1@example.com>");
         expect(screen.getByTitle("Hello there")).toHaveAttribute("src", "/api/mail/messages/m1/content");
         expect(screen.queryByRole("link", { name: /Back to messages/ })).not.toBeInTheDocument();
+    });
+
+    it("shows To, Cc and Bcc as separate lines, each recipient with name and address, and leaves out a line with nobody on it", () => {
+        const message = messageFixture({
+            recipients: [
+                { address: "u1@example.com", displayName: "Me", type: "to" as const },
+                { address: "amy@example.com", displayName: "Doe, Amy", type: "cc" as const },
+                { address: "hidden@example.com", type: "bcc" as const },
+            ],
+        });
+        const { unmount } = render(<MessageDetailPane message={message as any} attachments={[]} />);
+
+        expect(screen.getByText("To").parentElement).toHaveTextContent("To Me <u1@example.com>");
+        expect(screen.getByText("Cc").parentElement).toHaveTextContent('Cc "Doe, Amy" <amy@example.com>');
+        expect(screen.getByText("Bcc").parentElement).toHaveTextContent("Bcc hidden@example.com");
+        unmount();
+
+        render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+        expect(screen.queryByText("Cc")).not.toBeInTheDocument();
+        expect(screen.queryByText("Bcc")).not.toBeInTheDocument();
+    });
+
+    it("folds a long recipient list behind 'and N more' without hiding any address from the text", async () => {
+        const recipients = Array.from({ length: 6 }, (_, i) => ({ address: `r${i}@example.com`, displayName: `Person ${i}`, type: "to" as const }));
+        const user = userEvent.setup();
+        render(<MessageDetailPane message={messageFixture({ recipients }) as any} attachments={[]} />);
+
+        const line = screen.getByText("To").parentElement!;
+        expect(line).toHaveTextContent("Person 2 <r2@example.com> and 3 more");
+        expect(line).not.toHaveTextContent("r3@example.com");
+        await user.click(screen.getByRole("button", { name: "and 3 more" }));
+        expect(line).toHaveTextContent("Person 5 <r5@example.com>");
+    });
+
+    it("shows a sender whose name carries a different address with the real address, quoted, last", () => {
+        const message = messageFixture({ from: { address: "evil@example.net", displayName: "ceo@bank.com", type: "to" as const } });
+        render(<MessageDetailPane message={message as any} attachments={[]} />);
+        expect(screen.getByText(/^From /)).toHaveTextContent('From "ceo@bank.com" <evil@example.net>');
     });
 
     it("drops the subject to a lower heading inside a thread, where the conversation owns the h1", () => {
@@ -233,8 +271,8 @@ describe("MessageDetailPane", () => {
         render(<MessageDetailPane message={message as any} attachments={[]} />);
 
         expect(screen.getByRole("heading", { name: "(no subject)" })).toBeInTheDocument();
-        expect(screen.getByText(/From sender@example\.com/)).toBeInTheDocument();
-        expect(screen.getByText("To u1@example.com")).toBeInTheDocument();
+        expect(screen.getByText(/^From /)).toHaveTextContent("From sender@example.com");
+        expect(screen.getByText("To").parentElement).toHaveTextContent("To u1@example.com");
         expect(screen.getByTitle("Message content")).toBeInTheDocument();
     });
 

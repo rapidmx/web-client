@@ -6,6 +6,8 @@ import React, { useState } from "react";
 import { HiChevronDown, HiChevronRight, HiOutlineFlag, HiOutlinePaperClip } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
+import MailAddress from "./MailAddress.js";
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
 
 export interface ConversationListProps {
@@ -39,8 +41,9 @@ export interface ConversationListProps {
     newestFirst?: boolean;
 }
 
-function participantNames(conversation: ConversationSummary): string {
-    return conversation.participants.map((participant) => participant.displayName || participant.address).join(", ");
+/** Every participant as `Name <address>`, for the tooltip and the accessible text of the "+N" a crowded row folds them into. */
+function participantList(conversation: ConversationSummary): string {
+    return conversation.participants.map((participant) => formatMailAddress(participant)).join(", ");
 }
 
 /**
@@ -168,7 +171,15 @@ export default function ConversationList({
                                 )}
                             >
                                 <div className="flex items-center justify-between gap-2 text-sm">
-                                    <span className="truncate">{participantNames(conversation)}</span>
+                                    {/* The first participant in full - name and address - and the rest as a count, with everyone's
+                                        address in its tooltip; the latest sender when the summary lists none. */}
+                                    <MailAddress recipient={conversation.participants[0] ?? conversation.latestFrom} className="flex-1" />
+                                    {conversation.participants.length > 1 && (
+                                        <span className="text-xs text-text-muted shrink-0 font-normal" title={participantList(conversation)}>
+                                            +{conversation.participants.length - 1}
+                                            <span className="sr-only"> more: {participantList(conversation)}</span>
+                                        </span>
+                                    )}
                                     <span className="text-xs text-text-muted shrink-0">
                                         {new Date(conversation.latestDate).toLocaleDateString()}
                                     </span>
@@ -220,9 +231,7 @@ export default function ConversationList({
                                             ].join(" ")}
                                         >
                                             <div className="flex items-center justify-between gap-2 text-sm">
-                                                <span className="truncate">
-                                                    {message.from.displayName || message.from.address}
-                                                </span>
+                                                <MailAddress recipient={message.from} />
                                                 <span className="text-xs text-text-muted shrink-0">
                                                     {new Date(message.receivedDate).toLocaleDateString()}
                                                 </span>

@@ -11,8 +11,15 @@ import DomainDetailPage from "../../../../apps/admin/domains/[uid].js";
 
 // jsdom's `navigator.clipboard` is a getter-only property — `Object.assign` throws against it, so
 // `writeText` must be installed via `defineProperty` instead.
-function mockClipboard(writeText: ReturnType<typeof vi.fn>): void {
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+function mockClipboard(writeText: ReturnType<typeof vi.fn> | undefined): void {
+    Object.defineProperty(navigator, "clipboard", { value: writeText ? { writeText } : undefined, configurable: true });
+}
+
+/** jsdom implements no `document.execCommand`; the copy fallback needs one. */
+function mockExecCommand(impl: (() => boolean) | undefined): ReturnType<typeof vi.fn> | undefined {
+    const mock = impl ? vi.fn(impl) : undefined;
+    Object.defineProperty(document, "execCommand", { value: mock, configurable: true, writable: true });
+    return mock;
 }
 
 const domain = {
@@ -59,7 +66,39 @@ const dnsSetup = [
 afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    mockClipboard(undefined);
+    mockExecCommand(undefined);
 });
+
+// A domain with every record type configured, MX in its real "<priority> <server>" form and a long DKIM key.
+const DKIM_VALUE = `v=DKIM1; k=rsa; p=${"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A".repeat(8)}`;
+const fullDnsSetup = [
+    { ...dnsSetup[0] },
+    { type: "mx", recordKind: "MX", recordName: "example.com", configured: true, recommendedValue: "10 mx.example.net", found: false, matches: false },
+    { type: "spf", recordKind: "TXT", recordName: "example.com", configured: true, recommendedValue: "v=spf1 mx ~all", found: false, matches: false },
+    {
+        type: "dkim",
+        recordKind: "TXT",
+        recordName: "default._domainkey.example.com",
+        configured: true,
+        recommendedValue: DKIM_VALUE,
+        found: false,
+        matches: false,
+    },
+    {
+        type: "dmarc",
+        recordKind: "TXT",
+        recordName: "_dmarc.example.com",
+        configured: true,
+        recommendedValue: "v=DMARC1; p=none;",
+        found: false,
+        matches: false,
+    },
+];
+
+function renderDomainPage() {
+    return render(<DomainDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "example.com" }} />);
+}
 
 describe("DomainDetailPage", () => {
     it("renders domain details, the TXT record block, and the DNS setup checklist for an unverified, disabled domain", async () => {
@@ -87,7 +126,7 @@ describe("DomainDetailPage", () => {
         expect(screen.getByText("Not configured")).toBeInTheDocument();
     });
 
-    it("falls back to building the TXT value from the domain's own verificationToken when the DNS setup checklist has no ownership entry", async () => {
+    it("falls back to building the TXT value and name from the domain itself when the DNS setup checklist has no ownership entry", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
@@ -97,11 +136,29 @@ describe("DomainDetailPage", () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
         const user = userEvent.setup();
         mockClipboard(writeText);
-        render(<DomainDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "example.com" }} />);
+        renderDomainPage();
 
         expect(await screen.findByText("rapidmx-domain-verification=tok123")).toBeInTheDocument();
-        await user.click(screen.getByRole("button", { name: "Copy" }));
-        expect(writeText).toHaveBeenCalledWith("rapidmx-domain-verification=tok123");
+        await user.click(screen.getByRole("button", { name: "Copy value for the ownership TXT record" }));
+        expect(writeText).toHaveBeenLastCalledWith("rapidmx-domain-verification=tok123");
+        await user.click(screen.getByRole("button", { name: "Copy name for the ownership TXT record" }));
+        expect(writeText).toHaveBeenLastCalledWith("example.com");
+    });
+
+    it("uses the ownership record's own name, when the server names one, for the TXT record to add", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, [{ ...dnsSetup[0], recordName: "_verify.example.com" }]);
+            throw new Error(`unexpected ${url}`);
+        });
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        const user = userEvent.setup();
+        mockClipboard(writeText);
+        renderDomainPage();
+
+        await user.click(await screen.findAllByRole("button", { name: "Copy name for the ownership TXT record" }).then((buttons) => buttons[0]));
+        expect(writeText).toHaveBeenCalledWith("_verify.example.com");
     });
 
     it("hides the TXT record block and Verify button once the domain is verified", async () => {
@@ -120,26 +177,69 @@ describe("DomainDetailPage", () => {
         expect(screen.queryByText("DNS setup checklist")).not.toBeInTheDocument();
     });
 
-    it("copies the TXT record value to the clipboard", async () => {
-        const writeText = vi.fn().mockResolvedValue(undefined);
+    it("puts a Copy button on every value to type into a DNS form: each record's name, value, and an MX record's priority and server", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
-            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, dnsSetup);
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, fullDnsSetup);
             throw new Error(`unexpected ${url}`);
         });
+        const writeText = vi.fn().mockResolvedValue(undefined);
         const user = userEvent.setup();
         mockClipboard(writeText);
-        render(<DomainDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "example.com" }} />);
+        renderDomainPage();
+        await screen.findByText("DNS setup checklist");
 
-        await user.click(await screen.findByRole("button", { name: "Copy" }));
-        expect(writeText).toHaveBeenCalledWith("rapidmx-domain-verification=tok123");
-        expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+        const expected: Array<[string, string]> = [
+            // The TXT block above the checklist.
+            ["Copy name for the ownership TXT record", "example.com"],
+            ["Copy value for the ownership TXT record", "rapidmx-domain-verification=tok123"],
+            // The checklist: the ownership row appears in both places.
+            ["Copy priority for the MX record", "10"],
+            ["Copy mail server for the MX record", "mx.example.net"],
+            ["Copy name for the SPF record", "example.com"],
+            ["Copy value for the SPF record", "v=spf1 mx ~all"],
+            ["Copy name for the DKIM record", "default._domainkey.example.com"],
+            ["Copy value for the DKIM record", DKIM_VALUE],
+            ["Copy name for the DMARC record", "_dmarc.example.com"],
+            ["Copy value for the DMARC record", "v=DMARC1; p=none;"],
+        ];
+        for (const [name, value] of expected) {
+            const button = screen.getAllByRole("button", { name })[0];
+            await user.click(button);
+            expect(writeText).toHaveBeenLastCalledWith(value);
+        }
+        // Nothing else offers a copy: ownership's two buttons appear twice (block and checklist row), the MX row has a name,
+        // a priority and a server button but no whole-value one, and each remaining row has a name and a value button.
+        expect(screen.getAllByRole("button", { name: /^Copy / })).toHaveLength(2 + 2 + 3 + 2 + 2 + 2);
+        expect(screen.queryByRole("button", { name: "Copy value for the MX record" })).not.toBeInTheDocument();
+        expect(screen.getByText(/Some DNS providers want the name relative/)).toBeInTheDocument();
     });
 
-    it("reverts the 'Copied' confirmation back to 'Copy' after a couple of seconds", async () => {
+    it("shows each record's type and name, and leaves a dash where there is nothing to copy yet", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, dnsSetup.map((c) => (c.type === "dkim" ? { ...c, recordName: "" } : c)));
+            throw new Error(`unexpected ${url}`);
+        });
+        renderDomainPage();
+        await screen.findByText("DNS setup checklist");
+
+        const table = within(screen.getByRole("table"));
+        expect(table.getByText("Name / host", { selector: "th" })).toBeInTheDocument();
+        expect(table.getAllByText("Type: TXT")).toHaveLength(2);
+        expect(table.getByText("Type: MX")).toBeInTheDocument();
+        // The unconfigured DKIM row has no name and no value: no Copy buttons, dashes instead.
+        expect(table.getAllByText("\u2014")).toHaveLength(2);
+        expect(table.queryByRole("button", { name: /DKIM/ })).not.toBeInTheDocument();
+        // An MX value with no priority is copied whole.
+        expect(table.getByRole("button", { name: "Copy value for the MX record" })).toBeInTheDocument();
+        expect(table.queryByRole("button", { name: /priority/ })).not.toBeInTheDocument();
+    });
+
+    it("says Copied in a live region next to the button that was used, then goes quiet after a couple of seconds", async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true });
-        const writeText = vi.fn().mockResolvedValue(undefined);
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
@@ -147,18 +247,22 @@ describe("DomainDetailPage", () => {
             throw new Error(`unexpected ${url}`);
         });
         const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-        mockClipboard(writeText);
-        render(<DomainDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "example.com" }} />);
+        mockClipboard(vi.fn().mockResolvedValue(undefined));
+        renderDomainPage();
 
-        await user.click(await screen.findByRole("button", { name: "Copy" }));
-        expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+        const button = (await screen.findAllByRole("button", { name: "Copy value for the ownership TXT record" }))[0];
+        await user.click(button);
+        const status = button.parentElement!.querySelector("[role=status]")!;
+        expect(status).toHaveAttribute("aria-live", "polite");
+        expect(status).toHaveTextContent("Copied");
+        // The other buttons say nothing.
+        expect(screen.getAllByText("Copied")).toHaveLength(1);
 
         await act(() => vi.advanceTimersByTimeAsync(2000));
-        expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+        expect(status).toBeEmptyDOMElement();
     });
 
-    it("silently ignores a clipboard write failure", async () => {
-        const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    it("falls back to the legacy copy command when the async clipboard rejects", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
@@ -166,12 +270,51 @@ describe("DomainDetailPage", () => {
             throw new Error(`unexpected ${url}`);
         });
         const user = userEvent.setup();
-        mockClipboard(writeText);
-        render(<DomainDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "example.com" }} />);
+        mockClipboard(vi.fn().mockRejectedValue(new Error("denied")));
+        const exec = mockExecCommand(() => true)!;
+        renderDomainPage();
 
-        await user.click(await screen.findByRole("button", { name: "Copy" }));
-        expect(writeText).toHaveBeenCalled();
-        expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
+        const button = (await screen.findAllByRole("button", { name: "Copy value for the ownership TXT record" }))[0];
+        await user.click(button);
+        expect(exec).toHaveBeenCalledWith("copy");
+        expect(await screen.findByText("Copied")).toBeInTheDocument();
+    });
+
+    it("falls back to the legacy copy command when there is no async clipboard at all", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, dnsSetup);
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        mockClipboard(undefined);
+        const exec = mockExecCommand(() => true)!;
+        renderDomainPage();
+
+        const button = (await screen.findAllByRole("button", { name: "Copy name for the ownership TXT record" }))[0];
+        await user.click(button);
+        expect(exec).toHaveBeenCalledWith("copy");
+        expect(await screen.findByText("Copied")).toBeInTheDocument();
+    });
+
+    it("says it could not copy when neither the clipboard nor the legacy command works, leaving the value on screen to select", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, dnsSetup);
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        mockClipboard(vi.fn().mockRejectedValue(new Error("denied")));
+        mockExecCommand(() => false);
+        renderDomainPage();
+
+        const button = (await screen.findAllByRole("button", { name: "Copy value for the ownership TXT record" }))[0];
+        await user.click(button);
+        expect(await screen.findByText("Couldn\u2019t copy")).toBeInTheDocument();
+        expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+        expect(screen.getAllByText("rapidmx-domain-verification=tok123")).toHaveLength(2);
     });
 
     it("verifies the domain and reloads its (now verified) state", async () => {

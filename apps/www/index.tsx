@@ -44,6 +44,8 @@ import MailShell, {
     MailShellProps,
     useMailShell,
 } from "../shared/components/mail/layout/MailShell.js";
+import MailAddress from "../shared/components/mail/MailAddress.js";
+import { mergeFirstPage } from "../shared/mail/mergeFirstPage.js";
 import MessageDetailPane from "../shared/components/mail/MessageDetailPane.js";
 import ConversationList from "../shared/components/mail/ConversationList.js";
 import ConversationThreadPane from "../shared/components/mail/ConversationThreadPane.js";
@@ -447,7 +449,7 @@ export default function InboxPage(props: MailShellProps) {
 }
 
 function InboxContent({ userUid }: { userUid?: string }) {
-    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated } = useMailShell();
+    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, live } = useMailShell();
     const isMobile = useIsMobile();
     const { requestUnlock } = useUnlockPrompt();
     const [messages, setMessages] = useState<Message[]>([]);
@@ -1008,6 +1010,67 @@ function InboxContent({ userUid }: { userUid?: string }) {
         mailboxFolders,
         activeMailboxUid,
     ]);
+
+    // New mail without a reload. `live` is bumped by a push event, a reconnect, the safety-net poll or the tab coming back (see
+    // `useMailLiveUpdates()`); this then quietly refetches the first page of whatever is listed and folds it in - unlike the
+    // effect above it resets nothing: not the selection, the open thread, select mode, the scroll position or the rows
+    // already paged in, and nothing it fetches is marked read. It stands aside for a search (whose rows aren't a folder's),
+    // a listing still loading and a "load more" in flight, and for events about folders the list isn't showing - a
+    // conversation list, which can span folders, refreshes for any. Any failure is silent: the next tick tries again.
+    const liveRunRef = useRef(0);
+    useEffect(() => {
+        if (live.tick === 0 || isSearching || loading || loadMoreInFlightRef.current || (!folderUid && !aggregateFolderType)) {
+            return;
+        }
+        if (!preferences.showAsConversations && live.folderUids) {
+            const shown = new Set(
+                aggregateFolderType
+                    ? mailboxFolders.flatMap((entry) => entry.folders.filter((f) => f.type === aggregateFolderType).map((f) => f.uid))
+                    : [folderUid!],
+            );
+            if (![...live.folderUids].some((uid) => shown.has(uid))) {
+                return;
+            }
+        }
+        // Superseded by a newer refresh, or by any reload of the list itself (which bumps the search run id).
+        const listRun = searchRunIdRef.current;
+        const myRun = ++liveRunRef.current;
+        const isCurrent = () => searchRunIdRef.current === listRun && liveRunRef.current === myRun;
+        void (async () => {
+            try {
+                if (preferences.showAsConversations) {
+                    const fresh = await listConversations(activeMailboxUid, conversationParams(0));
+                    if (!isCurrent()) {
+                        return;
+                    }
+                    const merged = mergeFirstPage(conversationsRef.current, fresh, conversationKey, MESSAGE_PAGE_SIZE);
+                    setConversations(merged.rows);
+                    listedOffsetRef.current = merged.complete ? fresh.length : listedOffsetRef.current + merged.added;
+                    setHasMore(!merged.complete);
+                } else if (aggregateFolderType) {
+                    // No paging here (see `fetchAggregateMessages()`): the fresh merged first pages are the list.
+                    const fresh = await fetchAggregateMessages(mailboxFolders, aggregateFolderType, effectiveFilter);
+                    if (isCurrent()) {
+                        setMessages(fresh);
+                    }
+                } else {
+                    const fresh = await listMessages(folderUid!, listParams);
+                    if (!isCurrent()) {
+                        return;
+                    }
+                    // A row the reader has just changed (a higher version) is not put back by a fetch that began before.
+                    const merged = mergeFirstPage(messagesRef.current, fresh, messageUid, MESSAGE_PAGE_SIZE, (current, next) =>
+                        current.version > next.version ? current : next,
+                    );
+                    setMessages(merged.rows);
+                    listedOffsetRef.current = merged.complete ? fresh.length : listedOffsetRef.current + merged.added;
+                    setHasMore(!merged.complete);
+                }
+            } catch {
+                // Quiet by design - see above.
+            }
+        })();
+    }, [live.tick]);
 
     function handleSearchAllMail() {
         setSearchAllMailKey(searchAllMailScope);
@@ -1742,7 +1805,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                         ].join(" ")}
                                     >
                                         <div className="flex items-center justify-between gap-2 text-sm">
-                                            <span className="truncate">{message.from.displayName || message.from.address}</span>
+                                            <MailAddress recipient={message.from} />
                                             <span className="text-xs text-text-muted shrink-0">
                                                 {new Date(message.receivedDate).toLocaleDateString()}
                                             </span>

@@ -1,5 +1,67 @@
 # Release Notes
 
+## Unreleased
+
+Needs `@rapidmx/react-shared` with `components/buttons/CopyButton.js`, `auth/profileApi.js`'s `getMyUsername()`,
+`mail/pushClient.js`, `mail/mailAddress.js`, `mail/sendFailure.js` and `ApiRequestError.details` (all unreleased), and an
+auth-server with its `/auth/elevate` page. The live inbox needs the server's push route (`/push`, already part of
+`@rapidmx/server`) reachable from the browser as a WebSocket; without it Mail still updates, on a timer.
+
+### Features
+
+- **New mail appears without reloading the page.** Mail now listens to the server's push channel for every folder of every
+  mailbox you can open, so a message delivered to any of them shows up at once: in the open folder's list (in place, at the
+  top, without moving your selection, scroll position or the message you are reading, and without marking anything read), in
+  a conversation list, in the merged All Mailboxes views, and in the unread badges of every folder in the sidebar. A folder
+  another device creates appears in the sidebar too. A safety-net refresh runs every 45 seconds while the tab is visible, and
+  straight away when you come back to the tab, focus the window or the network returns - because push messages are never
+  replayed for a socket that was down. If the socket can't connect at all (a proxy that blocks WebSockets, say) that refresh
+  is all there is, silently. The connection is one per tab, reconnects by itself with a growing, jittered delay, and closes
+  when you sign out. A search's results, a list still loading and a page being loaded further down are left alone.
+- **Every sender and recipient shows their real address.** A name alone no longer stands in for who a message is from: list
+  rows, conversation rows, a message's own header in a thread and the reading pane show `Name <address@domain>` (the bare
+  address when there is no name). In a row the name is shortened first, then the start of the address - the `@domain` is
+  kept to the end - and the full text is the tooltip. The reading pane lists To, Cc and Bcc separately with every recipient's
+  name and address, folding a long list behind "and N more". A name that is itself a different address
+  (`"ceo@bank.com" <evil@example.net>`) is quoted, with the real address still last, and the existing "looks like an email
+  address" warning still applies. A forward's quoted header now shows the To recipients' addresses too.
+- **A failed send says why, with the details.** When sending (or scheduling) fails, the compose window stays open with your
+  message as it was and shows the server's message in a banner, with a collapsed "Technical details" block under it - one
+  monospace line per fact the server gave, such as each recipient's SMTP code, enhanced status and the remote server's reply,
+  and any transport error - and a button that copies all of it to send to whoever runs the server. A response with nothing
+  beyond its message shows just the message. Closing a window whose last send failed asks first, since closing keeps the
+  draft and would otherwise say nothing about it not having been sent; a minimized window says "Not sent" on its bar.
+
+- **The admin console asks an administrator to confirm their identity instead of refusing them.** The console's
+  endpoints require an elevated session, which an administrator's normal sign-in is not, so opening it used to show "You
+  do not have administrator access." Now the browser is sent to auth-server's `/auth/elevate` page and comes back to the
+  page you were opening once you have confirmed your identity (or lands on your auth-server account page if you cancel).
+  Someone who is elevated but not an administrator still sees "You do not have administrator access." If the confirmation
+  doesn't take effect - it is attempted at most once every two minutes per tab, so a session cookie that never reaches
+  this site can't bounce the browser back and forth - the console says so and offers "Try again".
+- **Copy buttons on the DNS setup checklist.** Every value you type into your DNS provider now has its own Copy button:
+  each record's name (host) and value, the ownership TXT record's name and value, and for MX the priority and the mail
+  server separately, as a provider's form asks for them. The checklist also shows each record's type and name now, which
+  it never did, and says "Copied" beside the button you used - or "Couldn't copy" if the browser refuses, in which case the
+  value is still on screen to select. Copying works on an `http:` page or with clipboard permission denied too, through
+  the older copy command.
+- **An Account item in the user menu**, first in the list, that opens your auth-server account page in the same tab. It
+  appears in every app (mail, calendar, contacts, tasks, the admin console and the escrow console) and is left out when the
+  server has no auth-server URL configured.
+
+### Fixes
+
+- **The admin console no longer shows the custom branding header.** It sat above the console's own header. The footer is
+  still shown, and the webmail keeps both. (The Branding page's text now says which is shown where.)
+- **"No mailbox available" says why.** When automatic mailbox creation is refused on purpose - not enabled, or no username
+  registered for your account - the server's own reason is shown above "Ask an administrator to create one for you." A
+  server error or a failed request shows no reason (its message is internals, not advice). A 502, the identity service
+  being unreachable, now offers "Retry" the way a 503 does, saying it couldn't reach the identity service.
+- **The user menu shows your name, not your uid.** The name still comes from your auth-server profile, but when that has no
+  name - or can't be read: some accounts have no profile at all - it falls back to your username (your first verified
+  auth-server name alias), then to the uid; the initials badge follows the same order. The username is only asked for
+  when the profile gave no name, and neither lookup ever shows an error.
+
 ## v0.8.0
 
 ### Features

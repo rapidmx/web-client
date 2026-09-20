@@ -33,6 +33,7 @@ import {
     uploadAttachment,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
+import { describeSendFailure } from "@rapidmx/react-shared/mail/sendFailure.js";
 import { buildComposeBodyHtml } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import { peekMailboxWritability, useMailboxWritability } from "../writableMailboxes.js";
 import { decideMessageEncryption, resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
@@ -48,6 +49,7 @@ import RecipientInput from "./RecipientInput.js";
 import { parseRecipientList } from "./recipients.js";
 import RichTextEditor from "./RichTextEditor.js";
 import ScheduleSendPicker from "./ScheduleSendPicker.js";
+import SendFailureAlert from "./SendFailureAlert.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
@@ -119,12 +121,19 @@ const CRYPTO_UNAVAILABLE_MESSAGE =
 const NO_RECIPIENTS_CLOSE_MESSAGE =
     "This message may be encrypted once its recipients are known, so it isn't saved as a draft until you add them. Add a recipient and close again, or discard it.";
 
+const SEND_FAILED_TITLE = "This message wasn't sent";
+function sendFailedCloseMessage(reason: string): string {
+    return `Sending it failed (${reason.replace(/\.$/, "")}). Closing keeps it as a draft, unsent. Keep editing to try again, or discard it.`;
+}
+
 /** The confirmation shown before a Close/Discard throws content away (or when a Close couldn't save it). */
 interface ClosePrompt {
     title: string;
     message: string;
     /** Also offer "Retry" for loading the encryption settings. */
     retry?: boolean;
+    /** Also offer "Close, keep draft": a failed send's close prompt, where closing keeps the unsent draft as it is. */
+    closeAnyway?: boolean;
 }
 
 interface SecurityBlock {
@@ -240,6 +249,8 @@ export default function ComposeWindow({
     const [attachments, setAttachments] = useState<Attachment[]>([]);
     const [attachError, setAttachError] = useState<string | null>(null);
     const [sendError, setSendError] = useState<string | null>(null);
+    // The technical facts behind `sendError` (per-recipient SMTP results, a transport error), when the server gave any.
+    const [sendDetails, setSendDetails] = useState<string[]>([]);
     const [sending, setSending] = useState(false);
     const [requestReceipt, setRequestReceipt] = useState(false);
     const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
@@ -909,6 +920,7 @@ export default function ComposeWindow({
         setSending(true);
         sendingRef.current = true;
         setSendError(null);
+        setSendDetails([]);
         setSecurityBlock(null);
         setEncryptionBlocked(null);
         pendingSaveRef.current = false;
@@ -928,8 +940,13 @@ export default function ComposeWindow({
             finishedRef.current = true;
             onClose();
         } catch (err) {
-            const fallback = scheduledSendTimeIso ? "Could not schedule this message." : "Could not send this message.";
-            setSendError(err instanceof ApiRequestError ? err.message : fallback);
+            // The window stays open with the draft exactly as it was; nothing here closes, discards or saves over it.
+            const failure = describeSendFailure(
+                err,
+                scheduledSendTimeIso ? "Could not schedule this message." : "Could not send this message.",
+            );
+            setSendError(failure.message);
+            setSendDetails(failure.lines);
         } finally {
             sendingRef.current = false;
             setSending(false);
@@ -1096,9 +1113,14 @@ export default function ComposeWindow({
      * the same confirmation as a discard. A failed save keeps the window open with Discard / Keep editing.
      * Close and Discard are both disabled while a send is in progress: deleting the draft, or saving a
      * plaintext copy over the message the send just assembled, mid-send would lose or leak it. */
-    async function handleClose() {
+    async function handleClose(sendFailureAcknowledged = false) {
         if (!hasUserContent) {
             void discardNow();
+            return;
+        }
+        if (sendError && !sendFailureAcknowledged) {
+            // Closing would keep the draft and say nothing, which reads as if it had been sent.
+            setClosePrompt({ title: SEND_FAILED_TITLE, message: sendFailedCloseMessage(sendError), closeAnyway: true });
             return;
         }
         if (encryptionDecided) {
@@ -1330,6 +1352,19 @@ export default function ComposeWindow({
                         Retry
                     </Button>
                 )}
+                {closePrompt?.closeAnyway && (
+                    <Button
+                        type="button"
+                        onClick={() => {
+                            setClosePrompt(null);
+                            void handleClose(true);
+                        }}
+                        disabled={sending || closing}
+                        className="!w-auto"
+                    >
+                        Close, keep draft
+                    </Button>
+                )}
                 <Button type="button" onClick={() => void discardNow()} disabled={sending || closing} className="!w-auto">
                     Discard
                 </Button>
@@ -1349,6 +1384,7 @@ export default function ComposeWindow({
                     onClick={onToggleMinimize}
                 >
                     <span className="text-sm font-medium truncate">{title}</span>
+                    {sendError && <span className="shrink-0 text-xs font-bold uppercase tracking-wide">Not sent</span>}
                     <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
                         <HeaderButton label="Restore" onClick={onToggleMinimize} icon={HiOutlineArrowsPointingOut} />
                         <HeaderButton label="Discard draft" onClick={handleDiscard} icon={HiOutlineXMark} disabled={sending || closing} />
@@ -1420,7 +1456,7 @@ export default function ComposeWindow({
                     <div className="px-3 pt-2">
                         {folderError && <Alert>{folderError}</Alert>}
                         {draftError && <Alert>{draftError}</Alert>}
-                        {sendError && <Alert>{sendError}</Alert>}
+                        {sendError && <SendFailureAlert message={sendError} lines={sendDetails} />}
                         {attachError && <Alert>{attachError}</Alert>}
                         {discardError && <Alert>{discardError}</Alert>}
                     </div>

@@ -9,8 +9,12 @@ import "@testing-library/jest-dom/vitest";
 
 if (typeof document !== "undefined") {
     const { cleanup } = await import("@testing-library/react");
+    const { resetPushClient } = await import("@rapidmx/react-shared/mail/pushClient.js");
     afterEach(() => {
         cleanup();
+        // The tab's one push client (see `useMailLiveUpdates()`) outlives a component; a test that stubs the WebSocket
+        // must not inherit the previous test's connection - or, once a sign-out closed it, a client that never reopens.
+        resetPushClient();
         // jsdom keeps one `localStorage` for the whole file, so a preference a test leaves behind (the mail
         // list's own sort/filter/conversation settings, the local-index byte budget) would silently become
         // the *next* test's starting state - and did, before this line existed.
@@ -35,6 +39,23 @@ if (typeof document !== "undefined") {
                 dispatchEvent: vi.fn(() => false),
             }) as MediaQueryList;
     }
+
+    // jsdom's own WebSocket really tries to connect - to the test page's origin, where nothing listens - and then
+    // reconnects forever. `MailShell` opens the push socket (see `useMailLiveUpdates()`), so default every test to one
+    // that never connects and never closes; a test of the push behavior swaps in its own fake with `vi.stubGlobal()`.
+    (window as any).WebSocket = class NeverConnectingWebSocket {
+        readyState = 0;
+        onopen = null;
+        onmessage = null;
+        onclose = null;
+        onerror = null;
+        send() {
+            // Nothing is ever delivered.
+        }
+        close() {
+            // Nothing to close.
+        }
+    };
 
     // jsdom implements no layout, so `Element.scrollIntoView` doesn't exist at all — a component that
     // scrolls the message it just opened into view (`ConversationThreadPane`) would throw on render. A
