@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-20
+
+### Added
+- Added a Reset to server default button under each mailbox policy field whose value differs from the server's config value, on the Mailbox Policy page and in the setup wizard, so an administrator can take a newly deployed default without typing it in
+
+### Changed
+- Fill the field in and leave saving to the form's own Save, so dirty tracking, the unsaved-changes prompt and the send-only-what-changed patch keep working, and offer no button when the server reports no defaults or the field is already at the config value
+- Test the reset of each of the three fields, that nothing is sent before Save, and that no button shows at the config value or without defaults
+- Document the change in the release notes and NOTES, including that it needs @rapidmx/react-shared with MailboxPolicy.defaults and type-checks only once that is published and the dependency is bumped
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Upgraded react-shared dep
+
 ## [0.7.0] - 2026-09-17
 
 ### Added
@@ -721,7 +733,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/rapidmx/web-client/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rapidmx/web-client/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rapidmx/web-client/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rapidmx/web-client/compare/v0.4.0...v0.5.0
