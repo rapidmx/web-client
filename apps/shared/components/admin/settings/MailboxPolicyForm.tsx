@@ -18,6 +18,23 @@ function toGb(bytes: number): string {
     return String(bytes / GB);
 }
 
+/** Whether a quota field's text is not the given number of bytes. */
+function differsFromBytes(text: string, bytes: number): boolean {
+    return Math.round(Number(text) * GB) !== bytes;
+}
+
+/** Puts a field back to the server's config value; nothing is saved until the form is. */
+function ResetToDefault({ label, shown, onClick }: { label: string; shown: boolean; onClick: () => void }) {
+    if (!shown) {
+        return null;
+    }
+    return (
+        <Button type="button" variant="text" className="!w-auto self-start text-xs -mt-2" onClick={onClick}>
+            Reset to server default ({label})
+        </Button>
+    );
+}
+
 /** The form's values as they were loaded or last saved. */
 interface Baseline {
     defaultQuotaGb: string;
@@ -35,8 +52,13 @@ export interface MailboxPolicyFormProps {
     embedded?: boolean;
 }
 
-/** The mailbox defaults editor, shared by the Mailbox Policy page and the setup wizard. */
+/**
+ * The mailbox defaults editor, shared by the Mailbox Policy page and the setup wizard. Each field can be reset to what
+ * the server's config currently says (`policy.defaults`), which lets an administrator take a newly deployed value
+ * without typing it in; the reset fills the field in and is saved with the rest of the form.
+ */
 export default function MailboxPolicyForm({ policy, onChange, onDirtyChange, embedded = false }: MailboxPolicyFormProps) {
+    const defaults = policy.defaults;
     const [defaultQuotaGb, setDefaultQuotaGb] = useState(toGb(policy.defaultQuotaBytes));
     const [autoProvisionEnabled, setAutoProvisionEnabled] = useState(policy.autoProvisionEnabled);
     const [autoProvisionQuotaGb, setAutoProvisionQuotaGb] = useState(toGb(policy.autoProvisionQuotaBytes));
@@ -119,6 +141,11 @@ export default function MailboxPolicyForm({ policy, onChange, onDirtyChange, emb
                     />
                     <span className="text-xs text-text-muted">The storage a mailbox starts with when an administrator creates it.</span>
                 </label>
+                <ResetToDefault
+                    label={defaults ? `${toGb(defaults.defaultQuotaBytes)} GB` : ""}
+                    shown={!!defaults && differsFromBytes(defaultQuotaGb, defaults.defaultQuotaBytes)}
+                    onClick={() => setDefaultQuotaGb(toGb(defaults!.defaultQuotaBytes))}
+                />
                 <label className="flex items-start gap-2 text-sm">
                     <input
                         type="checkbox"
@@ -134,19 +161,31 @@ export default function MailboxPolicyForm({ policy, onChange, onDirtyChange, emb
                         </span>
                     </span>
                 </label>
+                <ResetToDefault
+                    label={defaults?.autoProvisionEnabled ? "on" : "off"}
+                    shown={!!defaults && autoProvisionEnabled !== defaults.autoProvisionEnabled}
+                    onClick={() => setAutoProvisionEnabled(defaults!.autoProvisionEnabled)}
+                />
                 {autoProvisionEnabled && (
-                    <label className="flex flex-col gap-1.5 text-sm">
-                        <span className="font-semibold">Quota for self-created mailboxes (GB)</span>
-                        <input
-                            aria-label="Quota for self-created mailboxes (GB)"
-                            type="number"
-                            min={0}
-                            step="any"
-                            className={INPUT_CLASS}
-                            value={autoProvisionQuotaGb}
-                            onChange={(e) => setAutoProvisionQuotaGb(e.target.value)}
+                    <>
+                        <label className="flex flex-col gap-1.5 text-sm">
+                            <span className="font-semibold">Quota for self-created mailboxes (GB)</span>
+                            <input
+                                aria-label="Quota for self-created mailboxes (GB)"
+                                type="number"
+                                min={0}
+                                step="any"
+                                className={INPUT_CLASS}
+                                value={autoProvisionQuotaGb}
+                                onChange={(e) => setAutoProvisionQuotaGb(e.target.value)}
+                            />
+                        </label>
+                        <ResetToDefault
+                            label={defaults ? `${toGb(defaults.autoProvisionQuotaBytes)} GB` : ""}
+                            shown={!!defaults && differsFromBytes(autoProvisionQuotaGb, defaults.autoProvisionQuotaBytes)}
+                            onClick={() => setAutoProvisionQuotaGb(toGb(defaults!.autoProvisionQuotaBytes))}
                         />
-                    </label>
+                    </>
                 )}
                 <div>
                     <Button type="submit" loading={saving} disabled={saving} className="!w-auto">

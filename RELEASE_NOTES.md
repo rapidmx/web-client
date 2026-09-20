@@ -1,5 +1,17 @@
 # Release Notes
 
+## Unreleased
+
+### Features
+
+- **Reset a mailbox setting to the server's config value:** on the Mailbox Policy page (and the same section of the setup
+  wizard), a field that differs from what the server's config says now shows "Reset to server default (5 GB)" - for the
+  default quota, whether people may create their own mailbox, and the quota for those. This is how an administrator takes
+  a newly deployed default after having saved the policy, without typing the value in. The reset fills the field in and is
+  saved with the rest of the form (nothing is written until Save), and the button disappears once the field is back on
+  the config value. Needs `@rapidmx/react-shared` with `getMailboxPolicy()`'s `defaults` and `@rapidmx/restapi`'s
+  `/system/mailbox-policy` `defaults` (both unreleased); against an older server no reset is offered.
+
 ## v0.7.0
 
 Needs `@rapidmx/react-shared` with `mail/directoryApi.js`, `mail/messageBodySanitizer.js`, `composeQuoting.js`'s

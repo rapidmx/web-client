@@ -2254,3 +2254,17 @@ Two follow-ups from JP on the round above.
   and then checked its text once - the row mounts before its attachments request lands, so it raced under
   full-suite load (it failed there while passing in isolation). The `waitFor` has to wrap the *assertion*.
 
+### 2026-09-19 — Mailbox policy: "Reset to server default" per field
+
+- `MailboxPolicyForm` offers a text button under each field whose value differs from `policy.defaults` (the server's
+  config value): "Reset to server default (5 GB)" / "(on|off)". It **fills the field and leaves saving to the form's
+  own Save**, like every other edit, so the dirty tracking, the leave-with-unsaved-changes prompt in the setup wizard and
+  the send-only-what-changed patch all keep working with no special case. Quota fields compare as bytes
+  (`Math.round(Number(text) * GB)`), so "5.0" against a default of 5 GB offers no reset. No `defaults` (older server) -> no
+  buttons at all.
+- **`tsc` fails here until `@rapidmx/react-shared` with `MailboxPolicy.defaults` is published and this repo's dependency
+  is bumped** - `node_modules/@rapidmx/react-shared` is a registry copy, so it doesn't see the sibling repo's change. The
+  only error is `Property 'defaults' does not exist on type 'MailboxPolicy'` in `MailboxPolicyForm.tsx`; vitest is
+  unaffected (the field is only read at runtime). Not worked around with a cast.
+- Tests: `test/apps/admin/mailbox-policy/index.test.tsx` (reset of each of the three fields, nothing sent before Save, no
+  button at the config value, no button without `defaults`); the file is at full coverage.

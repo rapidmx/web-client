@@ -109,6 +109,58 @@ describe("MailboxPolicyPage", () => {
         await vi.waitFor(() => expect(saved).toEqual([{ autoProvisionEnabled: true }]));
     });
 
+    it("offers to reset a field to the server's config value, and saves the reset like any other edit", async () => {
+        const saved: any[] = [];
+        const defaults = { defaultQuotaBytes: 5_000_000_000, autoProvisionEnabled: false, autoProvisionQuotaBytes: 2_500_000_000 };
+        mockPolicy(
+            (body) => {
+                saved.push(body);
+                return jsonResponse(200, { ...current, ...body, defaults });
+            },
+            jsonResponse(200, { defaultQuotaBytes: 10_000_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 1_000_000_000, defaults }),
+        );
+        const current = { defaultQuotaBytes: 10_000_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 1_000_000_000 };
+        const user = userEvent.setup();
+        renderPage();
+
+        expect(await screen.findByLabelText("Default quota (GB)")).toHaveValue(10);
+        await user.click(screen.getByRole("button", { name: "Reset to server default (5 GB)" }));
+        expect(screen.getByLabelText("Default quota (GB)")).toHaveValue(5);
+        // Back on the config value, so there is nothing left to reset.
+        expect(screen.queryByRole("button", { name: "Reset to server default (5 GB)" })).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Reset to server default (2.5 GB)" }));
+        expect(screen.getByLabelText("Quota for self-created mailboxes (GB)")).toHaveValue(2.5);
+
+        await user.click(screen.getByRole("button", { name: "Reset to server default (off)" }));
+        expect(screen.getByLabelText(/Let people create their own mailbox/)).not.toBeChecked();
+        expect(screen.queryByLabelText("Quota for self-created mailboxes (GB)")).not.toBeInTheDocument();
+
+        // Nothing is saved until the form is.
+        expect(saved).toEqual([]);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(saved).toEqual([{ defaultQuotaBytes: 5_000_000_000, autoProvisionQuotaBytes: 2_500_000_000, autoProvisionEnabled: false }]);
+    });
+
+    it("offers no reset for a field already at the config value, or when the server reports no defaults", async () => {
+        const defaults = { defaultQuotaBytes: 5_000_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 2_500_000_000 };
+        mockPolicy(undefined, jsonResponse(200, { ...defaults, autoProvisionEnabled: true, defaults }));
+        const { unmount } = renderPage();
+        await screen.findByLabelText("Default quota (GB)");
+        expect(screen.queryByRole("button", { name: /Reset to server default/ })).not.toBeInTheDocument();
+
+        // A change of the checkbox alone offers its own reset, phrased with the config value ("on").
+        await userEvent.setup().click(screen.getByLabelText(/Let people create their own mailbox/));
+        expect(screen.getByRole("button", { name: "Reset to server default (on)" })).toBeInTheDocument();
+        unmount();
+
+        mockPolicy(undefined, jsonResponse(200, { defaultQuotaBytes: 10_000_000_000, autoProvisionEnabled: true, autoProvisionQuotaBytes: 1_000_000_000 }));
+        renderPage();
+        await screen.findByLabelText("Default quota (GB)");
+        expect(screen.queryByRole("button", { name: /Reset to server default/ })).not.toBeInTheDocument();
+    });
+
     it("shows load and save errors", async () => {
         mockPolicy(() => jsonResponse(400, { message: "Too big" }));
         const user = userEvent.setup();
