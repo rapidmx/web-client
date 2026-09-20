@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.9.0
 
 Needs `@rapidmx/react-shared` with `components/buttons/CopyButton.js`, `auth/profileApi.js`'s `getMyUsername()`,
 `mail/pushClient.js`, `mail/mailAddress.js`, `mail/sendFailure.js` and `ApiRequestError.details` (all unreleased), and an

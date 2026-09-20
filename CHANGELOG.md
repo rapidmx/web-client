@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-20
+
+### Added
+- Added copy buttons to every name and value of the domain DNS checklist, and show each record's type and name
+
+### Changed
+- Redirect an administrator whose token is not elevated to the auth-server's /auth/elevate page and back, instead of showing no administrator access, with a two minute guard against a redirect loop
+- Show the reason the server gave when a mailbox can't be set up, and offer Retry when the identity service can't be reached
+- Show the profile name in the account menu, else the username, else the uid, and add an Account link to the auth-server's account page
+- Update the inbox, conversation lists, all mailboxes views and unread counts as mail arrives, over the push connection with a poll as a fallback, without a reload or losing the selection
+- Show the sender's address next to their name in lists, the reading pane, recipient lines and a forward's quote
+- Keep the compose window open after a failed send with an expandable technical details block, and ask before closing it
+- Test the new components and hooks and the changed ones
+- Document the changes in the README, the release notes and NOTES, including that this needs the next @rapidmx/react-shared and @rapidmx/restapi
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Upgraded react-shared dep
+
+### Removed
+- Removed the custom header from the admin console and keep its footer
+
 ## [0.8.0] - 2026-09-20
 
 ### Added
@@ -733,7 +753,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/rapidmx/web-client/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rapidmx/web-client/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rapidmx/web-client/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rapidmx/web-client/compare/v0.5.0...v0.6.0
