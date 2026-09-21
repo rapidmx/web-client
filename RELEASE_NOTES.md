@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.10.0
 
 Needs `@rapidmx/server`'s next release for the `trustedRoles` page prop (without it the Admin Console lookup asks for `admin`, which is the server's own default). Folder counts are exact only with the `@rapidmx/restapi` release that derives `unreadCount`/`totalCount` and publishes a `Folder` update event after every change; the badges cope with an older one, but a stored count that was never decremented comes back after each refresh.
 

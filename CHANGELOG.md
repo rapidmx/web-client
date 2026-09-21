@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-21
+
+### Added
+- Added Outlook style keyboard shortcuts, with ctrl+shift+a, s, b, m, c and l going to Account, Settings, Contacts, Mail, Calendar and To-Do, ctrl+r, ctrl+shift+r and ctrl+d replying, replying to all and deleting, alt+n creating a message, event, contact or task, more for the list, compose, calendar, contacts and tasks, and a ? dialog listing them
+- Added ctrl+n and ctrl+shift+t in the Electron client, as create and Tasks
+
+### Changed
+- Switch folders, mailboxes and views inside the mail page without a page load, keeping the URL shareable and back and forward working, and remember each folder's list, selection and scroll for five minutes
+- Switch between Mail, Calendar, Contacts, Tasks and Settings through a client-side router that keeps one app frame mounted, loads the next page's code before the URL changes and prefetches on hover, focus and idle, so compose windows, the push connection and unlocked keys survive the switch
+- Split the compose editor, the emoji list and the S/MIME code out of the inbox route and open Reply at once with the quoted text filled in when it arrives, taking the inbox's initial JavaScript from 2.0 MB to 467 KB
+- Distinguish unread mail with an accent bar, tint, bold sender and subject and a hidden Unread label in the message list, the conversation list and the thread headers
+- Show the server's derived folder counts in the folder badges, update them at once when a message is read, moved, archived or deleted, and reconcile them with the server's live folder events and a poll, with the unread count in the tab title
+- Show a pop-up with the sender's name and address, the subject and a preview when new mail arrives, and a desktop notification when the tab is in the background, with an account menu switch to turn them off
+- Show an Admin Console item in the account menu for users whose auth-server record has the admin role, since an administrator's token carries no roles until it is elevated
+- Hold the push connection, new mail pop-ups and the tab title in the app frame, so they work in every view over a single connection
+- Test the router, the keyboard layer and every shortcut, the folder counts, the unread styling, the pop-ups, the admin lookup and the lazy loading
+- Document the changes in the README, the release notes and NOTES, including that this needs the next @rapidmx/react-shared and @rapidmx/restapi
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Test each of the fixes
+- Document the fixes in the release notes and NOTES
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Upgraded react-shared dep
+
+### Fixed
+- Fixed an open message marked unread being marked read again straight away by the automatic mark as read
+- Fixed Ctrl and Cmd+Enter inserting a line break in the compose body instead of sending, by stopping the editor's hard break binding for it
+- Fixed Enter on a message list row not opening the message after a click or j and k in conversation mode, because the thread pane took the focus
+- Fixed an expanded Technical details block pushing Send out of the compose window, by letting the banner scroll inside it
+- Fixed the full-window screens for choosing or setting up a mailbox sitting at the left edge inside the app frame
+- Fixed DNS record names wrapping one letter per line beside a long DKIM key
+
 ## [0.9.0] - 2026-09-20
 
 ### Added
@@ -753,7 +784,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/rapidmx/web-client/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rapidmx/web-client/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rapidmx/web-client/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rapidmx/web-client/compare/v0.6.0...v0.7.0
