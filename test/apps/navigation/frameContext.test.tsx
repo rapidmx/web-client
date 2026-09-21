@@ -31,6 +31,21 @@ describe("FrameTakeover", () => {
         expect(screen.getByText("screen content")).toBeInTheDocument();
     });
 
+    it("renders its children bare outside a frame, and in a wrapper that takes the frame's whole row inside one, so the screen centres", () => {
+        const { container, unmount } = render(<FrameTakeover><p>screen content</p></FrameTakeover>);
+        expect(container.firstElementChild?.tagName).toBe("P");
+        unmount();
+        const inside = render(
+            <AppFrameContext.Provider value={{ enterTakeover: () => () => undefined }}>
+                <FrameTakeover><p>screen content</p></FrameTakeover>
+            </AppFrameContext.Provider>,
+        );
+        const wrapper = screen.getByText("screen content").parentElement!;
+        expect(wrapper.className).toContain("flex-1");
+        expect(wrapper.className).toContain("min-w-0");
+        inside.unmount();
+    });
+
     it("asks the frame to hide its chrome while mounted and lets go when it unmounts", () => {
         const leave = vi.fn();
         const enterTakeover = vi.fn(() => leave);

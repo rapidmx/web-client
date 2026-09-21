@@ -100,6 +100,12 @@ export default function RichTextEditor({
         content: value,
         autofocus,
         immediatelyRender: false,
+        editorProps: {
+            // Ctrl/Cmd+Enter is the compose window's Send. TipTap binds it to a hard break, and a key it handles never reaches the
+            // window's shortcut (which skips what a widget already took), so it inserted a line break and sent nothing. Returning true here
+            // stops ProseMirror handling it without preventing the event, which goes on to the shortcut. Shift+Enter is still the hard break.
+            handleDOMEvents: { keydown: (_view, event) => event.key === "Enter" && (event.ctrlKey || event.metaKey) },
+        },
         onCreate: ({ editor: created }) => {
             // An empty transaction runs the schema's append-transaction normalization now, before any edit.
             created.view.dispatch(created.state.tr);

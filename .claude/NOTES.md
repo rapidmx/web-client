@@ -2591,3 +2591,29 @@ got its own entry (explicit application menu so Electron's default accelerators 
   still has its pre-existing type errors (`mockFetch` signature etc.); the new `test/apps/keyboard` files add none. **Not verified:** any of it in a real browser (which keys a browser
   actually delivers or reserves, macOS Option/Cmd behaviour, AZERTY/Cyrillic/Dvorak key events - only synthetic `KeyboardEvent`s with the `key`/`code` such layouts produce), the
   Electron menu against a real window (see `electron-client`'s NOTES), focus behaviour with a screen reader, and the compose editor's own bindings winning over the global chords.
+
+### 2026-09-20 (QA) — acceptance test in a real browser against the committed code: five client defects fixed
+
+Not committed. Playwright (Chromium) against a local sandbox copy of the server (production build, `node dist/src/worker.js`, mongo:7 + redis:7 in docker, stub auth-server, stub rspamd/clamd,
+a fake `sendmail.exe`) whose `node_modules/@rapidmx/{restapi,react-shared,web-client}` were overlaid with the working trees (hash-compared file by file). Every requirement A-M was exercised; what
+follows is only what was wrong. Numbers, the server-side finding (missing `notifications` datastore) and the list of what was proven against stubs are in the server's NOTES of the same date.
+
+- **Takeover screens were left-aligned, not centred** (`FrameTakeover`, `navigation/frameContext.tsx`): inside the persistent frame `#app-content` is a flex row and a full-window screen ("Choose your
+  mailbox address", "No mailbox available", "Protect your mailbox", the unlock cards) shrank to its content at the left edge. Now wrapped in `<div className="flex-1 min-w-0">` inside the frame (a
+  block, so the screen's own `min-h-screen flex items-center justify-center` root fills it). Measured: card 32-480 px in a 1440 px window before, 496-944 after.
+- **Ctrl/Cmd+Enter did not send from the compose body** (`RichTextEditor.tsx`): TipTap binds it to a hard break, and a key the editor handles is skipped by the shortcut layer, so it inserted a line break
+  and sent nothing (it did send from To/Subject). `editorProps.handleDOMEvents.keydown` returns true for Ctrl/Cmd+Enter (ProseMirror stops handling it without preventing the event, which then reaches the
+  window's shortcut); Shift+Enter is still a hard break. Test with a real TipTap editor in `RichTextEditor.tiptap.test.tsx`.
+- **Enter on a list row never opened the message page after a click or j/k in conversation mode** (`ConversationThreadPane.tsx`): the thread's own "hand focus to the message the thread was opened at"
+  effect ran after the list's `focusRow()` and took the focus, so Enter toggled a message header instead of opening `/messages/:uid`. The effect now leaves the focus alone when it is on a list row's
+  `[data-row-open]` button *with a focus ring* (`:focus-visible`: a key press put it there); a click still hands the focus to the thread. Test in `ConversationThreadPane.test.tsx`.
+- **The send-failure banner pushed Send out of the compose window** (`ComposeWindow.tsx`): the window is a fixed 520 px and clips, so with "Technical details" expanded the Send button ended 26 px below its
+  bottom edge and could not be reached (or scrolled to). The alerts wrapper is now `shrink-0 max-h-[45%] overflow-y-auto`. Measured Send bottom 926 -> 892 in a window ending at 900.
+- **DNS checklist: record names wrapped one letter to a line** (`DomainDnsSetup.tsx`): beside the DKIM key (which breaks anywhere) the auto-width table gave the name column a few characters
+  (`mai / l._d / omai / nke...`). The name cell has `min-w-[10rem]` (167 px measured).
+- **Not fixed, observed:** (1) the new-mail toast sits over the account menu button (top right) for its 8 s; (2) with nothing selected the `?` dialog lists only the keys registered at that moment (New
+  message, next/previous), not Reply/Delete/Mark read... which appear once a message is open - it does list them all then, with the right glyphs; (3) after Ctrl+U the reading pane closes in conversation
+  mode (the bulk action reloads the list); (4) in conversation mode there is no search box, so `/` has nothing to focus (it works in the message list); (5) the first paragraph of a conversation row's
+  address shrinks the display name to nothing before the local part at 390 px (the domain stays whole, as specified); (6) `ReactRoute` caches the rendered page per path and uid only, so props that come
+  from cookies (`impersonating`) can be stale for a moment for the same uid (a real impersonation changes the uid); (7) Ctrl+Shift+S/B/L inside the compose body still belong to TipTap (documented above).
+- Verified: `yarn tsc --noEmit` and `yarn lint` clean, `yarn vitest run --coverage` 205 files / 3203 tests, coverage 100 / 99.91 / 100 / 100 (the same figures as before; the threshold caught an uncovered `catch` in the focus-ring helper, now tested); every fix re-checked in the browser after a rebuild of the sandbox. react-shared 92 files / 1174 tests and restapi 262 / 5371 pass on the same trees; electron-client tsc, lint and 54 tests pass.

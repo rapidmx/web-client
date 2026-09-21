@@ -189,6 +189,8 @@ describe("DomainDetailPage", () => {
         mockClipboard(writeText);
         renderDomainPage();
         await screen.findByText("DNS setup checklist");
+        // The name column keeps a floor, so a long DKIM key beside it can't squeeze a record name into one letter per line.
+        expect(screen.getByRole("button", { name: "Copy name for the DKIM record" }).closest("td")?.className).toContain("min-w-[10rem]");
 
         const expected: Array<[string, string]> = [
             // The TXT block above the checklist.

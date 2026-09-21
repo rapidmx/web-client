@@ -116,6 +116,15 @@ async function loadThread(mailboxUid: string, conversationId: string): Promise<{
     return { messages, truncated: more };
 }
 
+/** Whether the browser is showing a focus ring on `element` - it was focused from the keyboard (or by a key press's handler), not by a click. */
+function hasFocusRing(element: HTMLElement): boolean {
+    try {
+        return element.matches(":focus-visible");
+    } catch {
+        return false;
+    }
+}
+
 /**
  * The reading pane for the conversation list: the whole thread, **newest at the top**, opened at the message
  * the reader picked. Every message from that one through to the newest is expanded - which in this order is
@@ -246,8 +255,14 @@ export default function ConversationThreadPane({
                 scroller.scrollTop += top;
             }
         }
-        // `preventScroll` so focusing doesn't scroll it somewhere else again.
-        headerRefs.current[pendingFocusUid]!.focus({ preventScroll: true });
+        // A key press (j, k, the arrows) that opened this thread left the focus on its list row on purpose, so Enter goes on to open the
+        // message's page; taking the focus here would make Enter toggle this header instead. A click leaves no focus ring, and hands
+        // the focus to the thread as before.
+        const active = document.activeElement;
+        if (!(active instanceof HTMLElement && active.hasAttribute("data-row-open") && hasFocusRing(active))) {
+            // `preventScroll` so focusing doesn't scroll it somewhere else again.
+            headerRefs.current[pendingFocusUid]!.focus({ preventScroll: true });
+        }
         setPendingFocusUid(null);
     }, [pendingFocusUid, expandedUids]);
 

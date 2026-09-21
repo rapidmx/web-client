@@ -354,6 +354,46 @@ describe("ConversationThreadPane", () => {
         expect(document.documentElement.scrollTop).toBe(0);
     });
 
+    it("leaves the focus on a list row that a key press moved it to, so Enter still opens the message page, but takes it after a click", async () => {
+        vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => undefined);
+        const row = document.createElement("div");
+        row.setAttribute("data-message-uid", "row");
+        const rowButton = document.createElement("button");
+        rowButton.setAttribute("data-row-open", "true");
+        row.appendChild(rowButton);
+        document.body.appendChild(row);
+        const matches = Element.prototype.matches;
+        let ring: boolean | "throws" = true;
+        vi.spyOn(Element.prototype, "matches").mockImplementation(function (this: Element, selector: string) {
+            if (selector === ":focus-visible") {
+                if (ring === "throws") throw new SyntaxError("':focus-visible' is not a valid selector");
+                return ring;
+            }
+            return matches.call(this, selector);
+        });
+        rowButton.focus();
+        const first = renderThread({ selectedUid: "m2" });
+        await screen.findByTestId("detail-m2");
+        expect(document.activeElement).toBe(rowButton);
+        first.unmount();
+
+        // No focus ring: a click. The thread takes the focus, as it always has.
+        ring = false;
+        rowButton.focus();
+        const second = renderThread({ selectedUid: "m2" });
+        await screen.findByTestId("detail-m2");
+        expect(document.activeElement).toBe(header("Bob"));
+        second.unmount();
+
+        // A browser that can't answer `:focus-visible` counts as no ring: the thread takes the focus.
+        ring = "throws";
+        rowButton.focus();
+        renderThread({ selectedUid: "m2" });
+        await screen.findByTestId("detail-m2");
+        expect(document.activeElement).toBe(header("Bob"));
+        row.remove();
+    });
+
     /** Makes `node` the element `scrollingAncestor()` resolves to: jsdom has neither styles nor layout. */
     function makeScroller(node: HTMLElement, top: number, clientHeight: number) {
         node.style.overflowY = "auto";

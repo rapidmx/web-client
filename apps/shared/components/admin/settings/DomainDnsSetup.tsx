@@ -195,7 +195,8 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                                                 </span>
                                             )}
                                         </td>
-                                        <td className="py-2.5 px-2.5 border-b border-border text-text-muted">
+                                        {/* A floor on the name column: beside a long DKIM key (which breaks anywhere) the table gave it a few characters, and a name wrapped one letter to a line. */}
+                                        <td className="py-2.5 px-2.5 border-b border-border text-text-muted min-w-[10rem]">
                                             {check.recordName ? (
                                                 <CopyableValue
                                                     value={check.recordName}

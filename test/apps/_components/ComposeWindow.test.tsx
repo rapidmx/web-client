@@ -783,6 +783,9 @@ describe("ComposeWindow", () => {
 
             const banner = await screen.findByRole("alert");
             expect(within(banner).getByText("The message could not be delivered.")).toBeInTheDocument();
+            // The banner scrolls inside the window rather than pushing the editor and Send out of its fixed height when the details are open.
+            expect(banner.parentElement?.className).toContain("overflow-y-auto");
+            expect(banner.parentElement?.className).toContain("max-h-[45%]");
             const summary = within(banner).getByText("Technical details", { selector: "summary" });
             expect(summary.closest("details")).not.toHaveAttribute("open");
 

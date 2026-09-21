@@ -62,6 +62,25 @@ describe("RichTextEditor with a real TipTap editor", () => {
         expect(onChange).toHaveBeenLastCalledWith(editor.getHTML());
     });
 
+    it("lets Ctrl+Enter and Cmd+Enter go to the window (no hard break, not prevented) while Shift+Enter is still a hard break", async () => {
+        const { container } = render(<RichTextEditor value="<p>Hello</p>" onChange={vi.fn()} onUploadImage={vi.fn()} />);
+        const editor = await mountedEditor(container);
+        editor.commands.focus("end");
+        const dom = editor.view.dom;
+        const press = (init: KeyboardEventInit) => {
+            const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
+            dom.dispatchEvent(event);
+            return event;
+        };
+
+        expect(press({ ctrlKey: true }).defaultPrevented).toBe(false);
+        expect(press({ metaKey: true }).defaultPrevented).toBe(false);
+        expect(editor.getHTML()).not.toContain("<br");
+
+        expect(press({ shiftKey: true }).defaultPrevented).toBe(true);
+        expect(editor.getHTML()).toContain("<br");
+    });
+
     it("without autoFocusStart, leaves the editor unfocused", async () => {
         const onChange = vi.fn();
         const { container } = render(<RichTextEditor value={REPLY_BODY} onChange={onChange} onUploadImage={vi.fn()} />);

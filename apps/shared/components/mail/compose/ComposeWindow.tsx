@@ -1547,7 +1547,9 @@ export default function ComposeWindow({
 
             <div className="flex-1 min-h-0 flex flex-col">
                 {(folderError || draftError || sendError || attachError || discardError) && (
-                    <div className="px-3 pt-2">
+                    // Scrolls inside the window when it is tall (a failed send's expanded Technical details), instead of pushing the
+                    // editor and the Send button out of the window's fixed height, where they can't be reached.
+                    <div className="px-3 pt-2 shrink-0 max-h-[45%] overflow-y-auto">
                         {folderError && <Alert>{folderError}</Alert>}
                         {draftError && <Alert>{draftError}</Alert>}
                         {sendError && <SendFailureAlert message={sendError} lines={sendDetails} />}

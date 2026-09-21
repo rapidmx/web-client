@@ -55,6 +55,11 @@ cached separately).
 
 ### Fixes
 
+- **Ctrl/Cmd+Enter did not send from the compose body.** The rich-text editor bound it to a hard break, and a key the editor handles never reached the window's Send shortcut, so it added a line and sent nothing. Shift+Enter is still the line break.
+- **Enter on a message-list row could not open the message after a click or j/k in conversation mode,** because the thread pane took the focus; it now leaves it on the row when a key press opened the thread.
+- **Expanding a failed send's Technical details pushed Send out of the compose window.** The banner now scrolls inside the window (at most 45% of its height).
+- **The full-window screens (Choose your mailbox address, No mailbox, Protect your mailbox) sat at the left edge** instead of centred, once they were inside the shared app frame.
+- **DNS record names in the domain checklist wrapped one letter per line** beside a long DKIM key; the name column has a minimum width.
 - **The Inbox badge did not go down when you read a message and showed the wrong count.** The sidebar showed the folder's stored count, which nothing decremented. It now shows the count the server derives, adjusted as you work and read back after each change (see above).
 - **A message you opened stayed bold until the server answered, and a refresh could put it back.** The row changes at once, and a list refresh that started before the change no longer reverts it.
 - **Two conversation rows could look identical whether or not they held unread mail** (only the weight of the text differed). See the unread styling above.
