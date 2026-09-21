@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -11,7 +12,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 export type SettingsReadReceiptsPageProps = Omit<SettingsShellProps, "active">;
 
-export default function SettingsReadReceiptsPage(props: SettingsReadReceiptsPageProps) {
+function SettingsReadReceiptsPage(props: SettingsReadReceiptsPageProps) {
     return (
         <SettingsShell {...props} active="read-receipts">
             <ReadReceiptsContent />
@@ -146,3 +147,5 @@ function ReadReceiptsContent() {
         </div>
     );
 }
+
+export default routedPage("/settings/read-receipts", SettingsReadReceiptsPage);

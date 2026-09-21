@@ -8,7 +8,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import SettingsEncryptionPage from "../../../../apps/www/settings/encryption/index.js";
+import SettingsEncryptionPageRouted from "../../../../apps/www/settings/encryption/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const SettingsEncryptionPage = SettingsEncryptionPageRouted.page;
 
 const {
     getKeyVault,

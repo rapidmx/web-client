@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -51,7 +52,7 @@ function statusLabel(status: string): string {
 
 export type SettingsPrivacyPageProps = Omit<SettingsShellProps, "active">;
 
-export default function SettingsPrivacyPage(props: SettingsPrivacyPageProps) {
+function SettingsPrivacyPage(props: SettingsPrivacyPageProps) {
     return (
         <SettingsShell {...props} active="privacy">
             <PrivacyContent userUid={props.userUid} />
@@ -492,3 +493,5 @@ function ErasureSection({ mailboxLabel }: { mailboxLabel: string }) {
         </div>
     );
 }
+
+export default routedPage("/settings/privacy", SettingsPrivacyPage);

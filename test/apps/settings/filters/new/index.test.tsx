@@ -7,7 +7,10 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewMailFilterPage from "../../../../../apps/www/settings/filters/new/index.js";
+import NewMailFilterPageRouted from "../../../../../apps/www/settings/filters/new/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const NewMailFilterPage = NewMailFilterPageRouted.page;
 
 const mailbox = {
     uid: "mb1",

@@ -2354,3 +2354,240 @@ Not committed. Needs the sibling `react-shared` changes of the same date (see it
 - Verified (with the `react-shared` `dist` copy described above): `yarn tsc --noEmit` clean, `yarn lint` clean, `yarn vitest run --coverage` 167 files / 2628
   tests passing, coverage 100 / 99.92 / 100 / 100 (statements / branches / functions / lines). The 5 uncovered branches are old ones (`MoveToFolderDialog` 223,
   `ComposeWindow` two, `index.tsx` two); nothing new is uncovered.
+
+### 2026-09-20 (afternoon) — Unread styling, folder counters that follow the user, new-mail pop-ups, "Admin Console" without elevation
+
+Not committed. JP's screenshot of the live inbox: "Inbox 6" with everything read, two rows that looked identical. Uses the released `@rapidmx/react-shared` 0.9.0 as installed - **nothing in `react-shared` changed** (no overlay needed). Another agent (W1) was reworking navigation in the same tree (router, lazy panes, compose latency); this work touched `MailShell`, `AppShell`, `UserMenu`, `MessageDetailPane`, `ConversationThreadPane`, `ConversationList`, `index.tsx`, `[uid].tsx` with small targeted edits.
+
+- **Why the badge was wrong.** The sidebar showed `Folder.unreadCount` as loaded, which the server never decremented (`@rapidmx/restapi` is fixing it: `GET /mail/folders` derives `unreadCount`/`totalCount`, and after any change it publishes `{ type: /^Folder/, action: "update", data: { uid, mailboxUid, unreadCount, totalCount } }` on the folder's push channel). **Confirmed by the restapi agent afterwards, and this code is written to it, while still tolerating its absence** (the read-back after each change and the 45 s poll do the same job later; with the old server a stored count that was never decremented returns after each read-back): derived `totalCount` (non-deleted messages) and `unreadCount` (`flags.read !== true`) on `GET /folders`, `GET /folders/:id` and the PUT/bulk responses; the event type is `FolderMongo`/`FolderSQL` (matched `/^Folder/`), `data` is exactly `{ uid, mailboxUid, unreadCount, totalCount }`, and it is published to **both the folder's channel and its mailbox's**, so the client hears each update twice - `applyFolderEvent()` is idempotent (absolute values, applying the same one again changes nothing) and never treats them as deltas. Writes by the ActiveSync/MAPI plugins and whole-mailbox erasures publish nothing, and overlapping writes to one folder are unordered, so the read-back after every change, on the poll, on refocus and on reconnect stays.
+- **`shared/mail/folderCounts.ts` - the counters model.** An overlay (`counts`, by folder uid) in front of the loaded folders, *not* written into `mailboxFolders` (the list effect reloads and forgets its selection whenever that changes). `countDeltas(previous, next)` says what a message change does to the folders (read flip, move, delete, create); `useFolderCounts()` applies it at once (`track()` returns `{settle, revert}`), then **reconciles**: `refresh()` re-reads every mailbox's folders and replaces the overlay. Drift is prevented by three rules: a read that began before a change of this page's own began or ended is discarded and asked again (`changesRef`/`inFlightRef`); a server-published `Folder` event is applied only when nothing of this page's own is in flight and none finished in the last 1.5 s (`COUNT_QUIET_MS`), else it triggers a read instead; and the overlay restarts when the mailboxes load again (keyed on their uids, not the array). `noteCreated()` counts a pushed message once (500-uid memory) and returns whether it was new - that return is what stops a duplicate event being announced. Badges: `badgeFor(type, count)` - Inbox/Archive/user: unread when > 0 (name bold), Drafts/Outbox: total, Sent/Deleted/Junk: none (`badgeLabel()` is the sr-only text: "3 unread", "2 messages"); the All Mailboxes entries sum a type across mailboxes and apply the same rule. `inboxUnreadTotal()` + `useUnreadTitle()` prefix the tab title `(3) `.
+- **One function changes read state (`shared/mail/messageReadState.ts`).** `setReadState()` (one message) and `setReadStateMany()` (a selection): optimistic `patch(optimistic, previous)` + `track(previous, next)`, then the server, then `patch(serverCopy)` + `settle()`, or `patch(original, optimistic)` + `revert()` on failure (`setReadState` never rejects; `setReadStateMany` reverts and rethrows because a bulk update isn't atomic and `runBulkAction` reloads the list). Three callers: `useMarkMessageRead` (new, `shared/mail/useMarkMessageRead.ts`, replaces react-shared's hook - that one drops the server's answer when the message changes, which the optimistic copy itself does, so the row would keep a stale `version`), `ConversationThreadPane`'s expand effect, and the bulk Mark read/unread. `InboxContent.patchListedMessage(updated, previous)` now moves a conversation row's `unreadCount` by `unread(updated) - unread(previous)` (it only decremented before), so a revert restores the count. Moves/deletes/archive: `MessageDetailPane` calls `useMailShell().trackMessageChange(message, updated).settle()` after each server success (move, archive, cancel-scheduled-send), `runBulkAction` does it for `removesRows`; `trackMessageChange` is on `MailShellContext` (a no-op tracker as the default value). `mergeFirstPage`'s `pick` for messages is now `current.version >= next.version ? current : next` so an equal-version optimistic row survives a refetch.
+- **Retry rules (a real trap).** The optimistic revert changes the message, which re-runs every effect keyed on it, so "clear the requested marker on failure" would loop for ever. `useMarkMessageRead` asks once per *opening* (the marker set is cleared when the open message's uid changes); `ConversationThreadPane` clears a message's marker in `toggleExpanded()` (re-expanding retries), never on failure.
+- **Not done / found.** The Tier 2 local index (`localIndexBuilder`) stores `flags` per encrypted message and only refreshes them when its next build sees a new server `version`; there is no per-message "flags changed" hook (only `moveLocalEntity`/`removeLocalEntity`), so a read flip reaches it on the next build - it affects only `is:read`/`is:unread` in Tier 2 search of encrypted mail. Drafts saved/discarded in compose reach the Drafts badge through the message events' read-back, not optimistically. The pop-ups and counters exist only where `MailShell` is mounted (Calendar/Contacts/Tasks/Settings don't open the push socket; with W1's persistent frame that could move up into it).
+- **Unread styling (`shared/components/mail/unreadStyle.tsx`).** One set of helpers for every list: `rowClass({unread, selected})` owns the row's single background (selected `bg-primary/20` + `ring-1 ring-primary/50`; unread `bg-primary/[0.07]`, hover `bg-primary/10`; read hover `bg-surface-alt`), `UnreadBar` (3 px `bg-primary`, `aria-hidden`), `UnreadLabel` (sr-only "Unread. "), `senderClass`/`subjectClass`/`dateClass`, `ROW_FOCUS_CLASS` (inside outline). Rows carry `data-unread="true"` (tests key on it; the old tests asserted `font-semibold` on the button). Unread = `flags.read !== true` (`isUnread()`); the weight moved from the button to the sender/subject elements, so a button's accessible name now starts with "Unread." (`header()` in the thread pane tests matches `^(Unread[.])?Name`). Colours are theme tokens only, so dark mode and a branding palette follow. **Looked at in Edge** (light and dark, conversation and message lists, hover/selected, toast, menu) through a scratchpad harness: Vite (web-client's own) + `@tailwindcss/vite` rendering the real `apps/www/index.tsx` with `window.fetch` and `WebSocket` replaced by stubs (`playwright-core`, `channel: "msedge"`; the harness is not in the repo).
+- **New-mail pop-ups (`shared/mail/newMailNotifications.ts`, `useNewMailNotifications.ts`, `components/mail/NewMailToasts.tsx`).** Fed only by `useMailLiveUpdates({ onMessageCreated })` (a push `create` event whose `data` has `uid`, `folderUid` and `flags`) - never by a list fetch, the first load or a reconnect (Redis pub/sub is not replayed). `shouldAnnounce()`: folder type `inbox`, unread, `inferenceClassification !== "other"`, `from` not one of the user's own addresses (`primarySmtpAddress` + aliases, case-insensitive), received < 6 h ago (bulk imports arrive as creates too). Text comes from the event (`bodyPreview`, cleaned of control/bidi/zero-width characters, cut to 140 chars, `…`) and is only ever rendered as text; an encrypted message shows "Encrypted message" (subject `[...]` becomes "(encrypted subject)"). Toast: `role="status"` polite region always mounted, max 3 (oldest dropped), 8 s, paused on hover/focus/hidden tab (remaining time kept), a plain `<a href="/messages/<uid>">` (W1's router intercepts same-origin links in its table; the desktop notification click uses `window.location.href` by default, `open` is injectable for `useNavigate()`), dismiss button, `.rr-toast-in` animation only inside `prefers-reduced-motion: no-preference`. Desktop: `Notification` only when permission is `granted` and (`visibilityState === "hidden"` or `!document.hasFocus()`), `tag = uid`, at most 5 per 30 s, constructor failures swallowed. Never prompts on load: the offer ("Turn on desktop notifications" / "Not now") sits in the first pop-up while permission is `default` and `rapidmx-desktop-notifications-offer` is unset; it and the account menu's item call `Notification.requestPermission()` from the click; any answer sets the marker. `rapidmx-new-mail-popups` = `off` turns everything off. All storage in try/catch.
+- **Where the "pop-ups off" setting lives.** The account menu (`UserMenu` `showNotificationSettings`, passed by `AppShell`): a `menuitemcheckbox` "New mail pop-ups On/Off" and, while permission is `default`, "Turn on desktop notifications". **No Settings page**: there is no natural existing section (auto-reply, filters, signatures, labels, read receipts, encryption, sharing, privacy are all mailbox-scoped and this is per browser), and a new section needs a `SETTINGS_SECTIONS` entry, a `routedPage` and a `_routes.ts` row in W1's router while it was in flux. Easy to add later on top of `newMailNotifications.ts`.
+- **Admin Console.** `shared/auth/adminAccess.ts` `lookUpAdminAccess(authServerUrl, userUid, trustedRoles)`: `GET {auth}/api/users/me` (credentialed; the caller may read their own `User`, whose `roles` is the source of truth - the same call auth-server's own UI makes "to check for admin access"; the JWT can't say, `TokenUtils.resolveTokenUser()` strips trusted roles from a non-elevated token). Requires `uid === userUid` and an array `roles`; remembers only a real answer (`sessionStorage` `rapidmx-admin-access:<uid>` `{admin, at}`, 30 min), shares one in-flight request per key, never rejects. `UserMenu` props: `detectAdmin` (AppShell passes `!trusted && !impersonating`), `trustedRoles`, `showAdminLink` (`trusted && !impersonating`). The item is `<a href="/admin">` with a `HiOutlineShieldCheck` icon and the text "Admin Console" (was "Admin"), above "Sign Out". **Server:** `wwwRoute.fetchProps` (mongo and sql) now also returns `trustedRoles: this.trustedRoles` (`trusted_roles`, default `["admin"]`), `AppShellProps.trustedRoles` carries it, and Mail/Calendar/Contacts/Tasks/Settings shells forward it (the client falls back to `["admin"]`). Cannot be spoofed into more than a link: `/admin` and the admin API still check the role and the elevation. Not checked: a real auth-server (CORS for the mail origin on `/api/users/me` is assumed the same as for `/api/profiles/me`, which works).
+- **Tests.** New: `_auth/adminAccess`, `_mail/{folderCounts,messageReadState,useMarkMessageRead,useNewMailNotifications,newMailNotifications,useUnreadTitle}`, `_components/{unreadStyle,NewMailToasts}`; extended `UserMenu`, `AppShell`, `MailShell` (badges, counters through `trackMessageChange`, folder events, pop-ups, tab title), `index` (read state and badges, bulk unread, move), `ConversationList`, `ConversationThreadPane`, `MessageDetailPane` (tracking), `useMailLiveUpdates` (+ssr). `test/apps/setup.ts` also clears `sessionStorage`. The old "forgets a failed mark-as-read" thread test now asserts the revert and the no-loop rule. **Failures that belong to W1's unfinished work, left alone:** `MessageDetailPane.test` reply/forward quoting and decrypt tests, `contacts/index.test`, and `index.test` cases that expect the mocked `detail-pane` or `location.href` (lazy reading pane, `useNavigate`); `yarn lint` also reports `AppRouter.tsx` (indentation, duplicate import, two unnecessary assertions).
+
+### 2026-09-20 — Speed: client-side router, per-folder snapshots, a 77% smaller first load, instant compose windows
+
+Not committed. Needs the sibling `react-shared` change of the same date (see its NOTES; unpublished) for the full bundle saving - everything
+else works with the released 0.9.0, but with it the inbox route's first JS is about 1.05 MB instead of 467,229 B (`smime` comes back through
+`KeyEnrollmentGate -> masterKeyWraps`, x509 through `keySession -> keys`). Findings first: the server was never slow (SSR/API 5-100 ms). The cost was the browser: an inbox load fetched
+17 chunks / 2,014,028 B of JS, of which a 1,022,512 B "shared" chunk (Rolldown named it `MailboxProvisioning-*.js`) was TipTap + ProseMirror + the
+500 KB emoji JSON (the compose editor, reached statically through `ComposeContext -> ComposeWindow`), `smime-*.js` (553 KB) was PKI.js/ASN.1/X.509
+(reached statically through `keySession -> keys -> @peculiar/x509`, `messageSecurity`, `masterKeyWraps`, `localIndexBuilder`), and every
+folder link, app-rail link and `window.location.href` was a full document load + a new hydration entry.
+
+- **Client-side router (`shared/navigation/`).** `@rapidrest/react` **hydrates only the page component - `_layout.tsx` is server-only** (the
+  `hydrateRoute()` entry hydrates `#react-root`, which the layout wraps), so the router can't live in the layout. Each `apps/www` page's default
+  export is `routedPage("/its/route", Page)` (`apps/www/_routedPage.tsx`): it renders `AppRouter` (the whole client tree) with `Page` first, and
+  carries the plain `Page` as `.page` for the router to use when it loads that module (rendering the wrapped default would nest a second router).
+  `apps/www/_routes.ts` is the route table (`{path, active, load: () => import(...), idlePrefetch?}`); `test/apps/routedPage.test.tsx` checks it
+  against the files under `apps/www` so a new page can't be forgotten. **One `AppChrome` stays mounted** (rail, header, user menu, banner, compose
+  windows, unlock prompt, idle-key timer, sign-out listener): `AppShell` is now a wrapper - inside `AppFrameContext` it renders only its children,
+  outside it (admin, escrow, plugin pages, tests) it is the whole `AppChrome`, so no shell or plugin call site changed. The frame's props are the
+  server's page props (identical for every www page: `WwwRoute.fetchProps()` + `userUid`, `user`; only `params` differs and the router recomputes
+  it from the URL); no www page exports a `fetchProps`. `active` comes from the route table.
+  - Links are plain `<a href>`: one `document` `click` listener takes plain left clicks on same-origin routes in the table (skips modifier keys,
+    a non-zero button, a `target` other than `_self`, `download`, `data-full-reload`, hash-only links and `defaultPrevented`). Unmatched URLs, the
+    admin/escrow consoles, plugin pages and other origins are left to the browser. `useNavigate()` does the same for code; outside a router it is
+    exactly `window.location.href = ...` (existing tests assert on that).
+  - `useLocation()`/`useLocationSearch()` are **empty until an effect reads `window.location`** (the server and the hydrating render must match, and
+    the server can't know the query string) - so `MailShell`, `CalendarShell`, `ContactsShell`, `TasksShell` and `SettingsShell` derive
+    `?mailboxUid=/?folderUid=/?aggregate=` from them in an effect (they used to read `window.location.search` once on mount). A folder switch is a
+    `search` change on the same page: nothing remounts, `InboxContent`'s list effect (its deps include `folderUid`) does the rest, and the push
+    subscriptions/poll in `useMailLiveUpdates` (every folder, not the selected one) are never touched. Back/forward is `popstate`.
+  - A page change runs `route.load()` first, then `pushState` + the swap in one commit (the old page stays up meanwhile, the content is
+    `aria-busy`); a failed load (offline, or a deploy replaced the chunk) falls back to a real navigation - which is also how a stale tab recovers.
+    A newer navigation overtakes an older one (sequence counter). One in-flight promise per route, dropped on failure so a later touch retries.
+  - Prefetch: `pointerover`/`pointerdown`/`focusin` on a link to a route, and the four app-rail routes through `whenIdle()` (after the window `load`
+    event, then `requestIdleCallback`; skipped for `navigator.connection.saveData`/2g). After a change `AppChrome` (keyed on `routeKey`) focuses
+    `#app-content` (`tabIndex=-1`), scrolls to the top, sets `document.title` (`<brand>: <label>`, also on first load - the layout's title is
+    "<brand>: Mail" for every page) and announces the page in a polite `role=status`. Full-window screens (`MailboxProvisioning`,
+    `KeyEnrollmentGate`'s blocking cards) wrap themselves in `FrameTakeover`, which hides the frame's rail/header/banner/footer (kept mounted, so
+    page state survives).
+  - `LocalIndexLifecycle` stays inside `MailShell` (it needs the mailboxes and folders): it unmounts when you leave Mail and restarts on return
+    (`buildLocalIndex` compares indexed versions, so that is incremental). Nothing polls for key destruction while on Calendar - the same as
+    before, when Calendar was a different page.
+  - Still full page loads: `/admin`, escrow, plugin pages (booking...), sign-out, "Return to admin", the setup-wizard redirect, the
+    `window.location.reload()` recoveries, "Manage labels..." in the label menu (`labelMenu.tsx` is a plain function; not converted) and
+    external links.
+- **Per-folder snapshots (`shared/mail/listSnapshots.ts`, used by `InboxContent`).** A folder's listing as it was on screen (rows incl. load-more
+  pages, selection, scroll) is kept in memory for 5 minutes (16 folders, keyed by mailbox + folder + conversation mode + filter + labels + sort).
+  Going to a folder shown a moment ago (or back to Mail from another app) paints it on the click's own frame and revalidates behind it, folding
+  the fresh page in with `mergeFirstPage()` exactly as a live refresh does; an uncached folder shows a skeleton (was a "Loading..." line). Search
+  and aggregate views are not snapshotted. `test/apps/setup.ts` clears it (and the reply-body cache) after every test - both are module-level.
+- **Bundle diet.** `ComposeContext` loads `ComposeWindow` with a hand-rolled loader (`prefetchComposeWindow()`), `ComposeToolbar` lazy-loads
+  `EmojiPicker` (the 430 KB JSON), `ComposeWindow` imports `smimeMessage` at send time only, `MessageDetailPane`/`ConversationThreadPane` are
+  `LazyReadingPane` chunks (the empty state renders without loading them), `MessageDetailPane`/`index.tsx` import `messageSecurity`/`searchTier3`
+  at use, `LocalIndexLifecycle` imports `localIndexBuilder` when a build is due. In `react-shared`, `keys.ts` (x509), `passwordUnlock.ts`
+  (hash-wasm) and `masterKeyWraps.ts` (smime) load lazily. `serverViteConfig.ts` (server repo) adds `codeSplitting` groups `react`
+  (react/react-dom/scheduler) and `icons` (`react-icons/hi2` + `lib`; **not `bs`**: an all-`react-icons` group put the compose toolbar's
+  Bootstrap icons into the initial chunk).
+  **`React.lazy` + `<Suspense>` is wrong for an on-click pane**: a boundary that has shown its fallback holds the content back for up to 300 ms
+  after the code arrives (React's fallback throttle), and `lazy()` starts its own load at first render, so prefetching the module doesn't help.
+  Selecting a message cost +300 ms until `LazyReadingPane` (and `ComposeContext`) switched to a loader that reads the loaded component
+  synchronously.
+  Numbers (the inbox route's static graph, production build, the same `createServerViteConfig()`): **before 17 chunks / 2,014,028 B (brotli
+  438,294)**; **after 25 chunks / 467,229 B (brotli 135,140)**, of which `react` is 219,010 B (58 KB brotli, cached across deploys) and the app's
+  own JS is 248 KB (77 KB brotli). Largest eager chunks after: react 219 KB, www (the inbox page) 41 KB, shared 31 / 29 (dompurify) / 28 / 23 KB,
+  icons 29 KB. Lazy and explicit: RichTextEditor 467 KB, EmojiPicker 430 KB, smime 330 KB, x509 161 KB, calendar 156 KB, localIndexWorker 103 KB and
+  its 2.2 MB wasm (worker, at unlock). Top modules before (rendered bytes): pkijs 583 KB, react-dom 538, @emoji-mart/data 500, web-client 368,
+  @tiptap/core 187, prosemirror-view 176, react-shared 155, @peculiar/x509 96, asn1js 93, prosemirror-model 77; after: react-dom 538, web-client
+  260, react-shared 92, dompurify 62, react-icons 39. `dompurify` stays (`BrandingChrome` sanitizes the custom header/footer at first paint). The
+  350 KB / 110 KB brotli target is not reached in total (React alone is 219 KB); it is met for everything but React (248 KB / 77 KB).
+  **`strictExecutionOrder` still holds and the lazy crypto is safe**: `keys.ts` awaits `import("reflect-metadata")` before
+  `import("@peculiar/x509")`, and `smime.ts` keeps `import "reflect-metadata"` first. The encrypted paths are unit-tested with mocks only - **a
+  browser-level encrypted send/receive round trip was not run**.
+- **Compose open latency.** Reply used to `await Promise.all([loadOriginalMessage(), ownAddresses()])` - `/content` (no timeout) then, for a
+  plain-text message, `/raw` - before `openCompose()`. Now `openCompose({... pending})` opens **on the click's own frame** (the frame from
+  `ComposeWindowPlaceholder` if the chunk isn't in yet); the window fetches its signature, draft and keys in parallel and mounts the editor as
+  soon as the signature is here; `pending` (`ComposeLateInput`: the quote and better To/Cc) is folded in when it resolves. The quote is *appended*
+  to the editor's document (`RichTextEditor` `appendHtml`, so what was typed above stays and the quote lands under the signature as before), To/Cc
+  are replaced only if the reader hasn't touched them, and an untouched reply still isn't autosaved (`seededHtml` and the baseline follow). The
+  body fetch has a 10 s timeout (`/raw` is raced against it) and is cached for 30 s; `prefetchOriginalMessage()` runs on hover/focus of
+  Reply/Reply All/Forward next to `prefetchComposeWindow()`; the sidebar Compose button passes the shell's own mailbox (no `listMailboxes()` round
+  trip first) and prefetches. `composePerf.ts` puts `performance.mark/measure` around the phases (`compose:<id>:click|shell|chunk|body|editor|draft`,
+  measures `compose:click->...`) in dev, or in production with `window.__RAPIDMX_PERF__ = true`.
+- **Measured (Edge through Playwright against a local sandbox server with the current static-asset compression, warm HTTP cache, medians of 2-3):**
+
+  | | before | after |
+  | --- | --- | --- |
+  | folder switch (Inbox -> Sent) | 140 ms, a full page load | 38 ms |
+  | back to a folder shown a moment ago | 155 ms | 19 ms |
+  | app switch Calendar / Contacts / Tasks / Mail | 141 / 136 / 132 / 144 ms | 28 / 27 / 26 / 35 ms |
+  | Reply: dialog visible / editor usable | 20 / 36 ms | 9 / 39-78 ms |
+  | full page loads during 8 in-app actions | 8 | 0 |
+
+  With 4x CPU throttling, 40 ms RTT and 20 Mbit/s: first list 1795 -> 1398 ms, load event 1346 -> 646 ms, repeat load 1567 -> 1160 ms, folder
+  switch 1518 -> 173 ms, back to a folder 1540 -> 92 ms, app switches ~1310-1610 -> 100-274 ms, Reply dialog 155 -> 57 ms. With `/content` and
+  `/raw` each held for 3 s (what a hung body looks like): dialog 6453 ms -> 15 ms, editor usable 6456 ms -> 53 ms. The idle prefetch pulls about
+  775 KB more (calendar, contacts, tasks, the reading pane, the compose window with its editor) after `load`: 1.25 MB in all once it settles.
+- **State that used to go with the page.** The mobile drawers (`MailShell`'s folder list, and the mailbox pickers of `ContactsShell`, `TasksShell`,
+  `SettingsShell`) stayed open after a choice once the choice stopped reloading the page; each shell now closes its drawer when `useLocationSearch()`
+  changes. Checked at 390 px: folder from the drawer, tap a conversation (`/messages/:uid` through the router - the conversation path still assigned
+  `window.location.href` until the browser check caught it), back, no document request after the first. Anything else that assumed "a new page
+  means fresh state" now survives a folder change on the same page. The one that mattered - a search followed the reader into the next folder and
+  kept showing its results - is cleared when the folder (or mailbox, or an all-mailboxes entry) changes; the sort/filter/conversation settings stay
+  (they are per mailbox and remembered anyway). Open menus close by themselves; expanded conversations and select mode are reset by the list
+  effect. Nothing else was found in the pages or shells, but this was not audited exhaustively.
+- **Harness gotchas (for the next person profiling).** A local build isn't served from `dist/public`: the plugin host builds the UI at server
+  start into `plugins/.ui-build/<hash>/` and switches `react:manifestPath` to it (and `rapidrest dev` builds with `NODE_ENV=development`, i.e.
+  dev React). Copy a production `vite build` over that folder, restart, and flush Redis (`ReactRoute` caches rendered HTML). `yarn dev`'s dev user
+  is an admin: on a server that hasn't finished setup `AppShell` redirects to `/admin/setup` (`POST /api/system/setup/complete`). Google Fonts
+  requests hang the load event in a sandbox - abort non-localhost requests. Never kill `msedge.exe` by name (it is JP's browser too).
+- Tests: new `navigation/{routes,idle,AppRouter,AppRouter.ssr,frameContext}`, `routedPage`, `_mail/listSnapshots`,
+  `_components/{LazyReadingPane,ComposeWindowPlaceholder,composePerf,ComposeContext.loader,ComposeWindow.pending,AppShell.frame}`; changed
+  `quotedBody`, `ComposeContext`, `RichTextEditor.tiptap` and the page and shell tests that assumed a full load, a synchronous compose window or
+  a "Loading..." line.
+- Verified (with the `react-shared` `dist` overlay described in the 2026-09-20 entry above): `yarn tsc --noEmit` clean, `yarn lint` clean, `yarn vitest run
+  --coverage` 192 files / 2961 tests passing, coverage 100 / 99.91 / 100 / 100 (statements / branches / functions / lines; the uncovered branches are the old
+  ones - `MoveToFolderDialog`, `ComposeWindow`'s `e.target.files ?? []` and `mailboxUid ?? ""`, `index.tsx`'s label-effect `cancelled` check and the label-created
+  ternary - plus one `current.version >= next.version` side in the live-refresh merge). The suite is load-sensitive: a first compose window opened in a test loads its chunk
+  (`MessageDetailPane.test.tsx` warms it in a `beforeAll`), and a run alongside another `vitest` produced spurious timeouts in `index.test.tsx` that did not repeat alone.
+  jsdom's `Range` has no `getClientRects`: adding content to a real TipTap editor (`appendHtml`) raised an asynchronous error that failed whichever test was running, so
+  `RichTextEditor.tiptap.test.tsx` stubs it. Browser checks (Edge/Playwright, sandbox server): hydration without console warnings on a first load of every kind of route
+  (`/`, `/calendar`, `/contacts`, `/contacts/:uid`, `/tasks`, `/messages/:uid` and eleven `/settings/...` pages); folder and app switching, back/forward, keyboard activation of a rail link (focus lands on `#app-content`), a compose
+  window and its typed text surviving Calendar -> Contacts -> Mail, and the 390 px folder drawer. **Not checked in a browser:** plugin pages, impersonation, sign-out,
+  the encrypted paths, the tap-a-message flow for a message with attachments, Safari/Firefox.
+
+### 2026-09-20 (evening) — Keyboard shortcuts (Outlook-style) in every view, and the push connection hoisted into the app frame
+
+Not committed. Nothing in `react-shared` or `server` changed (the work runs against the same `react-shared` overlay as the entries above). `electron-client`
+got its own entry (explicit application menu so Electron's default accelerators can't swallow Reply / Reply all).
+
+- **The layer (`shared/keyboard/`).** `ShortcutProvider` is mounted once in `AppChrome` (so it survives page swaps and covers Settings, and a page rendered
+  outside the router still gets one from its own `AppShell`); `GlobalShortcuts` (the "Go to ..." set and help) and `ShortcutsDialog` sit beside it. One
+  `keydown` listener on `document` (bubbling - what a widget handles itself and `preventDefault()`s is skipped) calls `dispatchKeyEvent()`. Views claim keys
+  with `useShortcut(SHORTCUTS.mail.reply, handler, { enabled, container })`; **`SHORTCUTS` in `keymap.ts` is the only place a key is written down**
+  (`ShortcutDef`: id, `keys`, `electronKeys`, label, scope, `allowOnActivatable`, `repeat`) and feeds the help dialog (`useRegisteredShortcuts()`), the
+  tooltips (`withHint()`, `ariaKeyShortcuts()`, `useShortcutProps()`) and a test that pins the whole map. Handlers are read through a ref at event time, so
+  a page swap changes what a key does with nothing re-wired; a handler returning `false` declines the key and the next registration (or nothing) gets it.
+  Outside a provider `useShortcut` does nothing, which is why no existing component test needed touching. SSR-safe: the platform (`mac`, `electron` =
+  `window.rapidmx` exists) is read in an effect (`SERVER_ENVIRONMENT` until then), hints render as Ctrl and switch to Cmd after mount.
+- **Matching (`parse.ts`, `match.ts`).** Specs like `ctrl+shift+a`, `alt+n`, `Delete`, `?`, `mod+enter` (`mod` = Ctrl, Cmd on a Mac). `event.key` (lower-cased)
+  first, so AZERTY/Dvorak follow the letter on the key cap; **`event.code` only when `event.key` isn't a Latin character** (macOS Option+N types `Dead`/`~`,
+  Cyrillic layouts) - never when it is (Dvorak's R key is not the QWERTY R). Modifiers must match exactly; Shift is ignored for a printable symbol (`?`).
+- **When a key is taken (`dispatch.ts`, `targets.ts`).** Skipped outright: `defaultPrevented`, `isComposing`/`Process`, bare modifier keys, and Copy/Cut/Paste/
+  Select all/Undo/Redo/Find (`a c v x z y f` with Ctrl/Cmd, no Shift) - never bound anywhere. In a text field (input except button/checkbox/submit/reset/image/
+  file/color, textarea, select, contenteditable, `role=textbox|searchbox`): bare keys, caret/delete keys with any modifier, Ctrl/Cmd+Shift+V (paste as plain
+  text) and +Z (redo) are the field's; a Ctrl/Alt/Cmd chord works, **except Option-only on a Mac and Ctrl+Alt (AltGr) elsewhere, which type characters**;
+  Escape works unless a popup it owns is open (`aria-haspopup` + `aria-expanded`, an expanded combobox) or it is in a popover dialog (`role=dialog` without a
+  `data-shortcut-scope`: the emoji/GIF/send-later pickers, which don't handle Escape themselves). Outside a field a bare key isn't taken from an open menu/
+  listbox/tab list/grid/...; Enter and Space are left to a focused button or link unless the shortcut says `allowOnActivatable`. A held key: a one-shot
+  action runs once and the repeats are **swallowed** (preventDefault, no handler) so a browser doesn't reload on a held Ctrl+R; `repeat: true` (arrows) keeps
+  firing. Scopes: `dialog` alone while any `[aria-modal="true"]` is in the document (react-shared's `Modal`/`Drawer`: DOM check, so no dialog had to change);
+  else inside `[data-shortcut-scope="compose"]` (the compose window's root) `compose` then `global`; else the mounted view's scope (`mail|calendar|contacts|
+  tasks`) then `global`; within a scope the latest registration first.
+- **The decided key map** (Cmd for `mod` on a Mac; the nav set and `Ctrl+Q` stay Ctrl; Cmd+Shift is **not** offered for the nav set: Cmd+Shift+A/B/C/L/M/S are
+  browser keys on macOS):
+
+  | Scope | Keys |
+  | --- | --- |
+  | Global | `Ctrl+Shift+A` Account (only with `authServerUrl`; full navigation to `${auth}/account`), `+S` Settings (`/settings/auto-reply`, the same target as the menu item), `+B` Contacts, `+M` Mail, `+C` Calendar, `+L` To-Do; `?` / `Ctrl+/` help. Already on the page: no navigation, key still consumed. Electron: `Ctrl+Shift+T` Tasks too |
+  | Mail | `Alt+N` new; `mod+R` reply, `mod+Shift+R` reply all, `mod+Shift+F` forward; `mod+D`/`Delete` delete; `E`/`Backspace` archive; `mod+Shift+V` move; `Ctrl+Q`/`mod+U` read/unread; `Insert` flag toggle; `Down`/`J`, `Up`/`K`; `Ctrl+.` / `Ctrl+,` next/previous unread; `Enter` open (`/messages/:uid`); `Escape` clear selection / leave select mode / clear search; `/`, `mod+E` search |
+  | Compose (focus inside a window) | `mod+Enter` send, `mod+S` save draft, `Escape` close (existing keep/discard flow), `Alt+N` another message (same From) |
+  | Calendar | `Alt+N` new event, `T` today, `Left`/`Right` and `mod+Left`/`mod+Right` previous/next period, `Ctrl+Alt+1..4` day/work week/week/month (no key for Split) |
+  | Contacts | `Alt+N` new contact, `/`, `mod+E` search |
+  | Tasks | `Alt+N` new task = focus the "Add a task" field (not in the Flagged email view, which has none) |
+  | Electron only | `mod+N` (Ctrl+N; Cmd+N on a Mac) = the view's create key; `Ctrl+Shift+T` Tasks |
+
+- **Who registers what.** `MessageDetailPane` (`shortcuts` prop) owns Reply/Reply all/Forward (`handleReplyOrForward`), Archive (`handleArchive`), Move to (opens
+  the dialog) - registered only while the button exists (Archive not for Drafts/Outbox, Move only with folders); a key pressed while the action is running is
+  consumed and does nothing (as the disabled button), so a browser never reloads on Ctrl+R meanwhile. `shortcuts` is passed by the one flat pane, the mobile
+  `/messages/:uid` page, and - through `ConversationThreadPane`'s `shortcuts` - **only the opened (else newest) message of a thread**, never all expanded ones.
+  `InboxContent` owns list-level keys and reuses `runBulkAction()` **exactly** (now `runBulkAction(action, removesRows, chosen = selectedMessages)`, resolving
+  to success): Delete = `moveMessages` to `resolveFolderOfType("deleted_items")` (created on demand), Mark read/unread = `setReadStateMany` with the same
+  `patchListedMessage`/`trackMessageChange`, Flag = `setMessagesFlagged` (flags all unless all already are). Targets: the ticked rows in select mode, else the
+  open message, else - in the conversation list - every message of the open conversation in this folder (fetched with `listConversationMessages()`, cached like a
+  ticked conversation's). The messages a key has nothing to do for are filtered out (already in Deleted Items, already read) and the key is still consumed. Not
+  registered without a target, in an aggregate view (the bar isn't offered there), and the pane's keys are off in select mode. Moving the selection focuses the row
+  (`data-message-uid` on rows, `data-row-open` on the row's button) and scrolls it into view; **after a delete/archive the next Down/J carries on from the removed
+  row's index** (`removedAnchorRef`), so clearing an inbox from the keyboard walks down it. `Enter` on the selected row (or with focus on the body) opens
+  `/messages/:uid`; on an unselected row it stays the button's click. A keyboard action's failure shows as an Alert above the list (`bulkError` was only shown by
+  the selection bar). `MailShell` renders `MailShortcuts` (alt+n -> `openCompose({ mailboxUid })`, a component of its own for the reason `ComposeButton` is:
+  `useCompose()` only resolves below `ComposeProvider`), `ComposeWindow` its four (container = its root, which carries `data-shortcut-scope="compose"`; Send/save/
+  close guarded by the same conditions as the buttons/autosave - Ctrl+S never saves a message headed for encryption), Calendar/Contacts/Tasks their own.
+- **Bug found and fixed on the way: Mark unread was undone at once for a message that was already read when opened.** `useMarkMessageRead` (and the thread pane's expand
+  effect) only recorded "asked" for a message it actually sent a request for, so making an already-read open message unread re-ran the effect and read it straight
+  back. Every opening is now recorded, read or not.
+- **Skipped, because the feature doesn't exist:** **Shift+Delete / permanent delete** (there is no permanent delete or "already in Deleted Items" confirm in the
+  UI - Delete is a move to Deleted Items, the bar disables it there, and `deleteMessage()` is only used for drafts; adding a purge is a product decision), and on
+  the mobile `/messages/:uid` page everything list-level (Delete, mark, flag, next/previous: it has no list) - Reply/Reply all/Forward/Archive/Move work there.
+- **Collisions found.** *Mine vs the editor:* the compose body is TipTap, whose bindings (defaultPrevented, so they win): `Ctrl+Shift+S` strike-through,
+  `Ctrl+Shift+B` blockquote, `Ctrl+Shift+L` align left (TextAlign), `Ctrl+E` code, `Ctrl+U` underline - so Settings, Contacts and To-Do do not fire while the caret
+  is in the compose body (Mail `Ctrl+Shift+M`, Calendar `Ctrl+Shift+C`, Account `Ctrl+Shift+A` do); a message body is a sandboxed iframe (`sandbox=""`, no scripts), which
+  **forwards no key events**, so after clicking into a message body Ctrl+R etc. reach the browser (Tab/click the list first; not fixable without `allow-same-origin`).
+  *Vs browsers (not verified in a browser, from documentation/knowledge):* Chrome/Edge - `Ctrl+Shift+A` tab search, `Ctrl+Shift+B` bookmarks bar, `Ctrl+Shift+C`
+  Inspect, `Ctrl+Shift+M` profile menu, `Ctrl+Shift+S` (Edge web capture), `Ctrl+D` bookmark, `Ctrl+R`/`Ctrl+Shift+R` reload, `Ctrl+E` search box, `Ctrl+U` view source,
+  `Ctrl+S` save page; Firefox - `Ctrl+Shift+A` Add-ons, `Ctrl+Shift+B/C/M/S`, `Ctrl+Q` quits on Linux; most of these normally reach the page first and can be
+  prevented, unlike `Ctrl+N`, `Ctrl+T`, `Ctrl+W` (and the shifted forms), which are never delivered - hence `Alt+N`/`Ctrl+Shift+L`. Not "fixed" beyond that.
+- **Task B - the mail connection moved into the frame (`shared/mail/useMailConnection.ts`).** The mailboxes + folder tree + `onFolderCreated` (moved out of
+  `MailShell`), `useMailLiveUpdates` (socket, poll, counters overlay) and `useNewMailNotifications` are one hook, `useMailConnection({ userUid, enabled, open })`.
+  `AppChrome` calls it with `enabled = useInAppFrame()`, provides the result as `MailConnectionContext`, renders `NewMailToasts` and keeps the tab title
+  (`useUnreadTitle(count, { enabled: inFrame, resetKey })`, declared **after** the effect that sets `document.title` so a page change strips the count from the old
+  title, writes the new one and puts the count back). `MailShell` reads the context (`hosted ?? own`, where `own` is the same hook with `enabled: !hosted`) and draws
+  its own toasts/title only when not hosted - so a Mail page outside the router (tests, plugin pages) behaves as before and **no existing MailShell test changed**.
+  Result: one socket for the tab across every app switch, pop-ups and the `(3)` prefix in Calendar/Contacts/Tasks/Settings, and going back to Mail shows the
+  folder tree in the same render (no reload of mailboxes/folders). **Chose to hoist the counters overlay too** (it is fed by the same events, inside
+  `useMailLiveUpdates`, so splitting it out would have needed the overlay re-fed through a second channel). Behaviour unchanged: same eligibility, dedupe,
+  6 h cutoff, permission UX. Costs: the frame lists mailboxes and folders once per document even on a page that doesn't need them (Calendar/Contacts/Tasks shells still
+  list their own too - not merged); a folder created/renamed elsewhere shows up in the sidebar via the push events (create) or on the next document load
+  (rename/delete), where before each visit to Mail was a document load. `AppChrome` now imports `useNavigate` from the new **`navigation/routerContext.tsx`**
+  (the router context and its hooks moved out of `AppRouter.tsx`, which re-exports them - no import changed) to avoid a cycle `AppRouter -> AppShell -> AppRouter`.
+- **Test-suite lessons.** (1) `useSyncExternalStore` on the registry in an always-mounted dialog re-rendered the whole frame on every shortcut registration and
+  shifted the microtask timing of two existing tests (calendar "clicking a day", tasks "blank title") - so `ShortcutsDialog` mounts its subscribing body only while
+  open. (2) A `vi.spyOn(navigator, "platform")` outlives `vi.unstubAllGlobals()`; restore it explicitly (a test left it on `MacIntel` and every later `mod` was Cmd).
+  (3) `fireEvent.keyDown` returns `false` when the layer took the key - that is the assertion for "prevented only when a handler ran".
+- Tests: new `test/apps/keyboard/{parse,match,targets,dispatch,format,keymap,platform,appLinks,GlobalShortcuts,ShortcutsDialog,ShortcutProvider.ssr}`,
+  `_components/MessageDetailPane.shortcuts`, `navigation/AppRouter.mailConnection`; extended `index` (list keys, conversation keys, aggregate), `ComposeWindow`,
+  `calendar/contacts/tasks index`, `AppShell`, `MailShell`, `UserMenu`, `MailSelectionBar`, `ContactsToolbar`, `ConversationList`, `ConversationThreadPane`,
+  `useMarkMessageRead`, `useUnreadTitle`.
+- Verified (with the `react-shared` `dist` overlay described above): `yarn tsc --noEmit` clean, `yarn lint` clean, `yarn build` clean (incl. `checkDistReferences`), `yarn vitest run
+  --coverage` 205 files / 3200 tests passing, coverage 100 / 99.91 / 100 / 100 (statements / branches / functions / lines; the uncovered branches are the old ones - `MoveToFolderDialog`,
+  `ComposeWindow`'s two, `index.tsx`'s label-effect `cancelled` check, the merge `version` side and the label-created ternary - nothing in `shared/keyboard` or the new handlers). `tsconfig.test.json`
+  still has its pre-existing type errors (`mockFetch` signature etc.); the new `test/apps/keyboard` files add none. **Not verified:** any of it in a real browser (which keys a browser
+  actually delivers or reserves, macOS Option/Cmd behaviour, AZERTY/Cyrillic/Dvorak key events - only synthetic `KeyboardEvent`s with the `key`/`code` such layouts produce), the
+  Electron menu against a real window (see `electron-client`'s NOTES), focus behaviour with a screen reader, and the compose editor's own bindings winning over the global chords.

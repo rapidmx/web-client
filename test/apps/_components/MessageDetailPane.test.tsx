@@ -5,7 +5,7 @@
 import React from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MessageDetailPane from "../../../apps/shared/components/mail/MessageDetailPane.js";
 import { clearPinnedSignerCache } from "../../../apps/shared/components/mail/pinnedSigners.js";
@@ -70,10 +70,17 @@ vi.mock("../../../apps/shared/components/mail/layout/MailShell.js", async (impor
 // convention) so the "reply/forward" tests below only exercise the values `MessageDetailPane` itself
 // hands off to `openCompose()`, observed via the real `ComposeWindow` that pops up.
 vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => ({
-    default: ({ value, autoFocusStart }: { value: string; autoFocusStart?: boolean }) => {
-        // Like the real editor, only the value it mounts with counts.
+    default: ({ value, autoFocusStart, appendHtml }: { value: string; autoFocusStart?: boolean; appendHtml?: string }) => {
+        // Like the real editor, only the value it mounts with counts (an empty one is the editor's own empty paragraph), and
+        // `appendHtml` - the quote a reply opened without - is added once at the end.
         const [mountedAutoFocusStart] = React.useState(!!autoFocusStart);
-        return <textarea data-testid="html-editor" data-autofocus-start={String(mountedAutoFocusStart)} value={value} readOnly />;
+        const [content, setContent] = React.useState(value || "<p></p>");
+        React.useEffect(() => {
+            if (appendHtml !== undefined) {
+                setContent((current) => current + appendHtml);
+            }
+        }, [appendHtml]);
+        return <textarea data-testid="html-editor" data-autofocus-start={String(mountedAutoFocusStart)} value={content} readOnly />;
     },
 }));
 
@@ -697,6 +704,13 @@ describe("MessageDetailPane", () => {
     });
 
     describe("reply/forward", () => {
+        // The compose window is a chunk loaded on demand (and prefetched when the pointer reaches Reply); loading it for the first
+        // time - transforming and evaluating its modules, slower still under coverage - can hold the thread for longer than a
+        // test's default wait, so it is loaded before the tests that open it.
+        beforeAll(async () => {
+            await import("../../../apps/shared/components/mail/compose/ComposeWindow.js");
+        });
+
         it("Reply opens Compose prefilled with the sender (name and address), a 'Re:' subject, and the quoted full body above an empty first line", async () => {
             const longBody = `<p>${"All the words of a long message. ".repeat(40)}</p><p>The very end.</p>`;
             mockComposeDraft((url) =>
@@ -712,12 +726,74 @@ describe("MessageDetailPane", () => {
             await user.click(screen.getByRole("button", { name: "Reply" }));
 
             expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
-            expect(recipientChips("To")).toEqual(["Sender One <sender@example.com>"]);
+            // The window's frame is up on the click; its fields arrive with its code.
+            await waitFor(() => expect(recipientChips("To")).toEqual(["Sender One <sender@example.com>"]), { timeout: 5000 });
             const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
-            expect(body.value.startsWith("<p></p><p></p><p>On ")).toBe(true);
+            // The editor opens at once; the quote is added under it when the original has been fetched.
+            await waitFor(() => expect(body.value.startsWith("<p></p><p></p><p>On ")).toBe(true), { timeout: 5000 });
             expect(body.value).toContain("Sender One &lt;sender@example.com&gt; wrote:");
             expect(body.value).toContain(`${longBody}</blockquote>`);
             expect(body).toHaveAttribute("data-autofocus-start", "true");
+        });
+
+        it("opens the compose window on the click, before the original's body has come back, and quotes it when it does", async () => {
+            let resolveContent!: (response: Response) => void;
+            const content = new Promise<Response>((resolve) => {
+                resolveContent = resolve;
+            });
+            mockComposeDraft((url) => (url === "/api/mail/messages/m1/content" ? (content) : undefined));
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+
+            // The window and its editor are there while the body is still on its way; Reply stays disabled meanwhile.
+            expect(await screen.findByRole("dialog", { name: "Re: Hello there" })).toBeInTheDocument();
+            const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+            expect(body.value).toBe("<p></p>");
+            expect(screen.getByRole("button", { name: "Reply" })).toBeDisabled();
+
+            resolveContent(new Response("<p>The original.</p>", { headers: { "content-type": "text/html" } }));
+            await waitFor(() => expect(body.value).toContain("<p>The original.</p></blockquote>"));
+            await waitFor(() => expect(screen.getByRole("button", { name: "Reply" })).not.toBeDisabled());
+        });
+
+        it("fetches what a Reply will quote, and the compose window's code, as the pointer reaches the button", async () => {
+            const fetchMock = mockComposeDraft((url) =>
+                url === "/api/mail/messages/m1/content" ? new Response("<p>Prefetched.</p>", { headers: { "content-type": "text/html" } }) : undefined,
+            );
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+            const contentRequests = () => fetchMock.mock.calls.filter(([url]) => url === "/api/mail/messages/m1/content").length;
+
+            await user.hover(screen.getByRole("button", { name: "Reply" }));
+            await waitFor(() => expect(contentRequests()).toBe(1));
+
+            // The click that follows finds the body already fetched.
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+            const body = await screen.findByTestId<HTMLTextAreaElement>("html-editor");
+            await waitFor(() => expect(body.value).toContain("<p>Prefetched.</p>"));
+            expect(contentRequests()).toBe(1);
+        });
+
+        it("prefetches with the keyboard too, and for Reply All and Forward", async () => {
+            const fetchMock = mockComposeDraft();
+            render(
+                <ComposeProvider>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[]} />
+                </ComposeProvider>,
+            );
+            act(() => screen.getByRole("button", { name: "Forward" }).focus());
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/messages/m1/content")).toBe(true));
+            act(() => screen.getByRole("button", { name: "Reply All" }).focus());
         });
 
         it("records the thread a reply continues on the draft it creates", async () => {
@@ -2236,6 +2312,84 @@ describe("MessageDetailPane", () => {
 
             rerender(<MessageDetailPane message={messageFixture({ version: 1, subject: "Renamed" })} attachments={[]} />);
             expect(screen.getByText("archive boom")).toBeInTheDocument();
+        });
+    });
+
+    describe("folder badges", () => {
+        const FOLDERS = [
+            { uid: "f1", mailboxUid: "mb1", name: "Inbox", type: "inbox" },
+            { uid: "f5", mailboxUid: "mb1", name: "Receipts", type: "user" },
+        ] as never;
+
+        function shellTracking() {
+            const tracker = { settle: vi.fn(), revert: vi.fn() };
+            const trackMessageChange = vi.fn(() => tracker);
+            mailShellOverride.current = { mailboxes: [], mailboxFolders: [], trackMessageChange };
+            return { tracker, trackMessageChange };
+        }
+
+        it("tells the shell about a move, so the source and target badges follow, once the server has accepted it", async () => {
+            const { tracker, trackMessageChange } = shellTracking();
+            const moved = messageFixture({ folderUid: "f5", version: 1 });
+            mockFetch((url, init) => (url === "/api/mail/messages/m1" && init?.method === "PUT" ? jsonResponse(200, moved) : undefined) as Response);
+            const original = messageFixture() as any;
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={original} attachments={[]} folders={FOLDERS} onMoved={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /^Receipts/ }));
+
+            await waitFor(() => expect(trackMessageChange).toHaveBeenCalledWith(original, moved));
+            expect(tracker.settle).toHaveBeenCalledTimes(1);
+        });
+
+        it("does not count a move the server refused", async () => {
+            const { trackMessageChange } = shellTracking();
+            mockFetch(() => jsonResponse(500, { message: "boom" }));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={messageFixture() as any} attachments={[]} folders={FOLDERS} onMoved={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /^Receipts/ }));
+
+            expect(await screen.findByText("boom")).toBeInTheDocument();
+            expect(trackMessageChange).not.toHaveBeenCalled();
+        });
+
+        it("tells the shell about an archive", async () => {
+            const { tracker, trackMessageChange } = shellTracking();
+            const archived = messageFixture({ folderUid: "f-archive" });
+            mockFetch(() => jsonResponse(200, archived));
+            const original = messageFixture() as any;
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={original} attachments={[]} onArchived={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Archive" }));
+
+            await waitFor(() => expect(trackMessageChange).toHaveBeenCalledWith(original, archived));
+            expect(tracker.settle).toHaveBeenCalledTimes(1);
+        });
+
+        it("tells the shell about a scheduled send taken back into Drafts", async () => {
+            const { tracker, trackMessageChange } = shellTracking();
+            const back = messageFixture({ folderUid: "f-drafts", scheduledSendTime: undefined });
+            mockFetch(() => jsonResponse(200, back));
+            const original = messageFixture({ scheduledSendTime: "2026-06-01T09:00:00.000Z" }) as any;
+            const user = userEvent.setup();
+            render(
+                <MessageDetailPane
+                    message={original}
+                    attachments={[]}
+                    isOutbox
+                    draftsFolderUid="f-drafts"
+                    onScheduledSendCanceled={vi.fn()}
+                />,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+            await vi.waitFor(() => expect(trackMessageChange).toHaveBeenCalledWith(original, back));
+            expect(tracker.settle).toHaveBeenCalledTimes(1);
         });
     });
 });

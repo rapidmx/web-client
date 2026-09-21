@@ -2,19 +2,35 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { createContext, PropsWithChildren, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
-import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
+import { useLocationSearch, useNavigate } from "../../../navigation/AppRouter.js";
 import KeyEnrollmentGate from "../../layout/KeyEnrollmentGate.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
-import { useCompose } from "../compose/ComposeContext.js";
+import { prefetchComposeWindow, useCompose } from "../compose/ComposeContext.js";
 import LocalIndexLifecycle from "../../../search/LocalIndexLifecycle.js";
-import { LiveUpdates, NO_LIVE_UPDATES, useMailLiveUpdates } from "../../../mail/useMailLiveUpdates.js";
+import { LiveUpdates, NO_LIVE_UPDATES } from "../../../mail/useMailLiveUpdates.js";
+import { FOLDER_ORDER, MAILBOX_LIST_LIMIT, MailConnectionContext, useMailConnection } from "../../../mail/useMailConnection.js";
+import {
+    CountTracker,
+    FolderBadge,
+    FolderCount,
+    badgeFor,
+    badgeLabel,
+    countOfFolder,
+    inboxUnreadTotal,
+} from "../../../mail/folderCounts.js";
+import { useUnreadTitle } from "../../../mail/useUnreadTitle.js";
+import NewMailToasts from "../NewMailToasts.js";
+import { ariaKeyShortcuts, withHint } from "../../../keyboard/format.js";
+import { SHORTCUTS } from "../../../keyboard/keymap.js";
+import { useKeyEnvironment } from "../../../keyboard/ShortcutProvider.js";
+import { useShortcut } from "../../../keyboard/useShortcut.js";
 
 export type MailShellProps = Omit<AppShellProps, "active">;
 
@@ -69,13 +85,23 @@ export interface MailShellContextValue {
      * context value, which is only ever read outside a real shell.
      */
     live: LiveUpdates;
+    /**
+     * Applies a change to a message (`previous` to `next`; `next` absent when it was deleted) to the folder badges at once, and
+     * hands back what to call when the server has answered: `settle()` keeps it, `revert()` takes it back. Every place that
+     * reads, moves or deletes a message goes through this (see `setReadState()`), so the badges follow. A no-op on the default
+     * context value, which is only ever read outside a real shell.
+     */
+    trackMessageChange: (previous: Message, next: Message | null) => CountTracker;
 }
+
+const NO_TRACKER: CountTracker = { settle: () => undefined, revert: () => undefined };
 
 const MailShellContext = createContext<MailShellContextValue>({
     mailboxes: [],
     mailboxFolders: [],
     onFolderCreated: () => undefined,
     live: NO_LIVE_UPDATES,
+    trackMessageChange: () => NO_TRACKER,
 });
 
 /** Reads the mailbox/folder a page is currently showing, as resolved by the enclosing `MailShell`. */
@@ -93,17 +119,6 @@ const FOLDER_LABELS: Record<string, string> = {
     deleted_items: "Deleted Items",
 };
 
-/** Well-known folders sort first, in Gmail/Outlook's conventional order; anything else (incl. `user`) sorts after, alphabetically. */
-const FOLDER_ORDER = ["inbox", "drafts", "outbox", "sent_items", "junk", "archive", "deleted_items"];
-
-/**
- * A mailbox's `calendar`/`contacts`/`tasks`/`notes` folders back their own dedicated apps (see
- * `CalendarShell`/`ContactsShell`/`TasksShell`), not Mail — `listFolders()` returns every well-known
- * folder for the mailbox regardless of which app owns it, so Mail's own folder tree must filter down
- * to just the mail ones itself, or those other apps' folders leak into this sidebar.
- */
-const MAIL_FOLDER_TYPES = new Set([...FOLDER_ORDER, "user"]);
-
 function folderSortKey(folder: Folder): number {
     const idx = FOLDER_ORDER.indexOf(folder.type);
     return idx === -1 ? FOLDER_ORDER.length : idx;
@@ -113,22 +128,37 @@ function sortedFoldersOf(folders: Folder[]): Folder[] {
     return [...folders].sort((a, b) => folderSortKey(a) - folderSortKey(b) || a.name.localeCompare(b.name));
 }
 
-/** A folder's unread count: the refreshed one when live updates have read it since load, else the one it was listed with. */
-function unreadOf(folder: Folder, unreadCounts: Record<string, number>): number {
-    return unreadCounts[folder.uid] ?? folder.unreadCount;
+/** The badge an "All Mailboxes" entry shows: the folders of that type, summed across every mailbox, under the same rules as a single folder's. */
+function aggregateBadge(mailboxFolders: MailboxFolders[], type: AggregateFolderType, counts: Record<string, FolderCount>): FolderBadge | undefined {
+    const sum = mailboxFolders.reduce(
+        (total, mf) => {
+            const folder = mf.folders.find((f) => f.type === type);
+            const count = folder ? countOfFolder(folder, counts) : { unread: 0, total: 0 };
+            return { unread: total.unread + count.unread, total: total.total + count.total };
+        },
+        { unread: 0, total: 0 },
+    );
+    return badgeFor(type, sum);
 }
 
-function aggregateUnreadCount(mailboxFolders: MailboxFolders[], type: AggregateFolderType, unreadCounts: Record<string, number>): number {
-    return mailboxFolders.reduce((total, mf) => {
-        const folder = mf.folders.find((f) => f.type === type);
-        return total + (folder ? unreadOf(folder, unreadCounts) : 0);
-    }, 0);
+/** A folder's badge: an accent pill with the unread count, or - for the folders that show how many they hold - plain muted text. */
+function FolderBadgeChip({ badge }: { badge: FolderBadge }) {
+    return (
+        <span
+            className={[
+                "text-xs rounded-pill py-0.5 px-1.5",
+                badge.kind === "unread" ? "font-bold bg-primary/15 text-primary-dark" : "font-medium text-text-muted",
+            ].join(" ")}
+        >
+            <span aria-hidden="true">{badge.value}</span>
+            <span className="sr-only"> {badgeLabel(badge)}</span>
+        </span>
+    );
 }
 
 type Status = "checking" | "error" | "ready";
 
-/** Page size of the one `listMailboxes()` call this shell makes. */
-export const MAILBOX_LIST_LIMIT = 100;
+export { MAILBOX_LIST_LIMIT };
 
 /**
  * A separate component (not inlined into `MailShell`'s own render) so `useCompose()` resolves against
@@ -138,20 +168,38 @@ export const MAILBOX_LIST_LIMIT = 100;
  * its own descendants creates. This button, rendered as part of `AppShell`'s `children`, sits correctly
  * inside that subtree.
  *
- * Opens with no mailbox: a fresh message defaults to the caller's own mailbox, and the compose window's
- * own From field is where the sender is chosen.
+ * Opens with the caller's own mailbox (the shell has already listed them), so the window can start on its
+ * signature, draft and encryption lookups straight away instead of first asking which mailbox that is; the
+ * compose window's own From field is where the sender is chosen. Fetches the window's code as the pointer or
+ * keyboard reaches the button, so the click finds it already here.
  */
-function ComposeButton() {
+function ComposeButton({ mailboxUid }: { mailboxUid?: string }) {
     const { openCompose } = useCompose();
+    const env = useKeyEnvironment();
     return (
         <button
             type="button"
-            onClick={() => openCompose({})}
+            title={withHint("Compose", SHORTCUTS.mail.create, env)}
+            aria-keyshortcuts={ariaKeyShortcuts(SHORTCUTS.mail.create, env)}
+            onClick={() => openCompose({ mailboxUid })}
+            onPointerEnter={prefetchComposeWindow}
+            onFocus={prefetchComposeWindow}
             className="block text-center w-full py-2.5 px-4 rounded-sm font-semibold text-sm bg-primary text-white hover:bg-primary-dark"
         >
             Compose
         </button>
     );
+}
+
+/**
+ * Mail's keyboard shortcuts that don't belong to a list or a message: "New message". A component of its own for the reason `ComposeButton`
+ * is - `useCompose()` only resolves below `ComposeProvider`, i.e. inside the `AppShell` this shell renders - and mounted once, whatever number
+ * of Compose buttons (the sidebar, the folders drawer) are on screen. Opens the same window, for the same mailbox, as the button.
+ */
+function MailShortcuts({ mailboxUid }: { mailboxUid?: string }) {
+    const { openCompose } = useCompose();
+    useShortcut(SHORTCUTS.mail.create, () => openCompose({ mailboxUid }));
+    return null;
 }
 
 /**
@@ -176,40 +224,37 @@ export default function MailShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    trustedRoles,
     pluginNav,
     children,
 }: PropsWithChildren<MailShellProps>) {
-    const [status, setStatus] = useState<Status>("checking");
-    const [error, setError] = useState<string | null>(null);
-    const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
-    const [mailboxFolders, setMailboxFolders] = useState<MailboxFolders[]>([]);
-    const [foldersLoading, setFoldersLoading] = useState(true);
+    // The mailboxes, their folders and the live connection come from the persistent app frame when there is one (`AppChrome` owns them, so
+    // they survive Mail -> Calendar -> Mail and the push socket, pop-ups, counters and tab title work in every app). A page rendered
+    // outside the frame - a test, a plugin page - has no frame to ask, so this shell runs the same hook for itself, and renders the pop-ups.
+    const navigate = useNavigate();
+    const hosted = useContext(MailConnectionContext);
+    const own = useMailConnection({ userUid, enabled: !hosted, open: navigate });
+    const { status, error, mailboxes, mailboxFolders, foldersLoading, onFolderCreated, live, folderCounts, notifications } = hosted ?? own;
     const [requestedMailboxUid, setRequestedMailboxUid] = useState<string | null>(null);
     const [requestedFolderUid, setRequestedFolderUid] = useState<string | null>(null);
     const [requestedAggregateType, setRequestedAggregateType] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
 
+    // The selection lives in the URL, and the router (`AppRouter`) changes the URL without a page load when a folder link is
+    // clicked - so it is read from the router's location, which updates, rather than once from `window.location`. Still read
+    // in an effect, never during the first render, so the server render and the hydrating render agree.
+    const search = useLocationSearch();
     useEffect(() => {
-        const params = new URLSearchParams(window.location.search);
+        const params = new URLSearchParams(search);
         setRequestedMailboxUid(params.get("mailboxUid"));
         setRequestedFolderUid(params.get("folderUid"));
         setRequestedAggregateType(params.get("aggregate"));
-    }, []);
-
+    }, [search]);
+    // Choosing a folder (or mailbox) changes the URL without a page load now, so the drawer that held the choice - which used to go
+    // with the page - is closed here.
     useEffect(() => {
-        if (!userUid) {
-            return;
-        }
-        listMailboxes({ limit: MAILBOX_LIST_LIMIT })
-            .then((result) => {
-                setMailboxes(result);
-                setStatus("ready");
-            })
-            .catch((err) => {
-                setError(err instanceof ApiRequestError ? err.message : "Could not load your mailboxes.");
-                setStatus("error");
-            });
-    }, [userUid]);
+        setDrawerOpen(false);
+    }, [search]);
 
     const aggregateFolderType: AggregateFolderType | undefined = isAggregateFolderType(requestedAggregateType)
         ? requestedAggregateType
@@ -219,36 +264,6 @@ export default function MailShell({
         ? undefined
         : (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
           mailboxes[0]?.uid;
-
-    // Fans out one listFolders() call per accessible mailbox in parallel - each call catches its own
-    // failure into an MailboxFolders.error rather than letting Promise.all reject, so one mailbox's fetch
-    // failure renders that section's own inline Alert instead of blanking out every other mailbox's
-    // folder tree.
-    useEffect(() => {
-        if (mailboxes.length === 0) {
-            // Deliberately leaves foldersLoading as-is: this also runs once before listMailboxes() has
-            // resolved, and clearing it here would briefly render an empty sidebar the moment mailboxes
-            // arrive, before their folders do. A genuinely mailbox-less caller gets MailboxProvisioning.
-            setMailboxFolders([]);
-            return;
-        }
-        setFoldersLoading(true);
-        void Promise.all(
-            mailboxes.map((mailbox) =>
-                listFolders(mailbox.uid)
-                    .then((result): MailboxFolders => ({ mailbox, folders: result.filter((f) => MAIL_FOLDER_TYPES.has(f.type)) }))
-                    .catch(
-                        (err): MailboxFolders => ({
-                            mailbox,
-                            folders: [],
-                            error: err instanceof ApiRequestError ? err.message : "Could not load folders.",
-                        }),
-                    ),
-            ),
-        )
-            .then(setMailboxFolders)
-            .finally(() => setFoldersLoading(false));
-    }, [mailboxes]);
 
     const selectedMailboxFolders = mailboxFolders.find((mf) => mf.mailbox.uid === mailboxUid)?.folders ?? [];
     const folderUid: string | undefined = aggregateFolderType
@@ -264,30 +279,14 @@ export default function MailShell({
     const defaultMailboxUid = mailboxes.find((mb) => mb.ownerUserUid === userUid)?.uid ?? mailboxes[0]?.uid;
     const activeMailboxUid = mailboxUid ?? defaultMailboxUid;
 
-    /** Files a newly created folder under its own mailbox, leaving every other mailbox's list untouched -
-     * and ignoring a type this sidebar doesn't list at all, the same filter the fetch above applies. */
-    const onFolderCreated = useCallback((folder: Folder) => {
-        if (!MAIL_FOLDER_TYPES.has(folder.type)) {
-            return;
-        }
-        setMailboxFolders((prev) =>
-            prev.map((entry) =>
-                // Not one already there: another client's create event can arrive after (or twice, or alongside) our own.
-                entry.mailbox.uid === folder.mailboxUid && !entry.folders.some((existing) => existing.uid === folder.uid)
-                    ? { ...entry, folders: [...entry.folders, folder] }
-                    : entry,
-            ),
-        );
-    }, []);
-
-    // New mail without a reload: push events for every folder, plus a safety-net poll. Held in state beside `mailboxFolders`
-    // rather than written into it, so a refreshed unread count never looks like a change of folders to the list on screen
-    // (which reloads, and forgets its selection, whenever the folders do).
-    const { live, unreadCounts } = useMailLiveUpdates({ userUid, mailboxes, mailboxFolders, onFolderCreated });
+    const counts = folderCounts.counts;
+    const trackMessageChange = folderCounts.track;
+    // `(3) Acme: Mail` in the tab strip while there is unread mail in an Inbox - kept by the frame when there is one.
+    useUnreadTitle(inboxUnreadTotal(mailboxFolders, counts), { enabled: !hosted });
 
     const contextValue = useMemo<MailShellContextValue>(
-        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, live }),
-        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, live],
+        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, live, trackMessageChange }),
+        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, live, trackMessageChange],
     );
 
     // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else for a
@@ -323,7 +322,7 @@ export default function MailShell({
         const sidebarContent = () => (
             <>
                 <div className="p-3">
-                    <ComposeButton />
+                    <ComposeButton mailboxUid={defaultMailboxUid} />
                 </div>
                 {foldersLoading ? (
                     <div className="flex-1 overflow-y-auto px-3 pb-3">
@@ -338,7 +337,7 @@ export default function MailShell({
                                 </div>
                                 <div className="flex flex-col gap-0.5">
                                     {AGGREGATE_FOLDER_TYPES.map((type) => {
-                                        const unread = aggregateUnreadCount(mailboxFolders, type, unreadCounts);
+                                        const badge = aggregateBadge(mailboxFolders, type, counts);
                                         return (
                                             <a
                                                 key={type}
@@ -350,12 +349,8 @@ export default function MailShell({
                                                         : "text-text hover:bg-surface-alt",
                                                 ].join(" ")}
                                             >
-                                                <span>{FOLDER_LABELS[type]}</span>
-                                                {unread > 0 && (
-                                                    <span className="text-xs font-bold rounded-pill py-0.5 px-1.5 bg-surface-alt text-text-muted">
-                                                        {unread}
-                                                    </span>
-                                                )}
+                                                <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>{FOLDER_LABELS[type]}</span>
+                                                {badge && <FolderBadgeChip badge={badge} />}
                                             </a>
                                         );
                                     })}
@@ -375,7 +370,7 @@ export default function MailShell({
                                 )}
                                 <div className="flex flex-col gap-0.5">
                                     {sortedFoldersOf(folders).map((folder) => {
-                                        const unread = unreadOf(folder, unreadCounts);
+                                        const badge = badgeFor(folder.type, countOfFolder(folder, counts));
                                         return (
                                         <a
                                             key={folder.uid}
@@ -387,12 +382,10 @@ export default function MailShell({
                                                     : "text-text hover:bg-surface-alt",
                                             ].join(" ")}
                                         >
-                                            <span>{FOLDER_LABELS[folder.type] ?? folder.name}</span>
-                                            {unread > 0 && (
-                                                <span className="text-xs font-bold rounded-pill py-0.5 px-1.5 bg-surface-alt text-text-muted">
-                                                    {unread}
-                                                </span>
-                                            )}
+                                            <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>
+                                                {FOLDER_LABELS[folder.type] ?? folder.name}
+                                            </span>
+                                            {badge && <FolderBadgeChip badge={badge} />}
                                         </a>
                                         );
                                     })}
@@ -406,6 +399,7 @@ export default function MailShell({
 
         inner = (
             <>
+                <MailShortcuts mailboxUid={defaultMailboxUid} />
                 <aside className="hidden md:flex w-64 shrink-0 bg-surface border-r border-border flex-col">{sidebarContent()}</aside>
                 <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Folders">
                     <div className="flex flex-col">{sidebarContent()}</div>
@@ -421,6 +415,15 @@ export default function MailShell({
                     </button>
                     <MailShellContext.Provider value={contextValue}>{children}</MailShellContext.Provider>
                 </main>
+                {!hosted && (
+                    <NewMailToasts
+                        toasts={notifications.toasts}
+                        onDismiss={notifications.dismiss}
+                        offerDesktop={notifications.offerDesktop}
+                        onEnableDesktop={() => void notifications.enableDesktop()}
+                        onDeclineDesktop={notifications.declineDesktop}
+                    />
+                )}
             </>
         );
     }
@@ -463,6 +466,7 @@ export default function MailShell({
                 impersonating={impersonating}
                 impersonationBaseUrl={impersonationBaseUrl}
                 trusted={trusted}
+                trustedRoles={trustedRoles}
                 pluginNav={pluginNav}
             >
                 {inner}

@@ -8,7 +8,10 @@ import userEvent from "@testing-library/user-event";
 import { format } from "date-fns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
-import CalendarPage from "../../../apps/www/calendar/index.js";
+import CalendarPageRouted from "../../../apps/www/calendar/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const CalendarPage = CalendarPageRouted.page;
 
 // `@dnd-kit/core`'s real sensors can't be driven from jsdom (they call `setPointerCapture`, which
 // jsdom doesn't implement, and that breaks the rest of synthetic event dispatch — see
@@ -500,5 +503,134 @@ describe("CalendarPage", () => {
             expect(mailboxSelect).toHaveValue("mb1");
             expect(within(mailboxSelect).getByRole("option", { name: "Support (shared)" })).toBeInTheDocument();
         });
+    });
+});
+
+
+describe("CalendarPage keyboard shortcuts", () => {
+    const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => fireEvent.keyDown(target, { key, ...init });
+    const CTRL_ALT = { ctrlKey: true, altKey: true };
+
+    async function renderCalendar(events: unknown[] = [], folders?: unknown[]) {
+        mockShellAndEvents(events, undefined, folders);
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("heading", { name: "June 2026" });
+        // The new-event key exists once there is a calendar to create in: the button says so when the shell has found it.
+        if (!folders) {
+            await waitFor(() => expect(screen.getByRole("button", { name: "+ New event" })).toHaveAttribute("aria-keyshortcuts"));
+        }
+    }
+
+    it("Alt+N opens the new event form, as '+ New event' does - and Ctrl+N only in the desktop client", async () => {
+        await renderCalendar();
+
+        expect(press("n", { ctrlKey: true })).toBe(true);
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(press("n", { altKey: true })).toBe(false);
+        expect(screen.getByRole("dialog", { name: "New event" })).toBeInTheDocument();
+    });
+
+    it("Ctrl+N is the same key in the desktop client", async () => {
+        (window as { rapidmx?: unknown }).rapidmx = {};
+        try {
+            await renderCalendar();
+            expect(press("n", { ctrlKey: true })).toBe(false);
+            expect(screen.getByRole("dialog", { name: "New event" })).toBeInTheDocument();
+        } finally {
+            delete (window as { rapidmx?: unknown }).rapidmx;
+        }
+    });
+
+    it("offers no new-event key before there is a calendar to put an event in", async () => {
+        await renderCalendar([], []);
+        expect(press("n", { altKey: true })).toBe(true);
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("moves to the previous and next period with the arrow keys and Ctrl+arrow, in whatever view is showing", async () => {
+        await renderCalendar();
+
+        expect(press("ArrowLeft")).toBe(false);
+        expect(screen.getByRole("heading", { name: "May 2026" })).toBeInTheDocument();
+        expect(press("ArrowRight")).toBe(false);
+        expect(press("ArrowRight", { ctrlKey: true })).toBe(false);
+        expect(screen.getByRole("heading", { name: "July 2026" })).toBeInTheDocument();
+        expect(press("ArrowLeft", { ctrlKey: true })).toBe(false);
+
+        press("3", CTRL_ALT);
+        press("ArrowRight");
+        expect(screen.getByRole("heading", { name: "Jun 22 – Jun 28, 2026" })).toBeInTheDocument();
+        press("1", CTRL_ALT);
+        press("ArrowRight");
+        expect(screen.getByRole("heading", { name: "Tuesday, June 23, 2026" })).toBeInTheDocument();
+    });
+
+    it("goes to today with T", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        vi.setSystemTime(new Date("2026-07-04T12:00:00.000Z"));
+        await renderCalendar();
+
+        expect(press("t")).toBe(false);
+
+        await waitFor(() => expect(screen.getByRole("heading", { name: "July 2026" })).toBeInTheDocument());
+    });
+
+    it("switches to the day, work week, week and month views with Ctrl+Alt+1 to 4, as Outlook does", async () => {
+        await renderCalendar();
+
+        expect(press("1", CTRL_ALT)).toBe(false);
+        expect(screen.getByRole("heading", { name: "Monday, June 15, 2026" })).toBeInTheDocument();
+        expect(press("2", CTRL_ALT)).toBe(false);
+        expect(screen.getByRole("heading", { name: "Jun 15 – Jun 19, 2026" })).toBeInTheDocument();
+        expect(press("3", CTRL_ALT)).toBe(false);
+        expect(screen.getByRole("heading", { name: "Jun 15 – Jun 21, 2026" })).toBeInTheDocument();
+        expect(press("4", CTRL_ALT)).toBe(false);
+        expect(screen.getByRole("heading", { name: "June 2026" })).toBeInTheDocument();
+        // There is no key for the split view, and no other digit is claimed.
+        expect(press("5", CTRL_ALT)).toBe(true);
+    });
+
+    it("leaves every key to a text field, and to the event form while it is open", async () => {
+        await renderCalendar();
+        const input = document.createElement("input");
+        document.body.appendChild(input);
+
+        expect(press("t", {}, input)).toBe(true);
+        expect(press("ArrowLeft", {}, input)).toBe(true);
+        expect(press("ArrowLeft", { ctrlKey: true }, input)).toBe(true);
+        input.remove();
+
+        press("n", { altKey: true });
+        await screen.findByRole("dialog", { name: "New event" });
+        expect(press("t")).toBe(true);
+        expect(press("ArrowRight")).toBe(true);
+        expect(press("2", CTRL_ALT)).toBe(true);
+        expect(screen.getByRole("heading", { name: "June 2026" })).toBeInTheDocument();
+    });
+
+    it("names its shortcuts on the buttons: tooltip and aria-keyshortcuts, with the accessible names unchanged", async () => {
+        await renderCalendar();
+
+        const newEvent = screen.getByRole("button", { name: "+ New event" });
+        expect(newEvent).toHaveAttribute("title", "New event (Alt+N)");
+        expect(newEvent).toHaveAttribute("aria-keyshortcuts", "Alt+N");
+        expect(screen.getByRole("button", { name: "Today" })).toHaveAttribute("title", "Today (T)");
+        expect(screen.getByRole("button", { name: "Previous" })).toHaveAttribute("title", "Previous (←)");
+        expect(screen.getByRole("button", { name: "Previous" })).toHaveAttribute("aria-keyshortcuts", "ArrowLeft Control+ArrowLeft");
+        expect(screen.getByRole("button", { name: "Next" })).toHaveAttribute("title", "Next (→)");
+        expect(screen.getByRole("button", { name: "Day" })).toHaveAttribute("title", "Day (Ctrl+Alt+1)");
+        expect(screen.getByRole("button", { name: "Work Week" })).toHaveAttribute("title", "Work Week (Ctrl+Alt+2)");
+        expect(screen.getByRole("button", { name: "Week" })).toHaveAttribute("title", "Week (Ctrl+Alt+3)");
+        expect(screen.getByRole("button", { name: "Month" })).toHaveAttribute("title", "Month (Ctrl+Alt+4)");
+        expect(screen.getByRole("button", { name: "Month" })).toHaveAttribute("aria-keyshortcuts", "Control+Alt+4");
+        // Split has none.
+        expect(screen.getByRole("button", { name: "Split" })).toHaveAttribute("title", "Split");
+        expect(screen.getByRole("button", { name: "Split" })).not.toHaveAttribute("aria-keyshortcuts");
+    });
+
+    it("calls the new-event button by its plain name when there is no calendar to create in", async () => {
+        await renderCalendar([], []);
+        expect(screen.getByRole("button", { name: "+ New event" })).toHaveAttribute("title", "New event");
+        expect(screen.getByRole("button", { name: "+ New event" })).not.toHaveAttribute("aria-keyshortcuts");
     });
 });

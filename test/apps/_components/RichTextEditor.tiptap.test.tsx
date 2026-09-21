@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { cleanup, render, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Editor } from "@tiptap/core";
 import RichTextEditor from "../../../apps/shared/components/mail/compose/RichTextEditor.js";
 
@@ -21,6 +21,14 @@ async function mountedEditor(container: HTMLElement): Promise<Editor> {
         return found!.editor!;
     });
 }
+
+// jsdom has no layout: ProseMirror measures a Range when it scrolls the caret into view (which adding content at the end does), and
+// jsdom's Range cannot be measured - an asynchronous "getClientRects is not a function" that failed whichever test was running.
+beforeAll(() => {
+    const noRects = { length: 0, item: () => null, [Symbol.iterator]: () => [][Symbol.iterator]() };
+    Range.prototype.getClientRects = () => noRects;
+    Range.prototype.getBoundingClientRect = () => new DOMRect();
+});
 
 afterEach(() => {
     cleanup();
@@ -72,5 +80,56 @@ describe("RichTextEditor with a real TipTap editor", () => {
 
         await waitFor(() => expect(editor.isFocused).toBe(true));
         expect(editor.state.selection.from).toBe(1);
+    });
+
+    describe("appendHtml", () => {
+        it("adds the html at the end of the document once, keeping what was typed above, and reports the serialization", async () => {
+            const onChange = vi.fn();
+            const onAppended = vi.fn();
+            const { container, rerender } = render(
+                <RichTextEditor value="<p>Best,<br>Jane</p>" onChange={onChange} onUploadImage={vi.fn()} autoFocusStart onAppended={onAppended} />,
+            );
+            const editor = await mountedEditor(container);
+            await waitFor(() => expect(editor.isFocused).toBe(true));
+            editor.view.dispatch(editor.state.tr.insertText("Thanks! "));
+            expect(onAppended).not.toHaveBeenCalled();
+
+            rerender(
+                <RichTextEditor
+                    value="<p>Best,<br>Jane</p>"
+                    onChange={onChange}
+                    onUploadImage={vi.fn()}
+                    autoFocusStart
+                    onAppended={onAppended}
+                    appendHtml="<p></p><blockquote>Original</blockquote>"
+                />,
+            );
+            await waitFor(() => expect(onAppended).toHaveBeenCalledTimes(1));
+            expect(editor.getHTML()).toContain("<p>Thanks! Best,<br>Jane</p>");
+            expect(editor.getHTML()).toContain("<blockquote><p>Original</p></blockquote>");
+            expect(editor.getHTML().indexOf("Thanks!")).toBeLessThan(editor.getHTML().indexOf("Original"));
+            expect(onAppended).toHaveBeenCalledWith(editor.getHTML());
+            expect(onChange).toHaveBeenLastCalledWith(editor.getHTML());
+
+            // The same html again (a re-render) is not added twice; nor is anything added without it.
+            rerender(
+                <RichTextEditor
+                    value="<p>Best,<br>Jane</p>"
+                    onChange={onChange}
+                    onUploadImage={vi.fn()}
+                    autoFocusStart
+                    onAppended={onAppended}
+                    appendHtml="<p></p><blockquote>Original</blockquote>"
+                />,
+            );
+            expect(onAppended).toHaveBeenCalledTimes(1);
+            expect(editor.getHTML().match(/Original/g)).toHaveLength(1);
+        });
+
+        it("works without an onAppended callback", async () => {
+            const { container } = render(<RichTextEditor value="<p>Hi</p>" onChange={vi.fn()} onUploadImage={vi.fn()} appendHtml="<p>More</p>" />);
+            const editor = await mountedEditor(container);
+            await waitFor(() => expect(editor.getHTML()).toContain("<p>More</p>"));
+        });
     });
 });

@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../../_routedPage.js";
+import { useNavigate } from "../../../../shared/navigation/AppRouter.js";
 import React, { FormEvent, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { createMailSignature, listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
@@ -17,7 +19,7 @@ const INPUT_CLASS =
 
 export type NewSignaturePageProps = Omit<SettingsShellProps, "active">;
 
-export default function NewSignaturePage(props: NewSignaturePageProps) {
+function NewSignaturePage(props: NewSignaturePageProps) {
     return (
         <SettingsShell {...props} active="signatures">
             <NewSignatureForm />
@@ -33,6 +35,7 @@ async function handleUploadImage(): Promise<string | null> {
 }
 
 function NewSignatureForm() {
+    const navigate = useNavigate();
     const { mailboxUid } = useSettingsShell();
     const [name, setName] = useState("");
     const [contentHtml, setContentHtml] = useState("");
@@ -63,7 +66,7 @@ function NewSignatureForm() {
                 isDefaultForNewMessages,
                 isDefaultForReplyForward,
             });
-            window.location.href = `/settings/signatures/${encodeURIComponent(created.uid)}?mailboxUid=${encodeURIComponent(mailboxUid!)}`;
+            navigate(`/settings/signatures/${encodeURIComponent(created.uid)}?mailboxUid=${encodeURIComponent(mailboxUid!)}`);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create the signature.");
         } finally {
@@ -127,3 +130,5 @@ function NewSignatureForm() {
         </div>
     );
 }
+
+export default routedPage("/settings/signatures/new", NewSignaturePage);

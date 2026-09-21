@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -22,7 +23,7 @@ const ROLE_LABELS: Record<MailboxAccessRole, string> = { viewer: "Can view", man
 
 export type SettingsSharingPageProps = Omit<SettingsShellProps, "active">;
 
-export default function SettingsSharingPage(props: SettingsSharingPageProps) {
+function SettingsSharingPage(props: SettingsSharingPageProps) {
     return (
         <SettingsShell {...props} active="sharing">
             <SharingContent />
@@ -272,3 +273,5 @@ function SharingContent() {
         </div>
     );
 }
+
+export default routedPage("/settings/sharing", SettingsSharingPage);

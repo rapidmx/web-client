@@ -7,7 +7,10 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import MessageDetailPage from "../../../apps/www/messages/[uid].js";
+import MessageDetailPageRouted from "../../../apps/www/messages/[uid].js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const MessageDetailPage = MessageDetailPageRouted.page;
 
 const mailbox = {
     uid: "mb1",

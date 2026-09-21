@@ -9,6 +9,7 @@ import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shar
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
+import { useLocationSearch } from "../../../navigation/AppRouter.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 
 export type CalendarShellProps = Omit<AppShellProps, "active">;
@@ -69,6 +70,7 @@ export default function CalendarShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    trustedRoles,
     pluginNav,
     children,
 }: PropsWithChildren<CalendarShellProps>) {
@@ -79,9 +81,12 @@ export default function CalendarShell({
     const [requestedMailboxUid, setRequestedMailboxUid] = useState<string | null>(null);
     const [folderRefreshToken, setFolderRefreshToken] = useState(0);
 
+    // Read from the router's location, so a mailbox change (a link, or `navigate()`) takes effect without a page load - and in an
+    // effect, not during render, so the server render and the hydrating render agree.
+    const search = useLocationSearch();
     useEffect(() => {
-        setRequestedMailboxUid(new URLSearchParams(window.location.search).get("mailboxUid"));
-    }, []);
+        setRequestedMailboxUid(new URLSearchParams(search).get("mailboxUid"));
+    }, [search]);
 
     useEffect(() => {
         if (!userUid) {
@@ -186,6 +191,7 @@ export default function CalendarShell({
             impersonating={impersonating}
             impersonationBaseUrl={impersonationBaseUrl}
             trusted={trusted}
+            trustedRoles={trustedRoles}
             pluginNav={pluginNav}
         >
             {inner}

@@ -10,8 +10,14 @@ import "@testing-library/jest-dom/vitest";
 if (typeof document !== "undefined") {
     const { cleanup } = await import("@testing-library/react");
     const { resetPushClient } = await import("@rapidmx/react-shared/mail/pushClient.js");
+    const { clearListSnapshots } = await import("../../apps/shared/mail/listSnapshots.js");
+    const { clearOriginalMessageCache } = await import("../../apps/shared/components/mail/compose/quotedBody.js");
     afterEach(() => {
         cleanup();
+        // Short-lived, module-level copies of what a folder listed and of a message's body (see `listSnapshots.ts`,
+        // `quotedBody.ts`) would otherwise show a test the previous test's rows and quote for the same uid.
+        clearListSnapshots();
+        clearOriginalMessageCache();
         // The tab's one push client (see `useMailLiveUpdates()`) outlives a component; a test that stubs the WebSocket
         // must not inherit the previous test's connection - or, once a sign-out closed it, a client that never reopens.
         resetPushClient();
@@ -19,6 +25,8 @@ if (typeof document !== "undefined") {
         // list's own sort/filter/conversation settings, the local-index byte budget) would silently become
         // the *next* test's starting state - and did, before this line existed.
         localStorage.clear();
+        // Likewise what a test remembered for the tab's session (the admin-access answer, the elevation attempt).
+        sessionStorage.clear();
     });
 
     // jsdom doesn't implement `window.matchMedia` at all (confirmed: it's simply `undefined`, not a

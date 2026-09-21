@@ -7,6 +7,7 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { MailboxAutoProvisionAliasOption, autoProvisionMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { FrameTakeover } from "../../navigation/frameContext.js";
 
 type Status = "checking" | "needs_selection" | "creating" | "unavailable" | "retryable";
 
@@ -153,12 +154,15 @@ export default function MailboxProvisioning() {
         );
     }
 
+    // Inside the client-side router's persistent frame this hides the frame's rail and header, as replacing the whole shell used to.
     return (
-        <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
-            <div className="w-full max-w-md bg-surface border border-border rounded-md p-8 flex flex-col items-center gap-4 text-center">
-                <img src="/images/wordmark.png" height="128" alt="" />
-                {content}
+        <FrameTakeover>
+            <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
+                <div className="w-full max-w-md bg-surface border border-border rounded-md p-8 flex flex-col items-center gap-4 text-center">
+                    <img src="/images/wordmark.png" height="128" alt="" />
+                    {content}
+                </div>
             </div>
-        </div>
+        </FrameTakeover>
     );
 }

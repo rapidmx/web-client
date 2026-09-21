@@ -4,12 +4,15 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Attachment, Folder, Message, listAttachments, setMessageRead } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Attachment, Folder, Message, listAttachments } from "@rapidmx/react-shared/mail/mailApi.js";
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import MailAddress from "./MailAddress.js";
 import MessageDetailPane from "./MessageDetailPane.js";
+import { useMailShell } from "./layout/MailShell.js";
+import { setReadState } from "../../mail/messageReadState.js";
+import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, senderClass } from "./unreadStyle.js";
 
 /** One request's worth of the thread. The server's own default for `listConversationMessages()`. */
 export const THREAD_PAGE_SIZE = 100;
@@ -51,6 +54,9 @@ export interface ConversationThreadPaneProps {
     onLabelCreated?: (label: Label) => void;
     /** A folder created from a message's own Move to prompt, for the folder sidebar to pick up. */
     onFolderCreated?: (folder: Folder) => void;
+    /** Registers the keyboard shortcuts (Reply, Reply all, Forward, Archive, Move to) of the message that was opened - see `MessageDetailPane`'s
+     * `shortcuts`. The caller turns it off while it is doing something else with the keyboard (select mode). */
+    shortcuts?: boolean;
 }
 
 /**
@@ -137,7 +143,9 @@ export default function ConversationThreadPane({
     onMessageRemoved,
     onLabelCreated,
     onFolderCreated,
+    shortcuts,
 }: ConversationThreadPaneProps) {
+    const { trackMessageChange } = useMailShell();
     const [messages, setMessages] = useState<Message[]>([]);
     const [attachmentsByUid, setAttachmentsByUid] = useState<Record<string, Attachment[]>>({});
     const [expandedUids, setExpandedUids] = useState<Set<string>>(new Set());
@@ -276,20 +284,26 @@ export default function ConversationThreadPane({
                         attachmentsRequestedRef.current.delete(uid);
                     });
             }
-            if (!message.flags.read && !markReadRequestedRef.current.has(uid)) {
+            if (!markReadRequestedRef.current.has(uid)) {
+                // Asked once per opened conversation and per expanding of the message: a failure is not retried from here, because
+                // undoing the optimistic change changes `messages`, which would run this effect again and ask again, for ever. A message
+                // that is already read is asked about too (there is nothing to send), so marking it unread while it is open - the
+                // keyboard's Ctrl+U - doesn't make this run again and read it straight back.
                 markReadRequestedRef.current.add(uid);
-                // `message` is this render's copy, so the request carries its current `version`.
-                setMessageRead(message, true)
-                    .then((updated) => {
-                        if (generation !== generationRef.current) return;
-                        // `message` is the unread copy this pane just replaced - what tells the list's own
-                        // conversation row that its unread count has gone down by one.
-                        patchMessage(updated, message);
-                    })
-                    .catch(() => {
-                        // Best-effort, as in `useMarkMessageRead`.
-                        markReadRequestedRef.current.delete(uid);
-                    });
+                if (message.flags.read === true) {
+                    continue;
+                }
+                // `message` is this render's copy, so the request carries its current `version`. The row, the conversation row's
+                // unread count and the folder badge all change at once; `previous` is what tells the list's conversation row
+                // that its count moved (see `setReadState()`).
+                void setReadState(message, true, {
+                    patch: (updated, previous) => {
+                        if (generation === generationRef.current) {
+                            patchMessage(updated, previous);
+                        }
+                    },
+                    track: trackMessageChange,
+                });
             }
         }
     }, [expandedUids, messages]);
@@ -308,6 +322,8 @@ export default function ConversationThreadPane({
     }
 
     function toggleExpanded(uid: string) {
+        // Opening a message again asks to mark it read again - that is how one whose request failed is retried.
+        markReadRequestedRef.current.delete(uid);
         // The row this button lives in has rendered, so its ref is set.
         anchorRef.current = { uid, top: rowRefs.current[uid]!.getBoundingClientRect().top };
         setExpandedUids((prev) => {
@@ -320,6 +336,10 @@ export default function ConversationThreadPane({
             return next;
         });
     }
+
+    // The keyboard acts on the message that was opened - or the newest, when the opened one isn't in this thread - never on all the expanded
+    // ones at once (each is a `MessageDetailPane`, and two of them must not both answer Ctrl+R).
+    const keyboardUid = messages.some((message) => message.uid === selectedUid) ? selectedUid : messages[0]?.uid;
 
     function folderTypeOf(message: Message): string | undefined {
         return folders.find((folder) => folder.uid === message.folderUid)?.type;
@@ -363,6 +383,7 @@ export default function ConversationThreadPane({
                     const uid = message.uid;
                     const expanded = expandedUids.has(uid);
                     const bodyId = `thread-message-${uid}`;
+                    const messageUnread = isUnread(message);
                     return (
                         <li
                             key={uid}
@@ -374,8 +395,10 @@ export default function ConversationThreadPane({
                             // has a full pane of height to fill and its body reaches the bottom of the
                             // window whatever that window's size is. `min-` rather than `h-`: a message
                             // whose header alone is taller than the pane still gets the room it needs.
-                            className={["border-b border-border", expanded ? "flex flex-col min-h-full" : ""].join(" ")}
+                            data-unread={messageUnread ? "true" : undefined}
+                            className={["relative border-b border-border", expanded ? "flex flex-col min-h-full" : ""].join(" ")}
                         >
+                            <UnreadBar unread={messageUnread} />
                             <h2 className="shrink-0">
                                 <button
                                     type="button"
@@ -386,13 +409,15 @@ export default function ConversationThreadPane({
                                     aria-expanded={expanded}
                                     aria-controls={bodyId}
                                     className={[
-                                        "w-full text-left px-4 py-3 hover:bg-surface-alt",
-                                        message.flags.read ? "" : "font-semibold",
+                                        "w-full text-left px-4 py-3",
+                                        messageUnread ? "bg-primary/[0.07] hover:bg-primary/10" : "hover:bg-surface-alt",
+                                        ROW_FOCUS_CLASS,
                                     ].join(" ")}
                                 >
+                                    <UnreadLabel unread={messageUnread} />
                                     <span className="flex items-center justify-between gap-2 text-sm">
-                                        <MailAddress recipient={message.from} />
-                                        <span className="text-xs text-text-muted shrink-0">
+                                        <MailAddress recipient={message.from} className={senderClass(messageUnread)} />
+                                        <span className={["text-xs shrink-0", dateClass(messageUnread)].join(" ")}>
                                             {new Date(message.receivedDate).toLocaleString()}
                                         </span>
                                     </span>
@@ -407,6 +432,7 @@ export default function ConversationThreadPane({
                                 {expanded && (
                                     <MessageDetailPane
                                         inThread
+                                        shortcuts={!!shortcuts && uid === keyboardUid}
                                         message={message}
                                         attachments={attachmentsByUid[uid] ?? []}
                                         isSentItems={folderTypeOf(message) === "sent_items"}

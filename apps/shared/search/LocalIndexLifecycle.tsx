@@ -24,7 +24,19 @@ import { useEffect, useRef } from "react";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import type { Folder } from "@rapidmx/react-shared/mail/mailApi.js";
-import { buildLocalIndex, cancelLocalIndexBuild } from "./localIndexBuilder.js";
+
+/**
+ * The index builder (with the message security code it decrypts through - PKI.js and the ASN.1/X.509 libraries, over half a
+ * megabyte) is loaded only once a mailbox is actually unlocked and a build is due, so an inbox that never unlocks - the
+ * common case - never downloads it.
+ */
+let builder: Promise<typeof import("./localIndexBuilder.js")> | undefined;
+const loadBuilder = () =>
+    (builder ??= import("./localIndexBuilder.js").catch((err) => {
+        // A failed download is tried again the next time one is due.
+        builder = undefined;
+        throw err;
+    }));
 import { destroyLocalIndex, pruneInaccessibleLocalIndexes } from "./localIndexRpcClient.js";
 
 export const POLL_INTERVAL_MS = 5_000;
@@ -56,7 +68,9 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
         trackedRef.current.set(targetMailboxUid, true);
         // Never an unhandled rejection - a broken local index is best-effort infrastructure, not a build
         // the rest of the app depends on.
-        buildLocalIndex(targetMailboxUid, unlocked, targetFolders).catch(() => undefined);
+        loadBuilder()
+            .then(({ buildLocalIndex }) => buildLocalIndex(targetMailboxUid, unlocked, targetFolders))
+            .catch(() => undefined);
     }
 
     useEffect(() => {
@@ -73,7 +87,9 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
                     trackedRef.current.set(trackedUid, false);
                     // Stop the pass still running with the now-destroyed keys; the destroy itself also makes
                     // the Worker reject anything that pass still sends.
-                    void cancelLocalIndexBuild(trackedUid);
+                    loadBuilder()
+                        .then(({ cancelLocalIndexBuild }) => cancelLocalIndexBuild(trackedUid))
+                        .catch(() => undefined);
                     void destroyLocalIndex(trackedUid);
                 }
             }

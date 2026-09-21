@@ -7,7 +7,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsSharingPage from "../../../../apps/www/settings/sharing/index.js";
+import SettingsSharingPageRouted from "../../../../apps/www/settings/sharing/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const SettingsSharingPage = SettingsSharingPageRouted.page;
 
 const mailbox = {
     uid: "mb1",

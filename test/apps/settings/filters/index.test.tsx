@@ -6,7 +6,10 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsFiltersPage from "../../../../apps/www/settings/filters/index.js";
+import SettingsFiltersPageRouted from "../../../../apps/www/settings/filters/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const SettingsFiltersPage = SettingsFiltersPageRouted.page;
 
 const mailbox = {
     uid: "mb1",

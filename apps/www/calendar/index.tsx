@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../_routedPage.js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { HiOutlineBars3 } from "react-icons/hi2";
@@ -36,8 +37,11 @@ import SplitDayView from "../../shared/components/calendar/SplitDayView.js";
 import TimeGridView from "../../shared/components/calendar/TimeGridView.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { SHORTCUTS, ShortcutDef } from "../../shared/keyboard/keymap.js";
+import { useShortcut } from "../../shared/keyboard/useShortcut.js";
+import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 
-export default function CalendarPage(props: CalendarShellProps) {
+function CalendarPage(props: CalendarShellProps) {
     return (
         <CalendarShell {...props}>
             <CalendarContent userUid={props.userUid} />
@@ -48,6 +52,35 @@ export default function CalendarPage(props: CalendarShellProps) {
 type ViewType = "month" | "week" | "workWeek" | "day" | "split";
 const VIEW_TYPES: ViewType[] = ["month", "week", "workWeek", "day", "split"];
 const VIEW_LABELS: Record<ViewType, string> = { month: "Month", week: "Week", workWeek: "Work Week", day: "Day", split: "Split" };
+/** The shortcut that switches to a view (Outlook's Ctrl+Alt+1-4); the split view has none. */
+const VIEW_SHORTCUTS: Partial<Record<ViewType, ShortcutDef>> = {
+    day: SHORTCUTS.calendar.day,
+    workWeek: SHORTCUTS.calendar.workWeek,
+    week: SHORTCUTS.calendar.week,
+    month: SHORTCUTS.calendar.month,
+};
+
+/** One of the view switcher's buttons, with its shortcut in the tooltip. */
+function ViewButton({ view, current, onSelect }: { view: ViewType; current: ViewType; onSelect: (view: ViewType) => void }) {
+    const shortcut = VIEW_SHORTCUTS[view];
+    const hint = useShortcutProps(VIEW_LABELS[view], shortcut ?? SHORTCUTS.calendar.day, !!shortcut);
+    return (
+        <button
+            type="button"
+            onClick={() => onSelect(view)}
+            {...hint}
+            className={[
+                "px-3 h-7 text-sm rounded-sm whitespace-nowrap",
+                current === view ? "bg-primary text-white" : "hover:bg-surface-alt",
+                (view === "workWeek" || view === "split") && "hidden md:inline-block",
+            ]
+                .filter(Boolean)
+                .join(" ")}
+        >
+            {VIEW_LABELS[view]}
+        </button>
+    );
+}
 
 interface ModalState {
     occurrence: CalendarOccurrence | null;
@@ -254,6 +287,20 @@ function CalendarContent({ userUid }: { userUid?: string }) {
         setModal(null);
     }
 
+    // Keyboard shortcuts - the toolbar's own actions. (A dialog open - the event editor - silences them.)
+    useShortcut(SHORTCUTS.calendar.create, () => openNewEvent(), { enabled: !!mailboxUid && !!folderUid });
+    useShortcut(SHORTCUTS.calendar.today, goToday);
+    useShortcut(SHORTCUTS.calendar.previous, () => shiftView(-1));
+    useShortcut(SHORTCUTS.calendar.next, () => shiftView(1));
+    useShortcut(SHORTCUTS.calendar.day, () => setView("day"));
+    useShortcut(SHORTCUTS.calendar.workWeek, () => setView("workWeek"));
+    useShortcut(SHORTCUTS.calendar.week, () => setView("week"));
+    useShortcut(SHORTCUTS.calendar.month, () => setView("month"));
+    const newEventHint = useShortcutProps("New event", SHORTCUTS.calendar.create, !!mailboxUid && !!folderUid);
+    const previousHint = useShortcutProps("Previous", SHORTCUTS.calendar.previous);
+    const todayHint = useShortcutProps("Today", SHORTCUTS.calendar.today);
+    const nextHint = useShortcutProps("Next", SHORTCUTS.calendar.next);
+
     function handleSaved() {
         setModal(null);
         reload();
@@ -333,37 +380,24 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                     >
                         <HiOutlineBars3 size={20} aria-hidden="true" />
                     </button>
-                    <Button type="button" onClick={() => openNewEvent()} className="!w-auto shrink-0">
+                    <Button type="button" onClick={() => openNewEvent()} className="!w-auto shrink-0" {...newEventHint}>
                         + New event
                     </Button>
                     <div className="flex items-center gap-1">
-                        <button type="button" onClick={() => shiftView(-1)} aria-label="Previous" className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt">
+                        <button type="button" onClick={() => shiftView(-1)} aria-label="Previous" {...previousHint} className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt">
                             &lsaquo;
                         </button>
-                        <button type="button" onClick={goToday} className="px-2 h-7 text-sm rounded-sm hover:bg-surface-alt">
+                        <button type="button" onClick={goToday} {...todayHint} className="px-2 h-7 text-sm rounded-sm hover:bg-surface-alt">
                             Today
                         </button>
-                        <button type="button" onClick={() => shiftView(1)} aria-label="Next" className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt">
+                        <button type="button" onClick={() => shiftView(1)} aria-label="Next" {...nextHint} className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt">
                             &rsaquo;
                         </button>
                     </div>
                     <h1 className="hidden md:block text-lg font-bold tracking-tight">{title}</h1>
                     <div className="ml-auto flex gap-1 overflow-x-auto">
                         {VIEW_TYPES.map((v) => (
-                            <button
-                                key={v}
-                                type="button"
-                                onClick={() => setView(v)}
-                                className={[
-                                    "px-3 h-7 text-sm rounded-sm whitespace-nowrap",
-                                    view === v ? "bg-primary text-white" : "hover:bg-surface-alt",
-                                    (v === "workWeek" || v === "split") && "hidden md:inline-block",
-                                ]
-                                    .filter(Boolean)
-                                    .join(" ")}
-                            >
-                                {VIEW_LABELS[v]}
-                            </button>
+                            <ViewButton key={v} view={v} current={view} onSelect={setView} />
                         ))}
                     </div>
                 </div>
@@ -436,3 +470,5 @@ function CalendarContent({ userUid }: { userUid?: string }) {
         </div>
     );
 }
+
+export default routedPage("/calendar", CalendarPage);

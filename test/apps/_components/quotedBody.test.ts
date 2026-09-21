@@ -4,7 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockFetch } from "../testUtils.js";
-import { loadOriginalMessage } from "../../../apps/shared/components/mail/compose/quotedBody.js";
+import {
+    QUOTE_CACHE_MS,
+    QUOTE_FETCH_TIMEOUT_MS,
+    clearOriginalMessageCache,
+    loadOriginalMessage,
+    prefetchOriginalMessage,
+} from "../../../apps/shared/components/mail/compose/quotedBody.js";
 
 const message = { uid: "m 1", mailboxUid: "mb1", bodyPreview: "Preview" } as never;
 const encrypted = { ...(message as object), encrypted: true } as never;
@@ -110,5 +116,84 @@ describe("loadOriginalMessage", () => {
             recipients: [{ address: "dave@partner.test", type: "to" }],
         });
         expect(fetchMock).not.toHaveBeenCalled();
+    });
+});
+
+describe("what a reply fetches, and when", () => {
+    const htmlResponse = (html: string) => new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+
+    it("asks for the body once for a Reply and the click that follows a prefetch, and remembers it for a short while", async () => {
+        const fetchMock = mockFetch(() => htmlResponse("<p>Body</p>"));
+
+        prefetchOriginalMessage(message);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(await loadOriginalMessage(message, null)).toEqual({ body: { html: "<p>Body</p>" } });
+        expect(await loadOriginalMessage(message, null)).toEqual({ body: { html: "<p>Body</p>" } });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks again once what it remembered is older than QUOTE_CACHE_MS", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        try {
+            const fetchMock = mockFetch(() => htmlResponse("<p>Body</p>"));
+            await loadOriginalMessage(message, null);
+            vi.setSystemTime(Date.now() + QUOTE_CACHE_MS + 1);
+            await loadOriginalMessage(message, null);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("does not remember a failure, and asks again the next time", async () => {
+        const fetchMock = mockFetch(() => new Response("nope", { status: 500 }));
+        await loadOriginalMessage(message, null);
+        await loadOriginalMessage(message, null);
+        expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/content"))).toHaveLength(2);
+    });
+
+    it("prefetches nothing for an encrypted message, whose body the server never has to give", () => {
+        const fetchMock = mockFetch(() => htmlResponse("<p>Body</p>"));
+        prefetchOriginalMessage(encrypted);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("gives up on a body that takes longer than QUOTE_FETCH_TIMEOUT_MS and quotes what it can from the raw message instead", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            mockFetch((url, init) => {
+                if (url.endsWith("/raw")) {
+                    return new Response(RAW);
+                }
+                return new Promise<Response>((_resolve, reject) => {
+                    init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+                });
+            });
+            const result = loadOriginalMessage(message, null);
+            await vi.advanceTimersByTimeAsync(QUOTE_FETCH_TIMEOUT_MS);
+            expect(await result).toEqual({ body: { text: RAW_TEXT } });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("stops waiting for the raw message after QUOTE_FETCH_TIMEOUT_MS too, and quotes nothing rather than hang", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            mockFetch((url) => (url.endsWith("/raw") ? (new Promise<Response>(() => undefined)) : new Response(null, { status: 200 })));
+            const result = loadOriginalMessage(message, null);
+            await vi.advanceTimersByTimeAsync(QUOTE_FETCH_TIMEOUT_MS + 1);
+            expect(await result).toEqual({ body: {} });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("forgets everything remembered on request", async () => {
+        const fetchMock = mockFetch(() => htmlResponse("<p>Body</p>"));
+        await loadOriginalMessage(message, null);
+        clearOriginalMessageCache();
+        await loadOriginalMessage(message, null);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 });

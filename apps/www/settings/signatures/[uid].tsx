@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { MailSignature, getMailSignature, listMailSignatures, updateMailSignature } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
@@ -23,7 +24,7 @@ async function handleUploadImage(): Promise<string | null> {
 
 export type SignatureDetailPageProps = Omit<SettingsShellProps, "active"> & { params: { uid: string } };
 
-export default function SignatureDetailPage(props: SignatureDetailPageProps) {
+function SignatureDetailPage(props: SignatureDetailPageProps) {
     return (
         <SettingsShell {...props} active="signatures">
             <SignatureDetailContent uid={props.params.uid} />
@@ -165,3 +166,5 @@ function SignatureDetailContent({ uid }: { uid: string }) {
         </div>
     );
 }
+
+export default routedPage("/settings/signatures/:uid", SignatureDetailPage);

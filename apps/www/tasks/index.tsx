@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import { routedPage } from "../_routedPage.js";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { endOfWeek, isAfter, isBefore, isToday, parseISO, startOfDay } from "date-fns";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -26,11 +27,14 @@ import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import { findWellKnownFolderUid } from "../../shared/mail/findWellKnownFolderUid.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/listAllPages.js";
+import { SHORTCUTS } from "../../shared/keyboard/keymap.js";
+import { useShortcut } from "../../shared/keyboard/useShortcut.js";
+import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 
 const INPUT_CLASS =
     "text-sm py-1.5 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
-export default function TasksPage(props: TasksShellProps) {
+function TasksPage(props: TasksShellProps) {
     return (
         <TasksShell {...props}>
             <TasksContent />
@@ -102,6 +106,14 @@ function TasksContent() {
     // What the delete confirmation dialog is asking about - one task (a row's delete button), or every
     // checked task (the toolbar's Delete).
     const [pendingDelete, setPendingDelete] = useState<{ type: "single"; task: Task } | { type: "bulk" } | null>(null);
+
+    // "New task" from the keyboard: a task is made in the quick-add form, so this moves the caret to its title field (which the Flagged view,
+    // a list of flagged mail rather than tasks, doesn't have). A dialog open - the delete confirmation - silences it.
+    const addTaskRef = useRef<HTMLInputElement | null>(null);
+    const canAddTask = view.type !== "flagged";
+    // Registered only while the form is rendered (`canAddTask`), so its field is there.
+    useShortcut(SHORTCUTS.tasks.create, () => addTaskRef.current!.focus(), { enabled: canAddTask });
+    const addTaskHint = useShortcutProps("Add a task", SHORTCUTS.tasks.create, canAddTask);
 
     function reload(): Promise<void> {
         if (!folderUid) {
@@ -344,8 +356,10 @@ function TasksContent() {
                         <>
                             <form onSubmit={handleCreate} className="flex items-center gap-2 bg-surface border border-border rounded-md p-2">
                                 <input
+                                    ref={addTaskRef}
                                     type="text"
                                     aria-label="Add a task"
+                                    {...addTaskHint}
                                     className={`${INPUT_CLASS} flex-1`}
                                     value={title}
                                     onChange={(e) => setTitle(e.target.value)}
@@ -636,3 +650,5 @@ function TaskTable({ tasks, checkedUids, onToggleChecked, onToggle, onDelete }: 
         </div>
     );
 }
+
+export default routedPage("/tasks", TasksPage);

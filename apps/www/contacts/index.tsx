@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useMemo, useState } from "react";
+import { routedPage } from "../_routedPage.js";
+import { useNavigate } from "../../shared/navigation/AppRouter.js";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Contact,
@@ -29,11 +31,13 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/listAllPages.js";
 import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigners.js";
+import { SHORTCUTS } from "../../shared/keyboard/keymap.js";
+import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
-export default function ContactsPage(props: ContactsShellProps) {
+function ContactsPage(props: ContactsShellProps) {
     return (
         <ContactsShell {...props}>
             <ContactsContent userUid={props.userUid} />
@@ -73,6 +77,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     const writableMailboxes = useWritableMailboxes(mailboxes, userUid, mailboxUid);
     const { openCompose } = useCompose();
     const isMobile = useIsMobile();
+    const navigate = useNavigate();
     const [contacts, setContacts] = useState<Contact[]>([]);
     const [deletedContacts, setDeletedContacts] = useState<Contact[]>([]);
     const [deletedLoading, setDeletedLoading] = useState(false);
@@ -248,7 +253,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
 
     function handleSelectRow(contact: Contact) {
         if (isMobile) {
-            window.location.href = `/contacts/${encodeURIComponent(contact.uid)}`;
+            navigate(`/contacts/${encodeURIComponent(contact.uid)}`);
             return;
         }
         setSelectedUid(contact.uid);
@@ -259,6 +264,14 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         setSelectedUid(null);
         setMode("new");
     }
+
+    // Keyboard shortcuts - the toolbar's New contact and the search box. (A dialog open silences them.)
+    const searchInputRef = useRef<HTMLInputElement | null>(null);
+    useShortcut(SHORTCUTS.contacts.create, handleNew);
+    useShortcut(SHORTCUTS.contacts.search, () => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+    });
 
     function handleSaved(contact: Contact) {
         setMode("view");
@@ -407,9 +420,11 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                     onAddCategory={handleAddCategory}
                     onExportVCard={handleExportVCard}
                     onImportFile={handleImportFile}
+                    shortcuts
                 />
                 <div className="p-3 border-b border-border">
                     <input
+                        ref={searchInputRef}
                         type="search"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
@@ -565,3 +580,5 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         </div>
     );
 }
+
+export default routedPage("/contacts", ContactsPage);

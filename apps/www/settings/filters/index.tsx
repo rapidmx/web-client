@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { MailFilterRule, listMailFilterRules } from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
@@ -11,7 +12,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 export type SettingsFiltersPageProps = Omit<SettingsShellProps, "active">;
 
-export default function SettingsFiltersPage(props: SettingsFiltersPageProps) {
+function SettingsFiltersPage(props: SettingsFiltersPageProps) {
     return (
         <SettingsShell {...props} active="filters">
             <FiltersContent />
@@ -97,3 +98,5 @@ function FiltersContent() {
         </div>
     );
 }
+
+export default routedPage("/settings/filters", SettingsFiltersPage);

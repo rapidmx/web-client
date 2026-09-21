@@ -9,6 +9,7 @@ import { Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
 import MailAddress from "./MailAddress.js";
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
+import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "./unreadStyle.js";
 
 export interface ConversationListProps {
     conversations: ConversationSummary[];
@@ -131,13 +132,11 @@ export default function ConversationList({
                 return (
                     <li key={id}>
                         <div
-                            className={[
-                                "flex items-stretch border-b border-border",
-                                conversation.latestMessageUid === selectedUid || ticked
-                                    ? "bg-primary/10"
-                                    : "hover:bg-surface-alt",
-                            ].join(" ")}
+                            data-message-uid={conversation.latestMessageUid}
+                            data-unread={unread ? "true" : undefined}
+                            className={rowClass({ unread, selected: conversation.latestMessageUid === selectedUid || ticked }, "flex items-stretch")}
                         >
+                            <UnreadBar unread={unread} />
                             {selectMode && (
                                 <span className="shrink-0 flex items-center pl-3">
                                     <input
@@ -155,7 +154,7 @@ export default function ConversationList({
                                 aria-expanded={isExpanded}
                                 aria-controls={panelId}
                                 aria-label={`${isExpanded ? "Collapse" : "Expand"} conversation: ${conversation.subject || "(no subject)"}`}
-                                className="shrink-0 px-2 text-text-muted hover:text-text"
+                                className={["shrink-0 px-2 text-text-muted hover:text-text", ROW_FOCUS_CLASS].join(" ")}
                             >
                                 {isExpanded ? (
                                     <HiChevronDown size={16} aria-hidden="true" />
@@ -165,26 +164,29 @@ export default function ConversationList({
                             </button>
                             <button
                                 type="button"
+                                data-row-open
                                 onClick={() => onOpenMessage(conversation, conversation.latestMessageUid)}
-                                className={["flex-1 min-w-0 text-left pr-4 py-3", unread ? "font-semibold" : ""].join(
-                                    " "
-                                )}
+                                className={["flex-1 min-w-0 text-left pr-4 py-3", ROW_FOCUS_CLASS].join(" ")}
                             >
+                                <UnreadLabel unread={unread} />
                                 <div className="flex items-center justify-between gap-2 text-sm">
                                     {/* The first participant in full - name and address - and the rest as a count, with everyone's
                                         address in its tooltip; the latest sender when the summary lists none. */}
-                                    <MailAddress recipient={conversation.participants[0] ?? conversation.latestFrom} className="flex-1" />
+                                    <MailAddress
+                                        recipient={conversation.participants[0] ?? conversation.latestFrom}
+                                        className={["flex-1", senderClass(unread)].join(" ")}
+                                    />
                                     {conversation.participants.length > 1 && (
                                         <span className="text-xs text-text-muted shrink-0 font-normal" title={participantList(conversation)}>
                                             +{conversation.participants.length - 1}
                                             <span className="sr-only"> more: {participantList(conversation)}</span>
                                         </span>
                                     )}
-                                    <span className="text-xs text-text-muted shrink-0">
+                                    <span className={["text-xs shrink-0", dateClass(unread)].join(" ")}>
                                         {new Date(conversation.latestDate).toLocaleDateString()}
                                     </span>
                                 </div>
-                                <div className="text-sm truncate">{conversation.subject || "(no subject)"}</div>
+                                <div className={["text-sm truncate", subjectClass(unread)].join(" ")}>{conversation.subject || "(no subject)"}</div>
                                 <div className="text-xs text-text-muted truncate font-normal">
                                     {conversation.latestPreview}
                                 </div>
@@ -193,7 +195,7 @@ export default function ConversationList({
                                     {/* A one-message conversation's unread state is already the row's own
                                         bolding - counting it "1 unread" on every such row is just noise. */}
                                     {unread && conversation.messageCount > 1 && (
-                                        <span className="py-0.5 px-2 rounded-pill bg-primary/10 text-primary-dark font-semibold">
+                                        <span className="py-0.5 px-2 rounded-pill bg-primary/15 text-primary-dark font-bold">
                                             {conversation.unreadCount} unread
                                         </span>
                                     )}
@@ -219,20 +221,25 @@ export default function ConversationList({
                             )}
                             {children?.map((fetched) => {
                                 const message = messageOverrides?.[fetched.uid] ?? fetched;
+                                const messageUnread = isUnread(message);
                                 return (
-                                    <li key={message.uid}>
+                                    <li
+                                        key={message.uid}
+                                        data-message-uid={message.uid}
+                                        data-unread={messageUnread ? "true" : undefined}
+                                        className={rowClass({ unread: messageUnread, selected: message.uid === selectedUid })}
+                                    >
+                                        <UnreadBar unread={messageUnread} />
                                         <button
                                             type="button"
+                                            data-row-open
                                             onClick={() => onOpenMessage(conversation, message.uid)}
-                                            className={[
-                                                "w-full text-left pl-8 pr-4 py-2 border-b border-border",
-                                                message.uid === selectedUid ? "bg-primary/10" : "hover:bg-surface-alt",
-                                                message.flags.read ? "" : "font-semibold",
-                                            ].join(" ")}
+                                            className={["w-full text-left pl-8 pr-4 py-2", ROW_FOCUS_CLASS].join(" ")}
                                         >
+                                            <UnreadLabel unread={messageUnread} />
                                             <div className="flex items-center justify-between gap-2 text-sm">
-                                                <MailAddress recipient={message.from} />
-                                                <span className="text-xs text-text-muted shrink-0">
+                                                <MailAddress recipient={message.from} className={senderClass(messageUnread)} />
+                                                <span className={["text-xs shrink-0", dateClass(messageUnread)].join(" ")}>
                                                     {new Date(message.receivedDate).toLocaleDateString()}
                                                 </span>
                                             </div>

@@ -87,6 +87,7 @@ const FOLDERS = [
 
 let latest: MailLiveUpdates;
 const onFolderCreated = vi.fn();
+const onMessageCreated = vi.fn();
 
 function Harness(props: { userUid?: string; mailboxFolders?: typeof FOLDERS; mailboxes?: any[] }) {
     latest = useMailLiveUpdates({
@@ -94,6 +95,7 @@ function Harness(props: { userUid?: string; mailboxFolders?: typeof FOLDERS; mai
         mailboxes: props.mailboxes ?? [MB1, MB2],
         mailboxFolders: props.mailboxFolders ?? FOLDERS,
         onFolderCreated,
+        onMessageCreated,
     });
     return null;
 }
@@ -129,6 +131,7 @@ beforeEach(() => {
     vi.stubGlobal("BroadcastChannel", FakeBroadcastChannel);
     setVisibility("visible");
     onFolderCreated.mockClear();
+    onMessageCreated.mockClear();
 });
 
 afterEach(() => {
@@ -209,8 +212,8 @@ describe("useMailLiveUpdates", () => {
         await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
         expect(latest.live.tick).toBe(1);
         expect([...latest.live.folderUids!].sort()).toEqual(["f1-inbox", "f1-sent"]);
-        expect(latest.unreadCounts["f1-inbox"]).toBe(3);
-        expect(latest.unreadCounts["f2-inbox"]).toBe(5);
+        expect(latest.folderCounts.counts["f1-inbox"].unread).toBe(3);
+        expect(latest.folderCounts.counts["f2-inbox"].unread).toBe(5);
         expect(fetchMock.mock.calls.filter(([url]) => url.startsWith("/api/mail/folders"))).toHaveLength(2);
 
         // A second burst is a second refresh, for its own folders.
@@ -270,6 +273,87 @@ describe("useMailLiveUpdates", () => {
         expect(onFolderCreated).toHaveBeenCalledWith(expect.objectContaining({ uid: "f1-new" }));
     });
 
+    describe("new messages", () => {
+        const message = (uid: string, overrides: Record<string, unknown> = {}) => ({
+            uid,
+            folderUid: "f1-inbox",
+            mailboxUid: "mb1",
+            subject: "Hi",
+            from: { address: "jane@example.com", type: "to" },
+            flags: { read: false },
+            ...overrides,
+        });
+
+        it("counts each new message in its folder at once and hands it on, once, however many times it is delivered", async () => {
+            mockFolderCounts({ "f1-inbox": 3 });
+            render(<Harness />);
+            socket().greet();
+
+            act(() => {
+                socket().receive({ type: "MessageMongo", action: "create", data: message("m1") });
+                socket().receive({ type: "MessageMongo", action: "create", data: message("m1") });
+                socket().receive({ type: "MessageMongo", action: "create", data: message("m2", { flags: { read: true } }) });
+            });
+            expect(onMessageCreated).toHaveBeenCalledTimes(2);
+            expect(onMessageCreated).toHaveBeenNthCalledWith(1, expect.objectContaining({ uid: "m1" }));
+            expect(onMessageCreated).toHaveBeenNthCalledWith(2, expect.objectContaining({ uid: "m2" }));
+            // 2 unread when loaded, plus the unread one; the read one only joins the total.
+            expect(latest.folderCounts.counts["f1-inbox"]).toEqual({ unread: 3, total: 2 });
+
+            // The server's own numbers replace what the page worked out.
+            await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+            expect(latest.folderCounts.counts["f1-inbox"]).toEqual({ unread: 3, total: 0 });
+        });
+
+        it("hands on nothing for a message that is updated or deleted, or an event whose data is not a message", () => {
+            mockFolderCounts({});
+            render(<Harness />);
+            socket().greet();
+
+            act(() => {
+                socket().receive({ type: "MessageMongo", action: "update", data: message("m1") });
+                socket().receive({ type: "MessageMongo", action: "delete", data: message("m2") });
+                socket().receive({ type: "MessageMongo", action: "create", data: { uid: "m3", folderUid: "f1-inbox" } });
+                socket().receive({ type: "MessageMongo", action: "create", data: { uid: "m4", flags: { read: false } } });
+                socket().receive({ type: "MessageMongo", action: "create", data: { uid: "m5", folderUid: "f1-inbox", flags: null } });
+                socket().receive({ type: "MessageMongo", action: "create", data: null });
+            });
+            expect(onMessageCreated).not.toHaveBeenCalled();
+        });
+
+        it("works without anyone to hand a new message on to", () => {
+            mockFolderCounts({});
+            function Bare() {
+                latest = useMailLiveUpdates({ userUid: "u1", mailboxes: [MB1], mailboxFolders: [FOLDERS[0]], onFolderCreated });
+                return null;
+            }
+            render(<Bare />);
+            socket().greet();
+            expect(() => act(() => socket().receive({ type: "MessageMongo", action: "create", data: message("m1") }))).not.toThrow();
+            expect(latest.folderCounts.counts["f1-inbox"].unread).toBe(3);
+        });
+    });
+
+    describe("folder counts published by the server", () => {
+        it("shows a Folder update event's unread and total counts", () => {
+            mockFolderCounts({});
+            render(<Harness />);
+            socket().greet();
+
+            act(() => socket().receive({ type: "FolderMongo", action: "update", data: { uid: "f2-inbox", mailboxUid: "mb2", unreadCount: 9, totalCount: 40 } }));
+            expect(latest.folderCounts.counts["f2-inbox"]).toEqual({ unread: 9, total: 40 });
+        });
+
+        it("tolerates a server that never sends them: the reads after each change carry the same numbers", async () => {
+            mockFolderCounts({ "f1-inbox": 6 });
+            render(<Harness />);
+            socket().greet();
+            act(() => socket().receive({ type: "MessageMongo", action: "update", data: { folderUid: "f1-inbox" } }));
+            await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+            expect(latest.folderCounts.counts["f1-inbox"].unread).toBe(6);
+        });
+    });
+
     it("keeps a count that failed to refresh and only re-renders when a count changed", async () => {
         let fail = false;
         mockFetch((url) => {
@@ -282,19 +366,19 @@ describe("useMailLiveUpdates", () => {
 
         act(() => socket().receive({ type: "MessageMongo", action: "create", data: { folderUid: "f1-inbox" } }));
         await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
-        const counts = latest.unreadCounts;
-        expect(counts["f1-inbox"]).toBe(2);
+        const counts = latest.folderCounts.counts;
+        expect(counts["f1-inbox"].unread).toBe(2);
 
         // Same counts again: the state object is left alone.
         act(() => socket().receive({ type: "MessageMongo", action: "create", data: { folderUid: "f1-inbox" } }));
         await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
-        expect(latest.unreadCounts).toBe(counts);
+        expect(latest.folderCounts.counts).toBe(counts);
 
         fail = true;
         act(() => socket().receive({ type: "MessageMongo", action: "create", data: { folderUid: "f1-inbox" } }));
         await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
         expect(latest.live.tick).toBe(3);
-        expect(latest.unreadCounts).toBe(counts);
+        expect(latest.folderCounts.counts).toBe(counts);
     });
 
     it("polls the safety net every interval while the tab is visible, and not while it is hidden", async () => {
@@ -328,7 +412,7 @@ describe("useMailLiveUpdates", () => {
 
         await flushTimers(LIVE_POLL_INTERVAL_MS + LIVE_EVENT_DEBOUNCE_MS);
         expect(latest.live.tick).toBeGreaterThanOrEqual(1);
-        expect(latest.unreadCounts["f1-inbox"]).toBe(9);
+        expect(latest.folderCounts.counts["f1-inbox"].unread).toBe(9);
     });
 
     it("refreshes, and reconnects at once, when the tab comes back to the front, the window regains focus or the browser is back online", async () => {
@@ -451,7 +535,7 @@ describe("useMailLiveUpdates", () => {
         await act(async () => {
             resolvers[0](jsonResponse(200, [folder("f1-inbox", "mb1", "inbox", 1)]));
         });
-        expect(latest.unreadCounts["f1-inbox"]).toBe(7);
+        expect(latest.folderCounts.counts["f1-inbox"].unread).toBe(7);
     });
 });
 

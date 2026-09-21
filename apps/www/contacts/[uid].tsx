@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../_routedPage.js";
+import { useNavigate } from "../../shared/navigation/AppRouter.js";
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Contact, deleteContact, getContact } from "@rapidmx/react-shared/contacts/contactsApi.js";
@@ -17,7 +19,7 @@ import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigne
  * equivalent "new contact" route — an unsaved contact has no uid to route on, so creation stays an
  * in-place mode-switch on every device (see `apps/www/contacts/index.tsx`'s `handleNew`).
  */
-export default function ContactDetailPage(props: ContactsShellProps & { params: { uid: string } }) {
+function ContactDetailPage(props: ContactsShellProps & { params: { uid: string } }) {
     return (
         <ContactsShell {...props}>
             <ContactDetailContent uid={props.params.uid} />
@@ -28,6 +30,7 @@ export default function ContactDetailPage(props: ContactsShellProps & { params: 
 type Mode = "view" | "edit";
 
 function ContactDetailContent({ uid }: { uid: string }) {
+    const navigate = useNavigate();
     const [contact, setContact] = useState<Contact | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -55,7 +58,7 @@ function ContactDetailContent({ uid }: { uid: string }) {
             await deleteContact(contact.uid, contact.version);
             // A deleted contact's pinned signing keys must stop vouching for signatures.
             clearPinnedSignerCache();
-            window.location.href = "/contacts";
+            navigate("/contacts");
         } catch (err) {
             setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this contact.");
         }
@@ -105,3 +108,5 @@ function ContactDetailContent({ uid }: { uid: string }) {
         </div>
     );
 }
+
+export default routedPage("/contacts/:uid", ContactDetailPage);

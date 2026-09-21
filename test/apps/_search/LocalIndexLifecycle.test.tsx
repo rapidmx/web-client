@@ -23,7 +23,10 @@ vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ destroyLo
 const folders = [{ uid: "inbox", type: "inbox" }] as Folder[];
 let unlockedMailboxes: Set<string>;
 
-beforeEach(() => {
+beforeEach(async () => {
+    // The component loads the builder with a dynamic import; loaded here, before the timers are faked, so that it resolves from
+    // the module cache within a few microtasks (see `flush()`).
+    await import("../../../apps/shared/search/localIndexBuilder.js");
     vi.useFakeTimers();
     unlockedMailboxes = new Set();
     getUnlockedKeys.mockImplementation((uid: string) => (unlockedMailboxes.has(uid) ? { masterKey: new Uint8Array(32) } : undefined));
@@ -36,6 +39,13 @@ beforeEach(() => {
 afterEach(() => {
     vi.useRealTimers();
 });
+
+/** The builder is loaded with a dynamic import when a build is due, so its start is a few microtasks after the render. */
+async function flush() {
+    await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+    });
+}
 
 async function tick() {
     await act(async () => {
@@ -59,6 +69,7 @@ describe("LocalIndexLifecycle", () => {
         await tick();
         expect(buildLocalIndex).not.toHaveBeenCalled();
         rerender(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
         expect(buildLocalIndex).toHaveBeenCalledTimes(1);
 
         const late = render(<LocalIndexLifecycle mailboxUid="mb2" folders={folders} />);
@@ -74,6 +85,7 @@ describe("LocalIndexLifecycle", () => {
         unlockedMailboxes.add("mb2");
         const { rerender } = render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
         rerender(<LocalIndexLifecycle mailboxUid="mb2" folders={folders} />);
+        await flush();
         expect(buildLocalIndex).toHaveBeenCalledTimes(2);
 
         // Keys destroyed between polls, then an unrelated re-render before the next poll fires.
@@ -91,7 +103,21 @@ describe("LocalIndexLifecycle", () => {
         expect(destroyLocalIndex).toHaveBeenCalledTimes(2);
         unlockedMailboxes.add("mb2");
         await tick();
+        await flush();
         expect(buildLocalIndex).toHaveBeenCalledTimes(3);
+    });
+
+    it("never produces an unhandled rejection from a cancel that fails", async () => {
+        unlockedMailboxes.add("mb1");
+        cancelLocalIndexBuild.mockRejectedValue(new Error("worker gone"));
+        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await tick();
+        await flush();
+        unlockedMailboxes.clear();
+        await tick();
+        await flush();
+        expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb1");
+        expect(destroyLocalIndex).toHaveBeenCalledWith("mb1");
     });
 
     it("never produces an unhandled rejection from a failed build", async () => {
@@ -99,6 +125,7 @@ describe("LocalIndexLifecycle", () => {
         buildLocalIndex.mockRejectedValue(new Error("no OPFS"));
         render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
         await tick();
+        await flush();
         expect(buildLocalIndex).toHaveBeenCalledTimes(1);
     });
 

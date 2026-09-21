@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../../_routedPage.js";
+import { useNavigate } from "../../../../shared/navigation/AppRouter.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -22,7 +24,7 @@ const INPUT_CLASS =
 
 export type NewMailFilterPageProps = Omit<SettingsShellProps, "active">;
 
-export default function NewMailFilterPage(props: NewMailFilterPageProps) {
+function NewMailFilterPage(props: NewMailFilterPageProps) {
     return (
         <SettingsShell {...props} active="filters">
             <NewMailFilterForm />
@@ -31,6 +33,7 @@ export default function NewMailFilterPage(props: NewMailFilterPageProps) {
 }
 
 function NewMailFilterForm() {
+    const navigate = useNavigate();
     const { mailboxUid } = useSettingsShell();
     const [folders, setFolders] = useState<Folder[] | null>(null);
     const [folderError, setFolderError] = useState<string | null>(null);
@@ -71,7 +74,7 @@ function NewMailFilterForm() {
         setSaving(true);
         try {
             const created = await createMailFilterRule({ mailboxUid: mailboxUid!, name: name.trim(), ...rule });
-            window.location.href = `/settings/filters/${encodeURIComponent(created.uid)}?mailboxUid=${encodeURIComponent(mailboxUid!)}`;
+            navigate(`/settings/filters/${encodeURIComponent(created.uid)}?mailboxUid=${encodeURIComponent(mailboxUid!)}`);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create the mail filter.");
         } finally {
@@ -131,3 +134,5 @@ function NewMailFilterForm() {
         </div>
     );
 }
+
+export default routedPage("/settings/filters/new", NewMailFilterPage);

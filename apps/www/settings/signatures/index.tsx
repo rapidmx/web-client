@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { MailSignature, listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
@@ -11,7 +12,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 
 export type SettingsSignaturesPageProps = Omit<SettingsShellProps, "active">;
 
-export default function SettingsSignaturesPage(props: SettingsSignaturesPageProps) {
+function SettingsSignaturesPage(props: SettingsSignaturesPageProps) {
     return (
         <SettingsShell {...props} active="signatures">
             <SignaturesContent />
@@ -83,3 +84,5 @@ function SignaturesContent() {
         </div>
     );
 }
+
+export default routedPage("/settings/signatures", SettingsSignaturesPage);

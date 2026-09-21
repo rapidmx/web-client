@@ -286,3 +286,21 @@ h6 {
     border-left: 2px solid var(--rr-color-border);
     color: var(--rr-color-text-muted);
 }
+
+/* A new-mail pop-up (`NewMailToasts.tsx`) eases in from just above its place. Only for readers who have not asked their system
+ * for less motion: with `prefers-reduced-motion: reduce` it simply appears. */
+@media (prefers-reduced-motion: no-preference) {
+    .rr-toast-in {
+        animation: rr-toast-in 0.18s ease-out;
+    }
+}
+@keyframes rr-toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(-0.5rem);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}

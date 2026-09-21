@@ -20,6 +20,7 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isOutbox,
         draftsFolderUid,
         inThread,
+        shortcuts,
         onArchived,
         onLabelsChanged,
         labels,
@@ -30,6 +31,7 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isOutbox?: boolean;
         draftsFolderUid?: string;
         inThread?: boolean;
+        shortcuts?: boolean;
         onArchived?: (updated: Record<string, unknown>) => void;
         onLabelsChanged?: (updated: Record<string, unknown>) => void;
         labels?: { uid: string }[];
@@ -37,12 +39,15 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         <div data-testid={`detail-${message!.uid}`}>
             body:{message!.uid} attachments:{attachments.map((a) => a.filename).join(",")} sentItems:
             {String(!!isSentItems)} outbox:{String(!!isOutbox)} drafts:
-            {draftsFolderUid ?? "unset"} inThread:{String(!!inThread)} labels:{(labels ?? []).length}
+            {draftsFolderUid ?? "unset"} inThread:{String(!!inThread)} shortcuts:{String(!!shortcuts)} labels:{(labels ?? []).length}
             <button type="button" onClick={() => onArchived!({ ...message, folderUid: "f-archive" })}>
                 archive-{message!.uid}
             </button>
             <button type="button" onClick={() => onLabelsChanged!({ ...message, version: 9, labelUids: ["l1"] })}>
                 label-{message!.uid}
+            </button>
+            <button type="button" onClick={() => onLabelsChanged!({ ...message, version: 10, flags: { ...(message as any).flags, read: false } })}>
+                unread-{message!.uid}
             </button>
         </div>
     ),
@@ -137,9 +142,9 @@ function renderThread(
     return { fetchMock, onMessagePatched, onMessageRemoved, ...result };
 }
 
-/** The header button of the message `sender` sent. */
+/** The header button of the message `sender` sent - an unread one starts with a visually hidden "Unread.". */
 function header(sender: string) {
-    return screen.getByRole("button", { name: new RegExp(`^${sender}`) });
+    return screen.getByRole("button", { name: new RegExp(`^(Unread[.])?${sender}`) });
 }
 
 /** The uids of the thread's entries, in the order the pane actually renders them. */
@@ -173,6 +178,47 @@ describe("ConversationThreadPane", () => {
         await screen.findAllByRole("heading", { level: 2 });
         expect(screen.getByText("Alice <alice@example.com>", { selector: ".sr-only" })).toBeInTheDocument();
         expect(screen.getByText("Carol <carol@example.com>", { selector: ".sr-only" })).toBeInTheDocument();
+    });
+
+    describe("keyboard shortcuts", () => {
+        /** Which expanded messages were told to register the reading pane's shortcuts. */
+        const registering = () =>
+            THREAD.map((message) => message.uid).filter((uid) => screen.queryByTestId(`detail-${uid}`)?.textContent?.includes("shortcuts:true"));
+
+        it("hands them to the opened message only - never to every expanded one, which would fight over Ctrl+R", async () => {
+            renderThread({ shortcuts: true, selectedUid: "m1" });
+            await screen.findByTestId("detail-m1");
+            // Opening m1 expands it and everything above it.
+            expect(screen.getByTestId("detail-m2")).toBeInTheDocument();
+            expect(screen.getByTestId("detail-m3")).toBeInTheDocument();
+            expect(registering()).toEqual(["m1"]);
+        });
+
+        it("does not read a message straight back after the reader marks it unread while it is open (Ctrl+U on a message that was already read)", async () => {
+            const user = userEvent.setup();
+            const { fetchMock } = renderThread({ shortcuts: true });
+            await screen.findByTestId("detail-m3");
+            const writes = () => fetchMock.mock.calls.filter(([, init]: any) => init?.method === "PUT");
+            expect(writes()).toHaveLength(0);
+
+            await user.click(screen.getByRole("button", { name: "unread-m3" }));
+
+            // Nothing is sent: it was asked about once, when it was opened, and it was already read then.
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(writes()).toHaveLength(0);
+        });
+
+        it("falls back to the newest message when the opened one is not in the thread", async () => {
+            renderThread({ shortcuts: true, selectedUid: "not-in-this-thread" });
+            await screen.findByTestId("detail-m3");
+            expect(registering()).toEqual(["m3"]);
+        });
+
+        it("hands them to nobody unless the caller asks (select mode has the keyboard for itself)", async () => {
+            renderThread({ selectedUid: "m1" });
+            await screen.findByTestId("detail-m1");
+            expect(registering()).toEqual([]);
+        });
     });
 
     it("says what to do with no conversation open", () => {
@@ -455,7 +501,13 @@ describe("ConversationThreadPane", () => {
         });
 
         await screen.findByTestId("detail-m2");
-        await waitFor(() => expect(onMessagePatched).toHaveBeenCalledTimes(2));
+        // Each of the two: the optimistic copy at once, then the server's.
+        await waitFor(() => expect(onMessagePatched).toHaveBeenCalledTimes(4));
+        expect(onMessagePatched).toHaveBeenCalledWith(
+            expect.objectContaining({ uid: "m2", flags: expect.objectContaining({ read: true }), version: 0 }),
+            expect.objectContaining({ uid: "m2", flags: unread }),
+        );
+        expect(onMessagePatched).toHaveBeenCalledWith(expect.objectContaining({ uid: "m2", version: 1 }), undefined);
         const marked = fetchMock.mock.calls
             .filter(([, init]: [string, RequestInit]) => init?.method === "PUT")
             .map(([url]: [string]) => String(url).split("/").pop());
@@ -660,7 +712,7 @@ describe("ConversationThreadPane", () => {
         await waitFor(() => expect(screen.getByTestId("detail-m1")).toHaveTextContent("attachments:notes.txt"));
     });
 
-    it("forgets a failed mark-as-read, so re-expanding the message tries again", async () => {
+    it("puts a failed mark-as-read back, does not retry it by itself, and tries again when the message is opened again", async () => {
         const user = userEvent.setup();
         const unread = { read: false, flagged: false, answered: false, forwarded: false };
         const thread = [messageFixture("m1", "Alice", { flags: unread }), messageFixture("m2", "Bob")];
@@ -675,18 +727,27 @@ describe("ConversationThreadPane", () => {
 
         await screen.findByTestId("detail-m1");
         await waitFor(() => expect(attempts).toBe(1));
-        expect(onMessagePatched).not.toHaveBeenCalled();
+        // The optimistic copy, then the unread one put back - and no request in a loop meanwhile.
+        await waitFor(() => expect(onMessagePatched).toHaveBeenCalledTimes(2));
+        expect(onMessagePatched).toHaveBeenLastCalledWith(
+            expect.objectContaining({ uid: "m1", flags: unread }),
+            expect.objectContaining({ uid: "m1", flags: expect.objectContaining({ read: true }) }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(attempts).toBe(1);
 
         await user.click(header("Alice"));
         await user.click(header("Alice"));
 
         await waitFor(() =>
-            // Marking read hands over the unread copy it replaced too - what a conversation row's own
-            // unread count is decremented from (see `onMessagePatched`'s own doc comment).
-            expect(onMessagePatched).toHaveBeenCalledWith(
-                expect.objectContaining({ uid: "m1", version: 1 }),
-                expect.objectContaining({ uid: "m1", flags: unread }),
-            ),
+            // The server's own copy, once it has accepted the change.
+            expect(onMessagePatched).toHaveBeenCalledWith(expect.objectContaining({ uid: "m1", version: 1 }), undefined),
+        );
+        // And the change itself was handed over with the unread copy it replaced - what a conversation row's own
+        // unread count moves by (see `onMessagePatched`'s own doc comment).
+        expect(onMessagePatched).toHaveBeenCalledWith(
+            expect.objectContaining({ uid: "m1", flags: expect.objectContaining({ read: true }) }),
+            expect.objectContaining({ uid: "m1", flags: unread }),
         );
     });
 
@@ -724,10 +785,12 @@ describe("ConversationThreadPane", () => {
             />,
         );
         await screen.findByTestId("detail-z1");
+        // Only the optimistic copy, made while that conversation was open.
+        expect(onMessagePatched).toHaveBeenCalledTimes(1);
 
         resolveMarkRead!(jsonResponse(200, messageFixture("m1", "Alice", { version: 1 })));
         await waitFor(() => expect(screen.getByTestId("detail-z1")).toBeInTheDocument());
-        expect(onMessagePatched).not.toHaveBeenCalled();
+        expect(onMessagePatched).toHaveBeenCalledTimes(1);
     });
 
     it("drops a load failure that lands after the reader has moved to another conversation", async () => {

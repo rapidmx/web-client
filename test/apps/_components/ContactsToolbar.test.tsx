@@ -110,3 +110,20 @@ describe("ContactsToolbar", () => {
         expect(handlers.onImportFile).not.toHaveBeenCalled();
     });
 });
+
+describe("ContactsToolbar keyboard shortcut hint", () => {
+    it("names the New contact shortcut in the tooltip and aria-keyshortcuts when the page has one, leaving the name alone", () => {
+        renderToolbar({ shortcuts: true });
+        const button = screen.getByText("New contact").closest("button")!;
+        expect(button).toHaveAttribute("title", "New contact (Alt+N)");
+        expect(button).toHaveAttribute("aria-keyshortcuts", "Alt+N");
+        expect(screen.getByText("Import").closest("button")).not.toHaveAttribute("aria-keyshortcuts");
+    });
+
+    it("says nothing about it without one.", () => {
+        renderToolbar();
+        const button = screen.getByText("New contact").closest("button")!;
+        expect(button).not.toHaveAttribute("title");
+        expect(button).not.toHaveAttribute("aria-keyshortcuts");
+    });
+});

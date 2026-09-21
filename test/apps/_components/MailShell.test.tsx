@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
@@ -311,7 +311,8 @@ describe("MailShell", () => {
 
         const inboxLink = await screen.findByRole("link", { name: /Inbox/ });
         expect(inboxLink.className).toContain("bg-primary/10");
-        const draftsLink = screen.getByRole("link", { name: "Drafts" });
+        // Drafts shows how many messages it holds (10), not an unread count.
+        const draftsLink = screen.getByRole("link", { name: /^Drafts/ });
         expect(draftsLink.className).not.toContain("bg-primary/10");
     });
 
@@ -338,7 +339,7 @@ describe("MailShell", () => {
         await screen.findByText("All Mailboxes");
         const aggregateInbox = screen.getAllByRole("link").find((el) => el.getAttribute("href") === "/?aggregate=inbox")!;
         // 3 unread in each mailbox's own Inbox.
-        expect(aggregateInbox.textContent).toBe("Inbox6");
+        expect(aggregateInbox.textContent).toBe("Inbox6 6 unread");
         expect(screen.getAllByRole("link").some((el) => el.getAttribute("href") === "/?aggregate=junk")).toBe(true);
         expect(screen.getAllByRole("link").some((el) => el.getAttribute("href") === "/?aggregate=outbox")).toBe(false);
     });
@@ -457,7 +458,7 @@ describe("MailShell", () => {
 
         await screen.findByText("Inbox");
         const folderLinks = screen.getAllByRole("link").filter((el) => el.getAttribute("href")?.includes("folderUid="));
-        expect(folderLinks.map((el) => el.textContent)).toEqual(["Inbox3", "Archive", "Projects"]);
+        expect(folderLinks.map((el) => el.textContent)).toEqual(["Inbox3 3 unread", "Archive", "Projects"]);
     });
 
     it("excludes calendar/contacts/tasks folders from the folder tree — those back their own dedicated apps, not Mail", async () => {
@@ -469,7 +470,7 @@ describe("MailShell", () => {
 
         await screen.findByText("Inbox");
         const folderLinks = screen.getAllByRole("link").filter((el) => el.getAttribute("href")?.includes("folderUid="));
-        expect(folderLinks.map((el) => el.textContent)).toEqual(["Inbox3"]);
+        expect(folderLinks.map((el) => el.textContent)).toEqual(["Inbox3 3 unread"]);
     });
 
     it("honors a ?mailboxUid= query param that names an accessible mailbox, highlighting that mailbox's Inbox", async () => {
@@ -501,7 +502,7 @@ describe("MailShell", () => {
         mockMailboxesAndFolders([mailboxA], [draftsFolder, inboxFolder]);
         render(<MailShell userUid="u1">content</MailShell>);
 
-        const draftsLink = await screen.findByRole("link", { name: "Drafts" });
+        const draftsLink = await screen.findByRole("link", { name: /^Drafts/ });
         expect(draftsLink.className).toContain("bg-primary/10");
     });
 
@@ -815,5 +816,344 @@ describe("MailShell", () => {
             expect((await screen.findAllByText("Inbox")).length).toBeGreaterThan(0);
             expect(screen.getByTestId("live")).toHaveTextContent("tick:0");
         });
+
+        describe("folder badges", () => {
+            const folderOf = (type: string, uid: string, unreadCount: number, totalCount: number, name = type) =>
+                ({ ...inboxFolder, uid, type, name, unreadCount, totalCount }) as any;
+
+            it("shows unread for the Inbox, Archive and other folders, messages for Drafts and Outbox, and nothing for Sent, Deleted and Junk", async () => {
+                mockMailboxesAndFolders(
+                    [mailboxA],
+                    [
+                        folderOf("inbox", "f1", 3, 10, "Inbox"),
+                        folderOf("drafts", "f2", 5, 4, "Drafts"),
+                        folderOf("outbox", "f3", 0, 1, "Outbox"),
+                        folderOf("sent_items", "f4", 6, 20, "Sent Items"),
+                        folderOf("junk", "f5", 7, 7, "Junk Email"),
+                        folderOf("archive", "f6", 2, 9, "Archive"),
+                        folderOf("deleted_items", "f7", 8, 8, "Deleted Items"),
+                        folderOf("user", "f8", 0, 5, "Projects"),
+                    ],
+                );
+                render(<MailShell userUid="u1">content</MailShell>);
+                await screen.findByText("Inbox");
+                const texts = screen
+                    .getAllByRole("link")
+                    .filter((el) => el.getAttribute("href")?.includes("folderUid="))
+                    .map((el) => el.textContent);
+                expect(texts).toEqual([
+                    "Inbox3 3 unread",
+                    "Drafts4 4 messages",
+                    "Outbox1 1 message",
+                    "Sent Items",
+                    "Junk Email",
+                    "Archive2 2 unread",
+                    "Deleted Items",
+                    "Projects",
+                ]);
+            });
+
+            it("puts an unread folder's name in bold, and a folder with nothing to show in normal weight", async () => {
+                mockMailboxesAndFolders([mailboxA], [folderOf("inbox", "f1", 3, 10, "Inbox"), folderOf("user", "f2", 0, 5, "Projects")]);
+                render(<MailShell userUid="u1">content</MailShell>);
+                expect((await screen.findByText("Inbox")).className).toContain("font-semibold");
+                expect(screen.getByText("Projects").className).not.toContain("font-semibold");
+            });
+
+            it("applies the same rules to the All Mailboxes entries", async () => {
+                mockPerMailboxFolders([mailboxA, mailboxB]);
+                render(<MailShell userUid="u1">content</MailShell>);
+                await screen.findByText("All Mailboxes");
+                const aggregate = (type: string) => screen.getAllByRole("link").find((el) => el.getAttribute("href") === `/?aggregate=${type}`)!;
+                expect(aggregate("inbox").textContent).toBe("Inbox6 6 unread");
+                // Junk has no badge whatever its unread count.
+                expect(aggregate("junk").textContent).toBe("Junk Email");
+            });
+        });
+
+        describe("counts that follow what the user does", () => {
+            /** Buttons that change a message the way a reading pane does: unread to read, in the Inbox. */
+            function ChangeProbe() {
+                const { trackMessageChange } = useMailShell();
+                const unreadMessage = { uid: "m1", folderUid: "f-inbox-mb-a", mailboxUid: "mb-a", flags: { read: false } } as any;
+                const readMessage = { ...unreadMessage, flags: { read: true } };
+                const trackers = React.useRef<ReturnType<typeof trackMessageChange>[]>([]);
+                return (
+                    <>
+                        <button onClick={() => trackers.current.push(trackMessageChange(unreadMessage, readMessage))}>read it</button>
+                        <button onClick={() => trackers.current.pop()?.settle()}>server accepted</button>
+                        <button onClick={() => trackers.current.pop()?.revert()}>server refused</button>
+                    </>
+                );
+            }
+
+            const inboxBadge = () =>
+                screen.getAllByRole("link").find((el) => el.getAttribute("href")?.includes("folderUid=f-inbox-mb-a"))!.textContent;
+
+            it("drops the badge the moment a message is read, and lets the server's count settle it afterwards", async () => {
+                vi.stubGlobal("WebSocket", FakePushSocket);
+                const unread = { current: { "f-inbox-mb-a": 3 } as Record<string, number> };
+                mockLiveFolders([mailboxA], unread);
+                const user = userEvent.setup();
+                render(
+                    <MailShell userUid="u1">
+                        <ChangeProbe />
+                    </MailShell>,
+                );
+                await screen.findAllByText("Inbox");
+                expect(inboxBadge()).toBe("Inbox3 3 unread");
+
+                await user.click(screen.getByRole("button", { name: "read it" }));
+                expect(inboxBadge()).toBe("Inbox2 2 unread");
+
+                // The server agrees - the badge stays.
+                unread.current = { "f-inbox-mb-a": 2 };
+                await user.click(screen.getByRole("button", { name: "server accepted" }));
+                await new Promise((resolve) => setTimeout(resolve, 900));
+                expect(inboxBadge()).toBe("Inbox2 2 unread");
+            });
+
+            it("puts the badge back when the server refuses the change", async () => {
+                vi.stubGlobal("WebSocket", FakePushSocket);
+                mockLiveFolders([mailboxA], { current: { "f-inbox-mb-a": 3 } });
+                const user = userEvent.setup();
+                render(
+                    <MailShell userUid="u1">
+                        <ChangeProbe />
+                    </MailShell>,
+                );
+                await screen.findAllByText("Inbox");
+                await user.click(screen.getByRole("button", { name: "read it" }));
+                expect(inboxBadge()).toBe("Inbox2 2 unread");
+                await user.click(screen.getByRole("button", { name: "server refused" }));
+                expect(inboxBadge()).toBe("Inbox3 3 unread");
+            });
+
+            it("shows the server's count over its own when they differ - it can't drift", async () => {
+                vi.stubGlobal("WebSocket", FakePushSocket);
+                // The server counts 5 whatever this page thinks.
+                mockLiveFolders([mailboxA], { current: { "f-inbox-mb-a": 5 } });
+                const user = userEvent.setup();
+                render(
+                    <MailShell userUid="u1">
+                        <ChangeProbe />
+                    </MailShell>,
+                );
+                await screen.findAllByText("Inbox");
+                await user.click(screen.getByRole("button", { name: "read it" }));
+                await user.click(screen.getByRole("button", { name: "server accepted" }));
+                await waitFor(() => expect(inboxBadge()).toBe("Inbox5 5 unread"), { timeout: 3000 });
+            });
+
+            it("applies the counts the server publishes for a folder", async () => {
+                vi.stubGlobal("WebSocket", FakePushSocket);
+                mockLiveFolders([mailboxA], { current: { "f-inbox-mb-a": 3 } });
+                render(<MailShell userUid="u1">content</MailShell>);
+                await screen.findAllByText("Inbox");
+                const socket = FakePushSocket.instances[0];
+                socket.receive({ id: 0, type: "SUBSCRIBED", data: ["u1"] });
+
+                // The server publishes to the folder's channel and its mailbox's, so the same event is heard twice.
+                const event = { type: "FolderMongo", action: "update", data: { uid: "f-inbox-mb-a", mailboxUid: "mb-a", unreadCount: 8, totalCount: 30 } };
+                act(() => {
+                    socket.receive(event);
+                    socket.receive(event);
+                });
+                await waitFor(() => expect(inboxBadge()).toBe("Inbox8 8 unread"));
+            });
+
+            it("counts a new message in its folder at once, and keeps that count when the server agrees", async () => {
+                vi.stubGlobal("WebSocket", FakePushSocket);
+                const unread = { current: { "f-inbox-mb-a": 3 } as Record<string, number> };
+                mockLiveFolders([mailboxA], unread);
+                render(<MailShell userUid="u1">content</MailShell>);
+                await screen.findAllByText("Inbox");
+                const socket = FakePushSocket.instances[0];
+                socket.receive({ id: 0, type: "SUBSCRIBED", data: ["u1"] });
+
+                unread.current = { "f-inbox-mb-a": 4 };
+                act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
+                expect(inboxBadge()).toBe("Inbox4 4 unread");
+                await new Promise((resolve) => setTimeout(resolve, 1200));
+                expect(inboxBadge()).toBe("Inbox4 4 unread");
+            });
+        });
+
+        const newMail = (uid: string, overrides: Record<string, unknown> = {}) => ({
+            uid,
+            version: 0,
+            folderUid: "f-inbox-mb-a",
+            mailboxUid: "mb-a",
+            subject: "Contract signed",
+            from: { address: "dana@client.example", displayName: "Dana Whitfield", type: "to" },
+            receivedDate: new Date().toISOString(),
+            bodyPreview: "Great news: the contract is signed.",
+            flags: { read: false, flagged: false, answered: false, forwarded: false },
+            ...overrides,
+        });
+
+        describe("new mail pop-ups", () => {
+            async function shellWithSocket() {
+                vi.stubGlobal("WebSocket", FakePushSocket);
+                mockLiveFolders([mailboxA], { current: { "f-inbox-mb-a": 3 } });
+                render(<MailShell userUid="u1">content</MailShell>);
+                await screen.findAllByText("Inbox");
+                const socket = FakePushSocket.instances[0];
+                socket.receive({ id: 0, type: "SUBSCRIBED", data: ["u1"] });
+                return socket;
+            }
+
+            it("shows the sender, the subject and a preview of a message that arrives, in a polite live region", async () => {
+                const socket = await shellWithSocket();
+                act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
+
+                const region = screen.getByRole("status", { name: "New mail" });
+                expect(region).toHaveAttribute("aria-live", "polite");
+                const toast = within(region).getByRole("link");
+                expect(toast).toHaveAttribute("href", "/messages/m9");
+                expect(toast).toHaveTextContent("Dana Whitfield");
+                expect(toast).toHaveTextContent("<dana@client.example>");
+                expect(toast).toHaveTextContent("Contract signed");
+                expect(toast).toHaveTextContent("Great news: the contract is signed.");
+            });
+
+            it("shows nothing for a message that is not new Inbox mail, or that this page already announced", async () => {
+                const socket = await shellWithSocket();
+                act(() => {
+                    socket.receive({ type: "MessageMongo", action: "create", data: newMail("sent", { folderUid: "f-elsewhere" }) });
+                    socket.receive({ type: "MessageMongo", action: "create", data: newMail("read", { flags: { read: true } }) });
+                    socket.receive({ type: "MessageMongo", action: "update", data: newMail("update") });
+                    socket.receive({ type: "MessageMongo", action: "create", data: newMail("mine", { from: { address: "a@example.com", type: "to" } }) });
+                });
+                expect(within(screen.getByRole("status", { name: "New mail" })).queryByRole("link")).not.toBeInTheDocument();
+
+                act(() => {
+                    socket.receive({ type: "MessageMongo", action: "create", data: newMail("dup") });
+                    socket.receive({ type: "MessageMongo", action: "create", data: newMail("dup") });
+                });
+                expect(within(screen.getByRole("status", { name: "New mail" })).getAllByRole("link")).toHaveLength(1);
+            });
+
+            it("shows nothing while the user has turned pop-ups off", async () => {
+                localStorage.setItem("rapidmx-new-mail-popups", "off");
+                const socket = await shellWithSocket();
+                act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
+                expect(within(screen.getByRole("status", { name: "New mail" })).queryByRole("link")).not.toBeInTheDocument();
+            });
+
+            it("offers desktop notifications in the pop-up, and remembers 'Not now'", async () => {
+                vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission: "default", requestPermission: vi.fn() }));
+                const user = userEvent.setup();
+                const socket = await shellWithSocket();
+                act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
+
+                await user.click(await screen.findByRole("button", { name: "Not now" }));
+                expect(screen.queryByRole("button", { name: "Turn on desktop notifications" })).not.toBeInTheDocument();
+                expect(localStorage.getItem("rapidmx-desktop-notifications-offer")).not.toBeNull();
+            });
+
+            it("asks the browser for permission only when 'Turn on desktop notifications' is clicked", async () => {
+                const requestPermission = vi.fn().mockResolvedValue("granted");
+                vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission: "default", requestPermission }));
+                const user = userEvent.setup();
+                const socket = await shellWithSocket();
+                expect(requestPermission).not.toHaveBeenCalled();
+                act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
+
+                await user.click(await screen.findByRole("button", { name: "Turn on desktop notifications" }));
+                expect(requestPermission).toHaveBeenCalledTimes(1);
+                await waitFor(() => expect(screen.queryByRole("button", { name: "Turn on desktop notifications" })).not.toBeInTheDocument());
+            });
+        });
+
+        describe("the tab title", () => {
+            it("carries the unread count of every Inbox, and drops it when everything is read", async () => {
+                document.title = "Acme: Mail";
+                vi.stubGlobal("WebSocket", FakePushSocket);
+                mockLiveFolders([mailboxA, mailboxB], { current: {} });
+                const { unmount } = render(<MailShell userUid="u1">content</MailShell>);
+                await waitFor(() => expect(document.title).toBe("(6) Acme: Mail"));
+
+                const socket = FakePushSocket.instances[0];
+                socket.receive({ id: 0, type: "SUBSCRIBED", data: ["u1"] });
+                act(() =>
+                    socket.receive({ type: "FolderMongo", action: "update", data: { uid: "f-inbox-mb-a", unreadCount: 0, totalCount: 10 } }),
+                );
+                await waitFor(() => expect(document.title).toBe("(3) Acme: Mail"));
+
+                unmount();
+                expect(document.title).toBe("Acme: Mail");
+            });
+        });
+    });
+});
+
+
+describe("MailShell keyboard shortcuts", () => {
+    const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => fireEvent.keyDown(target, { key, ...init });
+
+    function mockComposeableMail() {
+        const draft = {
+            uid: "m1",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            folderUid: "f-drafts",
+            mailboxUid: "mb-a",
+            messageId: "abc@webmail",
+            subject: "",
+            from: { address: "a@example.com", type: "to" as const },
+            recipients: [],
+            sentDate: "2026-01-01T00:00:00.000Z",
+            receivedDate: "2026-01-01T00:00:00.000Z",
+            bodyPreview: "",
+            flags: { read: true, flagged: false, answered: false, forwarded: false },
+            importance: "normal" as const,
+            hasAttachments: false,
+        };
+        return mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url === "/api/mail/mailboxes/mb-a") return jsonResponse(200, mailboxA);
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [draftsFolder, inboxFolder]);
+            if (url === "/api/mail/messages" && (init?.method ?? "GET") === "POST") return jsonResponse(200, draft);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+    }
+
+    it("Alt+N opens the compose window for the resolved mailbox, as the Compose button does", async () => {
+        const fetchMock = mockComposeableMail();
+        render(<MailShell userUid="u1">content</MailShell>);
+        await screen.findByRole("button", { name: "Compose" });
+
+        expect(press("n", { altKey: true })).toBe(false);
+
+        expect(await screen.findByRole("dialog", { name: "New Message" })).toBeInTheDocument();
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages", expect.objectContaining({ method: "POST" })));
+        // Another Alt+N from inside the window opens another one.
+        expect(press("n", { altKey: true }, screen.getByLabelText("Subject"))).toBe(false);
+        await waitFor(() => expect(screen.getAllByRole("dialog", { name: "New Message" })).toHaveLength(2));
+    });
+
+    it("names the shortcut on the Compose button, leaving its name alone", async () => {
+        mockComposeableMail();
+        render(<MailShell userUid="u1">content</MailShell>);
+
+        const button = await screen.findByRole("button", { name: "Compose" });
+        expect(button).toHaveAttribute("title", "Compose (Alt+N)");
+        expect(button).toHaveAttribute("aria-keyshortcuts", "Alt+N");
+    });
+
+    it("has no new-message key until there is a mailbox to send from (the mailbox-less screen has none)", async () => {
+        mockFetch((url) => {
+            if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, []);
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, []);
+            throw new Error(`unexpected ${url}`);
+        });
+        render(<MailShell userUid="u1">content</MailShell>);
+        await screen.findByText("No mailbox available");
+
+        expect(press("n", { altKey: true })).toBe(true);
     });
 });

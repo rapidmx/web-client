@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
@@ -492,7 +492,7 @@ describe("AppShell", () => {
         await waitFor(() => expect(location.href).toBe("/"));
     });
 
-    it("shows the Admin link in the user menu only when trusted", async () => {
+    it("shows the Admin Console link in the user menu when the token is trusted", async () => {
         const user = userEvent.setup();
         render(
             <AppShell active="mail" userUid="u1" trusted>
@@ -500,7 +500,76 @@ describe("AppShell", () => {
             </AppShell>,
         );
         await user.click(screen.getByRole("button", { name: "Account menu" }));
-        expect(screen.getByRole("menuitem", { name: "Admin" })).toBeInTheDocument();
+        expect(screen.getByRole("menuitem", { name: "Admin Console" })).toHaveAttribute("href", "/admin");
+    });
+
+    describe("Admin Console for an administrator whose token isn't elevated", () => {
+        const auth = (roles: string[]) =>
+            mockFetch((url) => (url.endsWith("/api/users/me") ? jsonResponse(200, { uid: "u1", roles }) : jsonResponse(404, {})));
+        const askedForUser = (fetchMock: ReturnType<typeof mockFetch>) =>
+            fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/users/me"));
+
+        it("asks auth-server about the caller's own record and shows the link when it holds the admin role", async () => {
+            const fetchMock = auth(["admin"]);
+            const user = userEvent.setup();
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AppShell>,
+            );
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByRole("menuitem", { name: "Admin Console" })).toHaveAttribute("href", "/admin");
+            expect(fetchMock).toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/users/me`, expect.anything());
+        });
+
+        it("uses the server's trusted role names", async () => {
+            auth(["operator"]);
+            const user = userEvent.setup();
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL} trustedRoles={["operator"]}>
+                    content
+                </AppShell>,
+            );
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByRole("menuitem", { name: "Admin Console" })).toBeInTheDocument();
+        });
+
+        it("hides it for a user without the role", async () => {
+            const fetchMock = auth(["user"]);
+            const user = userEvent.setup();
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AppShell>,
+            );
+            await waitFor(() => expect(askedForUser(fetchMock)).toBe(true));
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitem", { name: "Admin Console" })).not.toBeInTheDocument();
+        });
+
+        it("never shows it, and never asks, while impersonating", async () => {
+            const fetchMock = auth(["admin"]);
+            const user = userEvent.setup();
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL} impersonating trusted>
+                    content
+                </AppShell>,
+            );
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/profiles/me`, expect.anything()));
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitem", { name: "Admin Console" })).not.toBeInTheDocument();
+            expect(askedForUser(fetchMock)).toBe(false);
+
+            cleanup();
+            fetchMock.mockClear();
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL} impersonating>
+                    content
+                </AppShell>,
+            );
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/profiles/me`, expect.anything()));
+            expect(askedForUser(fetchMock)).toBe(false);
+        });
     });
 
     it("always shows the Settings link in the user menu, regardless of trusted", async () => {
@@ -550,5 +619,93 @@ describe("AppShell", () => {
         for (const label of ["Mail", "Calendar", "Contacts", "Tasks"]) {
             expect(tabBar.getByRole("link", { name: label })).not.toHaveAttribute("aria-current");
         }
+    });
+});
+
+
+describe("AppShell keyboard shortcuts", () => {
+    const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => fireEvent.keyDown(target, { key, ...init });
+    const CTRL_SHIFT = { ctrlKey: true, shiftKey: true };
+
+    /** The address bar of a page at `pathname` - `mockLocation()` has none of its own. */
+    function locationAt(pathname: string) {
+        const location = mockLocation() as { href: string; pathname: string };
+        location.pathname = pathname;
+        return location;
+    }
+
+    it("goes to each app, Settings and the account page from wherever the user is - the chrome is what they all share", () => {
+        const location = locationAt("/tasks");
+        mockFetch(() => jsonResponse(404, {}));
+        render(
+            <AppShell active="tasks" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+
+        expect(press("M", CTRL_SHIFT)).toBe(false);
+        expect(location.href).toBe("/");
+        press("C", CTRL_SHIFT);
+        expect(location.href).toBe("/calendar");
+        press("B", CTRL_SHIFT);
+        expect(location.href).toBe("/contacts");
+        press("S", CTRL_SHIFT);
+        expect(location.href).toBe("/settings/auto-reply");
+        press("A", CTRL_SHIFT);
+        expect(location.href).toBe(`${AUTH_SERVER_URL}/account`);
+        // Already there: nothing changes, the key is still taken.
+        location.href = "";
+        expect(press("L", CTRL_SHIFT)).toBe(false);
+        expect(location.href).toBe("");
+    });
+
+    it("opens the shortcuts dialog with ?, listing the global shortcuts - and Account only because auth-server is configured", async () => {
+        locationAt("/");
+        mockFetch(() => jsonResponse(404, {}));
+        render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+
+        expect(press("?", { shiftKey: true })).toBe(false);
+
+        const dialog = await screen.findByRole("dialog", { name: "Keyboard shortcuts" });
+        expect(within(dialog).getByRole("heading", { name: "Global" })).toBeInTheDocument();
+        expect(within(dialog).getByText("Go to Account")).toBeInTheDocument();
+        expect(within(dialog).getByText("Go to Tasks")).toBeInTheDocument();
+        // Nothing of Mail: this page has no view registering any.
+        expect(within(dialog).queryByRole("heading", { name: "Mail" })).not.toBeInTheDocument();
+        expect(within(dialog).getByText(/Some browsers keep a few keys for themselves/)).toBeInTheDocument();
+    });
+
+    it("opens the same dialog from the account menu's Keyboard shortcuts item", async () => {
+        locationAt("/");
+        mockFetch(() => jsonResponse(404, {}));
+        const user = userEvent.setup();
+        render(
+            <AppShell active="mail" userUid="u1">
+                content
+            </AppShell>,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        await user.click(screen.getByRole("menuitem", { name: "Keyboard shortcuts" }));
+
+        expect(await screen.findByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+        expect(screen.queryByText("Go to Account")).not.toBeInTheDocument();
+        press("Escape", {}, screen.getByRole("dialog"));
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument());
+    });
+
+    it("has no shortcuts while there is no signed-in user (the chrome renders nothing)", () => {
+        const location = locationAt("/calendar");
+        location.href = "https://mail.example.com/";
+        mockFetch(() => jsonResponse(404, {}));
+        render(<AppShell active="mail" authServerUrl={AUTH_SERVER_URL}>content</AppShell>);
+
+        expect(press("M", CTRL_SHIFT)).toBe(true);
+        expect(press("?", { shiftKey: true })).toBe(true);
     });
 });

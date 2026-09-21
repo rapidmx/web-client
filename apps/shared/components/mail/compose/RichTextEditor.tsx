@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TextStyleKit } from "@tiptap/extension-text-style";
@@ -32,6 +32,14 @@ export interface RichTextEditorProps {
      * quote). That normalization happens on the editor's first transaction - even one that only moves the caret -
      * and isn't reported through `onChange`, so a caller can compare later edits against this instead of `value`. */
     onInitialized?: (value: string) => void;
+    /**
+     * HTML to add at the end of the document, once, as soon as there is some (it may be undefined when the editor is created and
+     * defined later). A reply opens its editor before the quoted original has been fetched and hands the quote in through this when
+     * it arrives - so whatever has been typed above stays, and the quote lands where it always did, under the signature.
+     */
+    appendHtml?: string;
+    /** Called with the document as the editor serializes it, right after `appendHtml` was added. */
+    onAppended?: (value: string) => void;
 }
 
 /**
@@ -63,11 +71,16 @@ export default function RichTextEditor({
     onUploadImage,
     autoFocusStart = false,
     onInitialized,
+    appendHtml,
+    onAppended,
 }: RichTextEditorProps) {
     const onChangeRef = useRef(onChange);
     onChangeRef.current = onChange;
     const onInitializedRef = useRef(onInitialized);
     onInitializedRef.current = onInitialized;
+    const onAppendedRef = useRef(onAppended);
+    onAppendedRef.current = onAppended;
+    const appendedRef = useRef<string | undefined>(undefined);
     // Transactions before `create` (the autofocus, and the normalizing one below) aren't edits.
     const initializedRef = useRef(false);
     // Held for this editor's lifetime: TipTap focuses a tick after creating the editor, and a re-render passing a
@@ -99,6 +112,16 @@ export default function RichTextEditor({
             }
         },
     });
+
+    // Added once, at the end, whatever the reader has typed meanwhile (the caret stays where it is).
+    useEffect(() => {
+        if (!editor || appendHtml === undefined || appendedRef.current === appendHtml) {
+            return;
+        }
+        appendedRef.current = appendHtml;
+        editor.commands.insertContentAt(editor.state.doc.content.size, appendHtml);
+        onAppendedRef.current?.(editor.getHTML());
+    }, [editor, appendHtml]);
 
     return (
         <div className={["border border-border rounded-sm overflow-hidden", fill ? "h-full flex flex-col" : ""].filter(Boolean).join(" ")}>

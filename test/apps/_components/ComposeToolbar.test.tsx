@@ -280,7 +280,8 @@ describe("ComposeToolbar", () => {
         renderToolbar({ editor });
 
         await user.click(screen.getByLabelText("Insert emoji"));
-        await user.click(screen.getByText("fake-emoji"));
+        // The picker (and its emoji list) is a chunk of its own, loaded when it is first opened.
+        await user.click(await screen.findByText("fake-emoji"));
 
         expect(editor.calls).toContain('insertContent(["😀"])');
         expect(screen.queryByText("fake-emoji")).not.toBeInTheDocument();

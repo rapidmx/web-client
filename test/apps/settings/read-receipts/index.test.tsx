@@ -7,7 +7,10 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsReadReceiptsPage from "../../../../apps/www/settings/read-receipts/index.js";
+import SettingsReadReceiptsPageRouted from "../../../../apps/www/settings/read-receipts/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const SettingsReadReceiptsPage = SettingsReadReceiptsPageRouted.page;
 
 const mailbox = {
     uid: "mb1",

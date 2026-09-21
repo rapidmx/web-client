@@ -10,6 +10,7 @@ import { Mailbox, listMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
+import { useLocationSearch, useNavigate } from "../../../navigation/AppRouter.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { mergePluginNavItems, PluginNav } from "../../../plugins/pluginNav.js";
 
@@ -84,6 +85,7 @@ export default function SettingsShell({
     impersonating,
     impersonationBaseUrl,
     trusted,
+    trustedRoles,
     pluginNav,
     children,
 }: PropsWithChildren<SettingsShellProps>) {
@@ -93,9 +95,18 @@ export default function SettingsShell({
     const [requestedMailboxUid, setRequestedMailboxUid] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
 
+    // Read from the router's location, so a mailbox change (a link, or `navigate()`) takes effect without a page load - and in an
+    // effect, not during render, so the server render and the hydrating render agree.
+    const search = useLocationSearch();
+    const navigate = useNavigate();
     useEffect(() => {
-        setRequestedMailboxUid(new URLSearchParams(window.location.search).get("mailboxUid"));
-    }, []);
+        setRequestedMailboxUid(new URLSearchParams(search).get("mailboxUid"));
+    }, [search]);
+    // Choosing a folder (or mailbox) changes the URL without a page load now, so the drawer that held the choice - which used to go
+    // with the page - is closed here.
+    useEffect(() => {
+        setDrawerOpen(false);
+    }, [search]);
 
     useEffect(() => {
         if (!userUid) {
@@ -164,7 +175,7 @@ export default function SettingsShell({
                                 // `SettingsShellProps.active`), but a plugin page's section is missing when the
                                 // server didn't send its nav item, so that falls back to the current path.
                                 const href = sections.find((s) => s.id === active)?.href ?? window.location.pathname;
-                                window.location.href = `${href}?mailboxUid=${encodeURIComponent(e.target.value)}`;
+                                navigate(`${href}?mailboxUid=${encodeURIComponent(e.target.value)}`);
                             }}
                         >
                             {mailboxes.map((mb) => (
@@ -232,6 +243,7 @@ export default function SettingsShell({
             impersonating={impersonating}
             impersonationBaseUrl={impersonationBaseUrl}
             trusted={trusted}
+            trustedRoles={trustedRoles}
             pluginNav={pluginNav}
         >
             {inner}

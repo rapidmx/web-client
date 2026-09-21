@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -214,7 +215,7 @@ function idleTimeoutLabel(minutes: number): string {
 
 export type SettingsEncryptionPageProps = Omit<SettingsShellProps, "active">;
 
-export default function SettingsEncryptionPage(props: SettingsEncryptionPageProps) {
+function SettingsEncryptionPage(props: SettingsEncryptionPageProps) {
     return (
         <SettingsShell {...props} active="encryption">
             <EncryptionGate userUid={props.userUid} impersonating={props.impersonating} />
@@ -1247,3 +1248,5 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         </div>
     );
 }
+
+export default routedPage("/settings/encryption", SettingsEncryptionPage);

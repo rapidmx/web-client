@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
@@ -15,7 +16,7 @@ const INPUT_CLASS =
 
 export type SettingsAutoReplyPageProps = Omit<SettingsShellProps, "active">;
 
-export default function SettingsAutoReplyPage(props: SettingsAutoReplyPageProps) {
+function SettingsAutoReplyPage(props: SettingsAutoReplyPageProps) {
     return (
         <SettingsShell {...props} active="auto-reply">
             <AutoReplyContent />
@@ -132,3 +133,5 @@ function AutoReplyContent() {
         </div>
     );
 }
+
+export default routedPage("/settings/auto-reply", SettingsAutoReplyPage);

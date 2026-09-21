@@ -3,11 +3,14 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
-import InboxPage from "../../apps/www/index.js";
+import InboxPageRouted from "../../apps/www/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const InboxPage = InboxPageRouted.page;
 
 // Tier 3 (`searchTier3.ts#searchEncryptedCandidates()`) does real WebCrypto decryption against real
 // unlocked keys - already exercised end to end with real crypto in react-shared's own
@@ -145,6 +148,14 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
             )}
         </div>
     ),
+}));
+
+// The inbox renders the reading pane through `LazyReadingPane` (a chunk loaded on demand, with an empty state of its own; see its test
+// file). Here it is the stand-ins above, present from the first render, so these tests see what `InboxContent` hands the pane.
+vi.mock("../../apps/shared/components/mail/LazyReadingPane.js", async () => ({
+    LazyMessageDetailPane: (await import("../../apps/shared/components/mail/MessageDetailPane.js")).default,
+    LazyConversationThreadPane: (await import("../../apps/shared/components/mail/ConversationThreadPane.js")).default,
+    prefetchReadingPane: vi.fn(),
 }));
 
 const mailbox = {
@@ -1253,11 +1264,11 @@ describe("InboxPage", () => {
             await toggleConversations(user);
             await user.click(await screen.findByRole("button", { name: "Expand conversation: Thread subject" }));
             const row = await screen.findByText("The opening message");
-            expect(row.closest("button")).toHaveClass("font-semibold");
+            expect(row.closest("li")).toHaveAttribute("data-unread", "true");
 
             await user.click(row);
 
-            await waitFor(() => expect(screen.getByText("The opening message").closest("button")).not.toHaveClass("font-semibold"));
+            await waitFor(() => expect(screen.getByText("The opening message").closest("li")).not.toHaveAttribute("data-unread"));
         });
 
         it("navigates to the latest message's detail route instead of opening it in place on mobile", async () => {
@@ -1480,6 +1491,25 @@ describe("InboxPage", () => {
             ).toHaveLength(1);
         });
 
+        it("moves a conversation's unread count back up when a read it made is refused", async () => {
+            const unread = { read: false, flagged: false, answered: false, forwarded: false };
+            const messages = threadMessages().map((message) => ({ ...message, flags: unread }));
+            mockShellAndInbox(messages, (url, init) => (url.startsWith("/api/mail/messages/m") && init?.method === "PUT" ? jsonResponse(409, { message: "no" }) : undefined), [
+                { ...thread(), unreadCount: 2 },
+            ], { c1: messages });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await toggleConversations(user);
+            await screen.findByText("Thread subject");
+            expect(screen.getByText("2 unread")).toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: "Expand conversation: Thread subject" }));
+            await user.click((await screen.findAllByText("Older Sender"))[0]);
+
+            // Both were marked read at once, then both were put back.
+            await waitFor(() => expect(screen.getByText("2 unread")).toBeInTheDocument());
+        });
+
         it("switching conversations back off re-fetches the per-folder message list", async () => {
             mockShellAndInbox([messageFixture({ subject: "Flat row" })], undefined, [thread()]);
             const user = userEvent.setup();
@@ -1492,6 +1522,208 @@ describe("InboxPage", () => {
 
             expect(await screen.findByText("Flat row")).toBeInTheDocument();
             expect(screen.queryByText("Thread subject")).not.toBeInTheDocument();
+        });
+
+        describe("keyboard shortcuts", () => {
+            const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => fireEvent.keyDown(target, { key, ...init });
+            const CTRL = { ctrlKey: true };
+            const deletedFolder = { ...inboxFolder, uid: "f6", name: "Deleted Items", type: "deleted_items" as const };
+            const unread = () => threadMessages().map((m) => ({ ...m, flags: { ...m.flags, read: false } }));
+            const otherThread = () =>
+                conversationFixture({
+                    conversationId: "c2",
+                    subject: "Other thread",
+                    messageUids: ["m3"],
+                    latestMessageUid: "m3",
+                    unreadCount: 0,
+                    latestPreview: "Another one",
+                });
+            const otherMessages = () => [messageFixture({ uid: "m3", subject: "Other", flags: { read: true, flagged: false, answered: false, forwarded: false } })];
+            /** The list of conversations, with Deleted Items present so a delete has somewhere to go, and every message the bulk update echoes. */
+            function mockThreads(
+                extra?: (url: string, init?: RequestInit) => Response | undefined,
+                thread1: ReturnType<typeof threadMessages> = threadMessages(),
+            ) {
+                const messages = [...thread1, ...otherMessages()];
+                return mockShellAndInbox(
+                    messages,
+                    (url, init) => {
+                        const custom = extra?.(url, init);
+                        if (custom) return custom;
+                        if (url === "/api/mail/folders" && init?.method === "POST") return jsonResponse(200, { ...deletedFolder });
+                        if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder, deletedFolder]);
+                        return undefined;
+                    },
+                    [thread(), otherThread()],
+                    { c1: thread1, c2: otherMessages() },
+                );
+            }
+            const bulkPuts = (fetchMock: ReturnType<typeof vi.fn>) =>
+                fetchMock.mock.calls
+                    .filter(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT")
+                    .map(([, init]: [string, RequestInit]) => JSON.parse(init.body as string));
+            const openConversation = (subject: string) => screen.findByRole("heading", { level: 1, name: subject });
+
+            async function renderConversations() {
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+                return user;
+            }
+
+            it("opens the neighbouring conversation with the arrow keys and j/k", async () => {
+                mockThreads();
+                await renderConversations();
+
+                expect(press("ArrowDown")).toBe(false);
+                expect(await openConversation("Thread subject")).toBeInTheDocument();
+                press("j");
+                expect(await openConversation("Other thread")).toBeInTheDocument();
+                press("ArrowUp");
+                expect(await openConversation("Thread subject")).toBeInTheDocument();
+                press("k");
+                expect(await openConversation("Thread subject")).toBeInTheDocument();
+                // The focus follows, on the row's own button.
+                expect(document.activeElement).toHaveAttribute("data-row-open");
+            });
+
+            it("jumps to the next and previous conversation with unread mail", async () => {
+                mockThreads();
+                await renderConversations();
+
+                expect(press(".", CTRL)).toBe(false);
+                expect(await openConversation("Thread subject")).toBeInTheDocument();
+                // Nothing unread after it.
+                expect(press(".", CTRL)).toBe(false);
+                press("j");
+                expect(await openConversation("Other thread")).toBeInTheDocument();
+                press(",", CTRL);
+                expect(await openConversation("Thread subject")).toBeInTheDocument();
+            });
+
+            it("deletes the whole open conversation - its messages in this folder - and closes it", async () => {
+                const fetchMock = mockThreads();
+                const user = await renderConversations();
+                await user.click(screen.getByText("Thread subject"));
+                await openConversation("Thread subject");
+
+                expect(press("d", CTRL)).toBe(false);
+
+                await waitFor(() => expect(bulkPuts(fetchMock)).toContainEqual([
+                    { uid: "m1", version: 0, folderUid: "f6" },
+                    { uid: "m2", version: 0, folderUid: "f6" },
+                ]));
+                expect(await screen.findByText("Select a conversation to read it.")).toBeInTheDocument();
+            });
+
+            it("marks the whole open conversation unread with Ctrl+U - every one of its messages that is read", async () => {
+                const fetchMock = mockThreads();
+                const user = await renderConversations();
+                await user.click(screen.getByText("Thread subject"));
+                await openConversation("Thread subject");
+
+                expect(press("u", CTRL)).toBe(false);
+
+                await waitFor(() =>
+                    expect(bulkPuts(fetchMock).some((puts: any[]) => puts.length === 2 && puts.every((p) => p.flags.read === false))).toBe(true),
+                );
+            });
+
+            it("marks the whole open conversation read with Ctrl+Q", async () => {
+                const fetchMock = mockThreads(undefined, unread());
+                const user = await renderConversations();
+                await user.click(screen.getByText("Thread subject"));
+                await openConversation("Thread subject");
+
+                expect(press("q", CTRL)).toBe(false);
+
+                await waitFor(() =>
+                    expect(bulkPuts(fetchMock).some((puts: any[]) => puts.length === 2 && puts.every((p) => p.flags.read === true))).toBe(true),
+                );
+            });
+
+            it("flags the whole open conversation with Insert", async () => {
+                const fetchMock = mockThreads();
+                const user = await renderConversations();
+                await user.click(screen.getByText("Other thread"));
+                await openConversation("Other thread");
+
+                expect(press("Insert")).toBe(false);
+
+                await waitFor(() => expect(bulkPuts(fetchMock).some((puts: any[]) => puts.length === 1 && puts[0].flags.flagged === true)).toBe(true));
+            });
+
+            it("uses the messages of a conversation the reader already ticked, rather than fetching it again", async () => {
+                const fetchMock = mockThreads();
+                const user = await renderConversations();
+                // Ticking it in select mode fetches its messages; leaving select mode keeps them.
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                await user.click(await screen.findByRole("checkbox", { name: "Select conversation: Thread subject" }));
+                await screen.findByText("1 conversation selected");
+                const fetchesOf = () => fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/mail/messages/conversations/c1")).length;
+                const afterTick = fetchesOf();
+                press("Escape");
+                await user.click(screen.getByText("Thread subject"));
+                await openConversation("Thread subject");
+                const afterOpen = fetchesOf();
+                expect(afterOpen).toBeGreaterThan(afterTick);
+
+                expect(press("d", CTRL)).toBe(false);
+
+                await waitFor(() => expect(bulkPuts(fetchMock)).toContainEqual([
+                    { uid: "m1", version: 0, folderUid: "f6" },
+                    { uid: "m2", version: 0, folderUid: "f6" },
+                ]));
+                // The keyboard's Delete asked for nothing more.
+                expect(fetchesOf()).toBe(afterOpen);
+            });
+
+            it("says why, and keeps the conversation open, when its messages can't be loaded for a keyboard action", async () => {
+                let calls = 0;
+                mockThreads((url) =>
+                    url.startsWith("/api/mail/messages/conversations/c1") && ++calls > 1 ? jsonResponse(500, { message: "thread boom" }) : undefined,
+                );
+                const user = await renderConversations();
+                await user.click(screen.getByText("Thread subject"));
+                await openConversation("Thread subject");
+
+                press("d", CTRL);
+
+                expect(await screen.findByText("thread boom")).toBeInTheDocument();
+                expect(screen.getByRole("heading", { level: 1, name: "Thread subject" })).toBeInTheDocument();
+            });
+
+            it("says so, generically, when they can't be loaded for a reason of no interest", async () => {
+                let calls = 0;
+                mockThreads((url) => {
+                    if (url.startsWith("/api/mail/messages/conversations/c1") && ++calls > 1) {
+                        throw new TypeError("network down");
+                    }
+                    return undefined;
+                });
+                const user = await renderConversations();
+                await user.click(screen.getByText("Thread subject"));
+                await openConversation("Thread subject");
+
+                press("d", CTRL);
+
+                expect(await screen.findByText("Could not load the messages in that conversation.")).toBeInTheDocument();
+            });
+
+            it("closes the conversation with Escape and opens the selected message on its own page with Enter", async () => {
+                const location = mockLocation();
+                mockThreads();
+                const user = await renderConversations();
+                await user.click(screen.getByText("Thread subject"));
+                await openConversation("Thread subject");
+
+                expect(press("Enter")).toBe(false);
+                expect(location.href).toBe("/messages/m2");
+
+                expect(press("Escape")).toBe(false);
+                expect(await screen.findByText("Select a conversation to read it.")).toBeInTheDocument();
+            });
         });
     });
 
@@ -2053,7 +2285,26 @@ describe("InboxPage", () => {
                 { uid: "m1", version: 0, flags: { read: true, flagged: false, answered: false, forwarded: false } },
                 { uid: "m2", version: 0, flags: { read: true, flagged: false, answered: false, forwarded: false } },
             ]);
-            expect(screen.getByText("First").closest("button")).not.toHaveClass("font-semibold");
+            expect(screen.getByText("First").closest("li")).not.toHaveAttribute("data-unread");
+        });
+
+        it("marks the selection read at once, and puts the rows back when the server refuses", async () => {
+            const messages = twoMessages();
+            const fetchMock = mockSelectable(messages, undefined, (url, init) =>
+                url === "/api/mail/messages" && init?.method === "PUT" ? jsonResponse(409, { message: "changed since read" }) : undefined,
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await user.click(screen.getByRole("button", { name: "Select" }));
+            await user.click(screen.getByRole("button", { name: "Select all" }));
+            expect(screen.getByText("First").closest("li")).toHaveAttribute("data-unread", "true");
+            await user.click(screen.getByRole("button", { name: "Mark read" }));
+
+            expect(await screen.findByText(/changed since read/)).toBeInTheDocument();
+            expect(fetchMock).toHaveBeenCalled();
+            // The list is reloaded after a failed bulk update, from a server that still has them unread.
+            await waitFor(() => expect(screen.getByText("First").closest("li")).toHaveAttribute("data-unread", "true"));
         });
 
         it("flags the selection", async () => {
@@ -2140,6 +2391,43 @@ describe("InboxPage", () => {
             await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
             const bulk = fetchMock.mock.calls.find(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT");
             expect(JSON.parse(bulk![1].body as string)).toEqual([{ uid: "m1", version: 0, folderUid: "f7" }]);
+        });
+
+        it("moves the selection's unread count from one folder's badge to the other's", async () => {
+            const folders = [{ ...inboxFolder, unreadCount: 2, totalCount: 2 }, junkFolder, deletedFolder, { ...userFolder, unreadCount: 0, totalCount: 0 }];
+            mockSelectable(twoMessages(), folders);
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            const badgeOf = (uid: string) => screen.getAllByRole("link").find((el) => el.getAttribute("href")?.includes(`folderUid=${uid}`))!.textContent;
+            expect(badgeOf("f1")).toBe("Inbox2 2 unread");
+            await selectRows(user, "First");
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(await screen.findByRole("button", { name: /^Project X/ }));
+
+            await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+            expect(badgeOf("f1")).toBe("Inbox1 1 unread");
+            expect(badgeOf("f7")).toBe("Project X1 1 unread");
+        });
+
+        it("leaves a message the server gave no updated copy of out of the badge counts", async () => {
+            const folders = [{ ...inboxFolder, unreadCount: 2, totalCount: 2 }, junkFolder, deletedFolder, { ...userFolder, unreadCount: 0, totalCount: 0 }];
+            mockSelectable(twoMessages(), folders, (url, init) =>
+                url === "/api/mail/messages" && init?.method === "PUT" ? jsonResponse(200, []) : undefined,
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await selectRows(user, "First");
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(await screen.findByRole("button", { name: /^Project X/ }));
+
+            await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+            const badgeOf = (uid: string) => screen.getAllByRole("link").find((el) => el.getAttribute("href")?.includes(`folderUid=${uid}`))!.textContent;
+            expect(badgeOf("f1")).toBe("Inbox2 2 unread");
+            expect(badgeOf("f7")).toBe("Project X");
         });
 
         it("archives into the mailbox's Archive folder when it has one", async () => {
@@ -2416,6 +2704,392 @@ describe("InboxPage", () => {
             expect(select).toBeDisabled();
             expect(select).toHaveAttribute("title", "Open a mailbox's own folder to select messages");
             mockLocation();
+        });
+
+        describe("keyboard shortcuts", () => {
+            // Some tests below give the location a search string; put a plain one back for whatever runs next.
+            afterEach(() => {
+                mockLocation();
+            });
+
+            const flagsRead = { read: true, flagged: false, answered: false, forwarded: false };
+            /** m1 and m3 unread, m2 read - top to bottom. */
+            const threeMessages = () => [
+                messageFixture({ uid: "m1", subject: "First" }),
+                messageFixture({ uid: "m2", subject: "Second", flags: flagsRead }),
+                messageFixture({ uid: "m3", subject: "Third" }),
+            ];
+            /** A key pressed on `target`; resolves to whether the browser would still act on it (false: the layer took it). */
+            const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => fireEvent.keyDown(target, { key, ...init });
+            const CTRL = { ctrlKey: true };
+            const puts = (fetchMock: ReturnType<typeof vi.fn>) =>
+                fetchMock.mock.calls
+                    .filter(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT")
+                    .map(([, init]: [string, RequestInit]) => JSON.parse(init.body as string));
+            const rowButton = (subject: string) => screen.getByText(subject).closest("button") as HTMLElement;
+            const detail = () => screen.getByTestId("detail-pane");
+
+            it("moves the selection with the arrow keys and j/k, keeping the focus on the selected row", async () => {
+                mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
+
+                expect(press("ArrowDown")).toBe(false);
+                expect(detail()).toHaveTextContent("message:m1");
+                expect(rowButton("First")).toHaveFocus();
+                expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+                press("j");
+                expect(detail()).toHaveTextContent("message:m2");
+                expect(rowButton("Second")).toHaveFocus();
+                press("ArrowUp");
+                expect(detail()).toHaveTextContent("message:m1");
+                press("k");
+                expect(detail()).toHaveTextContent("message:m1");
+                for (let i = 0; i < 5; i++) {
+                    press("ArrowDown");
+                }
+                expect(detail()).toHaveTextContent("message:m3");
+                scrollIntoView.mockRestore();
+            });
+
+            it("leaves j, k and the arrow keys to the search box while it has the focus", async () => {
+                mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                const search = screen.getByLabelText("Search all mail");
+
+                expect(press("j", {}, search)).toBe(true);
+                expect(press("ArrowDown", {}, search)).toBe(true);
+                expect(detail()).toHaveTextContent("no-message");
+            });
+
+            it("does not move the selection in select mode, where the arrow keys are the list's own", async () => {
+                mockSelectable(threeMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                expect(press("ArrowDown")).toBe(true);
+                expect(press("j")).toBe(true);
+                expect(press(".", CTRL)).toBe(true);
+            });
+
+            it("does not move the selection on a phone", async () => {
+                mockMatchMedia(true);
+                mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                expect(press("ArrowDown")).toBe(true);
+                expect(press("j")).toBe(true);
+            });
+
+            it("has nothing to move over in an empty folder", async () => {
+                mockSelectable([]);
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("No messages in this folder.");
+                expect(press("ArrowDown")).toBe(true);
+            });
+
+            it("jumps to the next and previous unread message with Ctrl+. and Ctrl+,", async () => {
+                mockSelectable(threeMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await user.click(await screen.findByText("Second"));
+                expect(detail()).toHaveTextContent("message:m2");
+
+                expect(press(".", CTRL)).toBe(false);
+                expect(detail()).toHaveTextContent("message:m3");
+                // Nothing unread below it: the key is taken and nothing moves.
+                expect(press(".", CTRL)).toBe(false);
+                expect(detail()).toHaveTextContent("message:m3");
+                expect(press(",", CTRL)).toBe(false);
+                expect(detail()).toHaveTextContent("message:m1");
+                expect(press(",", CTRL)).toBe(false);
+                expect(detail()).toHaveTextContent("message:m1");
+            });
+
+            it("deletes the selected message with Ctrl+D through the same bulk move to Deleted Items, then carries on from where it was", async () => {
+                const fetchMock = mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                press("ArrowDown");
+                expect(detail()).toHaveTextContent("message:m1");
+
+                expect(press("d", CTRL)).toBe(false);
+
+                await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+                expect(puts(fetchMock)).toContainEqual([{ uid: "m1", version: 0, folderUid: "f6" }]);
+                expect(detail()).toHaveTextContent("no-message");
+                // The next row is the one that slid into the deleted one's place.
+                press("ArrowDown");
+                expect(detail()).toHaveTextContent("message:m2");
+                press("ArrowUp");
+                expect(detail()).toHaveTextContent("message:m2");
+            });
+
+            it("deletes with the Delete key too, and steps back when the deleted row was the last", async () => {
+                const fetchMock = mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                for (let i = 0; i < 3; i++) {
+                    press("ArrowDown");
+                }
+                expect(detail()).toHaveTextContent("message:m3");
+
+                expect(press("Delete")).toBe(false);
+
+                await waitFor(() => expect(screen.queryByText("Third")).not.toBeInTheDocument());
+                expect(puts(fetchMock)).toContainEqual([{ uid: "m3", version: 0, folderUid: "f6" }]);
+                press("ArrowUp");
+                expect(detail()).toHaveTextContent("message:m2");
+            });
+
+            it("does not register Delete, mark read, mark unread, flag, Enter or Escape until something is selected", async () => {
+                const fetchMock = mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+
+                expect(press("d", CTRL)).toBe(true);
+                expect(press("Delete")).toBe(true);
+                expect(press("q", CTRL)).toBe(true);
+                expect(press("u", CTRL)).toBe(true);
+                expect(press("Insert")).toBe(true);
+                expect(press("Enter")).toBe(true);
+                expect(press("Escape")).toBe(true);
+                expect(puts(fetchMock)).toEqual([]);
+            });
+
+            it("does not delete what is already in Deleted Items - the key is taken and nothing is sent", async () => {
+                mockLocation();
+                (window.location as any).search = "?mailboxUid=mb1&folderUid=f6";
+                const fetchMock = mockSelectable([messageFixture({ uid: "m9", subject: "Gone already", folderUid: "f6" })]);
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("Gone already");
+                press("ArrowDown");
+                expect(detail()).toHaveTextContent("message:m9");
+
+                expect(press("d", CTRL)).toBe(false);
+
+                expect(puts(fetchMock)).toEqual([]);
+                expect(screen.getByText("Gone already")).toBeInTheDocument();
+            });
+
+            it("creates Deleted Items when the mailbox has none, exactly as the bar's Delete does", async () => {
+                const fetchMock = mockSelectable(threeMessages(), [inboxFolder]);
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                press("ArrowDown");
+
+                press("d", CTRL);
+
+                await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+                expect(fetchMock.mock.calls.filter(([url, init]: [string, RequestInit]) => url === "/api/mail/folders" && init?.method === "POST")).toHaveLength(1);
+                expect(puts(fetchMock)).toContainEqual([{ uid: "m1", version: 0, folderUid: "f-new" }]);
+            });
+
+            it("marks the selected message unread with Ctrl+U and read again with Ctrl+Q, one bulk update each", async () => {
+                const fetchMock = mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                press("ArrowDown");
+                // Opening it marked it read.
+                await waitFor(() => expect(rowButton("First").closest("li")).not.toHaveAttribute("data-unread"));
+                const before = puts(fetchMock).length;
+
+                expect(press("u", CTRL)).toBe(false);
+                await waitFor(() => expect(rowButton("First").closest("li")).toHaveAttribute("data-unread", "true"));
+                expect(puts(fetchMock)[before]).toEqual([expect.objectContaining({ uid: "m1", flags: expect.objectContaining({ read: false }) })]);
+
+                expect(press("q", CTRL)).toBe(false);
+                await waitFor(() => expect(rowButton("First").closest("li")).not.toHaveAttribute("data-unread"));
+                expect(puts(fetchMock)[before + 1]).toEqual([expect.objectContaining({ uid: "m1", flags: expect.objectContaining({ read: true }) })]);
+            });
+
+            it("does nothing, but still takes the key, when there is nothing to change (already read, already unread)", async () => {
+                const fetchMock = mockSelectable(threeMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await user.click(await screen.findByText("Second"));
+                const before = puts(fetchMock).length;
+
+                expect(press("q", CTRL)).toBe(false);
+                expect(puts(fetchMock).length).toBe(before);
+
+                await user.click(screen.getByText("Second"));
+                press("u", CTRL);
+                await waitFor(() => expect(rowButton("Second").closest("li")).toHaveAttribute("data-unread", "true"));
+                const afterUnread = puts(fetchMock).length;
+                expect(press("u", CTRL)).toBe(false);
+                expect(puts(fetchMock).length).toBe(afterUnread);
+            });
+
+            it("flags the selected message with Insert and unflags it with the next Insert", async () => {
+                const fetchMock = mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                press("ArrowDown");
+                const before = puts(fetchMock).length;
+
+                expect(press("Insert")).toBe(false);
+                await waitFor(() => expect(screen.getByLabelText("Flagged")).toBeInTheDocument());
+                expect(puts(fetchMock)[before][0].flags.flagged).toBe(true);
+
+                press("Insert");
+                await waitFor(() => expect(screen.queryByLabelText("Flagged")).not.toBeInTheDocument());
+                expect(puts(fetchMock)[before + 1][0].flags.flagged).toBe(false);
+            });
+
+            it("acts on the ticked rows in select mode - the same as the bar's buttons - and on nothing when none is ticked", async () => {
+                const fetchMock = mockSelectable(threeMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                expect(press("d", CTRL)).toBe(true);
+                expect(press("Insert")).toBe(true);
+
+                await user.click(await screen.findByRole("checkbox", { name: "Select First" }));
+                await user.click(await screen.findByRole("checkbox", { name: "Select Third" }));
+                expect(press("d", CTRL)).toBe(false);
+
+                await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+                expect(screen.queryByText("Third")).not.toBeInTheDocument();
+                expect(screen.getByText("Second")).toBeInTheDocument();
+                expect(puts(fetchMock)).toContainEqual([
+                    { uid: "m1", version: 0, folderUid: "f6" },
+                    { uid: "m3", version: 0, folderUid: "f6" },
+                ]);
+            });
+
+            it("shows the failure of a keyboard action, since there is no selection bar to show it, and reloads the list", async () => {
+                const fetchMock = mockSelectable(threeMessages(), undefined, (url, init) =>
+                    url === "/api/mail/messages" && init?.method === "PUT" && String(init.body).includes("f6")
+                        ? jsonResponse(500, { message: "the server said no" })
+                        : undefined,
+                );
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                press("ArrowDown");
+
+                press("d", CTRL);
+
+                expect(await screen.findByText(/the server said no/)).toBeInTheDocument();
+                expect(screen.getByText("First")).toBeInTheDocument();
+                expect(fetchMock).toHaveBeenCalled();
+            });
+
+            it("ignores a second action while one is on the wire", async () => {
+                let release: (() => void) | undefined;
+                const gate = new Promise<void>((resolve) => (release = resolve));
+                const fetchMock = mockSelectable(threeMessages(), undefined, (url, init) =>
+                    url === "/api/mail/messages" && init?.method === "PUT" && String(init.body).includes("f6")
+                        ? (gate.then(() => jsonResponse(200, [messageFixture({ uid: "m1", folderUid: "f6" })])) as unknown as Response)
+                        : undefined,
+                );
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                press("ArrowDown");
+
+                press("d", CTRL);
+                await waitFor(() => expect(puts(fetchMock).filter((body) => JSON.stringify(body).includes("f6"))).toHaveLength(1));
+                expect(press("d", CTRL)).toBe(false);
+                expect(puts(fetchMock).filter((body) => JSON.stringify(body).includes("f6"))).toHaveLength(1);
+                release!();
+                await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+            });
+
+            it("opens the selected message on its own page with Enter - from the row, or from anywhere - and leaves other buttons to Enter", async () => {
+                const location = mockLocation();
+                mockSelectable(threeMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await user.click(await screen.findByText("First"));
+
+                // On the selected row's own button, Enter opens it...
+                expect(press("Enter", {}, rowButton("First"))).toBe(false);
+                expect(location.href).toBe("/messages/m1");
+                location.href = "";
+                // ...and with the focus nowhere in particular.
+                expect(press("Enter")).toBe(false);
+                expect(location.href).toBe("/messages/m1");
+                location.href = "";
+                // On a row that is not selected yet, Enter is the button's own click, which selects it.
+                expect(press("Enter", {}, rowButton("Second"))).toBe(true);
+                // And a button that is not a row keeps its Enter.
+                expect(press("Enter", {}, screen.getByRole("button", { name: "Select" }))).toBe(true);
+                expect(location.href).toBe("");
+            });
+
+            it("clears the selection with Escape, and takes no Escape when nothing is selected", async () => {
+                mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                expect(press("Escape")).toBe(true);
+                press("ArrowDown");
+                expect(detail()).toHaveTextContent("message:m1");
+
+                expect(press("Escape")).toBe(false);
+
+                expect(detail()).toHaveTextContent("no-message");
+                expect(press("Escape")).toBe(true);
+            });
+
+            it("leaves select mode with Escape", async () => {
+                mockSelectable(threeMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                await user.click(await screen.findByRole("checkbox", { name: "Select First" }));
+
+                expect(press("Escape")).toBe(false);
+
+                expect(screen.queryByRole("checkbox", { name: "Select First" })).not.toBeInTheDocument();
+                expect(screen.getByRole("button", { name: "Select" })).toBeInTheDocument();
+            });
+
+            it("clears the search box first with Escape while it has the focus", async () => {
+                mockSelectable(threeMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                await user.click(screen.getByText("Second"));
+                const search = screen.getByLabelText("Search all mail");
+                await user.type(search, "abc");
+                expect(search).toHaveValue("abc");
+
+                expect(press("Escape", {}, search)).toBe(false);
+
+                expect(search).toHaveValue("");
+                // The selection is still there for the next Escape.
+                expect(detail()).toHaveTextContent("message:m2");
+            });
+
+            it("focuses the search box with / and Ctrl+E, and leaves / to the box once it has the focus", async () => {
+                mockSelectable(threeMessages());
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                const search = screen.getByLabelText("Search all mail");
+
+                expect(press("/")).toBe(false);
+                expect(search).toHaveFocus();
+                expect(press("/", {}, search)).toBe(true);
+                (document.activeElement as HTMLElement).blur();
+                expect(press("e", CTRL, search)).toBe(false);
+                expect(search).toHaveFocus();
+            });
+
+            it("has no search key where there is no search box (the conversation list)", async () => {
+                mockSelectable(threeMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                await toggleConversations(user);
+                await screen.findByText("No conversations in this folder.");
+                expect(press("/")).toBe(true);
+                expect(press("e", CTRL)).toBe(true);
+            });
         });
     });
 
@@ -3104,6 +3778,22 @@ describe("InboxPage", () => {
             render(<InboxPage userUid="u1" />);
 
             expect(await screen.findByText("Own survives")).toBeInTheDocument();
+        });
+
+        it("registers no delete, mark or flag keys and no search key: the selection bar and the search box aren't offered here either", async () => {
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            mockAggregate({ f1: [messageFixture({ uid: "m-own", subject: "Own row" })] });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await user.click(await screen.findByText("Own row"));
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:m-own");
+
+            for (const [key, init] of [["d", { ctrlKey: true }], ["Delete", {}], ["q", { ctrlKey: true }], ["u", { ctrlKey: true }], ["Insert", {}], ["/", {}]] as const) {
+                expect(fireEvent.keyDown(document.body, { key, ...init }), key).toBe(true);
+            }
+            // The keys that only need the list still work: Escape closes it.
+            expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false);
         });
     });
 
@@ -4318,6 +5008,126 @@ describe("InboxPage", () => {
         });
     });
 
+    describe("read state and the folder badge", () => {
+        /** The Inbox link in the sidebar - its text carries the badge: "Inbox2 2 unread". */
+        const inboxLink = () => screen.getAllByRole("link").find((el) => el.getAttribute("href")?.includes("folderUid=f1"))!;
+
+        /** A server that counts unread messages the way the fixed restapi does: from the messages themselves. */
+        function server(messages: any[], hold?: { gate?: Promise<void>; fail?: boolean }) {
+            const puts: string[] = [];
+            const fetchMock = mockShellAndInbox(messages, (url, init) => {
+                if (url.startsWith("/api/mail/folders")) {
+                    return jsonResponse(200, [{ ...inboxFolder, unreadCount: messages.filter((m) => !m.flags.read).length, totalCount: messages.length }]);
+                }
+                if (url.startsWith("/api/mail/messages/m") && init?.method === "PUT") {
+                    puts.push(url);
+                    return (async () => {
+                        await hold?.gate;
+                        if (hold?.fail) return jsonResponse(409, { message: "changed since read" });
+                        const uid = url.split("/").pop()!;
+                        const existing = messages.find((m) => m.uid === uid);
+                        existing.flags = { ...existing.flags, ...JSON.parse(init.body as string).flags };
+                        existing.version += 1;
+                        return jsonResponse(200, existing);
+                    })() as never;
+                }
+                return undefined;
+            });
+            return { fetchMock, puts };
+        }
+
+        const unreadMessages = () => [
+            messageFixture({ uid: "m1", subject: "First" }),
+            messageFixture({ uid: "m2", subject: "Second" }),
+            messageFixture({ uid: "m3", subject: "Third", flags: { read: true, flagged: false, answered: false, forwarded: false } }),
+        ];
+
+        it("shows each row's state, and the Inbox its unread count, on load", async () => {
+            server(unreadMessages());
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+
+            expect(screen.getByText("First").closest("li")).toHaveAttribute("data-unread", "true");
+            expect(screen.getByText("Third").closest("li")).not.toHaveAttribute("data-unread");
+            expect(inboxLink().textContent).toBe("Inbox2 2 unread");
+        });
+
+        it("flips the row and the badge the moment a message is opened - before the server has answered", async () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => (release = resolve));
+            const { puts } = server(unreadMessages(), { gate });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await user.click(await screen.findByText("First"));
+
+            // The request is out but unanswered: everything has already changed.
+            await waitFor(() => expect(puts).toEqual(["/api/mail/messages/m1"]));
+            expect(screen.getByText("First").closest("li")).not.toHaveAttribute("data-unread");
+            expect(inboxLink().textContent).toBe("Inbox1 1 unread");
+            expect(screen.getByText("Second").closest("li")).toHaveAttribute("data-unread", "true");
+
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            // The server agrees, so nothing moves back.
+            expect(screen.getByText("First").closest("li")).not.toHaveAttribute("data-unread");
+            expect(inboxLink().textContent).toBe("Inbox1 1 unread");
+        });
+
+        it("puts the row and the badge back when the server refuses, and doesn't keep asking", async () => {
+            const { puts } = server(unreadMessages(), { fail: true });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await user.click(await screen.findByText("First"));
+
+            await waitFor(() => expect(puts).toHaveLength(1));
+            await waitFor(() => expect(screen.getByText("First").closest("li")).toHaveAttribute("data-unread", "true"));
+            await waitFor(() => expect(inboxLink().textContent).toBe("Inbox2 2 unread"));
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            expect(puts).toHaveLength(1);
+        });
+
+        it("marks a bulk selection unread the same way, changing rows and badge at once", async () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => (release = resolve));
+            const messages = unreadMessages();
+            const fetchMock = mockShellAndInbox(messages, (url, init) => {
+                if (url.startsWith("/api/mail/folders")) {
+                    return jsonResponse(200, [{ ...inboxFolder, unreadCount: messages.filter((m) => !m.flags.read).length, totalCount: 3 }]);
+                }
+                if (url === "/api/mail/messages" && init?.method === "PUT") {
+                    return (async () => {
+                        await gate;
+                        const updates = JSON.parse(init.body as string) as { uid: string; flags: any }[];
+                        return jsonResponse(
+                            200,
+                            updates.map((update) => {
+                                const existing = messages.find((m) => m.uid === update.uid);
+                                existing.flags = update.flags;
+                                existing.version += 1;
+                                return existing;
+                            }),
+                        );
+                    })() as never;
+                }
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await user.click(screen.getByRole("button", { name: "Select" }));
+            await user.click(screen.getByRole("button", { name: "Select all" }));
+            await user.click(screen.getByRole("button", { name: "Mark unread" }));
+
+            // Only "Third" was read, so it is the only row that changes - and the badge goes 2 -> 3.
+            await waitFor(() => expect(screen.getByText("Third").closest("li")).toHaveAttribute("data-unread", "true"));
+            expect(inboxLink().textContent).toBe("Inbox3 3 unread");
+            release();
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/mail/messages" && (init as RequestInit)?.method === "PUT")).toBe(true));
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            expect(inboxLink().textContent).toBe("Inbox3 3 unread");
+        });
+    });
+
     describe("live updates", () => {
         /** A stand-in for the push WebSocket, driven by hand. */
         class FakePushSocket {
@@ -4531,13 +5341,13 @@ describe("InboxPage", () => {
             });
             const { container } = render(<InboxPage userUid="u1" />);
             await screen.findByText("First");
-            const row = () => container.querySelector("li button")!;
-            expect(row().className).not.toContain("font-semibold");
+            const row = () => container.querySelector("ul > li")!;
+            expect(row()).not.toHaveAttribute("data-unread");
 
             stale = true;
             pushMessage("f1");
             await new Promise((resolve) => setTimeout(resolve, 900));
-            expect(row().className).not.toContain("font-semibold");
+            expect(row()).not.toHaveAttribute("data-unread");
         });
 
         it("refreshes a conversation list too, whichever folder the event is about, since a conversation can span folders", async () => {

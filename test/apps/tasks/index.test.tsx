@@ -3,12 +3,15 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { addDays, endOfWeek, subDays } from "date-fns";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
-import TasksPage from "../../../apps/www/tasks/index.js";
+import TasksPageRouted from "../../../apps/www/tasks/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const TasksPage = TasksPageRouted.page;
 
 // Lets a test mark specific `listAllPages()` results as truncated (one entry per call, in call order)
 // without fetching 20,000 fixtures; every other call passes through to the real implementation.
@@ -1003,5 +1006,60 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
 
         const table = await screen.findByRole("table");
         expect(table.parentElement).toHaveClass("overflow-x-auto");
+    });
+});
+
+
+describe("TasksPage keyboard shortcuts", () => {
+    const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => fireEvent.keyDown(target, { key, ...init });
+
+    it("Alt+N moves the caret to the Add a task field - where a task is made - and Ctrl+N does in the desktop client only", async () => {
+        mockShellAndTasks([]);
+        render(<TasksPage userUid="u1" />);
+        await screen.findByText("No tasks yet.");
+        const field = screen.getByLabelText("Add a task");
+
+        expect(press("n", { ctrlKey: true })).toBe(true);
+        expect(field).not.toHaveFocus();
+        expect(press("n", { altKey: true })).toBe(false);
+        expect(field).toHaveFocus();
+    });
+
+    it("Ctrl+N is the same key in the desktop client", async () => {
+        (window as { rapidmx?: unknown }).rapidmx = {};
+        try {
+            mockShellAndTasks([]);
+            render(<TasksPage userUid="u1" />);
+            await screen.findByText("No tasks yet.");
+
+            expect(press("n", { ctrlKey: true })).toBe(false);
+            expect(screen.getByLabelText("Add a task")).toHaveFocus();
+        } finally {
+            delete (window as { rapidmx?: unknown }).rapidmx;
+        }
+    });
+
+    it("works from another text field, since Alt+N is a chord", async () => {
+        mockShellAndTasks([]);
+        render(<TasksPage userUid="u1" />);
+        await screen.findByText("No tasks yet.");
+        const due = screen.getByLabelText("Due date");
+
+        expect(press("n", { altKey: true }, due)).toBe(false);
+        expect(screen.getByLabelText("Add a task")).toHaveFocus();
+    });
+
+    it("names the shortcut on the field, and offers none in the Flagged email view, which has no such field", async () => {
+        mockShellAndTasks([todayTask], undefined, [tasksFolder, inboxFolder]);
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+        await screen.findByText("Today task");
+        const field = screen.getByLabelText("Add a task");
+        expect(field).toHaveAttribute("title", "Add a task (Alt+N)");
+        expect(field).toHaveAttribute("aria-keyshortcuts", "Alt+N");
+
+        await user.click(screen.getByText("Flagged email"));
+        await waitFor(() => expect(screen.queryByLabelText("Add a task")).not.toBeInTheDocument());
+        expect(press("n", { altKey: true })).toBe(true);
     });
 });

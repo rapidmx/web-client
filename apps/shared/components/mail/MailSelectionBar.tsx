@@ -8,6 +8,9 @@ import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import LabelMenuButton from "./labelMenu.js";
 import MoveToFolderDialog, { MOVE_TARGET_TYPES } from "./MoveToFolderDialog.js";
+import { ariaKeyShortcuts, withHint } from "../../keyboard/format.js";
+import { SHORTCUTS, ShortcutDef } from "../../keyboard/keymap.js";
+import { useKeyEnvironment } from "../../keyboard/ShortcutProvider.js";
 
 export interface MailSelectionBarProps {
     selected: Message[];
@@ -49,6 +52,9 @@ export interface MailSelectionBarProps {
      * `version`s the first has already superseded. */
     busy: boolean;
     error: string | null;
+    /** The keyboard acts on this selection (Delete, Ctrl+Q, Ctrl+U, Insert - registered by the page): Mark read, Mark unread, Flag and
+     * Delete name their shortcut in the tooltip and `aria-keyshortcuts`. */
+    shortcuts?: boolean;
 }
 
 function actionClassName(): string {
@@ -87,7 +93,14 @@ export default function MailSelectionBar({
     onDelete,
     busy,
     error,
+    shortcuts,
 }: MailSelectionBarProps) {
+    const env = useKeyEnvironment();
+    /** `title` and `aria-keyshortcuts` for an action the keyboard also does; `reason` (why it is disabled) wins the tooltip. */
+    const hint = (label: string, shortcut: ShortcutDef, reason?: string) =>
+        shortcuts
+            ? { title: reason ?? withHint(label, shortcut, env), "aria-keyshortcuts": ariaKeyShortcuts(shortcut, env) }
+            : { title: reason };
     const selectedCount = totals?.selected ?? selected.length;
     const listedCount = totals?.listed ?? listed.length;
     // Counted on the rows that were ticked, but *emptied* on the messages: a ticked conversation whose
@@ -143,13 +156,13 @@ export default function MailSelectionBar({
                 </button>
             </div>
             <div className="flex flex-wrap items-center gap-0.5 px-1.5 py-1">
-                <button type="button" onClick={() => onSetRead(true)} disabled={none || busy} className={actionClassName()}>
+                <button type="button" onClick={() => onSetRead(true)} disabled={none || busy} className={actionClassName()} {...hint("Mark read", SHORTCUTS.mail.markRead)}>
                     Mark read
                 </button>
-                <button type="button" onClick={() => onSetRead(false)} disabled={none || busy} className={actionClassName()}>
+                <button type="button" onClick={() => onSetRead(false)} disabled={none || busy} className={actionClassName()} {...hint("Mark unread", SHORTCUTS.mail.markUnread)}>
                     Mark unread
                 </button>
-                <button type="button" onClick={() => onSetFlagged(true)} disabled={none || busy} className={actionClassName()}>
+                <button type="button" onClick={() => onSetFlagged(true)} disabled={none || busy} className={actionClassName()} {...hint("Flag", SHORTCUTS.mail.flag)}>
                     Flag
                 </button>
                 <button type="button" onClick={() => onSetFlagged(false)} disabled={none || busy} className={actionClassName()}>
@@ -206,8 +219,8 @@ export default function MailSelectionBar({
                     type="button"
                     onClick={onDelete}
                     disabled={none || busy || !!deleteReason}
-                    title={deleteReason}
                     className={actionClassName()}
+                    {...hint("Delete", SHORTCUTS.mail.delete, deleteReason)}
                 >
                     Delete
                 </button>

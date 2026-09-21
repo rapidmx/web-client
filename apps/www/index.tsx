@@ -2,7 +2,11 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { routedPage } from "./_routedPage.js";
+import { useNavigate } from "../shared/navigation/AppRouter.js";
+import { whenIdle } from "../shared/navigation/idle.js";
+import { prefetchComposeWindow } from "../shared/components/mail/compose/ComposeContext.js";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { HiOutlineFlag, HiOutlineLockClosed, HiOutlinePaperClip } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -19,7 +23,6 @@ import {
     listMessages,
     moveMessages,
     setMessagesFlagged,
-    setMessagesRead,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
 import {
@@ -31,12 +34,10 @@ import {
 import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
 import { parseSearchQuery, type ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
-import { searchEncryptedCandidates } from "@rapidmx/react-shared/search/searchTier3.js";
 import { searchLocalIndex } from "../shared/search/searchTier2.js";
 import type { Coverage } from "../shared/search/localIndexWorker.js";
 import { getUnlockedKeys, subscribeKeySession, UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
-import { evaluateMessageSecurity } from "@rapidmx/react-shared/crypto/messageSecurity.js";
-import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
+import { useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import MailShell, {
     AggregateFolderType,
@@ -46,9 +47,12 @@ import MailShell, {
 } from "../shared/components/mail/layout/MailShell.js";
 import MailAddress from "../shared/components/mail/MailAddress.js";
 import { mergeFirstPage } from "../shared/mail/mergeFirstPage.js";
-import MessageDetailPane from "../shared/components/mail/MessageDetailPane.js";
+import { listSnapshotKey, readListSnapshot, saveListScroll, writeListSnapshot } from "../shared/mail/listSnapshots.js";
+import { setReadStateMany } from "../shared/mail/messageReadState.js";
+import { useMarkMessageRead } from "../shared/mail/useMarkMessageRead.js";
+import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "../shared/components/mail/unreadStyle.js";
+import { LazyConversationThreadPane, LazyMessageDetailPane, prefetchReadingPane } from "../shared/components/mail/LazyReadingPane.js";
 import ConversationList from "../shared/components/mail/ConversationList.js";
-import ConversationThreadPane from "../shared/components/mail/ConversationThreadPane.js";
 import MailListToolbar from "../shared/components/mail/MailListToolbar.js";
 import MailSelectionBar from "../shared/components/mail/MailSelectionBar.js";
 import {
@@ -61,8 +65,11 @@ import {
     sortConversations,
 } from "../shared/components/mail/listPreferences.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Skeleton from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import { useUnlockPrompt } from "../shared/components/layout/UnlockPromptProvider.js";
+import { SHORTCUTS } from "../shared/keyboard/keymap.js";
+import { isActivatable } from "../shared/keyboard/targets.js";
+import { useShortcut } from "../shared/keyboard/useShortcut.js";
 
 const MESSAGE_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -115,6 +122,9 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
         encrypted.map(async (message): Promise<[string, DecryptedRow] | null> => {
             try {
                 const rawMime = await getMessageRawContent(message.uid);
+                // Loaded here, on first use: the S/MIME code (PKI.js, ASN.1, X.509) is over half a megabyte and an inbox with
+                // no encrypted mail in it never needs it.
+                const { evaluateMessageSecurity } = await import("@rapidmx/react-shared/crypto/messageSecurity.js");
                 const security = await evaluateMessageSecurity(rawMime, unlocked);
                 if (!security.subject && !security.html) {
                     return null;
@@ -290,6 +300,8 @@ function tier3Windows(parsed: ParsedSearchQuery, coverage: Coverage | undefined,
 /** Runs Tier 3 over each window and merges the candidates (a uid can't match in two disjoint windows, but a
  * message whose date sits exactly on a boundary may come back from both). */
 async function searchTier3Windows(windows: ParsedSearchQuery[], unlocked: UnlockedKeys | undefined, mailboxUid: string): Promise<SearchResult[]> {
+    // Loaded on first use, with the S/MIME code it decrypts through (see `decryptEncryptedRows()`).
+    const { searchEncryptedCandidates } = await import("@rapidmx/react-shared/search/searchTier3.js");
     const pages = await Promise.all(
         windows.map((window) => searchEncryptedCandidates(window, unlocked, TIER3_CANDIDATE_LIMIT, { mailboxUid })),
     );
@@ -440,7 +452,7 @@ async function fetchAggregateMessages(
     return mergeInboxMessages(perMailbox);
 }
 
-export default function InboxPage(props: MailShellProps) {
+function InboxPage(props: MailShellProps) {
     return (
         <MailShell {...props}>
             <InboxContent userUid={props.userUid} />
@@ -449,12 +461,24 @@ export default function InboxPage(props: MailShellProps) {
 }
 
 function InboxContent({ userUid }: { userUid?: string }) {
-    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, live } = useMailShell();
+    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, live, trackMessageChange } = useMailShell();
     const isMobile = useIsMobile();
+    const navigate = useNavigate();
     const { requestUnlock } = useUnlockPrompt();
     const [messages, setMessages] = useState<Message[]>([]);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [loading, setLoading] = useState(true);
+    // Once a list is on screen and the browser has nothing better to do, fetch the code a click on a message (the reading pane)
+    // or on Compose/Reply (the compose window, with its editor) would otherwise wait for.
+    useEffect(() => {
+        if (loading) {
+            return;
+        }
+        return whenIdle(() => {
+            prefetchReadingPane();
+            prefetchComposeWindow();
+        });
+    }, [loading]);
     const [loadingMore, setLoadingMore] = useState(false);
     const [hasMore, setHasMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -593,6 +617,10 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // removal steps this back too, or the next page would silently skip a message. See `loadMore()`.
     const listedOffsetRef = useRef(0);
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+    const searchInputRef = useRef<HTMLInputElement | null>(null);
+    // Where the message the keyboard just removed from the list (deleted, archived, moved) was: the next Down/Up continues from that spot, so
+    // clearing an inbox from the keyboard walks down it instead of jumping back to the top. Cleared by any selection.
+    const removedAnchorRef = useRef<number | null>(null);
     // State (via a callback ref), not a plain ref: the sentinel mounts and unmounts as the list loads,
     // filters, and empties, and the observer effect below must re-attach to whichever node is current.
     const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
@@ -780,6 +808,50 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return () => clearTimeout(handle);
     }, [searchInput]);
 
+    // Choosing another folder no longer loads a new page, so what was being searched for would follow the reader into it: the
+    // search box and its results are cleared instead, as the page load used to. (The first selection resolves after mount - the
+    // shell reads the URL and lists the folders in effects - and is not a change of folder.)
+    const selectionKey = `${mailboxUid ?? ""}|${folderUid ?? ""}|${aggregateFolderType ?? ""}`;
+    const shownSelectionRef = useRef<string | null>(null);
+    useEffect(() => {
+        const shown = shownSelectionRef.current;
+        if (shown !== null && shown !== selectionKey) {
+            setSearchInput("");
+            setSearchQuery("");
+        }
+        if (folderUid || aggregateFolderType) {
+            shownSelectionRef.current = selectionKey;
+        }
+    }, [selectionKey]);
+
+    // Which listing this is, for the short-lived snapshot of each folder that makes going back to one instant (see
+    // `listSnapshots.ts`). A search, an aggregate view and a folder that hasn't resolved have no snapshot.
+    const listKey = listSnapshotKey({
+        mailboxUid: activeMailboxUid,
+        folderUid,
+        conversations: preferences.showAsConversations,
+        filter: effectiveFilter,
+        labels: labelFilterKey,
+        sort: serverSortKey,
+    });
+    const snapshotable = !!folderUid && !isSearching && !aggregateFolderType;
+    /** The key of the listing `messages`/`conversations` currently hold - not `listKey` while a new folder's rows are still coming. */
+    const shownListKeyRef = useRef<string | null>(null);
+    /** A scroll position to put the list back at once its rows are on screen (a snapshot's). */
+    const pendingScrollRef = useRef<number | null>(null);
+    useLayoutEffect(() => {
+        if (pendingScrollRef.current !== null && !loading && scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTop = pendingScrollRef.current;
+            pendingScrollRef.current = null;
+        }
+    });
+    // Keeps the snapshot of the folder on screen current - rows added by "load more" or live updates, a read message, the selection.
+    useEffect(() => {
+        if (snapshotable && !loading && shownListKeyRef.current === listKey) {
+            writeListSnapshot(listKey, { messages, conversations, hasMore, selectedUid });
+        }
+    }, [snapshotable, loading, listKey, messages, conversations, hasMore, selectedUid]);
+
     // Loads whichever list the current folder, arrangement and search state call for, and resets every
     // piece of per-listing state (selection, paging, select mode) that a previous listing left behind.
     useEffect(() => {
@@ -806,6 +878,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
         const invalidate = () => {
             searchRunIdRef.current += 1;
         };
+        // A folder shown a moment ago is put on screen at once and revalidated behind the rows; one that was not shows a skeleton.
+        const snapshot = snapshotable ? readListSnapshot(listKey) : undefined;
 
         if (!folderUid && !aggregateFolderType) {
             // The shell hasn't resolved this mailbox's folders yet (the render below says so). Listing
@@ -832,11 +906,29 @@ function InboxContent({ userUid }: { userUid?: string }) {
             // (always set - `MailShell` only renders this component once at least one mailbox exists).
             // They're scoped to the selected folder (`folderUid`, absent only in aggregate mode), so the
             // conversation list matches the folder the sidebar has selected rather than the whole mailbox.
-            setLoading(true);
+            if (snapshot) {
+                setConversations(snapshot.conversations);
+                listedOffsetRef.current = snapshot.conversations.length;
+                setHasMore(snapshot.hasMore);
+                shownListKeyRef.current = listKey;
+                pendingScrollRef.current = snapshot.scrollTop;
+                setLoading(false);
+            } else {
+                setLoading(true);
+            }
             setError(null);
             listConversations(activeMailboxUid, conversationParams(0))
                 .then((result) => {
                     if (isCurrentRun()) {
+                        shownListKeyRef.current = listKey;
+                        if (snapshot) {
+                            // Folded into what is already shown, as a live refresh does, so the reader's place is kept.
+                            const merged = mergeFirstPage(snapshot.conversations, result, conversationKey, MESSAGE_PAGE_SIZE);
+                            setConversations(merged.rows);
+                            listedOffsetRef.current = merged.complete ? result.length : snapshot.conversations.length + merged.added;
+                            setHasMore(!merged.complete);
+                            return;
+                        }
                         setConversations(result);
                         listedOffsetRef.current = result.length;
                         setHasMore(result.length === MESSAGE_PAGE_SIZE);
@@ -873,7 +965,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return invalidate;
         }
 
-        setLoading(true);
+        setLoading(!snapshot);
         setError(null);
 
         if (isSearching) {
@@ -967,9 +1059,30 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
         // Set: the guard at the top of this effect returned for a view with neither a folder nor an
         // aggregate type, and the aggregate branch above returned for the one with an aggregate type.
+        if (snapshot) {
+            setMessages(snapshot.messages);
+            listedOffsetRef.current = snapshot.messages.length;
+            setHasMore(snapshot.hasMore);
+            // The selection the reader left the folder with, if that message is still there.
+            setSelectedUid(snapshot.messages.some((m) => m.uid === snapshot.selectedUid) ? snapshot.selectedUid : null);
+            shownListKeyRef.current = listKey;
+            pendingScrollRef.current = snapshot.scrollTop;
+        }
         listMessages(folderUid!, listParams)
             .then((results) => {
                 if (isCurrentRun()) {
+                    shownListKeyRef.current = listKey;
+                    if (snapshot) {
+                        // Folded into what is already shown, as a live refresh does: the reader's place, selection and paged-in
+                        // rows stay, and a row they changed since (a higher version) is not put back.
+                        const merged = mergeFirstPage(snapshot.messages, results, messageUid, MESSAGE_PAGE_SIZE, (current, next) =>
+                            current.version >= next.version ? current : next,
+                        );
+                        setMessages(merged.rows);
+                        listedOffsetRef.current = merged.complete ? results.length : snapshot.messages.length + merged.added;
+                        setHasMore(!merged.complete);
+                        return;
+                    }
                     setMessages(results);
                     listedOffsetRef.current = results.length;
                     setHasMore(results.length === MESSAGE_PAGE_SIZE);
@@ -1059,8 +1172,10 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         return;
                     }
                     // A row the reader has just changed (a higher version) is not put back by a fetch that began before.
+                    // Equal versions are the same server state, so the row on screen - which may carry an optimistic read/unread
+                    // flip the server has not answered yet - wins too.
                     const merged = mergeFirstPage(messagesRef.current, fresh, messageUid, MESSAGE_PAGE_SIZE, (current, next) =>
-                        current.version > next.version ? current : next,
+                        current.version >= next.version ? current : next,
                     );
                     setMessages(merged.rows);
                     listedOffsetRef.current = merged.complete ? fresh.length : listedOffsetRef.current + merged.added;
@@ -1252,20 +1367,21 @@ function InboxContent({ userUid }: { userUid?: string }) {
      *
      * A conversation's *parent* row has no copy to replace: it is a summary of the whole thread, and its
      * "2 unread" chip and bold styling come from a count the server worked out when the list was fetched.
-     * So when the reading pane reports a message it has just read (`previous` unread, `updated` read), that
-     * count is decremented here - otherwise a conversation kept claiming unread mail the reader had just
-     * read, until the whole list was reloaded.
+     * So when a message changes read state (`previous` and `updated` differ in it - the optimistic copy of a message just
+     * read, or its revert), that count moves by one here - otherwise a conversation kept claiming unread mail the reader
+     * had just read, until the whole list was reloaded.
      */
     function patchListedMessage(updated: Message, previous?: Message) {
         setMessages((prev) => prev.map((m) => (m.uid === updated.uid ? updated : m)));
         // `ConversationList` fetched its own copy of this message when the thread was expanded; hand it the
         // newer one so the child row doesn't keep showing a stale read/flag state.
         setConversationPatches((prev) => ({ ...prev, [updated.uid]: updated }));
-        if (previous && !previous.flags.read && updated.flags.read) {
+        const unreadChange = previous ? Number(isUnread(updated)) - Number(isUnread(previous)) : 0;
+        if (unreadChange !== 0) {
             setConversations((prev) =>
                 prev.map((conversation) =>
                     conversation.messageUids.includes(updated.uid)
-                        ? { ...conversation, unreadCount: Math.max(0, conversation.unreadCount - 1) }
+                        ? { ...conversation, unreadCount: Math.max(0, conversation.unreadCount + unreadChange) }
                         : conversation,
                 ),
             );
@@ -1273,6 +1389,10 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     function removeListedMessages(uids: Set<string>) {
+        const selectedIndex = messagesRef.current.findIndex((m) => m.uid === selectedUid);
+        if (selectedUid && uids.has(selectedUid) && selectedIndex !== -1) {
+            removedAnchorRef.current = selectedIndex;
+        }
         setMessages((prev) => prev.filter((m) => !uids.has(m.uid)));
         listedOffsetRef.current = Math.max(0, listedOffsetRef.current - uids.size);
         setSelectedUid((prev) => (prev && uids.has(prev) ? null : prev));
@@ -1409,13 +1529,30 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * A bulk update is applied element by element server-side and stops at its first rejection, so a
      * failure leaves an unknown prefix of the selection already changed (see `bulkUpdateMessages()`) -
      * which is why a failure reloads the list rather than trying to reconcile it, and says so.
+     *
+     * `chosen` is the selection bar's ticked messages unless the caller (a keyboard shortcut acting on the one open message or conversation)
+     * names its own. Resolves whether it succeeded.
      */
-    async function runBulkAction(action: (chosen: Message[]) => Promise<Message[]>, removesRows: boolean) {
-        const chosen = selectedMessages;
+    async function runBulkAction(
+        action: (chosen: Message[]) => Promise<Message[]>,
+        removesRows: boolean,
+        chosen: Message[] = selectedMessages,
+    ): Promise<boolean> {
         setBulkBusy(true);
         setBulkError(null);
         try {
             const updated = await action(chosen);
+            if (removesRows) {
+                // A move (Delete, Archive, Report junk, Move to): the source folders' badges go down, the target's up. Reading
+                // and unreading are tracked by `setReadStateMany()` itself, as they happen.
+                const movedByUid = new Map(updated.map((m) => [m.uid, m]));
+                for (const before of chosen) {
+                    const after = movedByUid.get(before.uid);
+                    if (after) {
+                        trackMessageChange(before, after).settle();
+                    }
+                }
+            }
             if (preferences.showAsConversations) {
                 // A conversation row is a summary of its messages - its count, unread count, participants
                 // and preview all move when a bulk action changes or empties part of it - so the list is
@@ -1430,6 +1567,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 setMessages((prev) => prev.map((m) => byUid.get(m.uid) ?? m));
             }
             setSelectedUids(new Set());
+            return true;
         } catch (err) {
             setBulkError(
                 `${err instanceof ApiRequestError ? err.message : "Those messages couldn't all be updated."} Some of them may already have changed, so the list has been reloaded.`,
@@ -1438,6 +1576,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             setSelectedConversationIds(new Set());
             setConversationMessagesById({});
             setRefreshKey((n) => n + 1);
+            return false;
         } finally {
             setBulkBusy(false);
         }
@@ -1498,8 +1637,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
         );
     }
 
-    function moveSelectionToType(type: Folder["type"], name: string) {
-        void runBulkAction(async (chosen) => moveMessages(chosen, await resolveFolderOfType(type, name)), true);
+    function moveSelectionToType(type: Folder["type"], name: string, chosen?: Message[]) {
+        return runBulkAction(async (moving) => moveMessages(moving, await resolveFolderOfType(type, name)), true, chosen);
     }
 
     const loadMoreStatus = loadingMore ? (
@@ -1525,9 +1664,10 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return;
         }
         if (isMobile) {
-            window.location.href = `/messages/${encodeURIComponent(message.uid)}`;
+            navigate(`/messages/${encodeURIComponent(message.uid)}`);
             return;
         }
+        removedAnchorRef.current = null;
         setSelectedUid(message.uid);
     }
 
@@ -1543,12 +1683,197 @@ function InboxContent({ userUid }: { userUid?: string }) {
         if (isMobile) {
             // No dedicated mobile thread route yet - the existing single-message detail route already
             // handles any message uid regardless of conversation grouping.
-            window.location.href = `/messages/${encodeURIComponent(uid)}`;
+            navigate(`/messages/${encodeURIComponent(uid)}`);
             return;
         }
+        removedAnchorRef.current = null;
         setSelectedUid(uid);
         setOpenThread({ conversation, uid });
     }
+
+    // ---- Keyboard shortcuts (see `shared/keyboard`). Each is registered only while this view can do it, and calls what the toolbar and
+    // ---- the selection bar call: the same bulk-action path (`runBulkAction()` - so the same optimistic badge tracking, the same rollback,
+    // ---- the same lazily created Deleted Items folder), never a second implementation. Reply, Reply all, Forward, Archive and Move to are
+    // ---- registered by the reading pane itself (`MessageDetailPane`'s `shortcuts`), which owns those handlers.
+    const inConversations = preferences.showAsConversations;
+    /** The selection bar isn't offered in the aggregate view (its rows belong to several mailboxes), and neither are these. */
+    const keyboardActions = !aggregateFolderType;
+    /** What the keyboard acts on exists: the ticked rows in select mode, else the message (or conversation) open in the reading pane. */
+    const keyboardTargetExists = selectMode ? selectedMessages.length > 0 : inConversations ? openThread !== null : selected !== null;
+    const rowCount = inConversations ? listedConversations.length : messages.length;
+    const canMoveSelection = !selectMode && !isMobile && !loading && rowCount > 0;
+
+    function folderTypeOf(folderUidOfMessage: string): Folder["type"] | undefined {
+        return currentFolders.find((f) => f.uid === folderUidOfMessage)?.type;
+    }
+
+    /** Moves the keyboard's focus to a row - and scrolls it into view - once the selection has moved to it. */
+    function focusRow(uid: string) {
+        // Only called from a key press, when the list is on screen.
+        const row = [...scrollContainerRef.current!.querySelectorAll<HTMLElement>("[data-message-uid]")].find(
+            (element) => element.getAttribute("data-message-uid") === uid,
+        );
+        row?.scrollIntoView({ block: "nearest" });
+        row?.querySelector<HTMLElement>("[data-row-open]")?.focus({ preventScroll: true });
+    }
+
+    /** The index of the selected row: the open message's, or the open conversation's; -1 with nothing selected. */
+    function selectedRowIndex(): number {
+        if (inConversations) {
+            return openThread ? listedConversations.findIndex((c) => c.conversationId === openThread.conversation.conversationId) : -1;
+        }
+        return messages.findIndex((m) => m.uid === selectedUid);
+    }
+
+    function selectRow(index: number) {
+        if (inConversations) {
+            const conversation = listedConversations[index];
+            handleOpenConversation(conversation, conversation.latestMessageUid);
+            focusRow(conversation.latestMessageUid);
+        } else {
+            const message = messages[index];
+            handleSelect(message);
+            focusRow(message.uid);
+        }
+    }
+
+    function selectNeighbour(step: 1 | -1) {
+        const current = selectedRowIndex();
+        // After the selected message left the list (deleted, archived) the next row is the one that slid into its place.
+        const anchor = removedAnchorRef.current;
+        const target = current === -1 && anchor !== null ? (step === 1 ? anchor : anchor - 1) : current + step;
+        selectRow(Math.min(rowCount - 1, Math.max(0, target)));
+    }
+
+    function selectNextUnread(step: 1 | -1) {
+        const isRowUnread = (index: number) => (inConversations ? listedConversations[index].unreadCount > 0 : isUnread(messages[index]));
+        for (let index = selectedRowIndex() + step; index >= 0 && index < rowCount; index += step) {
+            if (isRowUnread(index)) {
+                selectRow(index);
+                return;
+            }
+        }
+    }
+
+    /** The messages of the open conversation that are in the folder being listed - fetched (once) like a ticked conversation's. */
+    async function loadOpenConversation(conversation: ConversationSummary): Promise<Message[]> {
+        const id = conversation.conversationId;
+        let all = conversationMessagesById[id];
+        if (!all) {
+            all = await listConversationMessages(activeMailboxUid, id);
+            const loaded = all;
+            setConversationMessagesById((prev) => ({ ...prev, [id]: loaded }));
+        }
+        return all.filter((m) => !folderUid || m.folderUid === folderUid);
+    }
+
+    /**
+     * Runs a bulk action on what the keyboard acts on - the ticked rows in select mode, else the open message or conversation - keeping only
+     * the messages `applies` accepts (Delete leaves out what is already in Deleted Items, Mark read what is already read: nothing to do
+     * then). Held while another bulk action is on the wire, like the bar's buttons. Closes the open thread after a move away from it.
+     */
+    async function runOnKeyboardTargets(
+        action: (chosen: Message[]) => Promise<Message[]>,
+        removesRows: boolean,
+        applies: (message: Message) => boolean = () => true,
+    ) {
+        if (bulkBusy || resolvingSelection > 0) {
+            return;
+        }
+        let chosen: Message[];
+        try {
+            chosen = selectMode ? selectedMessages : inConversations ? await loadOpenConversation(openThread!.conversation) : [selected!];
+        } catch (err) {
+            setBulkError(err instanceof ApiRequestError ? err.message : "Could not load the messages in that conversation.");
+            return;
+        }
+        chosen = chosen.filter(applies);
+        if (chosen.length === 0) {
+            return;
+        }
+        const succeeded = await runBulkAction(action, removesRows, chosen);
+        if (succeeded && removesRows && inConversations && !selectMode) {
+            setOpenThread(null);
+            setSelectedUid(null);
+        }
+    }
+
+    useShortcut(SHORTCUTS.mail.next, () => selectNeighbour(1), { enabled: canMoveSelection });
+    useShortcut(SHORTCUTS.mail.previous, () => selectNeighbour(-1), { enabled: canMoveSelection });
+    useShortcut(SHORTCUTS.mail.nextUnread, () => selectNextUnread(1), { enabled: canMoveSelection });
+    useShortcut(SHORTCUTS.mail.previousUnread, () => selectNextUnread(-1), { enabled: canMoveSelection });
+    useShortcut(
+        SHORTCUTS.mail.delete,
+        () =>
+            void runOnKeyboardTargets(
+                async (chosen) => moveMessages(chosen, await resolveFolderOfType("deleted_items", "Deleted Items")),
+                true,
+                (message) => folderTypeOf(message.folderUid) !== "deleted_items",
+            ),
+        { enabled: keyboardActions && keyboardTargetExists },
+    );
+    useShortcut(
+        SHORTCUTS.mail.markRead,
+        () =>
+            void runOnKeyboardTargets(
+                (chosen) => setReadStateMany(chosen, true, { patch: patchListedMessage, track: trackMessageChange }),
+                false,
+                isUnread,
+            ),
+        { enabled: keyboardActions && keyboardTargetExists },
+    );
+    useShortcut(
+        SHORTCUTS.mail.markUnread,
+        () =>
+            void runOnKeyboardTargets(
+                (chosen) => setReadStateMany(chosen, false, { patch: patchListedMessage, track: trackMessageChange }),
+                false,
+                (message) => !isUnread(message),
+            ),
+        { enabled: keyboardActions && keyboardTargetExists },
+    );
+    useShortcut(
+        SHORTCUTS.mail.flag,
+        () =>
+            // Flags them all unless every one already is - what the bar's Flag and Unflag would do on this selection.
+            void runOnKeyboardTargets((chosen) => setMessagesFlagged(chosen, !chosen.every((m) => m.flags.flagged)), false),
+        { enabled: keyboardActions && keyboardTargetExists },
+    );
+    useShortcut(
+        SHORTCUTS.mail.open,
+        (event) => {
+            // Enter on a row that is not selected yet is the row button's own click (it selects). On the selected one - or with the focus
+            // elsewhere - it opens the message on its own page, as it does in Outlook.
+            const rowUid = (event.target as Element).closest("[data-message-uid]")?.getAttribute("data-message-uid");
+            if (rowUid ? rowUid !== selectedUid : isActivatable(event.target)) {
+                return false;
+            }
+            navigate(`/messages/${encodeURIComponent(selectedUid!)}`);
+        },
+        { enabled: !selectMode && selectedUid !== null },
+    );
+    useShortcut(
+        SHORTCUTS.mail.close,
+        () => {
+            if (document.activeElement === searchInputRef.current && searchInput !== "") {
+                setSearchInput("");
+            } else if (selectMode) {
+                leaveSelectMode();
+            } else {
+                setSelectedUid(null);
+                setOpenThread(null);
+            }
+        },
+        { enabled: selectMode || selectedUid !== null || openThread !== null || searchInput !== "" },
+    );
+    useShortcut(
+        SHORTCUTS.mail.search,
+        () => {
+            searchInputRef.current?.focus();
+            searchInputRef.current?.select();
+        },
+        { enabled: !inConversations && !aggregateFolderType },
+    );
 
     if (!folderUid && !aggregateFolderType) {
         // `MailShell` never renders this component at all until a mailbox is resolved (see its own
@@ -1561,7 +1886,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     return (
         <div className="flex h-full min-h-0">
-            <div ref={scrollContainerRef} className="w-full md:w-96 shrink-0 md:border-r border-border overflow-y-auto">
+            <div
+                ref={scrollContainerRef}
+                // Remembered as it moves (not when the list is left: by then React has already detached the element), so
+                // the folder - or Mail, after another app - comes back where it was.
+                onScroll={(event) => saveListScroll(listKey, event.currentTarget.scrollTop)}
+                className="w-full md:w-96 shrink-0 md:border-r border-border overflow-y-auto"
+            >
                 {selectMode ? (
                     <MailSelectionBar
                         selected={selectedMessages}
@@ -1587,12 +1918,21 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
                         onFolderCreated={onFolderCreated}
                         onApplyLabels={applyLabelsToSelection}
-                        onSetRead={(read) => void runBulkAction((chosen) => setMessagesRead(chosen, read), false)}
+                        onSetRead={(read) =>
+                            void runBulkAction(
+                                // Optimistic: the rows and the folder badges change now, and change back if the server refuses.
+                                (chosen) => setReadStateMany(chosen, read, { patch: patchListedMessage, track: trackMessageChange }),
+                                false,
+                            )
+                        }
                         onSetFlagged={(flagged) => void runBulkAction((chosen) => setMessagesFlagged(chosen, flagged), false)}
+                        shortcuts={keyboardActions}
                         onArchive={() => void runBulkAction(bulkArchive, true)}
-                        onMoveTo={(targetFolderUid) => runBulkAction((chosen) => moveMessages(chosen, targetFolderUid), true)}
-                        onReportJunk={() => moveSelectionToType("junk", "Junk Email")}
-                        onDelete={() => moveSelectionToType("deleted_items", "Deleted Items")}
+                        onMoveTo={async (targetFolderUid) => {
+                            await runBulkAction((chosen) => moveMessages(chosen, targetFolderUid), true);
+                        }}
+                        onReportJunk={() => void moveSelectionToType("junk", "Junk Email")}
+                        onDelete={() => void moveSelectionToType("deleted_items", "Deleted Items")}
                         busy={bulkBusy || resolvingSelection > 0}
                         error={bulkError}
                     />
@@ -1641,6 +1981,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 {!preferences.showAsConversations && (
                     <div className="p-2 border-b border-border">
                         <input
+                            ref={searchInputRef}
                             type="search"
                             value={searchInput}
                             onChange={(e) => setSearchInput(e.target.value)}
@@ -1738,9 +2079,20 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         <Alert>{error}</Alert>
                     </div>
                 )}
+                {/* Select mode shows a bulk action's failure in its own bar; the keyboard's actions on the one open message need somewhere too. */}
+                {!selectMode && bulkError && (
+                    <div className="p-4">
+                        <Alert>{bulkError}</Alert>
+                    </div>
+                )}
 
                 {loading ? (
-                    <p className="p-4 text-sm text-text-muted">Loading&hellip;</p>
+                    // A skeleton of rows rather than a line of text: the list keeps its shape while a folder that was not shown a
+                    // moment ago loads (one that was is shown at once, from its snapshot).
+                    <div role="status" aria-busy="true" className="p-4">
+                        <span className="sr-only">Loading&hellip;</span>
+                        <SkeletonList count={8} />
+                    </div>
                 ) : preferences.showAsConversations ? (
                     <>
                         <ConversationList
@@ -1781,7 +2133,16 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     <>
                         <ul>
                             {messages.map((message) => (
-                                <li key={message.uid} className="flex items-stretch border-b border-border">
+                                <li
+                                    key={message.uid}
+                                    data-message-uid={message.uid}
+                                    data-unread={isUnread(message) ? "true" : undefined}
+                                    className={rowClass(
+                                        { unread: isUnread(message), selected: message.uid === selectedUid || selectedUids.has(message.uid) },
+                                        "flex items-stretch",
+                                    )}
+                                >
+                                    <UnreadBar unread={isUnread(message)} />
                                     {selectMode && (
                                         <span className="shrink-0 flex items-center pl-3">
                                             <input
@@ -1795,18 +2156,14 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                     )}
                                     <button
                                         type="button"
+                                        data-row-open
                                         onClick={() => handleSelect(message)}
-                                        className={[
-                                            "flex-1 min-w-0 text-left px-4 py-3",
-                                            message.uid === selectedUid || selectedUids.has(message.uid)
-                                                ? "bg-primary/10"
-                                                : "hover:bg-surface-alt",
-                                            message.flags.read ? "" : "font-semibold",
-                                        ].join(" ")}
+                                        className={["flex-1 min-w-0 text-left px-4 py-3", ROW_FOCUS_CLASS].join(" ")}
                                     >
+                                        <UnreadLabel unread={isUnread(message)} />
                                         <div className="flex items-center justify-between gap-2 text-sm">
-                                            <MailAddress recipient={message.from} />
-                                            <span className="text-xs text-text-muted shrink-0">
+                                            <MailAddress recipient={message.from} className={senderClass(isUnread(message))} />
+                                            <span className={["text-xs shrink-0", dateClass(isUnread(message))].join(" ")}>
                                                 {new Date(message.receivedDate).toLocaleDateString()}
                                             </span>
                                         </div>
@@ -1827,7 +2184,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                             </div>
                                         ) : (
                                             <>
-                                                <div className="text-sm truncate">{rowSubject(message)}</div>
+                                                <div className={["text-sm truncate", subjectClass(isUnread(message))].join(" ")}>
+                                                    {rowSubject(message)}
+                                                </div>
                                                 <div className="flex items-center gap-2 text-xs text-text-muted font-normal">
                                                     <span className="truncate">
                                                         {snippets[message.uid] || decryptedRows[message.uid]?.preview || message.bodyPreview}
@@ -1865,19 +2224,21 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 number of its own. */}
             <div className="hidden md:flex flex-1 min-w-0 min-h-0">
                 {preferences.showAsConversations ? (
-                    <ConversationThreadPane
+                    <LazyConversationThreadPane
                         conversation={openThread?.conversation ?? null}
                         selectedUid={openThread?.uid ?? null}
                         mailboxUid={activeMailboxUid}
                         folders={currentFolders}
                         labels={mailboxLabels}
+                        shortcuts={!selectMode}
                         onMessagePatched={patchListedMessage}
                         onMessageRemoved={(updated) => removeListedMessage(updated.uid)}
                         onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
                         onFolderCreated={onFolderCreated}
                     />
                 ) : (
-                <MessageDetailPane
+                <LazyMessageDetailPane
+                    shortcuts={!selectMode}
                     message={selected}
                     attachments={attachments}
                     isSentItems={isSentItems}
@@ -1915,3 +2276,5 @@ function InboxContent({ userUid }: { userUid?: string }) {
         </div>
     );
 }
+
+export default routedPage("/", InboxPage);

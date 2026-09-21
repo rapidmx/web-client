@@ -149,10 +149,14 @@ describe("ConversationList", () => {
         expect(screen.getByText("3 messages")).toBeInTheDocument();
     });
 
-    it("shows the unread badge and bold styling only when unreadCount is greater than zero", () => {
-        const { rerender } = renderList({ conversations: [conversationFixture({ unreadCount: 0 })] });
+    it("shows the unread badge and the unread styling only when unreadCount is greater than zero", () => {
+        const { rerender, container } = renderList({ conversations: [conversationFixture({ unreadCount: 0 })] });
         expect(screen.queryByText(/unread$/)).not.toBeInTheDocument();
-        expect(screen.getByText("Hello there").closest("button")?.className).not.toContain("font-semibold");
+        expect(screen.getByText("Hello there").className).not.toContain("font-semibold");
+        expect(screen.getByText("Hello there").className).toContain("font-normal");
+        expect(container.querySelector("[data-unread]")).toBeNull();
+        expect(container.querySelector("[data-unread-bar]")).toBeNull();
+        expect(screen.queryByText("Unread.")).not.toBeInTheDocument();
 
         rerender(
             <ConversationList
@@ -163,13 +167,20 @@ describe("ConversationList", () => {
             />,
         );
         expect(screen.getByText("2 unread")).toBeInTheDocument();
-        expect(screen.getByText("Hello there").closest("button")?.className).toContain("font-semibold");
+        expect(screen.getByText("Hello there").className).toContain("font-semibold");
+        // Not by colour alone: an accent bar and a tint, a bold sender, and "Unread" for assistive technology.
+        const row = container.querySelector("[data-unread]")!;
+        expect(row.className).toContain("bg-primary/[0.07]");
+        expect(row.querySelector("[data-unread-bar]")).toHaveAttribute("aria-hidden", "true");
+        expect(screen.getByText("Unread.")).toHaveClass("sr-only");
+        expect(screen.getByText(/Sender One/, { selector: ".sr-only" }).parentElement?.className).toContain("font-bold");
     });
 
     it("leaves the unread count off a one-message conversation, whose bolding already says it", () => {
         renderList({ conversations: [conversationFixture({ messageCount: 1, messageUids: ["m1"], unreadCount: 1 })] });
         expect(screen.queryByText(/unread$/)).not.toBeInTheDocument();
-        expect(screen.getByText("Hello there").closest("button")?.className).toContain("font-semibold");
+        expect(screen.getByText("Hello there").className).toContain("font-semibold");
+        expect(screen.getByText("Unread.")).toBeInTheDocument();
     });
 
     it("shows attachment and flag indicators only when the conversation has them", () => {
@@ -204,7 +215,10 @@ describe("ConversationList", () => {
                 onOpenMessage={onOpenMessage}
             />,
         );
-        expect(screen.getByText("Hello there").closest("li")?.firstElementChild?.className).toContain("bg-primary/10");
+        // The open row has a fill and an outline of its own, distinct from the unread tint and from hover.
+        const row = screen.getByText("Hello there").closest("li")?.firstElementChild;
+        expect(row?.className).toContain("bg-primary/20");
+        expect(row?.className).toContain("ring-1");
     });
 
     it("expands into the conversation's own messages, fetched once, and collapses again", async () => {
@@ -271,7 +285,10 @@ describe("ConversationList", () => {
         const { rerender } = renderList({}, [messageFixture({ uid: "m1", flags: { read: false, flagged: false, answered: false, forwarded: false } })]);
 
         await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
-        expect((await screen.findByText("The opening message")).closest("button")).toHaveClass("font-semibold");
+        const unreadRow = (await screen.findByText("The opening message")).closest("li")!;
+        expect(unreadRow).toHaveAttribute("data-unread", "true");
+        expect(unreadRow.querySelector("[data-unread-bar]")).not.toBeNull();
+        expect(unreadRow.querySelector("button")!.textContent).toContain("Unread.");
 
         rerender(
             <ConversationList
@@ -282,9 +299,11 @@ describe("ConversationList", () => {
                 messageOverrides={{ m1: messageFixture({ uid: "m1" }) }}
             />,
         );
-        const row = screen.getByText("The opening message").closest("button")!;
-        expect(row).not.toHaveClass("font-semibold");
-        expect(row.className).toContain("bg-primary/10");
+        const row = screen.getByText("The opening message").closest("li")!;
+        expect(row).not.toHaveAttribute("data-unread");
+        expect(row.querySelector("[data-unread-bar]")).toBeNull();
+        expect(row.querySelector("button")!.textContent).not.toContain("Unread.");
+        expect(row.className).toContain("bg-primary/20");
     });
 
     it("shows the server's message when a conversation's messages can't be loaded, and retries on a later expand", async () => {
@@ -364,5 +383,27 @@ describe("ConversationList", () => {
 
             expect(screen.getByRole("checkbox", { name: "Select conversation: Hello there" })).toBeInTheDocument();
         });
+    });
+});
+
+describe("ConversationList row markers for the keyboard", () => {
+    it("marks each parent row and each child row with its message uid, and the button that opens it", async () => {
+        mockFetch((url) => (url.startsWith("/api/mail/messages/conversations/") ? jsonResponse(200, [messageFixture({ uid: "child-1" })]) : jsonResponse(404, {})));
+        const user = userEvent.setup();
+        render(
+            <ConversationList
+                conversations={[conversationFixture({ conversationId: "c1", latestMessageUid: "latest-1" })]}
+                mailboxUid="mb1"
+                selectedUid={null}
+                onOpenMessage={vi.fn()}
+            />,
+        );
+
+        const parent = document.querySelector('[data-message-uid="latest-1"]')!;
+        expect(parent).toBeInTheDocument();
+        expect(parent.querySelector("[data-row-open]")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: /^Expand conversation/ }));
+        await waitFor(() => expect(document.querySelector('[data-message-uid="child-1"]')).toBeInTheDocument());
+        expect(document.querySelector('[data-message-uid="child-1"] [data-row-open]')).toBeInTheDocument();
     });
 });

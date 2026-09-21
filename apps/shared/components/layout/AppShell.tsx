@@ -28,6 +28,16 @@ import { authApiFetch } from "@rapidmx/react-shared/util/api.js";
 import { destroyUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../plugins/pluginNav.js";
+import { useInAppFrame } from "../../navigation/frameContext.js";
+import { APP_HREFS } from "../../navigation/appHrefs.js";
+import { useNavigate } from "../../navigation/routerContext.js";
+import { GlobalShortcuts } from "../../keyboard/GlobalShortcuts.js";
+import { ShortcutProvider } from "../../keyboard/ShortcutProvider.js";
+import ShortcutsDialog from "../../keyboard/ShortcutsDialog.js";
+import { inboxUnreadTotal } from "../../mail/folderCounts.js";
+import { MailConnectionContext, useMailConnection } from "../../mail/useMailConnection.js";
+import { useUnreadTitle } from "../../mail/useUnreadTitle.js";
+import NewMailToasts from "../mail/NewMailToasts.js";
 
 /** How long sign-out waits for auth-server's logout before navigating anyway. */
 export const LOGOUT_TIMEOUT_MS = 3_000;
@@ -76,8 +86,13 @@ export interface AppShellProps extends PluginNavProps {
     impersonating?: boolean;
     /** Where `mailApi.ts`'s `stopImpersonating()` should call — see `MailShell`'s original doc comment. */
     impersonationBaseUrl?: string;
-    /** `true` when the caller's JWT carries a trusted role — shows an "Admin" item in the user menu below. */
+    /** `true` when the caller's JWT carries a trusted role — shows an "Admin Console" item in the user menu below. A token
+     * only carries one once elevated, so a real administrator with an ordinary session is `false` here; the user menu
+     * asks auth-server about them separately (see `UserMenu`'s `detectAdmin`). */
     trusted?: boolean;
+    /** The role names the server treats as trusted (its `trusted_roles` config, injected via the route's `fetchProps`) -
+     * what that lookup looks for. Absent means the server's own default, `["admin"]`. */
+    trustedRoles?: string[];
 }
 
 export interface AppDef {
@@ -88,10 +103,10 @@ export interface AppDef {
 }
 
 export const APPS: AppDef[] = [
-    { id: "mail", href: "/", label: "Mail", icon: HiOutlineEnvelope },
-    { id: "calendar", href: "/calendar", label: "Calendar", icon: HiOutlineCalendarDays },
-    { id: "contacts", href: "/contacts", label: "Contacts", icon: HiOutlineUsers },
-    { id: "tasks", href: "/tasks", label: "Tasks", icon: HiOutlineClipboardDocumentList },
+    { id: "mail", href: APP_HREFS.mail, label: "Mail", icon: HiOutlineEnvelope },
+    { id: "calendar", href: APP_HREFS.calendar, label: "Calendar", icon: HiOutlineCalendarDays },
+    { id: "contacts", href: APP_HREFS.contacts, label: "Contacts", icon: HiOutlineUsers },
+    { id: "tasks", href: APP_HREFS.tasks, label: "Tasks", icon: HiOutlineClipboardDocumentList },
 ];
 
 /** Ids plugin `appRail` items can't take besides `APPS`' own - `"settings"` has no rail icon but is still a
@@ -108,26 +123,53 @@ export function appRailItems(pluginNav?: PluginNav): NavItem[] {
     );
 }
 
+/** What only the persistent frame (`AppRouter`) passes to the chrome it keeps mounted. */
+export interface AppChromeProps extends AppShellProps {
+    /** Changes whenever the router shows a different page: the chrome then moves focus to the content, scrolls to its top,
+     * sets the document title and announces the page. Absent outside the router, when nothing does. */
+    routeKey?: string;
+    /** The router is loading the next page's code - the content is `aria-busy`. */
+    busy?: boolean;
+    /** A screen that takes over the window (`FrameTakeover`) is showing: the rail, header, banner and footer are hidden - not
+     * unmounted, so what is inside them (and the page in the content region) keeps its state. */
+    hideChrome?: boolean;
+}
+
 /**
  * The persistent chrome shared by every webmail app (Mail, Calendar, Contacts, Tasks): a left icon rail for
- * switching apps (full page loads — see `MailShell`'s original doc comment on this framework having no
- * client-side router), a header with the current app's name and `UserMenu`, and the impersonation banner.
+ * switching apps, a header with the current app's name and `UserMenu`, and the impersonation banner.
  * Each app's own shell (e.g. `MailShell`) renders its own contextual sidebar + content as `children`, inside
  * the area to the right of the icon rail and below the header.
+ *
+ * Rendered by `AppRouter`, once, for the life of the page, so that moving between apps replaces only `children` - see
+ * `AppShell` below for what a page's own shell renders instead.
  */
-export default function AppShell({
+export function AppChrome({
     active,
     userUid,
     authServerUrl,
     impersonating,
     impersonationBaseUrl,
     trusted,
+    trustedRoles,
     pluginNav,
+    routeKey,
+    busy,
+    hideChrome,
     children,
-}: PropsWithChildren<AppShellProps>) {
+}: PropsWithChildren<AppChromeProps>) {
     const [stoppingImpersonation, setStoppingImpersonation] = useState(false);
+    // The keyboard shortcuts dialog: opened by `?`/Ctrl+/ (`GlobalShortcuts`) and by the account menu's item.
+    const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const signingOutRef = useRef(false);
     const { branding, iconSrc } = useBranding();
+    // The mailboxes, their folders and the one push connection live here, in the frame that stays mounted as the router swaps pages - so
+    // new-mail pop-ups, the folder counters and the tab title's unread count work in Calendar, Contacts, Tasks and Settings too, and moving
+    // between apps never opens a second socket (the server allows ten per user). `MailShell` reads them from `MailConnectionContext`. Outside
+    // the router (`AppShell` rendered as a page's own chrome: tests, plugin pages) it stays off, and a Mail shell owns its connection itself.
+    const inFrame = useInAppFrame();
+    const navigate = useNavigate();
+    const mail = useMailConnection({ userUid, enabled: inFrame, open: navigate });
 
     useRedirectIfUnauthenticated(userUid, authServerUrl);
     // Mounted here, not scoped to Mail/Settings (the only shells that actually read unlocked keys),
@@ -214,6 +256,33 @@ export default function AppShell({
         }
     }
 
+    // What the persistent frame (`AppRouter`) needs on top of a page that never changes: the document title follows the page, and
+    // after the router replaces the page the keyboard focus, the scroll position and a screen reader are told about it - a
+    // page load did all of that by itself. Nothing here runs for a page shown outside the router (`routeKey` is undefined).
+    const contentRef = useRef<HTMLDivElement>(null);
+    const [announcement, setAnnouncement] = useState("");
+    const firstRouteKeyRef = useRef(routeKey);
+    const pageLabel = active === "settings" ? "Settings" : appRailItems(pluginNav).find((app) => app.id === active)?.label;
+    useEffect(() => {
+        if (routeKey !== undefined) {
+            const brand = branding?.title || branding?.companyName || "RapidMX";
+            document.title = pageLabel ? `${brand}: ${pageLabel}` : brand;
+        }
+    }, [routeKey, pageLabel, branding]);
+    // After the title effect above, so a page change (which rewrites the title) is followed by the unread count going back in front of it.
+    useUnreadTitle(inboxUnreadTotal(mail.mailboxFolders, mail.folderCounts.counts), {
+        enabled: inFrame,
+        resetKey: `${routeKey}|${pageLabel}|${branding?.title}|${branding?.companyName}`,
+    });
+    useEffect(() => {
+        if (routeKey === undefined || routeKey === firstRouteKeyRef.current) {
+            return;
+        }
+        setAnnouncement(pageLabel ?? "");
+        contentRef.current?.focus({ preventScroll: true });
+        window.scrollTo(0, 0);
+    }, [routeKey]);
+
     if (!userUid) {
         return <div className="min-h-screen" />;
     }
@@ -226,13 +295,17 @@ export default function AppShell({
         // Mounted here, not scoped to Mail/Settings, for the same reason as useIdleKeyTimeout() above -
         // ComposeWindow's sign/encrypt toggles and MessageDetailPane's encrypted-message view (both Mail)
         // are today's only useUnlockPrompt() callers, but this needs to be available to any app shell.
+        <ShortcutProvider>
+        <MailConnectionContext.Provider value={inFrame ? mail : null}>
+        <GlobalShortcuts authServerUrl={authServerUrl} onToggleHelp={() => setShortcutsOpen((open) => !open)} />
+        <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
         <UnlockPromptProvider>
             {/* An impersonating admin acts with the impersonated user's access, so their own trusted role
                 mustn't skip the per-mailbox checks. */}
             <ComposeProvider userUid={userUid} trusted={!!trusted && !impersonating}>
             <div className="min-h-screen flex flex-col bg-surface-alt">
-                <BrandingHeader branding={branding} />
-                {impersonating && (
+                {!hideChrome && <BrandingHeader branding={branding} />}
+                {impersonating && !hideChrome && (
                     <div className="h-10 shrink-0 bg-warning text-warning-contrast flex items-center justify-center gap-3 text-sm font-medium px-4">
                         <span>
                             You are viewing as <strong>{userUid}</strong>.
@@ -248,6 +321,7 @@ export default function AppShell({
                     </div>
                 )}
                 <div className="flex-1 flex min-h-0">
+                    {!hideChrome && (
                     <nav
                         aria-label="Apps"
                         className="hidden md:flex w-16 shrink-0 bg-surface border-r border-border flex-col items-center py-3 gap-1"
@@ -271,18 +345,67 @@ export default function AppShell({
                             </a>
                         ))}
                     </nav>
-                    <BottomTabBar apps={apps} active={active} />
+                    )}
+                    {!hideChrome && <BottomTabBar apps={apps} active={active} />}
                     <div className="flex-1 flex flex-col min-w-0">
+                        {!hideChrome && (
                         <header className="h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-6">
                             <span className="font-display font-bold text-lg uppercase tracking-wide">{activeLabel}</span>
-                            <UserMenu userUid={userUid} authServerUrl={authServerUrl} onSignOut={handleSignOut} showAdminLink={trusted} showSettingsLink />
+                            <UserMenu
+                                userUid={userUid}
+                                authServerUrl={authServerUrl}
+                                onSignOut={handleSignOut}
+                                // An impersonating administrator acts as the impersonated user, so the console link is hidden then.
+                                showAdminLink={!!trusted && !impersonating}
+                                detectAdmin={!trusted && !impersonating}
+                                trustedRoles={trustedRoles}
+                                showSettingsLink
+                                showNotificationSettings
+                                onShowShortcuts={() => setShortcutsOpen(true)}
+                            />
                         </header>
-                        <div className="flex-1 flex min-h-0 pb-14 md:pb-0">{children}</div>
+                        )}
+                        <div
+                            ref={contentRef}
+                            id="app-content"
+                            tabIndex={-1}
+                            aria-busy={busy || undefined}
+                            className={["flex-1 flex min-h-0 outline-none", hideChrome ? "" : "pb-14 md:pb-0"].join(" ")}
+                        >
+                            {children}
+                        </div>
                     </div>
                 </div>
-                <BrandingFooter branding={branding} />
+                {routeKey !== undefined && (
+                    <div role="status" aria-live="polite" className="sr-only">
+                        {announcement}
+                    </div>
+                )}
+                {!hideChrome && <BrandingFooter branding={branding} />}
             </div>
             </ComposeProvider>
         </UnlockPromptProvider>
+        {inFrame && (
+            <NewMailToasts
+                toasts={mail.notifications.toasts}
+                onDismiss={mail.notifications.dismiss}
+                offerDesktop={mail.notifications.offerDesktop}
+                onEnableDesktop={() => void mail.notifications.enableDesktop()}
+                onDeclineDesktop={mail.notifications.declineDesktop}
+            />
+        )}
+        </MailConnectionContext.Provider>
+        </ShortcutProvider>
     );
+}
+
+/**
+ * What a page's own shell (`MailShell`, `CalendarShell`, ...) renders around its content. Outside the client-side router it
+ * is the whole `AppChrome`, as it always was. Inside it (`AppRouter`) the chrome is already mounted above the page - and stays
+ * mounted as the page is replaced - so this is only its children; everything it would have been given comes from the router
+ * frame instead (the props are the same for every page, and `active` is the route's).
+ */
+export default function AppShell(props: PropsWithChildren<AppShellProps>) {
+    const inFrame = useInAppFrame();
+    return inFrame ? <>{props.children}</> : <AppChrome {...props} />;
 }

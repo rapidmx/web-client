@@ -9,6 +9,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import { enrollKey, getKeyVault, PublicKey, VaultAlreadyInitializedError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { UnopenableKeysNotice, unlockErrorMessage } from "./UnlockPromptProvider.js";
+import { FrameTakeover } from "../../navigation/frameContext.js";
 import { RecoveryFollowUp, RecoveryFollowUpModal, UnlockModeToggle, startRecoveryUnlock } from "./RecoveryCodeUnlock.js";
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
@@ -231,6 +232,7 @@ export default function KeyEnrollmentGate({
     if ((status === "unlock" || status === "unlocking") && blocking) {
         const unlocking = status === "unlocking";
         return (
+            <FrameTakeover>
             <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
                 <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
                     <h1 className="text-lg font-bold mb-2">Unlock your mailbox</h1>
@@ -284,12 +286,14 @@ export default function KeyEnrollmentGate({
                     </div>
                 </div>
             </div>
+            </FrameTakeover>
         );
     }
 
     if (status === "setup_password" || status === "enrolling") {
         const enrolling = status === "enrolling";
         return (
+            <FrameTakeover>
             <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
                 <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
                     <h1 className="text-lg font-bold mb-2">Protect your mailbox</h1>
@@ -327,11 +331,13 @@ export default function KeyEnrollmentGate({
                     </form>
                 </div>
             </div>
+            </FrameTakeover>
         );
     }
 
     if (status === "already_set_up") {
         return (
+            <FrameTakeover>
             <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
                 <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
                     <h1 className="text-lg font-bold mb-2">Encryption is already set up</h1>
@@ -345,11 +351,13 @@ export default function KeyEnrollmentGate({
                     </Button>
                 </div>
             </div>
+            </FrameTakeover>
         );
     }
 
     if (status === "show_recovery_codes") {
         return (
+            <FrameTakeover>
             <div className="min-h-screen flex items-center justify-center p-8 bg-surface-alt">
                 <div className="w-full max-w-md bg-surface border border-border rounded-md p-8">
                     <h1 className="text-lg font-bold mb-2">Save your recovery codes</h1>
@@ -376,6 +384,7 @@ export default function KeyEnrollmentGate({
                     </Button>
                 </div>
             </div>
+            </FrameTakeover>
         );
     }
 

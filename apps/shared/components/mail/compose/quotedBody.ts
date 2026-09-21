@@ -18,6 +18,70 @@ export interface OriginalMessage {
     recipients?: Recipient[];
 }
 
+/** How long a reply waits for the original's body before it goes ahead with the preview - a slow or hung request must not
+ * leave the window waiting on it (or, before it opened at once, keep it from opening) indefinitely. */
+export const QUOTE_FETCH_TIMEOUT_MS = 10_000;
+/** How long a fetched (or prefetched) body is remembered, so hovering Reply and then clicking it costs one request. */
+export const QUOTE_CACHE_MS = 30_000;
+
+const contentCache = new Map<string, { at: number; promise: Promise<string | undefined> }>();
+
+/**
+ * The server's sanitized HTML body of a message (`GET /mail/messages/:id/content`), or `undefined` when it has none (a
+ * `text/plain` message is answered with its preview instead) or the request failed or timed out. Never rejects. Remembered
+ * for `QUOTE_CACHE_MS` - except a failure, which is asked again the next time.
+ */
+function fetchContentHtml(uid: string): Promise<string | undefined> {
+    const cached = contentCache.get(uid);
+    if (cached && Date.now() - cached.at < QUOTE_CACHE_MS) {
+        return cached.promise;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), QUOTE_FETCH_TIMEOUT_MS);
+    const promise = (async (): Promise<string | undefined> => {
+        try {
+            const res = await fetch(apiUrl(`/mail/messages/${encodeURIComponent(uid)}/content`), { credentials: "include", signal: controller.signal });
+            return res.ok && (res.headers.get("content-type") ?? "").includes("text/html") ? await res.text() : undefined;
+        } catch {
+            return undefined;
+        } finally {
+            clearTimeout(timer);
+        }
+    })();
+    contentCache.set(uid, { at: Date.now(), promise });
+    void promise.then((html) => {
+        if (html === undefined && contentCache.get(uid)?.promise === promise) {
+            contentCache.delete(uid);
+        }
+    });
+    return promise;
+}
+
+/** Rejects when `promise` hasn't settled within `ms` (`getMessageRawContent()` takes no `AbortSignal`, so it is raced rather than aborted). */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out.")), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Starts fetching what a Reply/Forward of `message` will quote, without waiting for the click - called when the pointer or
+ * keyboard reaches a Reply/Reply All/Forward button - so the request is usually already answered when it is clicked.
+ * Nothing to fetch for an encrypted message (`loadOriginalMessage()` never asks the server for one's body).
+ */
+export function prefetchOriginalMessage(message: Message): void {
+    if (!message.encrypted) {
+        void fetchContentHtml(message.uid);
+    }
+}
+
+/** Forgets every remembered body (the sign-out and test seam). */
+export function clearOriginalMessageCache(): void {
+    contentCache.clear();
+}
+
 /** The recipients one address-list header names, RFC 2047-decoded, with their display names. */
 function headerRecipients(value: string | undefined, type: "to" | "cc"): Recipient[] {
     if (!value) {
@@ -68,21 +132,18 @@ export async function loadOriginalMessage(
     }
     let needsRaw = !!options.recipients && result.recipients === undefined;
     if (!recovered) {
-        try {
-            const res = await fetch(apiUrl(`/mail/messages/${encodeURIComponent(message.uid)}/content`), { credentials: "include" });
-            if (res.ok && (res.headers.get("content-type") ?? "").includes("text/html")) {
-                result.body = { html: await res.text() };
-            } else {
-                needsRaw = true;
-            }
-        } catch {
-            // The raw message below is the other way to the body.
+        // Never rejects; nothing (a plain-text message, a failure, a timeout) leaves the raw message below as the other way
+        // to the body.
+        const html = await fetchContentHtml(message.uid);
+        if (html !== undefined) {
+            result.body = { html };
+        } else {
             needsRaw = true;
         }
     }
     try {
         if (needsRaw) {
-            const entity = parseMimeEntity(await getMessageRawContent(message.uid));
+            const entity = parseMimeEntity(await withTimeout(getMessageRawContent(message.uid), QUOTE_FETCH_TIMEOUT_MS));
             if (!recovered && result.body.html === undefined) {
                 const body = extractDisplayBody(entity);
                 result.body = body.html !== undefined ? { html: body.html } : body.text !== undefined ? { text: body.text } : {};

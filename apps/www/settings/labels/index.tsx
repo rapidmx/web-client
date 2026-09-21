@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../../_routedPage.js";
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Label, createLabel, deleteLabel, listLabels, updateLabel } from "@rapidmx/react-shared/mail/labelsApi.js";
@@ -13,7 +14,7 @@ import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 
 export type SettingsLabelsPageProps = Omit<SettingsShellProps, "active">;
 
-export default function SettingsLabelsPage(props: SettingsLabelsPageProps) {
+function SettingsLabelsPage(props: SettingsLabelsPageProps) {
     return (
         <SettingsShell {...props} active="labels">
             <LabelsContent />
@@ -199,3 +200,5 @@ function LabelsContent() {
         </div>
     );
 }
+
+export default routedPage("/settings/labels", SettingsLabelsPage);

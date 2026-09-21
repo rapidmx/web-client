@@ -15,6 +15,8 @@ import {
     HiOutlineUserPlus,
     HiStar,
 } from "react-icons/hi2";
+import { SHORTCUTS } from "../../keyboard/keymap.js";
+import { useShortcutProps } from "../../keyboard/useShortcutProps.js";
 
 export interface ContactsToolbarProps {
     selectedCount: number;
@@ -31,6 +33,8 @@ export interface ContactsToolbarProps {
     /** A `.vcf` file the user picked via the toolbar's own hidden file input — parsing/import is the
      * page's responsibility (it has the mailbox/folder context and the actual `createContact` calls). */
     onImportFile: (file: File) => void;
+    /** The keyboard's "New contact" is registered by the page: the button names its shortcut in its tooltip and `aria-keyshortcuts`. */
+    shortcuts?: boolean;
 }
 
 function ToolbarButton({
@@ -38,17 +42,21 @@ function ToolbarButton({
     icon: Icon,
     disabled,
     onClick,
+    hint,
 }: {
     label: string;
     icon: IconType;
     disabled?: boolean;
     onClick: () => void;
+    /** `title` and `aria-keyshortcuts` for a button with a shortcut. */
+    hint?: { title: string; "aria-keyshortcuts"?: string };
 }) {
     return (
         <button
             type="button"
             onClick={onClick}
             disabled={disabled}
+            {...hint}
             className="flex flex-col items-center gap-1 text-xs text-text-muted hover:text-text disabled:opacity-40 disabled:cursor-not-allowed px-2.5 py-1.5 rounded-sm hover:not-disabled:bg-surface-alt"
         >
             <Icon size={18} aria-hidden="true" />
@@ -79,7 +87,9 @@ export default function ContactsToolbar({
     onAddCategory,
     onExportVCard,
     onImportFile,
+    shortcuts,
 }: ContactsToolbarProps) {
+    const newContactHint = useShortcutProps("New contact", SHORTCUTS.contacts.create, !!shortcuts);
     const importInputRef = useRef<HTMLInputElement | null>(null);
     const hasSelection = selectedCount > 0;
 
@@ -93,7 +103,7 @@ export default function ContactsToolbar({
 
     return (
         <div role="toolbar" aria-label="Contacts actions" className="border-b border-border bg-surface-alt flex items-center gap-0.5 px-2 py-1">
-            <ToolbarButton label="New contact" icon={HiOutlineUserPlus} onClick={onNewContact} />
+            <ToolbarButton label="New contact" icon={HiOutlineUserPlus} onClick={onNewContact} hint={shortcuts ? newContactHint : undefined} />
             <Divider />
             <ToolbarButton label="Edit" icon={HiOutlinePencil} disabled={selectedCount !== 1} onClick={onEdit} />
             <ToolbarButton label="Delete" icon={HiOutlineTrash} disabled={!hasSelection} onClick={onDelete} />

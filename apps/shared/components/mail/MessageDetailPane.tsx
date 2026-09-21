@@ -43,12 +43,7 @@ import {
 import { sanitizeMessageBodyHtml } from "@rapidmx/react-shared/mail/messageBodySanitizer.js";
 import MoveToFolderDialog from "./MoveToFolderDialog.js";
 import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
-import {
-    MessageSecurityResult,
-    SignatureFailureReason,
-    evaluateMessageSecurity,
-    evaluateMessageSecurityWithSeal,
-} from "@rapidmx/react-shared/crypto/messageSecurity.js";
+import type { MessageSecurityResult, SignatureFailureReason } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { extractAddresses, type MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
 import { SignerKeyConflictError, signingKeyFingerprints, trustSigner } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
@@ -57,12 +52,16 @@ import { currentVerificationSeal, getVaultGeneration, sendVerificationSeal } fro
 import { getMyMailboxAccess } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
 import KeyChangeReview from "../contacts/KeyChangeReview.js";
 import { KEY_CHANGE_STALE_MESSAGE, sameFingerprint } from "../contacts/contactKeys.js";
-import { useCompose } from "./compose/ComposeContext.js";
-import { loadOriginalMessage } from "./compose/quotedBody.js";
+import { ComposeLateInput, prefetchComposeWindow, useCompose } from "./compose/ComposeContext.js";
+import { loadOriginalMessage, prefetchOriginalMessage } from "./compose/quotedBody.js";
 import { formatRecipient } from "./compose/recipients.js";
 import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
 import { RecipientLine } from "./MailAddress.js";
 import { useMailShell } from "./layout/MailShell.js";
+import { ariaKeyShortcuts, withHint } from "../../keyboard/format.js";
+import { SHORTCUTS, ShortcutDef } from "../../keyboard/keymap.js";
+import { useKeyEnvironment } from "../../keyboard/ShortcutProvider.js";
+import { useShortcut } from "../../keyboard/useShortcut.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
 import { moveLocalEntity } from "../../search/localIndexRpcClient.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
@@ -194,21 +193,32 @@ function IconAction({
     onClick,
     disabled,
     busy,
+    onPrefetch,
+    shortcut,
 }: {
     icon: React.ReactNode;
     label: string;
     onClick: () => void;
     disabled?: boolean;
     busy?: boolean;
+    /** Called when the pointer or keyboard reaches the button - the moment to start fetching what a click will need. */
+    onPrefetch?: () => void;
+    /** The keyboard shortcut that does what this button does, when it is registered right now: named in the tooltip (`Reply (Ctrl+R)`) and
+     * in `aria-keyshortcuts` - the accessible name stays the bare label. */
+    shortcut?: ShortcutDef;
 }) {
+    const env = useKeyEnvironment();
     return (
         <button
             type="button"
             aria-label={label}
-            title={label}
+            title={shortcut ? withHint(label, shortcut, env) : label}
+            aria-keyshortcuts={shortcut ? ariaKeyShortcuts(shortcut, env) : undefined}
             aria-busy={busy || undefined}
             disabled={disabled}
             onClick={onClick}
+            onPointerEnter={onPrefetch}
+            onFocus={onPrefetch}
             className="inline-flex items-center justify-center p-1.5 rounded-md border border-border text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent"
         >
             {icon}
@@ -332,6 +342,12 @@ export interface MessageDetailPaneProps {
      * subject becomes a heading under the thread's own, since a document has one `h1` and the thread's is
      * the conversation. Everything else - the badges, the actions, the body - is identical. */
     inThread?: boolean;
+    /**
+     * Registers this pane's keyboard shortcuts - Reply, Reply all, Forward, Archive, Move to - so they act on this message. Only the message
+     * the keyboard is acting on should set it: the one pane beside the list, or the opened message of a thread (each expanded message of a
+     * thread is a pane, and two of them must not both claim Ctrl+R). Also puts the shortcut in those buttons' tooltips.
+     */
+    shortcuts?: boolean;
 }
 
 function formatBytes(bytes: number): string {
@@ -383,6 +399,7 @@ function MessageDetailContent({
     onLabelsChanged,
     onLabelCreated,
     inThread,
+    shortcuts,
 }: MessageDetailPaneProps & { message: Message }) {
     // A copy re-read from the server after an Outbox action was refused (409/403) or a send lease ran out - see
     // `reloadMessage()`. A prop copy newer by `version` wins; an equal-version reload is kept, since claiming a send
@@ -427,7 +444,7 @@ function MessageDetailContent({
     const [keyChangeNotice, setKeyChangeNotice] = useState<string | null>(null);
     // "Now", for deciding whether a scheduled send's lease is still live - advanced when the lease runs out.
     const [nowMs, setNowMs] = useState(() => Date.now());
-    const { mailboxes } = useMailShell();
+    const { mailboxes, trackMessageChange } = useMailShell();
     const { requestUnlock } = useUnlockPrompt();
     // Bumped after a successful on-demand unlock to re-run the effect below - it's not a dependency the
     // effect could read reactively otherwise (getUnlockedKeys() is a plain module-level read, not React
@@ -488,6 +505,9 @@ function MessageDetailContent({
                 if (cancelled) {
                     return;
                 }
+                // The S/MIME code (PKI.js and the ASN.1/X.509 libraries) loads here, only for a message that is signed or
+                // encrypted - it is over half a megabyte, and the pane opens plain messages without it.
+                const messageSecurity = await import("@rapidmx/react-shared/crypto/messageSecurity.js");
                 const [primaryAddress, ...aliasAddresses] = readerAddressesKey ? readerAddressesKey.split(" ") : [];
                 const ownAddresses = readerAddressesKey.toLowerCase().split(" ");
                 const ownKeys = ownAddresses.includes(senderAddress.toLowerCase()) ? (readerMailbox!.keys ?? []) : [];
@@ -505,7 +525,7 @@ function MessageDetailContent({
                         ...(sealContext.keyState?.previous ?? []),
                         ...ownKeys,
                     ];
-                    result = await evaluateMessageSecurityWithSeal(rawMime, unlocked, pinned, primaryAddress, {
+                    result = await messageSecurity.evaluateMessageSecurityWithSeal(rawMime, unlocked, pinned, primaryAddress, {
                         mailboxUid: message.mailboxUid,
                         messageUid: message.uid,
                         ...currentVerificationSeal(message),
@@ -513,14 +533,14 @@ function MessageDetailContent({
                         signerKeys,
                     }).catch(() =>
                         // Only a lock while sealing throws: evaluate as locked (the lock itself re-evaluates too).
-                        evaluateMessageSecurity(rawMime, undefined, pinned, primaryAddress),
+                        messageSecurity.evaluateMessageSecurity(rawMime, undefined, pinned, primaryAddress),
                     );
                     if (result.sealToWrite) {
                         // Best effort and in the background: never awaited, never shown.
                         void sendVerificationSeal(message.uid, result.sealToWrite);
                     }
                 } else {
-                    result = await evaluateMessageSecurity(rawMime, unlocked, pinned, primaryAddress);
+                    result = await messageSecurity.evaluateMessageSecurity(rawMime, unlocked, pinned, primaryAddress);
                 }
                 // Only one reader address can be checked per evaluation: a message sent to one of this mailbox's
                 // aliases isn't "not addressed to you", so each alias is tried before saying so.
@@ -528,7 +548,7 @@ function MessageDetailContent({
                     if (!result.notAddressedToReader) {
                         break;
                     }
-                    const viaAlias = await evaluateMessageSecurity(rawMime, unlocked, pinned, alias);
+                    const viaAlias = await messageSecurity.evaluateMessageSecurity(rawMime, unlocked, pinned, alias);
                     result = { ...result, notAddressedToReader: viaAlias.notAddressedToReader };
                 }
                 const unpinned = contactPins.loaded && pins.length === 0;
@@ -648,50 +668,76 @@ function MessageDetailContent({
         return mailbox ? [mailbox.primarySmtpAddress, ...(mailbox.aliasAddresses ?? [])] : [];
     }
 
+    /** Starts fetching what Reply/Reply All/Forward will need (the compose window's code, the original's body) as the
+     * pointer or keyboard reaches one of their buttons, so the click itself finds it already on its way or here. */
+    function prefetchReply() {
+        prefetchComposeWindow();
+        prefetchOriginalMessage(message);
+    }
+
+    /**
+     * Opens the compose window at once from what is already in memory - the message's own subject and sender, and the
+     * mailbox it was read in - and fetches what needs the network meanwhile: the original's body to quote, and for Reply All
+     * the recipients its headers name. Both reach the window through `OpenComposeInput.pending` when they arrive, so the
+     * window is on screen on the click's own frame rather than after two or three sequential requests.
+     */
     async function handleReplyOrForward(kind: "reply" | "replyAll" | "forward") {
         setPreparingCompose(true);
         try {
-            const [original, own] = await Promise.all([
-                loadOriginalMessage(message, security, { recipients: kind === "replyAll" }),
-                kind === "forward" ? [] : ownAddresses(),
-            ]);
             const encrypt = !!message.encrypted;
             // What makes the new message part of this one's thread rather than a conversation of its own:
             // the server composes the MIME from the recipients, subject and HTML alone, so nothing else
             // recovers what is being replied to. A forward carries it for the same reason - it continues
             // the thread it came from, which is where its recipient will file the reply to it.
             const threading = buildReplyThreading(message);
+            const format = (list: Recipient[]) => list.map((r) => formatRecipient(r)).join(", ");
+            // Known without a request when the shell has already listed the mailbox; otherwise fetched with the body, and
+            // the window's recipients are corrected by `late` below if that changes who they are.
+            const knownOwn = readerAddressesKey ? readerAddressesKey.split(" ") : undefined;
+            // Never rejects: loadOriginalMessage() and ownAddresses() don't, and the rest is pure.
+            const late = (async (): Promise<ComposeLateInput> => {
+                const [original, own] = await Promise.all([
+                    loadOriginalMessage(message, security, { recipients: kind === "replyAll" }),
+                    kind === "forward" ? [] : (knownOwn ?? ownAddresses()),
+                ]);
+                if (kind === "forward") {
+                    return { quotedHtml: buildForwardQuote(message, original.body) };
+                }
+                // The message's own recipients are only the envelope recipient of a delivered message, so Reply All
+                // answers whoever its headers actually name, with anything the record holds that they don't.
+                const known = new Set((original.recipients ?? []).map((r) => r.address.trim().toLowerCase()));
+                const recipients = buildReplyRecipients(
+                    { ...message, recipients: [...(original.recipients ?? []), ...message.recipients.filter((r) => !known.has(r.address.trim().toLowerCase()))] },
+                    own,
+                    kind === "replyAll",
+                );
+                return { quotedHtml: buildReplyQuote(message, original.body), to: format(recipients.to), cc: format(recipients.cc) };
+            })();
             if (kind === "forward") {
                 openCompose({
                     mailboxUid: message.mailboxUid,
                     subject: forwardSubject(message.subject),
-                    quotedHtml: buildForwardQuote(message, original.body),
                     signatureContext: "reply_forward",
                     encrypt,
                     threading,
+                    pending: late,
                 });
-                return;
+            } else {
+                const first = buildReplyRecipients(message, knownOwn ?? [], kind === "replyAll");
+                openCompose({
+                    mailboxUid: message.mailboxUid,
+                    to: format(first.to),
+                    cc: first.cc.length > 0 ? format(first.cc) : undefined,
+                    subject: replySubject(message.subject),
+                    signatureContext: "reply_forward",
+                    suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
+                    encrypt,
+                    threading,
+                    pending: late,
+                });
             }
-            // The message's own recipients are only the envelope recipient of a delivered message, so Reply All
-            // answers whoever its headers actually name, with anything the record holds that they don't.
-            const known = new Set((original.recipients ?? []).map((r) => r.address.trim().toLowerCase()));
-            const recipients = buildReplyRecipients(
-                { ...message, recipients: [...(original.recipients ?? []), ...message.recipients.filter((r) => !known.has(r.address.trim().toLowerCase()))] },
-                own,
-                kind === "replyAll",
-            );
-            const format = (list: Recipient[]) => list.map((r) => formatRecipient(r)).join(", ");
-            openCompose({
-                mailboxUid: message.mailboxUid,
-                to: format(recipients.to),
-                cc: recipients.cc.length > 0 ? format(recipients.cc) : undefined,
-                subject: replySubject(message.subject),
-                quotedHtml: buildReplyQuote(message, original.body),
-                signatureContext: "reply_forward",
-                suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
-                encrypt,
-                threading,
-            });
+            // Held until the quote is in, so a second click can't open a second window for the same message meanwhile.
+            await late;
         } finally {
             setPreparingCompose(false);
         }
@@ -726,6 +772,8 @@ function MessageDetailContent({
             const updated = await cancelScheduledSend(message, draftsFolderUid!);
             // Keeps a `folder:`-scoped Tier 2 local search from still finding it in its old folder.
             void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
+            // Out of Outbox, into Drafts: both folders' badges.
+            trackMessageChange(message, updated).settle();
             onScheduledSendCanceled?.(updated);
         } catch (err) {
             const fallback = message.scheduledSendTime ? "Could not cancel this scheduled send." : "Could not move this message to Drafts.";
@@ -749,6 +797,7 @@ function MessageDetailContent({
         try {
             const updated = await archiveMessage(message.uid);
             void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
+            trackMessageChange(message, updated).settle();
             onArchived?.(updated);
         } catch (err) {
             setArchiveError(err instanceof ApiRequestError ? err.message : "Could not archive this message.");
@@ -791,8 +840,22 @@ function MessageDetailContent({
      */
     async function handleMove(folderUid: string) {
         const updated = await moveMessage(message, folderUid);
+        // Move to, Delete and Report junk are all this: the source folder's badge goes down, the target's up.
+        trackMessageChange(message, updated).settle();
         onMoved?.(updated);
     }
+
+    // Keyboard shortcuts for the message this pane shows. They call the same handlers as the buttons below, and exist only where the
+    // button does (Archive not for Drafts/Outbox, Move to only with folders to move to). A shortcut pressed while its action is already
+    // running is consumed and does nothing, exactly as the disabled button would: a browser must not act on Ctrl+R meanwhile.
+    const archivable = !inOutbox && message.folderUid !== draftsFolderUid;
+    const movable = !!folders && folders.length > 0;
+    const keyboard = !!shortcuts;
+    useShortcut(SHORTCUTS.mail.reply, () => void (!preparingCompose && handleReplyOrForward("reply")), { enabled: keyboard });
+    useShortcut(SHORTCUTS.mail.replyAll, () => void (!preparingCompose && handleReplyOrForward("replyAll")), { enabled: keyboard });
+    useShortcut(SHORTCUTS.mail.forward, () => void (!preparingCompose && handleReplyOrForward("forward")), { enabled: keyboard });
+    useShortcut(SHORTCUTS.mail.archive, () => void (!archiving && handleArchive()), { enabled: keyboard && archivable });
+    useShortcut(SHORTCUTS.mail.move, () => setMovePrompt(true), { enabled: keyboard && movable });
 
     // Only ever invoked from the pending-receipt banner below, which itself only renders once `message`
     // is loaded — same real invariant as every other handler above.
@@ -1104,7 +1167,9 @@ function MessageDetailContent({
                     <IconAction
                         icon={<HiOutlineArrowUturnLeft size={16} aria-hidden="true" />}
                         label="Reply"
+                        shortcut={keyboard ? SHORTCUTS.mail.reply : undefined}
                         disabled={preparingCompose}
+                        onPrefetch={prefetchReply}
                         onClick={() => void handleReplyOrForward("reply")}
                     />
                     <IconAction
@@ -1117,28 +1182,34 @@ function MessageDetailContent({
                             </span>
                         }
                         label="Reply All"
+                        shortcut={keyboard ? SHORTCUTS.mail.replyAll : undefined}
                         disabled={preparingCompose}
+                        onPrefetch={prefetchReply}
                         onClick={() => void handleReplyOrForward("replyAll")}
                     />
                     <IconAction
                         icon={<HiOutlineArrowUturnRight size={16} aria-hidden="true" />}
                         label="Forward"
+                        shortcut={keyboard ? SHORTCUTS.mail.forward : undefined}
                         disabled={preparingCompose}
+                        onPrefetch={prefetchReply}
                         onClick={() => void handleReplyOrForward("forward")}
                     />
-                    {!inOutbox && message.folderUid !== draftsFolderUid && (
+                    {archivable && (
                         <IconAction
                             icon={<HiOutlineArchiveBox size={16} aria-hidden="true" />}
                             label="Archive"
+                            shortcut={keyboard ? SHORTCUTS.mail.archive : undefined}
                             busy={archiving}
                             disabled={archiving}
                             onClick={handleArchive}
                         />
                     )}
-                    {folders && folders.length > 0 && (
+                    {movable && (
                         <IconAction
                             icon={<HiOutlineFolderArrowDown size={16} aria-hidden="true" />}
                             label="Move to"
+                            shortcut={keyboard ? SHORTCUTS.mail.move : undefined}
                             onClick={() => setMovePrompt(true)}
                         />
                     )}

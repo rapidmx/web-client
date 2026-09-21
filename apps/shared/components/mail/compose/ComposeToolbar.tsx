@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { ReactNode, useRef, useState } from "react";
+import React, { ReactNode, Suspense, lazy, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import type { IconType } from "react-icons";
 import {
@@ -27,8 +27,10 @@ import {
     BsTypeUnderline,
     BsUnindent,
 } from "react-icons/bs";
-import EmojiPicker from "./EmojiPicker.js";
 import GifPicker from "./GifPicker.js";
+
+/** Loaded when the picker is first opened: the emoji list is a half-megabyte JSON file that nothing else needs. */
+const EmojiPicker = lazy(() => import("./EmojiPicker.js"));
 
 export interface ComposeToolbarProps {
     /** `null` before the editor has mounted client-side (see `RichTextEditor`'s `immediatelyRender: false`
@@ -375,7 +377,9 @@ export default function ComposeToolbar({ editor, onUploadImage }: ComposeToolbar
                     😀
                 </button>
                 {openPopup === "emoji" && (
-                    <EmojiPicker anchorRef={emojiButtonRef} onSelect={handleInsertEmoji} onClose={() => setOpenPopup(null)} />
+                    <Suspense fallback={null}>
+                        <EmojiPicker anchorRef={emojiButtonRef} onSelect={handleInsertEmoji} onClose={() => setOpenPopup(null)} />
+                    </Suspense>
                 )}
 
                 <button

@@ -3,11 +3,14 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch, mockLocation, mockMatchMedia } from "../testUtils.js";
-import ContactsPage from "../../../apps/www/contacts/index.js";
+import ContactsPageRouted from "../../../apps/www/contacts/index.js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const ContactsPage = ContactsPageRouted.page;
 
 // The "Email" toolbar action opens a real `ComposeWindow` overlay — mocked here the same way every
 // compose-related test file mocks it, to avoid mounting real TipTap/ProseMirror (which needs DOM APIs
@@ -1092,7 +1095,8 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
 
         // Bob has no email, so only Jane's address should appear.
         expect(await screen.findByRole("dialog", { name: "New Message" })).toBeInTheDocument();
-        expect(recipientChips("To")).toEqual(["jane@example.com"]);
+        // The window's frame is up on the click; its fields arrive with its code.
+        await waitFor(() => expect(recipientChips("To")).toEqual(["jane@example.com"]));
     });
 
     it("toolbar Favorite marks every checked contact favorited, then relabels to Unfavorite once all are.", async () => {
@@ -1517,5 +1521,72 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
             answer(accessWith(true, true)());
             await new Promise((resolve) => setTimeout(resolve, 20));
         });
+    });
+});
+
+
+describe("ContactsPage keyboard shortcuts", () => {
+    const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => fireEvent.keyDown(target, { key, ...init });
+
+    it("Alt+N starts a new contact, as the toolbar's New contact does - and Ctrl+N only in the desktop client", async () => {
+        mockShellAndContacts([jane]);
+        render(<ContactsPage userUid="u1" />);
+        await screen.findByText("Jane Doe");
+
+        expect(press("n", { ctrlKey: true })).toBe(true);
+        expect(screen.queryByRole("heading", { name: "New contact" })).not.toBeInTheDocument();
+        expect(press("n", { altKey: true })).toBe(false);
+        expect(screen.getByRole("heading", { name: "New contact" })).toBeInTheDocument();
+    });
+
+    it("Ctrl+N is the same key in the desktop client", async () => {
+        (window as { rapidmx?: unknown }).rapidmx = {};
+        try {
+            mockShellAndContacts([jane]);
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Jane Doe");
+
+            expect(press("n", { ctrlKey: true })).toBe(false);
+            expect(screen.getByRole("heading", { name: "New contact" })).toBeInTheDocument();
+        } finally {
+            delete (window as { rapidmx?: unknown }).rapidmx;
+        }
+    });
+
+    it("focuses the search box with / and with Ctrl+E - and leaves / to the box once it has the focus", async () => {
+        mockShellAndContacts([jane]);
+        render(<ContactsPage userUid="u1" />);
+        await screen.findByText("Jane Doe");
+        const search = screen.getByLabelText("Search contacts");
+
+        expect(press("/")).toBe(false);
+        expect(search).toHaveFocus();
+        expect(press("/", {}, search)).toBe(true);
+        (document.activeElement as HTMLElement).blur();
+        expect(press("e", { ctrlKey: true })).toBe(false);
+        expect(search).toHaveFocus();
+    });
+
+    it("names the shortcut on the New contact button, leaving its name alone", async () => {
+        mockShellAndContacts([jane]);
+        render(<ContactsPage userUid="u1" />);
+        await screen.findByText("Jane Doe");
+
+        const button = screen.getByRole("button", { name: "New contact" });
+        expect(button).toHaveAttribute("title", "New contact (Alt+N)");
+        expect(button).toHaveAttribute("aria-keyshortcuts", "Alt+N");
+        // The other toolbar buttons have no shortcut.
+        expect(screen.getByRole("button", { name: "Export" })).not.toHaveAttribute("aria-keyshortcuts");
+    });
+
+    it("has no keys while the new-contact form's own dialog-like fields have the focus for typing", async () => {
+        mockShellAndContacts([jane]);
+        render(<ContactsPage userUid="u1" />);
+        await screen.findByText("Jane Doe");
+        press("n", { altKey: true });
+        const name = screen.getByLabelText("Display name");
+
+        expect(press("/", {}, name)).toBe(true);
+        expect(press("e", {}, name)).toBe(true);
     });
 });

@@ -3,11 +3,19 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
-import ComposeProvider, { useCompose } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
+import ComposeProvider, { ComposeLateInput, useCompose } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+        resolve = res;
+    });
+    return { promise, resolve };
+}
 
 vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => ({
     default: () => <textarea data-testid="html-editor" />,
@@ -106,7 +114,8 @@ describe("ComposeProvider / useCompose", () => {
 
         const dialog = await screen.findByRole("dialog", { name: "New Message" });
         expect(dialog).toBeInTheDocument();
-        expect(recipientChips("To")).toEqual(["jane@example.com"]);
+        // The window's frame is up on the click; its fields arrive with its code.
+        await waitFor(() => expect(recipientChips("To")).toEqual(["jane@example.com"]));
     });
 
     it("stacks multiple compose windows side by side when opened more than once", async () => {
@@ -231,6 +240,87 @@ describe("ComposeProvider / useCompose", () => {
             // The newly-minimized session's chip, plus the earlier session now shown full-screen.
             expect(await screen.findAllByRole("dialog", { name: "New Message" })).toHaveLength(2);
             expect(screen.getAllByTestId("html-editor")).toHaveLength(1);
+        });
+    });
+
+    describe("a reply that opens before its quoted original is known (pending)", () => {
+        function PendingOpener({ pending }: { pending: () => Promise<ComposeLateInput | undefined> }) {
+            const { openCompose } = useCompose();
+            return (
+                <button type="button" onClick={() => openCompose({ mailboxUid: "mb1", to: "sender@example.com", subject: "Re: Hi", signatureContext: "reply_forward", pending: pending() })}>
+                    Reply
+                </button>
+            );
+        }
+
+        it("opens the window and its editor at once, says the original is loading, then takes the better recipients when they arrive", async () => {
+            mockDraft();
+            const user = userEvent.setup();
+            const late = deferred<ComposeLateInput | undefined>();
+            render(
+                <ComposeProvider>
+                    <PendingOpener pending={() => late.promise} />
+                </ComposeProvider>,
+            );
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+            expect(await screen.findByRole("dialog", { name: "Re: Hi" })).toBeInTheDocument();
+            expect(await screen.findByTestId("html-editor")).toBeInTheDocument();
+            expect(await screen.findByText(/Loading the original message/)).toBeInTheDocument();
+
+            late.resolve({ quotedHtml: "<blockquote>Original</blockquote>", to: "alice@example.com" });
+            await waitFor(() => expect(recipientChips("To")).toEqual(["alice@example.com"]));
+            expect(screen.queryByText(/Loading the original message/)).not.toBeInTheDocument();
+        });
+
+        it("carries on without the quote when what it was waiting for never arrives", async () => {
+            mockDraft();
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <PendingOpener pending={() => Promise.reject(new Error("no body"))} />
+                </ComposeProvider>,
+            );
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+            expect(await screen.findByTestId("html-editor")).toBeInTheDocument();
+            await waitFor(() => expect(screen.queryByText(/Loading the original message/)).not.toBeInTheDocument());
+            expect(recipientChips("To")).toEqual(["sender@example.com"]);
+        });
+
+        it("leaves another open window alone when what one was waiting for arrives", async () => {
+            mockDraft();
+            const user = userEvent.setup();
+            const late = deferred<ComposeLateInput | undefined>();
+            render(
+                <ComposeProvider>
+                    <PendingOpener pending={() => late.promise} />
+                    <Opener mailboxUid="mb2" to="other@example.com" />
+                </ComposeProvider>,
+            );
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+            await user.click(screen.getByRole("button", { name: "Open mb2" }));
+            await screen.findAllByRole("dialog");
+
+            late.resolve({ quotedHtml: "<blockquote>Original</blockquote>", to: "alice@example.com" });
+            await waitFor(() => expect(screen.queryByText(/Loading the original message/)).not.toBeInTheDocument());
+            expect(screen.getAllByRole("dialog").length).toBeGreaterThanOrEqual(1);
+        });
+
+        it("ignores what arrives for a window that was closed meanwhile", async () => {
+            mockDraft();
+            const user = userEvent.setup();
+            const late = deferred<ComposeLateInput | undefined>();
+            render(
+                <ComposeProvider>
+                    <PendingOpener pending={() => late.promise} />
+                </ComposeProvider>,
+            );
+            await user.click(screen.getByRole("button", { name: "Reply" }));
+            await screen.findByRole("dialog", { name: "Re: Hi" });
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            late.resolve({ quotedHtml: "<blockquote>Original</blockquote>" });
+            await act(async () => undefined);
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
         });
     });
 

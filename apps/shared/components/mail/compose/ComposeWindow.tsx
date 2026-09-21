@@ -41,10 +41,15 @@ import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/cryp
 import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { useUnlockPrompt } from "../../layout/UnlockPromptProvider.js";
 import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
-import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } from "@rapidmx/react-shared/crypto/smimeMessage.js";
+import type { ProtectedHeaders } from "@rapidmx/react-shared/crypto/smimeMessage.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
-import type { ComposeSession } from "./ComposeContext.js";
+import { useCompose, type ComposeSession } from "./ComposeContext.js";
+import { ariaKeyShortcuts, withHint } from "../../../keyboard/format.js";
+import { SHORTCUTS, ShortcutDef } from "../../../keyboard/keymap.js";
+import { useKeyEnvironment } from "../../../keyboard/ShortcutProvider.js";
+import { useShortcut } from "../../../keyboard/useShortcut.js";
 import { isSigningOut, registerComposeFlush } from "./composeFlushRegistry.js";
+import { markComposePhase } from "./composePerf.js";
 import RecipientInput from "./RecipientInput.js";
 import { parseRecipientList } from "./recipients.js";
 import RichTextEditor from "./RichTextEditor.js";
@@ -171,17 +176,22 @@ function HeaderButton({
     onClick,
     icon: Icon,
     disabled,
+    shortcut,
 }: {
     label: string;
     onClick: () => void;
     icon: React.ComponentType<{ size?: number }>;
     disabled?: boolean;
+    /** The keyboard shortcut that does the same, named in the tooltip and `aria-keyshortcuts`. */
+    shortcut?: ShortcutDef;
 }) {
+    const env = useKeyEnvironment();
     return (
         <button
             type="button"
             aria-label={label}
-            title={label}
+            title={shortcut ? withHint(label, shortcut, env) : label}
+            aria-keyshortcuts={shortcut ? ariaKeyShortcuts(shortcut, env) : undefined}
             onClick={onClick}
             disabled={disabled}
             className="w-6 h-6 flex items-center justify-center rounded-sm text-white/80 hover:bg-white/15 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
@@ -214,7 +224,15 @@ export default function ComposeWindow({
     autosaveDelayMs = DEFAULT_AUTOSAVE_DELAY_MS,
     cryptoRetryDelaysMs = DEFAULT_CRYPTO_RETRY_DELAYS_MS,
 }: ComposeWindowProps) {
-    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, initialEncrypt, signatureContext, suppressSigning, minimized } = session;
+    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, initialEncrypt, signatureContext, suppressSigning, minimized, quotePending, late } = session;
+    // What a reply worked out after this window opened (see `OpenComposeInput.pending`): better recipients, applied below
+    // only to fields still exactly as they opened - so these, not `initialTo`/`initialCc`, are what "untouched" is measured against.
+    const baselineTo = late?.to ?? initialTo;
+    const baselineCc = late?.cc ?? initialCc;
+    useEffect(() => {
+        markComposePhase(id, "shell");
+        markComposePhase(id, "chunk");
+    }, []);
     // The sending ("From") mailbox. A reply/forward session names the original message's mailbox; a fresh
     // compose leaves it unset and defaults to the caller's own mailbox once `listMailboxes()` resolves.
     // Everything mailbox-scoped below (Drafts folder, draft, signatures, crypto context) keys off this.
@@ -226,6 +244,8 @@ export default function ComposeWindow({
     const [hasUploads, setHasUploads] = useState(false);
     const isMobile = useIsMobile();
     const { requestUnlock } = useUnlockPrompt();
+    const { openCompose } = useCompose();
+    const keyEnv = useKeyEnvironment();
     // Bumped after a successful on-demand unlock to force a re-render - `getUnlockedKeys()` below is a
     // plain read from a module-level store, not React state, so nothing else would pick up the change.
     const [, setUnlockRefresh] = useState(0);
@@ -507,10 +527,16 @@ export default function ComposeWindow({
     // non-blocking fetch in this codebase (e.g. `ConversationList`'s own child-message fetch) — no
     // signature is a completely legitimate outcome, so this falls back to just the quoted content
     // (if any) rather than surfacing an error over what's a cosmetic nicety.
+    //
+    // A reply or forward opens before its quoted original has been fetched (`quotePending`, see
+    // `OpenComposeInput.pending`). The body is seeded as soon as the signature is here, without the quote, so the editor is usable
+    // at once however slow the original is to come; the quote is added at the end of the editor's document when it arrives
+    // (`appendHtml` below) - the same place, under the signature, that a body seeded with it would have had it.
+    const [defaultSignature, setDefaultSignature] = useState<{ html?: string } | undefined>();
     useEffect(() => {
-        // Seeds the body once, from whichever mailbox is the sender when compose opens - switching From
-        // later must not overwrite what the user has already written (the editor itself never re-syncs).
-        if (!mailboxUid || contentReady) {
+        // Fetched once, for whichever mailbox is the sender when compose opens - switching From later must not
+        // overwrite what the user has already written (the editor itself never re-syncs).
+        if (!mailboxUid || contentReady || defaultSignature) {
             return;
         }
         listMailSignatures(mailboxUid)
@@ -518,17 +544,27 @@ export default function ComposeWindow({
                 const signature = signatures.find((s) =>
                     signatureContext === "new" ? s.isDefaultForNewMessages : s.isDefaultForReplyForward,
                 );
-                const seeded = buildComposeBodyHtml(signature?.contentHtml, initialQuotedHtml);
-                setHtml(seeded);
-                setSeededHtml(seeded);
+                setDefaultSignature({ html: signature?.contentHtml });
             })
-            .catch(() => {
-                const seeded = buildComposeBodyHtml(undefined, initialQuotedHtml);
-                setHtml(seeded);
-                setSeededHtml(seeded);
-            })
-            .finally(() => setContentReady(true));
-    }, [mailboxUid, signatureContext, initialQuotedHtml]);
+            .catch(() => setDefaultSignature({}));
+    }, [mailboxUid, signatureContext]);
+    const [seededWithoutQuote, setSeededWithoutQuote] = useState(false);
+    useEffect(() => {
+        if (contentReady || !defaultSignature) {
+            return;
+        }
+        const seeded = buildComposeBodyHtml(defaultSignature.html, quotePending ? undefined : initialQuotedHtml);
+        setHtml(seeded);
+        setSeededHtml(seeded);
+        setSeededWithoutQuote(!!quotePending);
+        setContentReady(true);
+        markComposePhase(id, "body");
+    }, [defaultSignature, quotePending, initialQuotedHtml]);
+    /** What the editor adds to the end of its document once the quote a reply was opened without has arrived. */
+    const lateQuoteHtml =
+        seededWithoutQuote && !quotePending && initialQuotedHtml && defaultSignature
+            ? buildComposeBodyHtml(defaultSignature.html, initialQuotedHtml).slice(buildComposeBodyHtml(defaultSignature.html) === "" ? "<p></p>".length : buildComposeBodyHtml(defaultSignature.html).length)
+            : undefined;
 
     useEffect(() => {
         if (!mailboxUid || !draftsFolderUid || draft) {
@@ -547,6 +583,7 @@ export default function ComposeWindow({
                     return;
                 }
                 setDraft(created);
+                markComposePhase(id, "draft");
                 // Only now that the replacement exists is it safe to discard the draft(s) a From switch
                 // superseded - if creating this one had failed, the earlier draft is still there.
                 for (const superseded of supersededDraftsRef.current.splice(0)) {
@@ -883,6 +920,11 @@ export default function ComposeWindow({
         const bodyContentType = 'text/html; charset="utf-8"';
         const signing = canSign ? { certDer: keys.unlocked!.signingCertDer!, privateKey: keys.unlocked!.signingPrivateKey! } : undefined;
 
+        // The S/MIME code (PKI.js and the ASN.1/X.509 libraries, over half a megabyte) is only needed here, to sign or
+        // encrypt - a plain message never loads it, and it is kept out of the compose window's own chunk.
+        const { applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } = await import(
+            "@rapidmx/react-shared/crypto/smimeMessage.js"
+        );
         const outerHeaders = wantEncrypt ? applyBaselineOuterHeaders(protectedHeaders) : protectedHeaders;
         const mimePart = wantEncrypt
             ? await buildEncryptedMessage(bodyContentType, html, protectedHeaders, outerHeaders, recipientCertDers, signing)
@@ -1204,7 +1246,7 @@ export default function ComposeWindow({
     // Autosave. "User content" is anything beyond what compose opened with (prefilled recipients/subject,
     // seeded signature/quote) - an untouched window has nothing worth saving or confirming a discard of.
     const contentKey = JSON.stringify([to, cc, bcc, subject, html]);
-    const baselineKey = JSON.stringify([initialTo ?? "", initialCc ?? "", "", initialSubject ?? "", seededHtml ?? ""]);
+    const baselineKey = JSON.stringify([baselineTo ?? "", baselineCc ?? "", "", initialSubject ?? "", seededHtml ?? ""]);
     const hasUserContent = contentKey !== baselineKey || hasUploads;
     // A message headed for encryption is never autosaved: the draft would store its plaintext server-side,
     // defeating end-to-end encryption. Until it's known not to be, it isn't either: while the mailbox (whose
@@ -1229,6 +1271,22 @@ export default function ComposeWindow({
         (encryptionPossible && currentAddresses.some((address) => exhaustedLookups[address] && !recipientStatuses[address]));
     const latestRef = useRef({ draft, to, cc, bcc, subject, html, seededHtml, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided });
     latestRef.current = { draft, to, cc, bcc, subject, html, seededHtml, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided };
+
+    // Recipients a reply could only work out after this window opened (Reply All: whoever the original's headers name)
+    // replace the ones it opened with - but only in a field the user hasn't touched, never over what they typed.
+    useEffect(() => {
+        if (!late) {
+            return;
+        }
+        const current = latestRef.current;
+        if (late.to !== undefined && current.to === (initialTo ?? "")) {
+            setTo(late.to);
+        }
+        if (late.cc !== undefined && current.cc === (initialCc ?? "")) {
+            setCc(late.cc);
+            setShowCcBcc((shown) => shown || late.cc !== "");
+        }
+    }, [late]);
 
     useEffect(() => {
         const due =
@@ -1316,7 +1374,7 @@ export default function ComposeWindow({
     // Where the caret starts, once per session: a reply/forward in the body (at its top), a new message in To - or,
     // with To already filled in (e.g. Contacts' "Email"), in Subject. Minimizing unmounts the fields, so restoring a
     // window must not move the caret there again.
-    const isReplyOrForward = initialQuotedHtml !== undefined;
+    const isReplyOrForward = initialQuotedHtml !== undefined || !!quotePending;
     const fieldsFocusedRef = useRef(false);
     const bodyFocusedRef = useRef(false);
     const focusToOnMount = !isReplyOrForward && !initialTo && !fieldsFocusedRef.current;
@@ -1326,7 +1384,16 @@ export default function ComposeWindow({
     // The editor serializes the seeded body its own way (see `RichTextEditor`'s `onInitialized`). While the body is
     // still exactly what compose seeded, that serialization becomes the baseline - so an untouched reply or signature
     // isn't mistaken for an edit (and autosaved) just because the editor was focused or clicked.
+    /** The quote has been added: unless the reader has typed something already, that is still exactly what compose seeded. */
+    function handleQuoteAppended(normalized: string) {
+        const latest = latestRef.current;
+        if (latest.html === latest.seededHtml) {
+            setHtml(normalized);
+            setSeededHtml(normalized);
+        }
+    }
     function handleEditorInitialized(normalized: string) {
+        markComposePhase(id, "editor");
         const latest = latestRef.current;
         if (latest.html === latest.seededHtml && normalized !== latest.html) {
             setHtml(normalized);
@@ -1339,6 +1406,32 @@ export default function ComposeWindow({
             bodyFocusedRef.current ||= contentReady;
         }
     }, [minimized, contentReady]);
+
+    // Keyboard shortcuts, active while the focus is inside this window (`container`; the scope attribute on its root is what tells the
+    // dispatcher the focus is in a compose window at all). They do what the Send and Close buttons and autosave do, under the same conditions -
+    // a shortcut pressed while its button would be disabled is consumed and does nothing.
+    const canSend = !!draft && !sending && !closing && cryptoContextReady;
+    useShortcut(SHORTCUTS.compose.send, () => void (canSend && submit(false)), { container: windowRef });
+    useShortcut(
+        SHORTCUTS.compose.saveDraft,
+        () => {
+            // Autosave's own conditions: never a draft that must not be stored as plaintext, and nothing while a send is on the wire.
+            if (draft && contentReady && cryptoContextReady && !sending && !closing && !autosaveSuppressed && hasUserContent) {
+                void saveDraftNow();
+            }
+        },
+        { container: windowRef },
+    );
+    useShortcut(
+        SHORTCUTS.compose.close,
+        () => {
+            if (!sending && !closing) {
+                void handleClose();
+            }
+        },
+        { container: windowRef },
+    );
+    useShortcut(SHORTCUTS.compose.create, () => openCompose({ mailboxUid }), { container: windowRef });
 
     const title = subject.trim() || "New Message";
     const titleId = `compose-title-${id}`;
@@ -1401,6 +1494,7 @@ export default function ComposeWindow({
         <div
             ref={windowRef}
             role="dialog"
+            data-shortcut-scope="compose"
             aria-labelledby={titleId}
             style={!isMobile && manualSize ? { width: manualSize.width, height: manualSize.height } : undefined}
             className={[
@@ -1447,7 +1541,7 @@ export default function ComposeWindow({
                             icon={expanded ? HiOutlineArrowsPointingIn : HiOutlineArrowsPointingOut}
                         />
                     )}
-                    <HeaderButton label="Close" onClick={() => void handleClose()} icon={HiOutlineXMark} disabled={sending || closing} />
+                    <HeaderButton label="Close" onClick={() => void handleClose()} icon={HiOutlineXMark} disabled={sending || closing} shortcut={SHORTCUTS.compose.close} />
                 </div>
             </div>
 
@@ -1619,6 +1713,8 @@ export default function ComposeWindow({
                 <div className="flex-1 min-h-0 p-2">
                     {contentReady && (
                         <RichTextEditor
+                            appendHtml={lateQuoteHtml}
+                            onAppended={handleQuoteAppended}
                             value={html}
                             onChange={setHtml}
                             fill
@@ -1628,6 +1724,12 @@ export default function ComposeWindow({
                         />
                     )}
                 </div>
+
+                {quotePending && (
+                    <p role="status" className="px-3 pb-1 text-xs text-text-muted">
+                        Loading the original message&hellip;
+                    </p>
+                )}
 
                 {attachments.length > 0 && (
                     <ul className="flex flex-wrap gap-2 px-3 pb-2">
@@ -1678,6 +1780,8 @@ export default function ComposeWindow({
                         <button
                             type="button"
                             onClick={() => void submit(false)}
+                            title={withHint("Send", SHORTCUTS.compose.send, keyEnv)}
+                            aria-keyshortcuts={ariaKeyShortcuts(SHORTCUTS.compose.send, keyEnv)}
                             disabled={!draft || sending || closing || !cryptoContextReady}
                             className="py-1.5 pl-5 pr-3 font-semibold text-sm hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >

@@ -2,10 +2,81 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { PropsWithChildren, createContext, useContext, useMemo, useState } from "react";
+import React, { PropsWithChildren, createContext, useContext, useEffect, useMemo, useState } from "react";
 import { DraftThreading } from "@rapidmx/react-shared/mail/mailApi.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
-import ComposeWindow from "./ComposeWindow.js";
+import { markComposePhase } from "./composePerf.js";
+import ComposeWindowPlaceholder from "./ComposeWindowPlaceholder.js";
+
+type ComposeWindowComponent = typeof import("./ComposeWindow.js").default;
+
+let loadedComposeWindow: ComposeWindowComponent | undefined;
+let loadingComposeWindow: Promise<ComposeWindowComponent> | undefined;
+
+/**
+ * The compose window - with the rich-text editor (TipTap/ProseMirror), the recipient inputs and the send pipeline - is
+ * the largest piece of the mail app and most page loads never open it, so it is a separate chunk, loaded here once. Not
+ * `React.lazy()`: a chunk that failed to download (offline, a deploy that replaced it) must be retryable, and `lazy()` keeps
+ * the rejection for good.
+ */
+function loadComposeWindow(): Promise<ComposeWindowComponent> {
+    loadingComposeWindow ??= import("./ComposeWindow.js").then(
+        (module) => (loadedComposeWindow = module.default),
+        (err) => {
+            loadingComposeWindow = undefined;
+            throw err;
+        },
+    );
+    return loadingComposeWindow;
+}
+
+/**
+ * Starts downloading the compose window's code without opening one - on hover/focus of a Compose or Reply button and when
+ * the browser is idle after the inbox has loaded - so that clicking it finds the chunk already in memory. Safe to call
+ * any number of times, and never rejects: a failed download is retried by the click itself.
+ */
+export function prefetchComposeWindow(): void {
+    loadComposeWindow().catch(() => undefined);
+}
+
+/** Test seam: forgets the loaded compose window chunk, as a fresh page load would. */
+export function resetComposeWindowLoader(): void {
+    loadedComposeWindow = undefined;
+    loadingComposeWindow = undefined;
+}
+
+/** The compose window component once its chunk is in, else `undefined` (while loading, or `failed`), and a way to retry. */
+function useComposeWindowComponent(wanted: boolean): { Component: ComposeWindowComponent | undefined; failed: boolean; retry: () => void } {
+    const [loaded, setComponent] = useState<ComposeWindowComponent | undefined>();
+    // Also read straight from the module: a prefetch that finished after this provider mounted has no state update to
+    // announce it, and the first click must not flash the placeholder for a chunk that is already here.
+    const Component = loaded ?? loadedComposeWindow;
+    const [failed, setFailed] = useState(false);
+    const [attempt, setAttempt] = useState(0);
+    useEffect(() => {
+        if (!wanted || Component) {
+            return;
+        }
+        let cancelled = false;
+        setFailed(false);
+        loadComposeWindow().then(
+            (component) => {
+                if (!cancelled) {
+                    setComponent(() => component);
+                }
+            },
+            () => {
+                if (!cancelled) {
+                    setFailed(true);
+                }
+            },
+        );
+        return () => {
+            cancelled = true;
+        };
+    }, [wanted, Component, attempt]);
+    return { Component, failed, retry: () => setAttempt((n) => n + 1) };
+}
 
 export interface ComposeSession {
     id: string;
@@ -27,7 +98,21 @@ export interface ComposeSession {
     signatureContext: "new" | "reply_forward";
     /** See `OpenComposeInput.suppressSigning`'s own doc comment. */
     suppressSigning?: boolean;
+    /** The window opened before its quoted original was known (see `OpenComposeInput.pending`): the body waits for it. */
+    quotePending?: boolean;
+    /** What `OpenComposeInput.pending` resolved with, once it has - see `ComposeLateInput`. */
+    late?: ComposeLateInput;
     minimized: boolean;
+}
+
+/** What a reply or forward could only work out after its window was already open (see `OpenComposeInput.pending`). */
+export interface ComposeLateInput {
+    /** The quoted original - see `OpenComposeInput.quotedHtml`. */
+    quotedHtml?: string;
+    /** A better To than the one the window opened with - applied only if the To field is still exactly what it opened with. */
+    to?: string;
+    /** A better Cc, under the same rule as `to`. */
+    cc?: string;
 }
 
 export interface OpenComposeInput {
@@ -61,6 +146,15 @@ export interface OpenComposeInput {
      * `In-Reply-To`/`References` at all and every mail system - the sender's own Sent Items included - files it
      * as a new conversation rather than part of the thread. Absent for a fresh compose, which starts one. */
     threading?: DraftThreading;
+    /**
+     * Something the window shouldn't wait for before appearing: a reply or forward opens at once from what is already in
+     * memory (the message's own subject and sender), and this settles with what needed the network - the original's body
+     * to quote, and for Reply All the recipients its headers name. The compose window shows meanwhile, its body area
+     * waiting, and fills the body in when this resolves; `to`/`cc` replace the opened-with values only if the user hasn't
+     * touched those fields. Must never reject (resolve `undefined` for "nothing more"); when set, `quotedHtml` is ignored
+     * until it resolves.
+     */
+    pending?: Promise<ComposeLateInput | undefined>;
 }
 
 export interface ComposeContextValue {
@@ -85,6 +179,7 @@ export function useCompose(): ComposeContextValue {
 export default function ComposeProvider({ children, userUid, trusted }: PropsWithChildren<{ userUid?: string; trusted?: boolean }>) {
     const [sessions, setSessions] = useState<ComposeSession[]>([]);
     const isMobile = useIsMobile();
+    const { Component: ComposeWindow, failed, retry: retryLoad } = useComposeWindowComponent(sessions.length > 0);
 
     function openCompose({
         mailboxUid,
@@ -96,11 +191,14 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
         suppressSigning,
         encrypt,
         threading,
+        pending,
     }: OpenComposeInput) {
+        const id = crypto.randomUUID();
+        markComposePhase(id, "click");
         setSessions((prev) => [
             ...prev,
             {
-                id: crypto.randomUUID(),
+                id,
                 mailboxUid,
                 initialTo: to,
                 initialCc: cc,
@@ -110,9 +208,20 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
                 threading,
                 signatureContext,
                 suppressSigning,
+                quotePending: !!pending,
                 minimized: false,
             },
         ]);
+        // A window closed before this settles is simply not in the list any more - nothing to update.
+        void pending
+            ?.catch(() => undefined)
+            .then((late) =>
+                setSessions((prev) =>
+                    prev.map((s) =>
+                        s.id === id ? { ...s, quotePending: false, late, initialQuotedHtml: late?.quotedHtml ?? s.initialQuotedHtml } : s,
+                    ),
+                ),
+            );
     }
 
     function closeCompose(id: string) {
@@ -143,13 +252,23 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
                         const hidden = isMobile && !session.minimized && session.id !== lastNonMinimizedId;
                         return (
                             <div key={session.id} hidden={hidden} className={hidden ? "hidden" : "contents"}>
-                                <ComposeWindow
-                                    session={session}
-                                    userUid={userUid}
-                                    trusted={trusted}
-                                    onClose={() => closeCompose(session.id)}
-                                    onToggleMinimize={() => toggleMinimize(session.id)}
-                                />
+                                {ComposeWindow ? (
+                                    <ComposeWindow
+                                        session={session}
+                                        userUid={userUid}
+                                        trusted={trusted}
+                                        onClose={() => closeCompose(session.id)}
+                                        onToggleMinimize={() => toggleMinimize(session.id)}
+                                    />
+                                ) : (
+                                    <ComposeWindowPlaceholder
+                                        session={session}
+                                        failed={failed}
+                                        onRetry={retryLoad}
+                                        onClose={() => closeCompose(session.id)}
+                                        onToggleMinimize={() => toggleMinimize(session.id)}
+                                    />
+                                )}
                             </div>
                         );
                     })}

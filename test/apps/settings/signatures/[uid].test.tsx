@@ -7,7 +7,10 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SignatureDetailPage from "../../../../apps/www/settings/signatures/[uid].js";
+import SignatureDetailPageRouted from "../../../../apps/www/settings/signatures/[uid].js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const SignatureDetailPage = SignatureDetailPageRouted.page;
 
 vi.mock("../../../../apps/shared/components/mail/compose/RichTextEditor.js", () => ({
     default: ({

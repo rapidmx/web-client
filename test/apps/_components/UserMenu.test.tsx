@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -41,20 +41,218 @@ describe("UserMenu", () => {
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it("shows the trusted-role-only Admin item when showAdminLink is set", async () => {
+    it("shows the trusted-role-only Admin Console item when showAdminLink is set", async () => {
         const user = userEvent.setup();
         render(<UserMenu userUid="jane" onSignOut={vi.fn()} showAdminLink />);
 
         await user.click(screen.getByRole("button", { name: "Account menu" }));
-        expect(screen.getByRole("menuitem", { name: "Admin" })).toHaveAttribute("href", "/admin");
+        const item = screen.getByRole("menuitem", { name: "Admin Console" });
+        expect(item).toHaveAttribute("href", "/admin");
+        // An icon beside the label, hidden from assistive technology so the name stays exactly the label.
+        expect(item.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     });
 
-    it("hides the Admin item when showAdminLink is not set", async () => {
+    it("hides the Admin Console item when showAdminLink is not set", async () => {
         const user = userEvent.setup();
         render(<UserMenu userUid="jane" onSignOut={vi.fn()} />);
 
         await user.click(screen.getByRole("button", { name: "Account menu" }));
-        expect(screen.queryByRole("menuitem", { name: "Admin" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("menuitem", { name: "Admin Console" })).not.toBeInTheDocument();
+    });
+
+    describe("new mail notification settings", () => {
+        function stubNotification(permission: NotificationPermission, requestPermission = vi.fn().mockResolvedValue(permission)) {
+            vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission, requestPermission }));
+            return requestPermission;
+        }
+
+        it("are left out unless asked for", async () => {
+            stubNotification("default");
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitemcheckbox")).not.toBeInTheDocument();
+            expect(screen.queryByRole("menuitem", { name: "Turn on desktop notifications" })).not.toBeInTheDocument();
+        });
+
+        it("switch new mail pop-ups on and off, and remember it", async () => {
+            stubNotification("granted");
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+
+            const toggle = screen.getByRole("menuitemcheckbox", { name: /New mail pop-ups/ });
+            expect(toggle).toHaveAttribute("aria-checked", "true");
+            expect(toggle).toHaveTextContent("On");
+
+            await user.click(toggle);
+            expect(toggle).toHaveAttribute("aria-checked", "false");
+            expect(toggle).toHaveTextContent("Off");
+            expect(localStorage.getItem("rapidmx-new-mail-popups")).toBe("off");
+
+            await user.click(toggle);
+            expect(toggle).toHaveAttribute("aria-checked", "true");
+            expect(localStorage.getItem("rapidmx-new-mail-popups")).toBeNull();
+        });
+
+        it("read the saved choice each time the menu opens", async () => {
+            stubNotification("granted");
+            localStorage.setItem("rapidmx-new-mail-popups", "off");
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.getByRole("menuitemcheckbox", { name: /New mail pop-ups/ })).toHaveAttribute("aria-checked", "false");
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            localStorage.removeItem("rapidmx-new-mail-popups");
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.getByRole("menuitemcheckbox", { name: /New mail pop-ups/ })).toHaveAttribute("aria-checked", "true");
+        });
+
+        it("offer desktop notifications only while the browser has not been asked, and ask only when clicked", async () => {
+            const requestPermission = stubNotification("default", vi.fn().mockResolvedValue("granted"));
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(requestPermission).not.toHaveBeenCalled();
+
+            await user.click(screen.getByRole("menuitem", { name: "Turn on desktop notifications" }));
+            expect(requestPermission).toHaveBeenCalledTimes(1);
+            // Answered: the item goes, and the first pop-up's own offer is not made again.
+            expect(screen.queryByRole("menuitem", { name: "Turn on desktop notifications" })).not.toBeInTheDocument();
+            expect(localStorage.getItem("rapidmx-desktop-notifications-offer")).not.toBeNull();
+        });
+
+        it("offer nothing about desktop notifications once granted, once denied, or where the browser has none", async () => {
+            const user = userEvent.setup();
+            for (const permission of ["granted", "denied"] as const) {
+                stubNotification(permission);
+                const { unmount } = render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
+                await user.click(screen.getByRole("button", { name: "Account menu" }));
+                expect(screen.getByRole("menuitemcheckbox")).toBeInTheDocument();
+                expect(screen.queryByRole("menuitem", { name: "Turn on desktop notifications" })).not.toBeInTheDocument();
+                unmount();
+            }
+            vi.stubGlobal("Notification", undefined);
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitem", { name: "Turn on desktop notifications" })).not.toBeInTheDocument();
+        });
+
+        it("come above Admin Console and Sign Out", async () => {
+            stubNotification("default");
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings showAdminLink />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            const items = [...screen.getByRole("menu").querySelectorAll('[role^="menuitem"]')];
+            expect(items.map((item) => item.textContent)).toEqual([
+                expect.stringContaining("New mail pop-ups"),
+                "Turn on desktop notifications",
+                "Admin Console",
+                "Sign Out",
+            ]);
+        });
+    });
+
+    describe("detecting an administrator with an ordinary (not elevated) session", () => {
+        /** An auth-server that answers `/api/users/me` with the given roles and everything else with nothing. */
+        function authServerWithRoles(roles: string[]) {
+            return mockFetch((url) => (url.endsWith("/api/users/me") ? jsonResponse(200, { uid: "jane", roles }) : jsonResponse(404, {})));
+        }
+        const askedForUser = (fetchMock: ReturnType<typeof mockFetch>) =>
+            fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/users/me"));
+
+        it("shows Admin Console, above Sign Out, for a user whose own record holds the admin role", async () => {
+            const fetchMock = authServerWithRoles(["user", "admin"]);
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} detectAdmin />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByRole("menuitem", { name: "Admin Console" })).toHaveAttribute("href", "/admin");
+            const items = screen.getAllByRole("menuitem").map((item) => item.textContent);
+            expect(items.at(-2)).toBe("Admin Console");
+            expect(items.at(-1)).toBe("Sign Out");
+            expect(fetchMock).toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/users/me`, expect.objectContaining({ credentials: "include" }));
+        });
+
+        it("keeps it hidden for a user without the role", async () => {
+            const fetchMock = authServerWithRoles(["user"]);
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} detectAdmin />);
+
+            await waitFor(() => expect(askedForUser(fetchMock)).toBe(true));
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitem", { name: "Admin Console" })).not.toBeInTheDocument();
+        });
+
+        it("keeps it hidden when the lookup fails", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(401, { message: "Sign in." }));
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} detectAdmin />);
+
+            await waitFor(() => expect(askedForUser(fetchMock)).toBe(true));
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitem", { name: "Admin Console" })).not.toBeInTheDocument();
+        });
+
+        it("looks for the server's configured trusted role names", async () => {
+            authServerWithRoles(["operator"]);
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} detectAdmin trustedRoles={["operator"]} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByRole("menuitem", { name: "Admin Console" })).toBeInTheDocument();
+        });
+
+        it("asks nothing without detectAdmin, without authServerUrl, or when the session already shows the link", async () => {
+            const fetchMock = authServerWithRoles(["admin"]);
+            const user = userEvent.setup();
+            const { unmount } = render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/profiles/me`, expect.anything()));
+            expect(askedForUser(fetchMock)).toBe(false);
+            unmount();
+
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} detectAdmin />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitem", { name: "Admin Console" })).not.toBeInTheDocument();
+            expect(askedForUser(fetchMock)).toBe(false);
+
+            fetchMock.mockClear();
+            cleanup();
+            render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} detectAdmin showAdminLink />);
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/profiles/me`, expect.anything()));
+            expect(askedForUser(fetchMock)).toBe(false);
+        });
+
+        it("drops the item again when detection is switched off (impersonation began)", async () => {
+            authServerWithRoles(["admin"]);
+            const user = userEvent.setup();
+            const { rerender } = render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} detectAdmin />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByRole("menuitem", { name: "Admin Console" })).toBeInTheDocument();
+
+            rerender(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} detectAdmin={false} />);
+            expect(screen.queryByRole("menuitem", { name: "Admin Console" })).not.toBeInTheDocument();
+        });
+
+        it("ignores an answer that arrives after the menu unmounted", async () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => (release = resolve));
+            const fetchMock = mockFetch(async (url) => {
+                if (url.endsWith("/api/users/me")) {
+                    await gate;
+                    return jsonResponse(200, { uid: "jane", roles: ["admin"] });
+                }
+                return jsonResponse(404, {});
+            });
+            const { unmount } = render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} detectAdmin />);
+            await waitFor(() => expect(askedForUser(fetchMock)).toBe(true));
+            unmount();
+            release();
+            await act(async () => {
+                await gate;
+            });
+        });
     });
 
     it("shows the Settings item when showSettingsLink is set", async () => {
@@ -296,7 +494,34 @@ describe("UserMenu", () => {
             render(<UserMenu userUid="jane" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} showSettingsLink showAdminLink />);
 
             await user.click(screen.getByRole("button", { name: "Account menu" }));
-            expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Account", "Settings", "Admin", "Sign Out"]);
+            expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Account", "Settings", "Admin Console", "Sign Out"]);
         });
+    });
+});
+
+
+describe("UserMenu keyboard shortcuts item", () => {
+    it("is left out unless the shell has a keyboard layer to open the dialog of", async () => {
+        const user = userEvent.setup();
+        render(<UserMenu userUid="jane" onSignOut={vi.fn()} />);
+
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        expect(screen.queryByRole("menuitem", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
+    });
+
+    it("opens the shortcuts dialog and closes the menu, sitting above Sign Out and after Settings", async () => {
+        const onShowShortcuts = vi.fn();
+        const user = userEvent.setup();
+        render(<UserMenu userUid="jane" onSignOut={vi.fn()} showSettingsLink showAdminLink onShowShortcuts={onShowShortcuts} />);
+
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Settings", "Keyboard shortcuts", "Admin Console", "Sign Out"]);
+        const item = screen.getByRole("menuitem", { name: "Keyboard shortcuts" });
+        expect(item).toHaveAttribute("aria-keyshortcuts", "? Control+/");
+
+        await user.click(item);
+
+        expect(onShowShortcuts).toHaveBeenCalledTimes(1);
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     });
 });

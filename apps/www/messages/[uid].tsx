@@ -2,20 +2,22 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { routedPage } from "../_routedPage.js";
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Message, getMessage } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
-import { useMarkMessageRead, useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
+import { useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
+import { useMarkMessageRead } from "../../shared/mail/useMarkMessageRead.js";
 import MailShell, { MailShellProps, useMailShell } from "../../shared/components/mail/layout/MailShell.js";
-import MessageDetailPane from "../../shared/components/mail/MessageDetailPane.js";
+import { LazyMessageDetailPane } from "../../shared/components/mail/LazyReadingPane.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 /**
  * Only reached on mobile (below the `md` breakpoint) — desktop's `apps/www/index.tsx` keeps its existing
  * inline reading pane and never navigates here; see that file's `handleSelect`.
  */
-export default function MessageDetailPage(props: MailShellProps & { params: { uid: string } }) {
+function MessageDetailPage(props: MailShellProps & { params: { uid: string } }) {
     return (
         <MailShell {...props}>
             <MessageDetailContent uid={props.params.uid} />
@@ -79,7 +81,8 @@ function MessageDetailContent({ uid }: { uid: string }) {
     const isOutbox = folders.find((f) => f.uid === message.folderUid)?.type === "outbox";
     const draftsFolderUid = folders.find((f) => f.type === "drafts")?.uid;
     return (
-        <MessageDetailPane
+        <LazyMessageDetailPane
+            shortcuts
             message={message}
             attachments={attachments}
             backHref={backHref}
@@ -99,3 +102,5 @@ function MessageDetailContent({ uid }: { uid: string }) {
         />
     );
 }
+
+export default routedPage("/messages/:uid", MessageDetailPage);

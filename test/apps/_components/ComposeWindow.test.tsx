@@ -12,6 +12,12 @@ import ComposeWindow from "../../../apps/shared/components/mail/compose/ComposeW
 import type { ComposeSession } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
 import { clearMailboxWritabilityCache } from "../../../apps/shared/components/mail/writableMailboxes.js";
 import { clearSigningOut, flushComposeDrafts, markSigningOut } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
+import { ShortcutProvider } from "../../../apps/shared/keyboard/ShortcutProvider.js";
+
+// "New message" (Alt+N) from inside a window asks the compose context for another one; the window is rendered on its own here, so what it asks
+// for is a spy.
+const { openCompose } = vi.hoisted(() => ({ openCompose: vi.fn() }));
+vi.mock("../../../apps/shared/components/mail/compose/ComposeContext.js", () => ({ useCompose: () => ({ openCompose }) }));
 
 // subscribeKeySession keeps a real listener set, so tests can fire lock/unlock events via emitKeySession().
 const { getUnlockedKeys, keySessionListeners } = vi.hoisted(() => ({
@@ -395,7 +401,7 @@ describe("ComposeWindow", () => {
             const from = await screen.findByLabelText("From");
             await waitFor(() => expect(screen.getByLabelText("Attach files")).not.toBeDisabled());
 
-            await user.click(screen.getByRole("button", { name: "fake-upload-image" }));
+            await user.click(await screen.findByRole("button", { name: "fake-upload-image" }));
 
             await waitFor(() => expect(from).toBeDisabled());
         });
@@ -3927,5 +3933,226 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 cleanup();
             }
         });
+    });
+});
+
+
+describe("ComposeWindow keyboard shortcuts", () => {
+    const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => fireEvent.keyDown(target, { key, ...init });
+    const CTRL = { ctrlKey: true };
+
+    function mockShortcutServer(extra?: (url: string, init?: RequestInit) => Response | undefined) {
+        let version = 0;
+        return mockCompose((url, init) => {
+            const custom = extra?.(url, init);
+            if (custom) return custom;
+            const method = init?.method ?? "GET";
+            if (url === "/api/mail/compose/m1/assemble" && method === "POST") {
+                version += 1;
+                return jsonResponse(200, { ...draft, version });
+            }
+            if (url.startsWith("/api/mail/messages/m1?") && method === "DELETE") return new Response(null, { status: 204 });
+            if (url === "/api/mail/messages/m1/send" && method === "POST") return jsonResponse(200, draft);
+            return undefined;
+        });
+    }
+    const calls = (fetchMock: ReturnType<typeof mockFetch>, url: string, method = "POST") =>
+        fetchMock.mock.calls.filter(([u, init]) => u === url && ((init as RequestInit | undefined)?.method ?? "GET") === method);
+
+    async function renderReady(props: Partial<React.ComponentProps<typeof ComposeWindow>> = {}, sessionOverrides: Partial<ComposeSession> = {}) {
+        const onClose = vi.fn();
+        render(
+            <ShortcutProvider>
+                <ComposeWindow session={session(sessionOverrides)} onClose={onClose} onToggleMinimize={vi.fn()} autosaveDelayMs={60_000} {...props} />
+            </ShortcutProvider>,
+        );
+        await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+        await screen.findByTestId("html-editor");
+        return { onClose };
+    }
+
+    const encryptionKeys = () => ({
+        masterKey: new Uint8Array(32),
+        encryptionPrivateKey: fakeEncryptionKey,
+        encryptionCertDer: fakeCertDer("alice-encrypt"),
+        encryptionFingerprint: "fp-own",
+    });
+
+    it("Ctrl+Enter sends from anywhere in the window - a field included - the way the Send button does", async () => {
+        const fetchMock = mockShortcutServer();
+        const { onClose } = await renderReady({}, { initialTo: "b@example.com" });
+        fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Hi there" } });
+
+        expect(press("Enter", CTRL, screen.getByLabelText("Subject"))).toBe(false);
+
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+        expect(calls(fetchMock, "/api/mail/compose/m1/assemble")).toHaveLength(1);
+        expect(calls(fetchMock, "/api/mail/messages/m1/send")).toHaveLength(1);
+    });
+
+    it("takes Ctrl+Enter and does nothing while Send is disabled (no draft yet)", async () => {
+        let createDraft: ((response: Response) => void) | undefined;
+        const fetchMock = mockShortcutServer((url, init) =>
+            url === "/api/mail/messages" && init?.method === "POST" ? (new Promise((resolve) => (createDraft = resolve)) as unknown as Response) : undefined,
+        );
+        render(
+            <ShortcutProvider>
+                <ComposeWindow session={session({ initialTo: "b@example.com" })} onClose={vi.fn()} onToggleMinimize={vi.fn()} autosaveDelayMs={60_000} />
+            </ShortcutProvider>,
+        );
+        expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+        expect(press("Enter", CTRL, screen.getByLabelText("Subject"))).toBe(false);
+
+        expect(calls(fetchMock, "/api/mail/compose/m1/assemble")).toHaveLength(0);
+        await waitFor(() => expect(createDraft).toBeDefined());
+        createDraft!(jsonResponse(200, draft));
+        await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+    });
+
+    it("does not take Ctrl+Enter from outside the window", async () => {
+        const fetchMock = mockShortcutServer();
+        await renderReady({}, { initialTo: "b@example.com" });
+
+        expect(press("Enter", CTRL)).toBe(true);
+
+        expect(calls(fetchMock, "/api/mail/compose/m1/assemble")).toHaveLength(0);
+    });
+
+    it("Ctrl+S saves the draft now, without waiting for the autosave pause", async () => {
+        const fetchMock = mockShortcutServer();
+        await renderReady();
+        fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Save me" } });
+        expect(calls(fetchMock, "/api/mail/compose/m1/assemble")).toHaveLength(0);
+
+        expect(press("s", CTRL, screen.getByLabelText("Subject"))).toBe(false);
+
+        await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Draft saved"));
+        expect(calls(fetchMock, "/api/mail/compose/m1/assemble")).toHaveLength(1);
+        expect(JSON.parse((calls(fetchMock, "/api/mail/compose/m1/assemble")[0][1] as RequestInit).body as string)).toMatchObject({ subject: "Save me" });
+    });
+
+    it("takes Ctrl+S and saves nothing when there is nothing to save, so the browser's Save page never opens", async () => {
+        const fetchMock = mockShortcutServer();
+        await renderReady();
+
+        expect(press("s", CTRL, screen.getByLabelText("Subject"))).toBe(false);
+
+        expect(calls(fetchMock, "/api/mail/compose/m1/assemble")).toHaveLength(0);
+    });
+
+    it("never saves a message headed for encryption with Ctrl+S - as autosave never does", async () => {
+        getUnlockedKeys.mockReturnValue(encryptionKeys());
+        const fetchMock = mockShortcutServer();
+        const user = userEvent.setup();
+        await renderReady();
+        await user.click(screen.getByLabelText("Encrypt this message"));
+        fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Secret plans" } });
+
+        expect(press("s", CTRL, screen.getByLabelText("Subject"))).toBe(false);
+
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(calls(fetchMock, "/api/mail/compose/m1/assemble")).toHaveLength(0);
+    });
+
+    it("Escape closes through the same path as the Close button: it keeps the draft (saving what is unsaved first)", async () => {
+        const fetchMock = mockShortcutServer();
+        const { onClose } = await renderReady();
+        fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Keep me" } });
+
+        expect(press("Escape", {}, screen.getByLabelText("Subject"))).toBe(false);
+
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+        expect(calls(fetchMock, "/api/mail/compose/m1/assemble")).toHaveLength(1);
+        expect(calls(fetchMock, "/api/mail/messages/m1", "DELETE")).toHaveLength(0);
+    });
+
+    it("Escape on a window nothing was typed in closes it and deletes the blank draft, as Close does", async () => {
+        const fetchMock = mockShortcutServer();
+        const { onClose } = await renderReady();
+
+        press("Escape", {}, screen.getByLabelText("Subject"));
+
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(true));
+    });
+
+    it("Escape asks the existing question before closing a message that cannot be kept as a draft, and the prompt's own Escape wins over the window's", async () => {
+        getUnlockedKeys.mockReturnValue(encryptionKeys());
+        mockShortcutServer();
+        const user = userEvent.setup();
+        const { onClose } = await renderReady();
+        await user.click(screen.getByLabelText("Encrypt this message"));
+        fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Secret plans" } });
+
+        press("Escape", {}, screen.getByLabelText("Subject"));
+        const prompt = await screen.findByRole("dialog", { name: "Discard this draft?" });
+        expect(onClose).not.toHaveBeenCalled();
+
+        // With the prompt open only it is listening: its Escape closes the prompt (it is a modal), and the window behind it stays.
+        expect(press("Escape", {}, prompt)).toBe(true);
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).not.toBeInTheDocument());
+        expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("takes Escape but does nothing while a send is on the wire, as the Close button is disabled", async () => {
+        let finishSend!: (response: Response) => void;
+        mockShortcutServer((url) =>
+            url === "/api/mail/messages/m1/send" ? (new Promise((resolve) => (finishSend = resolve)) as unknown as Response) : undefined,
+        );
+        const { onClose } = await renderReady({}, { initialTo: "b@example.com" });
+
+        press("Enter", CTRL, screen.getByLabelText("Subject"));
+        await waitFor(() => expect(screen.getByRole("button", { name: "Close" })).toBeDisabled());
+
+        expect(press("Escape", {}, screen.getByLabelText("Subject"))).toBe(false);
+        expect(onClose).not.toHaveBeenCalled();
+        finishSend(jsonResponse(200, draft));
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    });
+
+    it("Alt+N opens another new message from the same sending mailbox - Ctrl+N as well in the desktop client", async () => {
+        mockShortcutServer();
+        await renderReady();
+        const subject = screen.getByLabelText("Subject");
+
+        expect(press("n", { altKey: true }, subject)).toBe(false);
+        expect(openCompose).toHaveBeenCalledWith({ mailboxUid: "mb1" });
+        expect(press("n", CTRL, subject)).toBe(true);
+
+        (window as { rapidmx?: unknown }).rapidmx = {};
+        try {
+            expect(press("n", CTRL, subject)).toBe(false);
+            expect(openCompose).toHaveBeenCalledTimes(2);
+        } finally {
+            delete (window as { rapidmx?: unknown }).rapidmx;
+        }
+    });
+
+    it("does not register its keys for a minimized window", async () => {
+        mockShortcutServer();
+        render(
+            <ShortcutProvider>
+                <ComposeWindow session={session({ minimized: true })} onClose={vi.fn()} onToggleMinimize={vi.fn()} />
+            </ShortcutProvider>,
+        );
+        const bar = screen.getByRole("button", { name: "Restore" });
+        expect(press("Enter", CTRL, bar)).toBe(true);
+        expect(press("Escape", {}, bar)).toBe(true);
+        expect(press("s", CTRL, bar)).toBe(true);
+    });
+
+    it("names its shortcuts on the Send and Close buttons, leaving their accessible names alone", async () => {
+        mockShortcutServer();
+        await renderReady();
+        const send = screen.getByRole("button", { name: "Send" });
+        expect(send).toHaveAttribute("title", "Send (Ctrl+Enter)");
+        expect(send).toHaveAttribute("aria-keyshortcuts", "Control+Enter");
+        const close = screen.getByRole("button", { name: "Close" });
+        expect(close).toHaveAttribute("title", "Close (Esc)");
+        expect(close).toHaveAttribute("aria-keyshortcuts", "Escape");
+        // The other header buttons have none.
+        expect(screen.getByRole("button", { name: "Minimize" })).toHaveAttribute("title", "Minimize");
+        expect(screen.getByRole("button", { name: "Minimize" })).not.toHaveAttribute("aria-keyshortcuts");
     });
 });

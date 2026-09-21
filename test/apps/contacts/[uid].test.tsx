@@ -7,7 +7,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import ContactDetailPage from "../../../apps/www/contacts/[uid].js";
+import ContactDetailPageRouted from "../../../apps/www/contacts/[uid].js";
+
+// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
+const ContactDetailPage = ContactDetailPageRouted.page;
 
 // Round 6: a saved or deleted contact drops the trusted-signer pins cached from contacts.
 const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));

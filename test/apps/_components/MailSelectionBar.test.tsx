@@ -312,3 +312,32 @@ describe("MailSelectionBar", () => {
         });
     });
 });
+
+describe("MailSelectionBar keyboard shortcut hints", () => {
+    it("names Delete, Mark read, Mark unread and Flag's shortcuts in the tooltip and aria-keyshortcuts when the page has them", () => {
+        renderBar({ shortcuts: true });
+
+        expect(screen.getByRole("button", { name: "Mark read" })).toHaveAttribute("title", "Mark read (Ctrl+Q)");
+        expect(screen.getByRole("button", { name: "Mark read" })).toHaveAttribute("aria-keyshortcuts", "Control+Q");
+        expect(screen.getByRole("button", { name: "Mark unread" })).toHaveAttribute("title", "Mark unread (Ctrl+U)");
+        expect(screen.getByRole("button", { name: "Flag" })).toHaveAttribute("title", "Flag (Insert)");
+        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("title", "Delete (Ctrl+D)");
+        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("aria-keyshortcuts", "Control+D Delete");
+        // Unflag has no key of its own (Insert toggles), and Archive's key acts on the open message.
+        expect(screen.getByRole("button", { name: "Unflag" })).not.toHaveAttribute("aria-keyshortcuts");
+        expect(screen.getByRole("button", { name: "Archive" })).not.toHaveAttribute("aria-keyshortcuts");
+    });
+
+    it("says nothing about shortcuts without them, and lets the reason a button is disabled be its tooltip", () => {
+        renderBar({ currentFolderUid: "f3" });
+        expect(screen.getByRole("button", { name: "Mark read" })).not.toHaveAttribute("aria-keyshortcuts");
+        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("title", "These messages are already in Deleted Items");
+        expect(screen.getByRole("button", { name: "Delete" })).not.toHaveAttribute("aria-keyshortcuts");
+    });
+
+    it("prefers the reason to the hint when Delete is disabled", () => {
+        renderBar({ currentFolderUid: "f3", shortcuts: true });
+        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("title", "These messages are already in Deleted Items");
+        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("aria-keyshortcuts", "Control+D Delete");
+    });
+});
