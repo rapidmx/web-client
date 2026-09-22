@@ -12,9 +12,9 @@ export default function NewMailboxPage(props: Omit<AdminShellProps, "active">) {
             <div className="max-w-xl">
                 <h1 className="text-xl font-bold uppercase tracking-wide mb-1">New mailbox</h1>
                 <p className="text-sm text-text-muted mb-5">
-                    Leave "Owner user uid" blank to create a true ownerless shared mailbox (the Exchange "shared
-                    mailbox" concept) — access is then granted entirely to delegates afterward, not to a single
-                    owner. Set an owner to create a mailbox for a specific user instead.
+                    Choose "Shared mailbox" to create a true ownerless mailbox (the Exchange "shared mailbox"
+                    concept) — access is then granted entirely to delegates afterward, not to a single owner. Choose
+                    "Owned by a specific person" and look them up to create a mailbox for a specific user instead.
                 </p>
                 <MailboxCreateForm
                     cancelHref="/admin"

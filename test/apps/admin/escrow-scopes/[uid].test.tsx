@@ -32,6 +32,25 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+/** Wraps a test's own fetch handler so `GET .../escrow/scopes/resolve-holder?principal=<x>` always resolves to a
+ * person with that exact uid - `EscrowScopeKeyAndHoldersFields`'s holder list now only ever adds a uid this way. */
+function withHolderResolve(handler: (url: string, init?: RequestInit) => Response | undefined) {
+    return (url: string, init?: RequestInit) => {
+        if (url.startsWith("/api/escrow/scopes/resolve-holder")) {
+            const principal = new URL(url, "http://test.invalid").searchParams.get("principal")!;
+            return jsonResponse(200, { userUid: principal });
+        }
+        return handler(url, init);
+    };
+}
+
+/** Types `principal` into the holder field, looks it up, and confirms it - the only way a holder is added now. */
+async function addHolder(user: ReturnType<typeof userEvent.setup>, principal: string) {
+    await user.type(screen.getByLabelText("Holder user uids"), principal);
+    await user.click(screen.getByRole("button", { name: "Find" }));
+    await user.click(await screen.findByRole("button", { name: "Add" }));
+}
+
 describe("EscrowScopeDetailPage", () => {
     it("renders the loaded scope's fields", async () => {
         mockFetch((url) => {
@@ -292,20 +311,21 @@ describe("EscrowScopeDetailPage", () => {
     });
 
     it("refuses to add the signed-in admin as a holder, but keeps an admin who was already one", async () => {
-        const fetchMock = mockFetch((url, init) => {
-            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/escrow/scopes/es1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, scope);
-            if (url === "/api/escrow/scopes/es1" && init?.method === "PUT") return jsonResponse(200, { ...scope, version: 1 });
-            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
-        });
+        const fetchMock = mockFetch(
+            withHolderResolve((url, init) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url === "/api/escrow/scopes/es1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, scope);
+                if (url === "/api/escrow/scopes/es1" && init?.method === "PUT") return jsonResponse(200, { ...scope, version: 1 });
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            }),
+        );
         const user = userEvent.setup();
         const { unmount } = render(
             <EscrowScopeDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "es1" }} />,
         );
         await screen.findByLabelText("Name");
 
-        await user.type(screen.getByLabelText("Holder user uids"), "admin-1");
-        await user.click(screen.getByRole("button", { name: "Add" }));
+        await addHolder(user, "admin-1");
         await user.click(screen.getByRole("button", { name: "Save changes" }));
         expect(await screen.findByText(/You can't add yourself as a holder/)).toBeInTheDocument();
         expect(screen.queryByText("Confirm escrow scope changes")).not.toBeInTheDocument();
@@ -321,22 +341,23 @@ describe("EscrowScopeDetailPage", () => {
 
     it("confirms holder, approval-count, and key changes with a diff before saving", async () => {
         let requestBody: any;
-        mockFetch((url, init) => {
-            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/escrow/scopes/es1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, scope);
-            if (url === "/api/escrow/scopes/es1" && init?.method === "PUT") {
-                requestBody = JSON.parse(init.body as string);
-                return jsonResponse(200, { ...scope, ...requestBody, version: 1 });
-            }
-            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
-        });
+        mockFetch(
+            withHolderResolve((url, init) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url === "/api/escrow/scopes/es1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, scope);
+                if (url === "/api/escrow/scopes/es1" && init?.method === "PUT") {
+                    requestBody = JSON.parse(init.body as string);
+                    return jsonResponse(200, { ...scope, ...requestBody, version: 1 });
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            }),
+        );
         const user = userEvent.setup();
         render(<EscrowScopeDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "es1" }} />);
         await screen.findByLabelText("Name");
 
         await user.click(screen.getAllByRole("button", { name: "Remove" })[1]);
-        await user.type(screen.getByLabelText("Holder user uids"), "u3");
-        await user.click(screen.getByRole("button", { name: "Add" }));
+        await addHolder(user, "u3");
         fireEvent.change(screen.getByLabelText("Required holders (M-of-N dual control)"), { target: { value: "1" } });
         await user.type(screen.getByLabelText("Public key (base64)"), "X");
         await user.click(screen.getByRole("button", { name: "Save changes" }));

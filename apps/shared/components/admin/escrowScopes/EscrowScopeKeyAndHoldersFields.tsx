@@ -4,8 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
+import { resolveEscrowScopeHolder } from "@rapidmx/react-shared/admin/escrowScopesApi.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import StringListField from "../../forms/StringListField.js";
+import PrincipalListField from "../../sharing/PrincipalListField.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -150,12 +151,11 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
                     deliberately separate role from server administration. At least one holder is required.
                 </p>
 
-                <StringListField
+                <PrincipalListField
                     label="Holder user uids"
-                    id="holderUserUids"
                     values={value.holderUserUids}
                     onChange={(holderUserUids) => set("holderUserUids", holderUserUids)}
-                    placeholder="User uid to add"
+                    resolve={resolveEscrowScopeHolder}
                     emptyMessage="No holders added yet."
                     disabled={disabled}
                 />

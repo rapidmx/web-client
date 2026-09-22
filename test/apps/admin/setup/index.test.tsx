@@ -67,6 +67,10 @@ function mockSetup(options: Options = {}) {
         if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
         if (url === "/api/system/branding") return jsonResponse(200, { companyName: "", title: "" });
         if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, ["example.com"]);
+        if (url.startsWith("/api/mail/mailboxes/resolve-owner")) {
+            const principal = new URL(url, "http://test.invalid").searchParams.get("principal");
+            return jsonResponse(200, { userUid: principal, displayName: "Administrator", address: "admin@example.com" });
+        }
         if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, options.mailboxes ?? []);
         throw new Error(`unexpected ${method} ${url}`);
     });
@@ -261,7 +265,11 @@ describe("SetupPage", () => {
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=100&page=0&scope=admin", expect.anything());
         expect(await screen.findByLabelText("Local part")).toHaveValue("admin");
         expect(screen.getByLabelText("Display name")).toHaveValue("Administrator");
-        expect(screen.getByLabelText("Owner user uid (optional)")).toHaveValue("admin-1");
+        // The admin's own uid is looked up and shown automatically (it's the trusted `defaults` prop, not
+        // something typed) but, like any other resolved principal, still needs an explicit confirm before it's used.
+        expect(await screen.findByLabelText("Mailbox owner")).toHaveValue("admin-1");
+        expect(await screen.findByText("Administrator <admin@example.com>")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Use this owner" }));
         await waitFor(() => expect(screen.getByLabelText("Quota (GB)")).toHaveValue(2));
 
         await user.click(screen.getByRole("button", { name: "Create mailbox" }));

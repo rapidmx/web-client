@@ -13,13 +13,32 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+/** Wraps a test's own fetch handler so `GET .../escrow/scopes/resolve-holder?principal=<x>` always resolves to a
+ * person with that exact uid - `EscrowScopeKeyAndHoldersFields`'s holder list now only ever adds a uid this way,
+ * never straight from what was typed. */
+function withHolderResolve(handler: (url: string, init?: RequestInit) => Response | undefined) {
+    return (url: string, init?: RequestInit) => {
+        if (url.startsWith("/api/escrow/scopes/resolve-holder")) {
+            const principal = new URL(url, "http://test.invalid").searchParams.get("principal")!;
+            return jsonResponse(200, { userUid: principal });
+        }
+        return handler(url, init);
+    };
+}
+
+/** Types `principal` into the holder field, looks it up, and confirms it - the only way a holder is added now. */
+async function addHolder(user: ReturnType<typeof userEvent.setup>, principal: string) {
+    await user.type(screen.getByLabelText("Holder user uids"), principal);
+    await user.click(screen.getByRole("button", { name: "Find" }));
+    await user.click(await screen.findByRole("button", { name: "Add" }));
+}
+
 async function fillMinimalRequiredFields(user: ReturnType<typeof userEvent.setup>) {
     await user.type(screen.getByLabelText("Name"), "Legal Hold Q1");
     await user.type(screen.getByLabelText("Public key (base64)"), "base64cert");
     await user.clear(screen.getByLabelText("Fingerprint (hex SHA-256)"));
     await user.type(screen.getByLabelText("Fingerprint (hex SHA-256)"), "abc123");
-    await user.type(screen.getByLabelText("Holder user uids"), "u1");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await addHolder(user, "u1");
 }
 
 describe("NewEscrowScopePage", () => {
@@ -48,7 +67,7 @@ describe("NewEscrowScopePage", () => {
     });
 
     it("refuses to make the signed-in admin a holder", async () => {
-        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        const fetchMock = mockFetch(withHolderResolve(() => jsonResponse(200, {})));
         const user = userEvent.setup();
         render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New escrow scope");
@@ -56,8 +75,7 @@ describe("NewEscrowScopePage", () => {
         await user.type(screen.getByLabelText("Name"), "Legal Hold Q1");
         await user.type(screen.getByLabelText("Public key (base64)"), "base64cert");
         await user.type(screen.getByLabelText("Fingerprint (hex SHA-256)"), "abc123");
-        await user.type(screen.getByLabelText("Holder user uids"), "admin-1");
-        await user.click(screen.getByRole("button", { name: "Add" }));
+        await addHolder(user, "admin-1");
         await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
 
         expect(await screen.findByText(/You can't add yourself as a holder/)).toBeInTheDocument();
@@ -107,14 +125,16 @@ describe("NewEscrowScopePage", () => {
 
     it("creates the escrow scope and redirects to its detail page", async () => {
         let requestBody: any;
-        mockFetch((url, init) => {
-            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/escrow/scopes" && init?.method === "POST") {
-                requestBody = JSON.parse(init.body as string);
-                return jsonResponse(200, { uid: "es1" });
-            }
-            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
-        });
+        mockFetch(
+            withHolderResolve((url, init) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url === "/api/escrow/scopes" && init?.method === "POST") {
+                    requestBody = JSON.parse(init.body as string);
+                    return jsonResponse(200, { uid: "es1" });
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            }),
+        );
         const location = mockLocation();
         const user = userEvent.setup();
         render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
@@ -147,12 +167,11 @@ describe("NewEscrowScopePage", () => {
 
     it("supports removing an added holder before submitting", async () => {
         const user = userEvent.setup();
-        mockFetch(() => jsonResponse(200, {}));
+        mockFetch(withHolderResolve(() => jsonResponse(200, {})));
         render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New escrow scope");
 
-        await user.type(screen.getByLabelText("Holder user uids"), "u1");
-        await user.click(screen.getByRole("button", { name: "Add" }));
+        await addHolder(user, "u1");
         expect(screen.getByText("u1")).toBeInTheDocument();
 
         await user.click(screen.getByRole("button", { name: "Remove" }));
@@ -160,37 +179,42 @@ describe("NewEscrowScopePage", () => {
         expect(screen.getByText("No holders added yet.")).toBeInTheDocument();
     });
 
-    it("adds a holder by pressing Enter in the input, not just by clicking Add", async () => {
-        mockFetch(() => jsonResponse(200, {}));
+    it("looks a holder up by pressing Enter in the input, same as clicking Find - either way, still needs a confirm", async () => {
+        mockFetch(withHolderResolve(() => jsonResponse(200, {})));
         const user = userEvent.setup();
         render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New escrow scope");
 
         await user.type(screen.getByLabelText("Holder user uids"), "u1{Enter}");
-        expect(screen.getByText("u1")).toBeInTheDocument();
+        // Resolved and shown for confirmation, but not added to the list yet.
+        expect(await screen.findByText("user u1")).toBeInTheDocument();
+        expect(screen.queryByText("u1")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Add" }));
+        expect(await screen.findByText("u1")).toBeInTheDocument();
     });
 
-    it("does not add a blank or already-present holder", async () => {
-        mockFetch(() => jsonResponse(200, {}));
+    it("does not look up a blank box, and does not add an already-present holder twice", async () => {
+        mockFetch(withHolderResolve(() => jsonResponse(200, {})));
         const user = userEvent.setup();
         render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New escrow scope");
 
-        await user.click(screen.getByRole("button", { name: "Add" }));
+        await user.click(screen.getByRole("button", { name: "Find" }));
         expect(screen.getByText("No holders added yet.")).toBeInTheDocument();
 
-        await user.type(screen.getByLabelText("Holder user uids"), "u1");
-        await user.click(screen.getByRole("button", { name: "Add" }));
-        await user.type(screen.getByLabelText("Holder user uids"), "u1");
-        await user.click(screen.getByRole("button", { name: "Add" }));
+        await addHolder(user, "u1");
+        await addHolder(user, "u1");
         expect(screen.getAllByText("u1")).toHaveLength(1);
     });
 
     it("shows an error message when creation fails", async () => {
-        mockFetch((url) => {
-            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            return jsonResponse(500, { message: "boom" });
-        });
+        mockFetch(
+            withHolderResolve((url) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                return jsonResponse(500, { message: "boom" });
+            }),
+        );
         const user = userEvent.setup();
         render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New escrow scope");
@@ -202,10 +226,12 @@ describe("NewEscrowScopePage", () => {
     });
 
     it("shows a generic error message when creation fails with a non-API error", async () => {
-        mockFetch((url) => {
-            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            throw new TypeError("network down");
-        });
+        mockFetch(
+            withHolderResolve((url) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                throw new TypeError("network down");
+            }),
+        );
         const user = userEvent.setup();
         render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New escrow scope");

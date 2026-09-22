@@ -22,6 +22,10 @@ const keys = {
 
 function mockEscrow(options: { scopes?: unknown[]; create?: (body: any) => Response } = {}) {
     return mockFetch((url, init) => {
+        if (url.startsWith("/api/escrow/scopes/resolve-holder")) {
+            const principal = new URL(url, "http://test.invalid").searchParams.get("principal")!;
+            return jsonResponse(200, { userUid: principal });
+        }
         if (url.startsWith("/api/escrow/scopes?")) return jsonResponse(200, options.scopes ?? []);
         if (url === "/api/escrow/scopes" && init?.method === "POST") {
             const body = JSON.parse(init.body as string);
@@ -45,9 +49,11 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+/** Types `uid` into the holder field, looks it up, and confirms it - the only way a holder is added now
+ * (`resolve-holder` is stubbed by `mockEscrow()` to echo the typed principal back as the resolved uid). */
 async function addHolder(user: ReturnType<typeof userEvent.setup>, uid: string) {
-    const input = screen.getByPlaceholderText(/uid/i);
-    await user.type(input, `${uid}{Enter}`);
+    await user.type(screen.getByLabelText("Holder user uids"), `${uid}{Enter}`);
+    await user.click(await screen.findByRole("button", { name: "Add" }));
 }
 
 describe("EscrowSetupStep", () => {
@@ -198,6 +204,10 @@ describe("EscrowSetupStep", () => {
     it("creates a scope before the existing scopes have loaded, and shows a generic error for a non-API failure", async () => {
         let fail = true;
         mockFetch((url, init) => {
+            if (url.startsWith("/api/escrow/scopes/resolve-holder")) {
+                const principal = new URL(url, "http://test.invalid").searchParams.get("principal")!;
+                return jsonResponse(200, { userUid: principal });
+            }
             // The existing scopes never finish loading.
             if (url.startsWith("/api/escrow/scopes?")) return new Promise<Response>(() => undefined);
             if (url === "/api/escrow/scopes" && init?.method === "POST") {

@@ -84,11 +84,15 @@ describe("NewMailboxPage", () => {
         expect(requestBody.ownerUserUid).toBeUndefined();
     });
 
-    it("creates a mailbox with an explicit owner when one is provided", async () => {
+    it("creates a mailbox with an explicit owner, looked up and confirmed first", async () => {
         let requestBody: any;
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+            if (url.startsWith("/api/mail/mailboxes/resolve-owner")) {
+                expect(url).toBe("/api/mail/mailboxes/resolve-owner?principal=jdoe");
+                return jsonResponse(200, { userUid: "u-jdoe", displayName: "Jane Doe", address: "jdoe@example.com" });
+            }
             if (url === "/api/mail/mailboxes" && init?.method === "POST") {
                 requestBody = JSON.parse(init.body as string);
                 return jsonResponse(200, { uid: "mb2" });
@@ -102,11 +106,67 @@ describe("NewMailboxPage", () => {
 
         await user.type(screen.getByLabelText("Primary SMTP address"), "jdoe@example.com");
         await user.type(screen.getByLabelText("Display name"), "Jane Doe");
-        await user.type(screen.getByLabelText("Owner user uid (optional)"), "jdoe");
+        await user.click(screen.getByRole("radio", { name: "Owned by a specific person" }));
+        await user.type(screen.getByLabelText("Mailbox owner"), "jdoe");
+        await user.click(screen.getByRole("button", { name: "Find" }));
+        expect(await screen.findByText("Jane Doe <jdoe@example.com>")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Use this owner" }));
+        expect(await screen.findByText("Jane Doe <jdoe@example.com>")).toBeInTheDocument();
+        expect(screen.getByText("Owner:")).toBeInTheDocument();
+
         await user.click(screen.getByRole("button", { name: "Create mailbox" }));
 
         await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/mb2"));
-        expect(requestBody.ownerUserUid).toBe("jdoe");
+        expect(requestBody.ownerUserUid).toBe("u-jdoe");
+    });
+
+    it("lets the admin change a confirmed owner, or switch back to a shared mailbox", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+            if (url.startsWith("/api/mail/mailboxes/resolve-owner")) {
+                return jsonResponse(200, { userUid: "u-jdoe", displayName: "Jane Doe", address: "jdoe@example.com" });
+            }
+            return jsonResponse(200, {});
+        });
+        const user = userEvent.setup();
+        render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New mailbox");
+
+        await user.click(screen.getByRole("radio", { name: "Owned by a specific person" }));
+        await user.type(screen.getByLabelText("Mailbox owner"), "jdoe");
+        await user.click(screen.getByRole("button", { name: "Find" }));
+        await user.click(await screen.findByRole("button", { name: "Use this owner" }));
+        expect(await screen.findByText("Jane Doe <jdoe@example.com>")).toBeInTheDocument();
+
+        // "Change" drops the confirmed owner and shows the lookup box again.
+        await user.click(screen.getByRole("button", { name: "Change" }));
+        expect(screen.queryByText("Owner:")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Mailbox owner")).toBeInTheDocument();
+
+        // Switching back to "Shared mailbox" and back to "Owned" clears any previously confirmed owner too.
+        await user.click(screen.getByRole("radio", { name: "Shared mailbox (no single owner)" }));
+        await user.click(screen.getByRole("radio", { name: "Owned by a specific person" }));
+        expect(screen.queryByText("Owner:")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Mailbox owner")).toHaveValue("");
+    });
+
+    it("refuses to submit 'Owned by a specific person' without confirming who that is", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+            return jsonResponse(200, {});
+        });
+        const user = userEvent.setup();
+        render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New mailbox");
+
+        await user.type(screen.getByLabelText("Primary SMTP address"), "jdoe@example.com");
+        await user.type(screen.getByLabelText("Display name"), "Jane Doe");
+        await user.click(screen.getByRole("radio", { name: "Owned by a specific person" }));
+        await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+        expect(await screen.findByText("Look up and confirm the mailbox's owner, or choose a shared mailbox instead.")).toBeInTheDocument();
     });
 
     it("shows an error message when creation fails", async () => {

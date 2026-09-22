@@ -5,10 +5,11 @@
 import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { getMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
-import { createMailbox, listMailboxDomains, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { createMailbox, listMailboxDomains, Mailbox, resolveMailboxOwner, ResolvedPrincipal } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import PrincipalResolver, { describePerson } from "../../sharing/PrincipalResolver.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -33,7 +34,8 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
     const [domains, setDomains] = useState<string[]>([]);
     const [domain, setDomain] = useState("");
     const [displayName, setDisplayName] = useState(defaults?.displayName ?? "");
-    const [ownerUserUid, setOwnerUserUid] = useState(defaults?.ownerUserUid ?? "");
+    const [ownerMode, setOwnerMode] = useState<"shared" | "owned">(defaults?.ownerUserUid ? "owned" : "shared");
+    const [resolvedOwner, setResolvedOwner] = useState<ResolvedPrincipal | null>(null);
     const [timezone, setTimezone] = useState("UTC");
     const [quotaGb, setQuotaGb] = useState(5);
     // Only replaced by the mailbox policy's default if the admin hasn't typed a quota of their own yet.
@@ -90,16 +92,19 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
             setError("A display name can't contain \"@\" (or a look-alike) or line breaks.");
             return;
         }
+        if (ownerMode === "owned" && !resolvedOwner) {
+            setError("Look up and confirm the mailbox's owner, or choose a shared mailbox instead.");
+            return;
+        }
 
         setSaving(true);
         try {
-            // ownerUserUid left blank creates a true ownerless shared mailbox (e.g. support@example.com);
-            // delegates are then granted access from the mailbox's detail page. A resource mailbox is
-            // ownerless the same way — leave "Owner user uid" blank for one too.
+            // "Shared mailbox" creates a true ownerless mailbox (e.g. support@example.com); delegates are then
+            // granted access from the mailbox's detail page. A resource mailbox is ownerless the same way.
             const mailbox = await createMailbox({
                 primarySmtpAddress: address,
                 displayName: displayName.trim(),
-                ownerUserUid: ownerUserUid.trim() || undefined,
+                ownerUserUid: ownerMode === "owned" ? resolvedOwner!.userUid : undefined,
                 timezone,
                 quotaBytes: Math.round(quotaGb * 1_000_000_000),
                 ...(isResource && {
@@ -175,16 +180,60 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
                     />
                 </FormField>
 
-                <FormField label="Owner user uid (optional)" htmlFor="ownerUserUid">
-                    <input
-                        id="ownerUserUid"
-                        type="text"
-                        className={INPUT_CLASS}
-                        value={ownerUserUid}
-                        onChange={(e) => setOwnerUserUid(e.target.value)}
-                        placeholder="Leave blank for a shared mailbox"
-                    />
-                </FormField>
+                <div className="mb-4">
+                    <span className="block text-sm font-semibold mb-1.5 text-text">Owner</span>
+                    <div className="flex flex-col gap-2">
+                        <label className="flex items-center gap-2 text-sm">
+                            <input
+                                type="radio"
+                                name="ownerMode"
+                                checked={ownerMode === "shared"}
+                                onChange={() => {
+                                    setOwnerMode("shared");
+                                    setResolvedOwner(null);
+                                }}
+                            />
+                            Shared mailbox (no single owner)
+                        </label>
+                        <label className="flex items-center gap-2 text-sm">
+                            <input
+                                type="radio"
+                                name="ownerMode"
+                                checked={ownerMode === "owned"}
+                                onChange={() => setOwnerMode("owned")}
+                            />
+                            Owned by a specific person
+                        </label>
+                        {ownerMode === "owned" &&
+                            (resolvedOwner ? (
+                                <div className="flex items-center justify-between gap-3 text-sm py-2 px-3 border border-border rounded-sm">
+                                    <span>
+                                        Owner: <strong className="break-all">{describePerson(resolvedOwner)}</strong>
+                                    </span>
+                                    <Button type="button" variant="text" className="!w-auto" onClick={() => setResolvedOwner(null)}>
+                                        Change
+                                    </Button>
+                                </div>
+                            ) : (
+                                <PrincipalResolver
+                                    resolve={resolveMailboxOwner}
+                                    onResolved={(person) => {
+                                        setResolvedOwner(person);
+                                    }}
+                                    initialPrincipal={defaults?.ownerUserUid}
+                                    placeholder="Email address, username or user id"
+                                    ariaLabel="Mailbox owner"
+                                    confirmLabel="Use this owner"
+                                    confirmErrorMessage="Could not confirm this person."
+                                    describeConfirm={(person) => (
+                                        <>
+                                            Make <strong className="break-all">{describePerson(person)}</strong> the owner?
+                                        </>
+                                    )}
+                                />
+                            ))}
+                    </div>
+                </div>
 
                 <FormField label="Timezone" htmlFor="timezone">
                     <input

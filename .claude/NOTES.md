@@ -2971,3 +2971,20 @@ single sent message rather than the genuine forwarded/re-sent/Bcc case it's mean
 
 Files: changed `DomainDnsSetup.tsx`. Full suite (isolated run): 270/270 files, 4139/4139 tests, 100/99.91/100/100 (one pre-existing flaky contacts
 test - a cold compose-window code-load race - reproduced under concurrent load and passed clean alone, unrelated to this change).
+
+### 2026-09-22 - A general resolve-then-confirm person picker, for a mailbox's owner and an escrow scope's key holders
+
+`apps/shared/components/sharing/PrincipalPicker.tsx` (mailbox-sharing's own resolve-then-confirm widget) is now a thin wrapper over a new, general
+`PrincipalResolver.tsx` - parameterized by an injected `resolve`/`onResolved` pair instead of being hardcoded to `resolveMailboxPrincipal()`/
+`setMailboxAccess()`. `PrincipalPicker`'s own tests pass byte-for-byte unchanged, so `ShareAccessCard.tsx`/`settings/sharing/index.tsx` needed no
+changes. Wired `PrincipalResolver` into `MailboxCreateForm.tsx`'s new "Owner" section (an owned mailbox's owner is now looked up and confirmed, not
+typed as a raw uid) and a new `PrincipalListField.tsx` (an add-only-via-resolve, remove-by-click list, same visual shape as `StringListField.tsx`
+but never taking raw text as a value) into `EscrowScopeKeyAndHoldersFields.tsx`'s holder list - previously a plain `StringListField` of raw uids.
+One real bug fixed while wiring: `PrincipalResolver` originally rendered its own `<form>`, invalid once nested inside `MailboxCreateForm`'s outer
+form - replaced with a `<div>` + explicit Enter-key handling. Confirmed already fine and left untouched: mailbox sharing, escrow access requests
+(always the caller's own uid), distribution list membership (legitimately free-text addresses), legal hold custodians (mailbox uids, a different
+picker problem), retention policy (no user/mailbox targeting), admin impersonation (a searchable list, not a raw uid box).
+
+Files: new `apps/shared/components/sharing/{PrincipalResolver,PrincipalListField}.tsx`; changed `PrincipalPicker.tsx`, `MailboxCreateForm.tsx`,
+`EscrowScopeKeyAndHoldersFields.tsx`, `apps/admin/mailboxes/new/index.tsx`. Full suite (isolated run): 270/270 files, 4139/4139 tests,
+100/99.91/100/100.
