@@ -3021,3 +3021,68 @@ changed `notifications/{store,NotificationCenter,NotificationHistoryDialog}.tsx`
 passing - the two failures (`contacts/index.test.tsx`'s cold compose-window race, already a known flaky one in this file's own 2026-09-22
 entry above; `settings/filters/new/index.test.tsx`'s `resolveFolders is not a function`) are both pre-existing and in files this change never
 touches.
+
+### 2026-09-22 (later) - "Add video conferencing" on the event form (`EventModal.tsx`)
+
+Not committed. The compose/UI half of the video-conferencing integration: react-shared gained the client
+(`videoconf/videoMeetingsApi.ts`, see its NOTES entry of the same date), `@rapidmx/videoconf-plugin` owns the
+routes, and `@rapidmx/restapi`'s `MeetingSchedulingJob` does the per-attendee link substitution in the invite
+mails - none of that is here. **Written to the agreed contract, not run against a real server**; the plugin's
+`organizerJoinUrl` on create/read is being added in parallel by another agent.
+
+- **The control.** A checkbox **"Add video conferencing"** directly under Location. While it is checked, a
+  muted line under it always says: *"Changing attendees after enabling video conferencing won't update meeting
+  invitees - turn this off and back on to reissue links to the current attendee list."* A failure of the video
+  call itself renders as a `role="alert"` line in the same block, next to the checkbox - never in the form's
+  own `Alert` at the top, which stays the event save's own error.
+- **Save order, always: the event first, then the meeting.** The invitee list must be built from the attendee
+  list that was actually stored, so every branch of `handleSubmit` (create / detach one occurrence / save the
+  series / plain update) now keeps its saved `CalendarEvent` and `applyVideoConferencing(saved)` runs after it.
+  Checked and unlinked -> `POST /mail/video-meetings` (`visibility: "private"`, `calendarEventUid` the just-saved
+  uid, `startTime`/`endTime` the event's own, `invitees` the attendees **minus the organizer** - `isOrganizer`,
+  or an address equal to the saved event's own organizer address, or blank), then a second `PUT` on the event
+  setting `location` to the placeholder and `videoMeetingUid`. Unchecked and linked -> `PUT
+  /mail/video-meetings/:id` `{ status: "cancelled" }`, then a `PUT` clearing both fields with explicit `null`s.
+- **The placeholder location is exactly `"Video call — link in this invitation"`** (`VIDEO_LOCATION_PLACEHOLDER`,
+  em dash). Generic on purpose: the event is one shared record, so no join link - personal or not - may be
+  written into it. **Restoring it on uncheck** is a plain identity test, not a heuristic: if the Location field
+  at that moment still holds exactly that string (trimmed), it is cleared (`location: null`); anything else the
+  user has since typed is theirs and is sent back unchanged. So a stale "Video call ..." line can never survive
+  a cancellation, and a real location is never clobbered by one.
+- **An already-linked meeting is left completely alone** when the toggle is checked and `videoMeetingUid` is
+  already set - deliberately, and documented in `applyVideoConferencing()`'s own doc comment as well as in the
+  helper text. The plugin's `PUT` is title/status only and cannot add or remove invitees, and a private
+  meeting's personal join links are minted once at creation, so there is no honest way to reconcile an attendee
+  change: pretending otherwise would leave a new attendee with no link and a removed one with a working one.
+  Extending the plugin route was explicitly out of scope. Off and back on is the documented way to reissue.
+- **A video failure never loses the event.** The event is already stored by the time the meeting call runs, so
+  `applyVideoConferencing()` never throws: it sets the inline error and reports `failed`. The modal then stays
+  open (`onSaved()` is not called, exactly as the existing detached-occurrence sync warning already does) with
+  the toggle still checked and `videoMeetingUid` untouched, and remembers the stored event in `savedEvent` - a
+  **retry updates that record at the version the first save returned**, rather than creating a second event or
+  re-sending the stale prop's version into a 409. Minting a meeting with no attendee but the organizer is
+  refused client-side with the same inline error (the route would 400), again without touching the save.
+- **"Join video call"** sits above the form's `disabled` fieldset (joining is not editing, so an invitation's
+  read-only copy keeps it) and shows whenever the event has a `videoMeetingUid`. A meeting minted in this
+  session uses the create call's own `organizerJoinUrl` - no refetch; an event that arrived with a link fetches
+  it once on open (`GET /mail/video-meetings/:id`). The button is disabled until a URL is in hand, and opens it
+  with `window.open(url, "_blank", "noopener,noreferrer")`. A fetch failure and a meeting with no organizer link
+  are one state (`null`, "This meeting's join link isn't available.") - there is nothing to open either way.
+- **The event detail *is* this modal** - the calendar page opens the same component for an existing occurrence -
+  so there was no separate view to add the join button to.
+- **Known gap, not fixed here:** editing *one occurrence* of a video-conferenced series detaches a copy that
+  does not carry `videoMeetingUid` (the series keeps it); nothing mints or moves a meeting for the detached
+  copy. Reaching a sensible answer needs a per-occurrence meeting model the plugin doesn't have yet.
+
+Files: `apps/shared/components/calendar/EventModal.tsx`, new
+`test/apps/_components/EventModal.videoconf.test.tsx` (16 tests), `RELEASE_NOTES.md` (Unreleased > Features).
+Verified: `yarn tsc --noEmit` and `yarn lint` clean; `EventModal.tsx` 100% statements/branches/functions/lines
+(measured over its four test files); full suite **273/273 files, 4174/4174 tests, 100 / 99.91 / 100 / 100**
+(gates 100/99/100/100 - the same branch figures as the entries above; before this change: 272 files / 4158
+tests). That green run needed `--retry=2`: two earlier full runs failed 1 and 32 tests respectively, all in
+`contacts/index.test.tsx`, `settings/filters/new/index.test.tsx`, `index.test.tsx`'s bulk-action block and
+`settings/appearance/index.test.tsx` - every one of them already documented above as a full-suite-scale flake,
+all pass in isolation (275/275 and 89/89 re-runs), and **another agent was running this same suite in parallel
+at the time** (which is also why the first two runs left no coverage report at all: vitest skips it when the
+run fails, and parallel runs share and wipe `coverage/`). react-shared's own suite, with its half of this
+work, is 96/96 files, 1261/1261 tests, 100/99.48/100/100.

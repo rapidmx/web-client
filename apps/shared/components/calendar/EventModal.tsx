@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useRef, useState } from "react";
+import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attendee,
@@ -10,6 +10,7 @@ import {
     AttendeeResponseStatus,
     AttendeeRole,
     BusyStatus,
+    CalendarEvent,
     CalendarEventInput,
     RecurrenceRule,
     createCalendarEvent,
@@ -17,6 +18,12 @@ import {
     respondToEvent,
     updateCalendarEvent,
 } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import {
+    VideoMeetingInvitee,
+    createVideoMeeting,
+    getVideoMeeting,
+    updateVideoMeeting,
+} from "@rapidmx/react-shared/videoconf/videoMeetingsApi.js";
 import { deleteEventOccurrence, deleteEventSeries, detachOccurrence, saveEventSeries } from "@rapidmx/react-shared/calendar/calendarMutations.js";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -43,6 +50,21 @@ const RESPONSE_STATUS_LABEL: Record<AttendeeResponseStatus, string> = {
     declined: "Declined",
     tentative: "Tentative",
 };
+
+/**
+ * The Location text this modal writes when it mints a video meeting for an event, and the one value it will
+ * clear again when video conferencing is turned back off (see `applyVideoConferencing()`).
+ *
+ * Deliberately generic and identical for everyone: each attendee's own personal join link is substituted into
+ * their own copy of the invitation server-side (`@rapidmx/restapi`'s `MeetingSchedulingJob`), so no link -
+ * personal or otherwise - may be stored on the shared event itself, where every attendee would read the same
+ * one.
+ */
+export const VIDEO_LOCATION_PLACEHOLDER = "Video call — link in this invitation";
+
+/** The plugin's own title bound (`BaseVideoMeetingRoute`'s `MAX_TITLE_LENGTH`) - a longer title is a 400, so
+ * an over-long event title is trimmed to fit rather than failing the whole meeting. */
+const MAX_MEETING_TITLE_LENGTH = 200;
 
 export interface EventModalProps {
     open: boolean;
@@ -211,6 +233,17 @@ export default function EventModal({
     const [autoReplyEnabled, setAutoReplyEnabled] = useState(occurrence?.autoReplyEnabled ?? false);
     const [autoReplyMessage, setAutoReplyMessage] = useState(occurrence?.autoReplyMessage ?? "");
     const [editScope, setEditScope] = useState<EditScope>("occurrence");
+    // Video conferencing: the toggle, the meeting this event is linked to (if any), the organizer's own join
+    // link for it, and whatever went wrong with the last attempt to mint/cancel one.
+    const [videoEnabled, setVideoEnabled] = useState(!!occurrence?.videoMeetingUid);
+    const [videoMeetingUid, setVideoMeetingUid] = useState<string | undefined>(occurrence?.videoMeetingUid);
+    // `undefined` while the link is still being fetched, `null` once it is known there is none to open.
+    const [organizerJoinUrl, setOrganizerJoinUrl] = useState<string | null | undefined>(undefined);
+    const [videoError, setVideoError] = useState<string | null>(null);
+    // The event as this modal last persisted it. Set only when a save got the event stored but could not
+    // finish the video-conferencing step after it: the modal then stays open on that error, and the retry
+    // must update *that* record (its uid and its new version), not re-create it or reuse the stale prop.
+    const [savedEvent, setSavedEvent] = useState<CalendarEvent | null>(null);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
@@ -219,6 +252,31 @@ export default function EventModal({
     const [responding, setResponding] = useState(false);
     const [resourcePickerOpen, setResourcePickerOpen] = useState(false);
     const addResourceButtonRef = useRef<HTMLButtonElement>(null);
+
+    // An event that already carried a meeting when it was opened (e.g. after a page reload) knows only that
+    // meeting's uid - the organizer's own join link lives on the meeting, so it is fetched once here. A
+    // meeting minted in this session already has its link from the create call (see
+    // `applyVideoConferencing()`), which is why this deliberately reads the *prop*, not the state: it must
+    // not re-fetch what was just handed to us. A failure and a meeting with no link at all are the same
+    // thing to this UI - there is nothing to open either way - so both settle on `null`.
+    useEffect(() => {
+        const uid = occurrence?.videoMeetingUid;
+        if (!uid) {
+            return;
+        }
+        let cancelled = false;
+        void getVideoMeeting(uid)
+            .then((meeting) => meeting.organizerJoinUrl ?? null)
+            .catch(() => null)
+            .then((url) => {
+                if (!cancelled) {
+                    setOrganizerJoinUrl(url);
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [occurrence?.videoMeetingUid]);
 
     // The viewing mailbox can respond to an *existing* event it's invited to but doesn't organize —
     // `organizerAddress` (plus the aliases) are this mailbox's own addresses (see `EventModalProps`), so
@@ -245,9 +303,86 @@ export default function EventModal({
         setResourcePickerOpen(false);
     }
 
+    /**
+     * Brings the event's video meeting in line with the toggle, once the event itself is saved (so the
+     * attendee list a new meeting's invitees are built from is the one that was just stored).
+     *
+     * Turning it **on** mints a meeting for the saved event's attendees - every one of them except the
+     * organizer, who reaches their own meeting through ownership (`organizerJoinUrl`), not as a guest - and
+     * then patches the event with the meeting's uid and the generic `VIDEO_LOCATION_PLACEHOLDER` location.
+     * No join link is written onto the event: each attendee's own link is substituted into their own copy of
+     * the invitation server-side.
+     *
+     * Turning it **off** cancels the meeting and clears the link, restoring Location to `""` only when it
+     * still holds exactly the placeholder this modal wrote - anything the user has typed there since is
+     * theirs and is preserved.
+     *
+     * **Known, deliberate limitation:** an event that already has a meeting is left completely alone, even
+     * when its attendee list has just changed. `@rapidmx/videoconf-plugin`'s `PUT /mail/video-meetings/:id`
+     * is deliberately minimal (title and cancellation only) and cannot add or remove invitees, and a private
+     * meeting's personal join links are minted once at creation - so there is no way to reconcile an invitee
+     * list, and silently pretending otherwise would leave a new attendee with no link and a removed one with
+     * a working one. The helper text under the checkbox says so, and turning the toggle off and on again
+     * reissues links for the current attendee list.
+     *
+     * Never throws: the event is already stored by the time this runs, so a failure here is reported inline
+     * next to the checkbox and left retryable, with `videoMeetingUid` still whatever it was before.
+     */
+    async function applyVideoConferencing(saved: CalendarEvent): Promise<{ event: CalendarEvent; failed: boolean }> {
+        // Off and never on, or on and already linked (see the limitation above) - nothing to do either way.
+        if (videoEnabled === !!videoMeetingUid) {
+            return { event: saved, failed: false };
+        }
+        try {
+            if (videoEnabled) {
+                const organizerAddressLower = saved.organizer.address.toLowerCase();
+                const invitees: VideoMeetingInvitee[] = attendees
+                    .filter((a) => !a.isOrganizer && !!a.address.trim() && a.address.trim().toLowerCase() !== organizerAddressLower)
+                    .map((a) => ({ email: a.address.trim(), displayName: a.displayName }));
+                if (invitees.length === 0) {
+                    setVideoError("Add at least one attendee other than yourself to add video conferencing.");
+                    return { event: saved, failed: true };
+                }
+                const result = await createVideoMeeting({
+                    mailboxUid: saved.mailboxUid,
+                    title: saved.title.slice(0, MAX_MEETING_TITLE_LENGTH),
+                    visibility: "private",
+                    calendarEventUid: saved.uid,
+                    startTime: saved.startDate,
+                    endTime: saved.endDate,
+                    invitees,
+                });
+                const patched = await updateCalendarEvent({
+                    uid: saved.uid,
+                    version: saved.version,
+                    location: VIDEO_LOCATION_PLACEHOLDER,
+                    videoMeetingUid: result.meeting.uid,
+                });
+                setVideoMeetingUid(result.meeting.uid);
+                setOrganizerJoinUrl(result.organizerJoinUrl ?? null);
+                setLocation(VIDEO_LOCATION_PLACEHOLDER);
+                return { event: patched, failed: false };
+            }
+            await updateVideoMeeting(videoMeetingUid!, { status: "cancelled" });
+            const restoredLocation = location.trim() === VIDEO_LOCATION_PLACEHOLDER ? "" : location.trim();
+            // A stored event clears a field with an explicit `null` (see `EventFields`) - an omitted one would
+            // leave the placeholder (and the link to the now-cancelled meeting) in place.
+            const patch: EventFields = { location: restoredLocation || null, videoMeetingUid: null };
+            const patched = await updateCalendarEvent({ uid: saved.uid, version: saved.version, ...(patch as Partial<CalendarEventInput>) });
+            setVideoMeetingUid(undefined);
+            setOrganizerJoinUrl(undefined);
+            setLocation(restoredLocation);
+            return { event: patched, failed: false };
+        } catch (err) {
+            setVideoError(err instanceof ApiRequestError ? err.message : "Could not update this event's video conferencing.");
+            return { event: saved, failed: true };
+        }
+    }
+
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
         setError(null);
+        setVideoError(null);
 
         if (!title.trim()) {
             setError("A title is required.");
@@ -294,25 +429,42 @@ export default function EventModal({
 
         setSaving(true);
         try {
-            if (!occurrence) {
+            let saved: CalendarEvent;
+            let detachedSyncFailed = false;
+            if (savedEvent) {
+                // A retry after the event was stored but its video meeting couldn't be (see `savedEvent`):
+                // update exactly the record the first attempt left behind, whichever branch below created it.
+                // A series' own exception/detached-occurrence re-pointing already ran on that attempt and has
+                // nothing left to shift - the dates being sent again are the ones it moved everything to.
+                saved = await updateCalendarEvent({ uid: savedEvent.uid, version: savedEvent.version, ...(fields as Partial<CalendarEventInput>) });
+            } else if (!occurrence) {
                 // The organizer is only ever set on create - an edit keeps the event's own organizer.
-                await createCalendarEvent({
+                saved = await createCalendarEvent({
                     mailboxUid: targetMailboxUid,
                     folderUid: targetFolderUid,
                     ...fields,
                     organizer: { address: effectiveOrganizerAddress, type: "to" },
                 } as CalendarEventInput);
             } else if (editingSingleOccurrence) {
-                await detachOccurrence(occurrence, fields as Partial<CalendarEventInput>);
+                saved = await detachOccurrence(occurrence, fields as Partial<CalendarEventInput>);
             } else if (occurrence.isRecurringOccurrence) {
-                const saved = await saveEventSeries(occurrence, (await toSeriesFields(occurrence, fields)) as Partial<CalendarEventInput>);
-                if (saved.detachedOccurrenceSyncFailed) {
-                    // The series itself was saved - say so, and leave closing to the user once they've read it.
-                    setSyncWarning(true);
-                    return;
-                }
+                const series = await saveEventSeries(occurrence, (await toSeriesFields(occurrence, fields)) as Partial<CalendarEventInput>);
+                saved = series;
+                detachedSyncFailed = !!series.detachedOccurrenceSyncFailed;
             } else {
-                await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) });
+                saved = await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) });
+            }
+            const video = await applyVideoConferencing(saved);
+            if (video.failed) {
+                // The event itself is saved - keep the modal open on the inline error so the video meeting
+                // can be retried (or the toggle put back) rather than closing over it.
+                setSavedEvent(video.event);
+                return;
+            }
+            if (detachedSyncFailed) {
+                // The series itself was saved - say so, and leave closing to the user once they've read it.
+                setSyncWarning(true);
+                return;
             }
             onSaved();
         } catch (err) {
@@ -433,6 +585,28 @@ export default function EventModal({
                     </p>
                 )}
 
+                {/* Outside the `disabled` fieldset below: joining a call is not editing the event, so it stays
+                    available on an invitation's read-only copy too (where the link, like the meeting itself,
+                    is only reachable by whoever holds access to its mailbox). */}
+                {videoMeetingUid && (
+                    <div className="flex items-center gap-3 mb-3">
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto"
+                            disabled={!organizerJoinUrl}
+                            onClick={() => window.open(organizerJoinUrl!, "_blank", "noopener,noreferrer")}
+                        >
+                            Join video call
+                        </Button>
+                        {!organizerJoinUrl && (
+                            <span className="text-xs text-text-muted">
+                                {organizerJoinUrl === null ? "This meeting’s join link isn’t available." : "Loading the join link…"}
+                            </span>
+                        )}
+                    </div>
+                )}
+
                 <fieldset disabled={isInvited} className="flex flex-col gap-1 min-w-0">
 
                 {!occurrence && mailboxOptions && mailboxOptions.length > 1 && (
@@ -477,6 +651,24 @@ export default function EventModal({
                 <FormField label="Location" htmlFor="event-location">
                     <input id="event-location" type="text" className={INPUT_CLASS} value={location} onChange={(e) => setLocation(e.target.value)} />
                 </FormField>
+
+                <div className="mb-3">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                        <input type="checkbox" checked={videoEnabled} onChange={(e) => setVideoEnabled(e.target.checked)} />
+                        Add video conferencing
+                    </label>
+                    {videoEnabled && (
+                        <p className="text-xs text-text-muted mt-1">
+                            Changing attendees after enabling video conferencing won&rsquo;t update meeting invitees &mdash;
+                            turn this off and back on to reissue links to the current attendee list.
+                        </p>
+                    )}
+                    {videoError && (
+                        <p role="alert" className="text-xs text-danger mt-1">
+                            {videoError}
+                        </p>
+                    )}
+                </div>
 
                 <label className="flex items-center gap-2 text-sm font-medium mb-3">
                     <input type="checkbox" checked={allDay} onChange={(e) => handleAllDayChange(e.target.checked)} />
