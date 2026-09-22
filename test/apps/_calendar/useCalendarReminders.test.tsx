@@ -93,6 +93,39 @@ describe("useCalendarReminders", () => {
         expect(visible[0].actions.map((action) => action.label)).toEqual(["Dismiss", "Snooze"]);
     });
 
+    it("adds a leading Join Meeting action when the event's location is a URL, opening it in a new tab without resolving the pop-up", async () => {
+        const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+        render(<Harness />);
+        connect();
+        await fireReminder({ ...NOTICE, location: "https://meet.example.com/room/abc" } as typeof NOTICE);
+
+        const toast = getNotificationsSnapshot().visible[0];
+        expect(toast.actions.map((action) => action.label)).toEqual(["Join Meeting", "Dismiss", "Snooze"]);
+        const joinAction = toast.actions[0];
+        expect(joinAction.keepOpen).toBe(true);
+
+        joinAction.onClick?.();
+        expect(openSpy).toHaveBeenCalledWith("https://meet.example.com/room/abc", "_blank", "noopener,noreferrer");
+        // keepOpen: true - the pop-up is still there for Dismiss/Snooze afterward.
+        expect(getNotificationsSnapshot().visible).toHaveLength(1);
+    });
+
+    it("has no Join Meeting action when the location is a room name, address or other non-URL text", async () => {
+        render(<Harness />);
+        connect();
+        await fireReminder({ ...NOTICE, location: "Room 12" } as typeof NOTICE);
+
+        expect(getNotificationsSnapshot().visible[0].actions.map((action) => action.label)).toEqual(["Dismiss", "Snooze"]);
+    });
+
+    it("has no Join Meeting action when the event has no location", async () => {
+        render(<Harness />);
+        connect();
+        await fireReminder(NOTICE);
+
+        expect(getNotificationsSnapshot().visible[0].actions.map((action) => action.label)).toEqual(["Dismiss", "Snooze"]);
+    });
+
     it("ignores push events that are not a CalendarEvent reminder", async () => {
         render(<Harness />);
         connect();

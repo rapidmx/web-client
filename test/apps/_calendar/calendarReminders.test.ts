@@ -6,6 +6,7 @@ import type { PushEvent } from "@rapidmx/react-shared/mail/pushClient.js";
 import {
     SNOOZE_MS,
     calendarReminderOf,
+    joinMeetingUrl,
     reminderMessage,
     reminderNotificationId,
     snoozeDelayMs,
@@ -31,6 +32,44 @@ describe("calendarReminderOf", () => {
         expect(calendarReminderOf({ type: "CalendarEvent", action: "reminder", data: { eventUid: "evt1" } })).toBeUndefined();
         expect(calendarReminderOf({ type: "CalendarEvent", action: "reminder", data: null })).toBeUndefined();
         expect(calendarReminderOf({ type: "CalendarEvent", action: "reminder", data: undefined })).toBeUndefined();
+        expect(calendarReminderOf({ type: "CalendarEvent", action: "reminder", data: { ...NOTICE, location: 42 } })).toBeUndefined();
+    });
+
+    it("accepts a reminder with a location - a string, null, or absent", () => {
+        expect(calendarReminderOf({ type: "CalendarEvent", action: "reminder", data: { ...NOTICE, location: "Room 12" } })?.location).toBe(
+            "Room 12",
+        );
+        expect(calendarReminderOf({ type: "CalendarEvent", action: "reminder", data: { ...NOTICE, location: null } })?.location).toBeNull();
+        expect(calendarReminderOf({ type: "CalendarEvent", action: "reminder", data: NOTICE })?.location).toBeUndefined();
+    });
+});
+
+describe("joinMeetingUrl", () => {
+    it("reads an http(s) URL as a join link", () => {
+        expect(joinMeetingUrl("https://meet.example.com/room/abc")).toBe("https://meet.example.com/room/abc");
+        expect(joinMeetingUrl("http://meet.example.com/room/abc")).toBe("http://meet.example.com/room/abc");
+    });
+
+    it("trims incidental whitespace", () => {
+        expect(joinMeetingUrl("  https://meet.example.com/room/abc  ")).toBe("https://meet.example.com/room/abc");
+    });
+
+    it("is undefined for a plain room name, address or other non-URL text", () => {
+        expect(joinMeetingUrl("Room 12")).toBeUndefined();
+        expect(joinMeetingUrl("123 Main St, Springfield")).toBeUndefined();
+        expect(joinMeetingUrl("Ask the front desk")).toBeUndefined();
+    });
+
+    it("is undefined for a non-http(s) URL scheme", () => {
+        expect(joinMeetingUrl("ftp://example.com/file")).toBeUndefined();
+        expect(joinMeetingUrl("mailto:someone@example.com")).toBeUndefined();
+    });
+
+    it("is undefined for empty, missing or null location", () => {
+        expect(joinMeetingUrl("")).toBeUndefined();
+        expect(joinMeetingUrl("   ")).toBeUndefined();
+        expect(joinMeetingUrl(undefined)).toBeUndefined();
+        expect(joinMeetingUrl(null)).toBeUndefined();
     });
 });
 

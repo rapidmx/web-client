@@ -5,7 +5,7 @@
 import { useEffect } from "react";
 import { getPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
 import { notify } from "../notifications/store.js";
-import { CalendarReminderNotice, calendarReminderOf, reminderMessage, reminderNotificationId, snoozeDelayMs } from "./calendarReminders.js";
+import { CalendarReminderNotice, calendarReminderOf, joinMeetingUrl, reminderMessage, reminderNotificationId, snoozeDelayMs } from "./calendarReminders.js";
 
 /** Where a reminder's title leads. There is no per-event deep link yet (the calendar opens an event by local state, not a URL - see
  * `apps/www/calendar/index.tsx`'s `openEvent()`), so every reminder opens the calendar itself. */
@@ -39,6 +39,7 @@ export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersO
         const timers = new Set<ReturnType<typeof setTimeout>>();
 
         function show(notice: CalendarReminderNotice): void {
+            const joinUrl = joinMeetingUrl(notice.location);
             notify({
                 id: reminderNotificationId(notice.eventUid, notice.startDate),
                 kind: "calendar",
@@ -47,6 +48,16 @@ export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersO
                 href: CALENDAR_HREF,
                 sticky: true,
                 actions: [
+                    ...(joinUrl
+                        ? [
+                              {
+                                  label: "Join Meeting",
+                                  onClick: () => window.open(joinUrl, "_blank", "noopener,noreferrer"),
+                                  // Joining isn't resolving the reminder - Dismiss/Snooze are still there afterward.
+                                  keepOpen: true,
+                              },
+                          ]
+                        : []),
                     { label: "Dismiss" },
                     {
                         label: "Snooze",

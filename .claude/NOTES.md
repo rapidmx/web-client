@@ -3022,6 +3022,31 @@ passing - the two failures (`contacts/index.test.tsx`'s cold compose-window race
 entry above; `settings/filters/new/index.test.tsx`'s `resolveFolders is not a function`) are both pre-existing and in files this change never
 touches.
 
+### 2026-09-22 (later still) - A "Join Meeting" button on the reminder pop-up, when the event's location is a URL
+
+JP's ask: when a reminder's event location is itself a link, the pop-up should offer a one-click way in, above
+Dismiss/Snooze. Pairs with `restapi`'s `CalendarReminderJob` change of the same date, which adds `location` to the
+`"reminder"` push payload.
+
+- **`apps/shared/calendar/calendarReminders.ts`** gained `location?: string | null` on `CalendarReminderNotice`
+  (`isReminderNotice()` widened to accept it) and a new pure `joinMeetingUrl(location)`: trims, parses as a `URL`,
+  and returns the original string back only for `http:`/`https:` - anything unparsable, empty, or another scheme
+  (a room name, a physical address, `tel:`, etc.) is `undefined`, so the button never appears for non-link text.
+- **`apps/shared/calendar/useCalendarReminders.ts`**'s `show()` computes `joinMeetingUrl(notice.location)` and, only
+  when it resolves, prepends a `"Join Meeting"` entry to the pop-up's `actions` array - first in the array, which
+  `NotificationCenter` renders as the leading button in its single-row action bar, ahead of Dismiss/Snooze. Its
+  `onClick` is `window.open(joinUrl, "_blank", "noopener,noreferrer")` and it sets `keepOpen: true`, so clicking it
+  opens the link in a new tab and leaves the pop-up exactly as it was for a later Dismiss or Snooze.
+- No change to `CalendarReminderNotice`'s wire shape otherwise, and a reminder from an older `restapi` that never
+  sends `location` just never grows the button - the field is optional throughout.
+
+Files: changed `apps/shared/calendar/{calendarReminders,useCalendarReminders}.ts`,
+`test/apps/_calendar/{calendarReminders,useCalendarReminders}.test.ts(x)`. `RELEASE_NOTES.md` updated (Unreleased >
+Features, folded into the existing "Meeting reminder pop-ups" bullet). Verified: `eslint` clean on every file this
+touches; scoped `vitest` run over `test/apps/_calendar/` with coverage limited to `apps/shared/calendar/**`,
+28/28 tests passing, 100%/100%/100%/100% - a full-repo `yarn test:prod` is blocked by an unrelated, concurrent
+peer session's `Domain.aliasOf` TypeScript errors in `apps/admin/domains/*`, none of which this change touches.
+
 ### 2026-09-22 (later) - "Add video conferencing" on the event form (`EventModal.tsx`)
 
 Not committed. The compose/UI half of the video-conferencing integration: react-shared gained the client
