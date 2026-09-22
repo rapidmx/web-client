@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-22
+
+### Added
+- Added Autodiscover labels, explanation copy and SRV value splitting to the Domain DNS setup page for the checklist's two new record types
+
+### Changed
+- Document the change in the release notes and NOTES
+- Generalize PrincipalPicker into PrincipalResolver, parameterized by an injected resolve and onResolved pair instead of being hardcoded to mailbox sharing, keeping PrincipalPicker itself as a thin wrapper so its own callers need no changes
+- Wire the general picker into the new-mailbox form's owner field and a new PrincipalListField into the escrow scope editor's key holder list, replacing raw uid entry in both
+- Document the fix and what was confirmed already fine in the release notes and NOTES
+- Updated react-shared dep
+
+### Fixed
+- Fixed PrincipalResolver rendering its own form, invalid once nested inside the mailbox form's outer one
+
 ## [0.11.0] - 2026-09-22
 
 ### Added
@@ -801,7 +816,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/rapidmx/web-client/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rapidmx/web-client/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rapidmx/web-client/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rapidmx/web-client/compare/v0.8.0...v0.9.0
