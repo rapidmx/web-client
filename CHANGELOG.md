@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-22
+
+### Added
+- Added a {USER_MENU} header variable, drop the title bar and icon when a deployment supplies its own custom header, and set the icon flush with the top of the page
+- Added per-user appearance customization, a background covering the whole app and theme colours, applied to every page before first paint, and a dark/light/system toggle in the user menu
+- Added a single, consistent pop-up for every app notification, replacing the old new-mail toast and send-failure alert with one system that also announces a signing certificate's progress
+
+### Changed
+- Render each message in the reading pane as its own card with a subject header card, taking on the app's theme unless the message's HTML explicitly overrides it, with every remote image, style and script sanitized and faithfully rendered, never executed, and refine the locked encrypted message's lock icon and Unlock button to match
+- Send instantly in the background with a pending indicator in Outbox for each message still relaying, and never fail a draft on its encryption check - it is treated as unencrypted until encryption is configured or required
+- Make the admin console stop showing every user's mailbox by default - an administrator sees only their own inbox and shared mailboxes unless they explicitly impersonate another user - and carry the same scoping into Settings
+- Let sharing name a person by address, username or uid instead of a raw id, with a picker and a preview of who it resolves to, and show a mailbox shared with the caller even when their token isn't elevated
+- Make the Contacts, Tasks and Calendar toolbars and layouts responsive down to a phone width, collapsing the least-used actions into a menu instead of overflowing the page
+- Show a new folder without a refresh, keep one row per well-known folder type, and add a progress bar, plain-language status and Check-status button for a pending signing certificate, including an admin fallback page to upload or reject a stalled request by hand
+- Test every change above and document them in the README, release notes and NOTES
+- Updated react-shared
+
 ## [0.10.0] - 2026-09-21
 
 ### Added
@@ -784,7 +801,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/rapidmx/web-client/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rapidmx/web-client/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rapidmx/web-client/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rapidmx/web-client/compare/v0.7.0...v0.8.0
