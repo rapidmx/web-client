@@ -62,6 +62,23 @@ describe("DomainsListPage", () => {
         );
     });
 
+    it("shows a dash for a regular domain and the target name for a pure alias domain", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/domains")) {
+                return jsonResponse(200, [
+                    domain,
+                    { ...domain, uid: "plc.gg", name: "plc.gg", aliasOf: "powerlevel.gg" },
+                ]);
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        render(<DomainsListPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        expect(await screen.findByText("—")).toBeInTheDocument();
+        expect(screen.getByText("powerlevel.gg")).toBeInTheDocument();
+    });
+
     it("shows an error message when the domain list fails to load", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});

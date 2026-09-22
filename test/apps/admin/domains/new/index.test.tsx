@@ -76,6 +76,39 @@ describe("NewDomainPage", () => {
         expect(await screen.findByText("Could not create the domain.")).toBeInTheDocument();
     });
 
+    it("offers only non-alias domains as an 'Alias of' target, and includes the selection when submitting", async () => {
+        let requestBody: any;
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/domains?")) {
+                return jsonResponse(200, [
+                    { uid: "powerlevel.gg", name: "powerlevel.gg" },
+                    { uid: "plc.gg", name: "plc.gg", aliasOf: "powerlevel.gg" },
+                ]);
+            }
+            if (url === "/api/mail/domains" && init?.method === "POST") {
+                requestBody = JSON.parse(init.body as string);
+                return jsonResponse(200, { uid: "alias2.gg" });
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const location = mockLocation();
+        const user = userEvent.setup();
+        render(<NewDomainPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New domain");
+
+        const select = await screen.findByLabelText("Alias of");
+        expect(screen.queryByRole("option", { name: "plc.gg" })).not.toBeInTheDocument();
+        expect(screen.getByRole("option", { name: "powerlevel.gg" })).toBeInTheDocument();
+
+        await user.type(screen.getByLabelText("Domain name"), "alias2.gg");
+        await user.selectOptions(select, "powerlevel.gg");
+        await user.click(screen.getByRole("button", { name: "Create domain" }));
+
+        await vi.waitFor(() => expect(location.href).toBe("/admin/domains/alias2.gg"));
+        expect(requestBody).toEqual({ enabled: true, name: "alias2.gg", aliasOf: "powerlevel.gg" });
+    });
+
     it("the Cancel link returns to the domains list", async () => {
         mockFetch(() => jsonResponse(200, {}));
         render(<NewDomainPage userUid="admin-1" authServerUrl="https://auth.example.com" />);

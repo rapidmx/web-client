@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useState } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { createDomain } from "@rapidmx/react-shared/admin/domainsApi.js";
+import { createDomain, Domain, listDomains } from "@rapidmx/react-shared/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -23,8 +23,18 @@ export default function NewDomainPage(props: Omit<AdminShellProps, "active">) {
 
 function NewDomainForm() {
     const [name, setName] = useState("");
+    const [aliasOf, setAliasOf] = useState("");
+    // Only an existing, non-alias domain can be aliased (no chains) - see `Domain.aliasOf`'s own doc comment
+    // on the `@rapidmx/restapi` side.
+    const [primaryDomains, setPrimaryDomains] = useState<Domain[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+
+    useEffect(() => {
+        listDomains({ limit: 200 })
+            .then((domains) => setPrimaryDomains(domains.filter((d) => !d.aliasOf)))
+            .catch(() => setPrimaryDomains([]));
+    }, []);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -37,7 +47,7 @@ function NewDomainForm() {
 
         setSaving(true);
         try {
-            const domain = await createDomain({ name: name.trim() });
+            const domain = await createDomain({ name: name.trim(), aliasOf: aliasOf || undefined });
             window.location.href = `/admin/domains/${encodeURIComponent(domain.uid)}`;
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create the domain.");
@@ -66,6 +76,21 @@ function NewDomainForm() {
                         onChange={(e) => setName(e.target.value)}
                         placeholder="example.com"
                     />
+                </FormField>
+
+                <FormField label="Alias of" htmlFor="aliasOf">
+                    <select id="aliasOf" className={INPUT_CLASS} value={aliasOf} onChange={(e) => setAliasOf(e.target.value)}>
+                        <option value="">None - a regular domain with mailboxes of its own</option>
+                        {primaryDomains.map((domain) => (
+                            <option key={domain.uid} value={domain.name}>
+                                {domain.name}
+                            </option>
+                        ))}
+                    </select>
+                    <p className="text-xs text-text-muted mt-1.5">
+                        A pure alias receives (and may send as) mail for the same addresses as the domain it aliases, but
+                        has no mailboxes of its own - it still needs its own DNS setup below.
+                    </p>
                 </FormField>
 
                 <div className="flex gap-3 mt-2">

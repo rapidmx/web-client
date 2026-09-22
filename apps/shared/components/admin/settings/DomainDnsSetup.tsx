@@ -146,6 +146,14 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                     </dd>
                     <dt className="text-text-muted">Last checked</dt>
                     <dd>{domain.lastCheckedAt ? new Date(domain.lastCheckedAt).toLocaleString() : "Never"}</dd>
+                    {domain.aliasOf && (
+                        <>
+                            <dt className="text-text-muted">Alias of</dt>
+                            <dd>
+                                {domain.aliasOf} <span className="text-xs text-text-muted">(no mailboxes of its own)</span>
+                            </dd>
+                        </>
+                    )}
                 </dl>
 
                 {!domain.verified && (

@@ -58,7 +58,7 @@ function DomainsListContent() {
                     <table className="w-full text-sm border-collapse">
                         <thead>
                             <tr>
-                                {["Name", "Enabled", "Verified", ""].map((h) => (
+                                {["Name", "Enabled", "Verified", "Alias of", ""].map((h) => (
                                     <th
                                         key={h}
                                         className="text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border"
@@ -84,6 +84,7 @@ function DomainsListContent() {
                                             </span>
                                         )}
                                     </td>
+                                    <td className="py-2.5 px-2.5 border-b border-border text-text-muted">{domain.aliasOf || "—"}</td>
                                     <td className="py-2.5 px-2.5 border-b border-border text-right">
                                         <a
                                             href={`/admin/domains/${encodeURIComponent(domain.uid)}`}

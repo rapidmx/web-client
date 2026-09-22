@@ -3086,3 +3086,39 @@ all pass in isolation (275/275 and 89/89 re-runs), and **another agent was runni
 at the time** (which is also why the first two runs left no coverage report at all: vitest skips it when the
 run fails, and parallel runs share and wipe `coverage/`). react-shared's own suite, with its half of this
 work, is 96/96 files, 1261/1261 tests, 100/99.48/100/100.
+
+### 2026-09-22 (later still) - Domain aliases in the admin console
+
+Not committed, unpublished. The UI half of restapi's new pure-domain-alias feature (that repo's NOTES entry of the same date): a `Domain` can
+name another it aliases (`plc.gg` aliasing `powerlevel.gg`) and then receives/sends mail for the same addresses with no mailboxes of its own.
+Needs `@rapidmx/react-shared`'s new `Domain.aliasOf` (its own NOTES entry, same date) - not yet published, so `web-client`'s own `tsc --noEmit`
+won't see the field until that lands and this repo's dependency is bumped; the code below is written against the field as it will exist.
+
+- **`apps/admin/domains/new/index.tsx`**: a new "Alias of" `<select>` under the domain name, populated from `listDomains({ limit: 200 })`
+  filtered to `!d.aliasOf` (only a non-alias domain can itself be aliased - matches restapi's own no-chains rule), defaulting to "None - a
+  regular domain with mailboxes of its own". `createDomain({ name, aliasOf: aliasOf || undefined })`. The extra `GET /mail/domains` this adds
+  needed no changes to the file's own existing tests: `apiFetch` is `async`, so a mock that doesn't recognize the URL rejects rather than
+  throwing synchronously, and the component's own `.catch(() => setPrimaryDomains([]))` absorbs it - confirmed by running the existing suite
+  unchanged before adding a dedicated test for the real (populated, filtered, submitted) behavior.
+- **`apps/admin/domains/[uid].tsx`**: a new "Alias" panel (below the existing DNS-setup status/checklist) with a plain text input rather than
+  a domain-list `<select>` - deliberately, so this page adds **no new fetch call** and every one of its ~20 existing tests (which enumerate
+  every URL they expect and throw on anything else) keeps working unchanged. Save disabled until the value actually differs from the domain's
+  current `aliasOf`; on success, bumps a `refreshCount` state used as `DomainDnsSetup`'s own `key` prop to force it to remount and re-fetch -
+  needed because `DomainDnsSetup` owns its own `domain` state (fetched once per `uid`, not a controlled prop), so a parent-side `updateDomain()`
+  call has no other way to make the shared status panel reflect the new value immediately. Server-side validation errors (unknown domain,
+  self-alias, chain) surface verbatim via the same `ApiRequestError` pattern every other action on this page already uses.
+  - **Latent bug found and fixed while wiring this up**: `DomainDnsSetupProps.onLoaded` is typed as `(domain: Domain) => void`, but
+    `DomainDnsSetup` actually calls it with `null` when `getDomain()` resolves to `null` (the existing "falls back to 'Domain not found.'"
+    test already exercises this). The page's own previous `onLoaded={setDomain}` tolerated it silently (`setDomain(null)` is fine); my new
+    `handleLoaded` initially read `d.aliasOf` and crashed on that same case (`Cannot read properties of null (reading 'aliasOf')`) - fixed with
+    `d?.aliasOf`. Left `DomainDnsSetupProps`'s own type as-is (out of scope) rather than widening it to `Domain | null`.
+- **`apps/shared/components/admin/settings/DomainDnsSetup.tsx`**: the status `<dl>` gains an "Alias of" row, shown only when `domain.aliasOf`
+  is set, alongside a "(no mailboxes of its own)" hint - read-only, shared verbatim by both the detail page and the setup wizard (this
+  component's own existing purpose).
+- **`apps/admin/domains/index.tsx`**: a new "Alias of" column, `domain.aliasOf || "—"` per row.
+
+Files: `apps/admin/domains/{new/index,[uid],index}.tsx`, `apps/shared/components/admin/settings/DomainDnsSetup.tsx`, their four test files,
+`RELEASE_NOTES.md` (Unreleased > Features). Verified: full suite **273/273 files, 4180/4180 tests** (no `--retry` needed this run - no
+concurrent agent this time); `tsc --noEmit` fails only on the still-unpublished `aliasOf` field (9 errors, every one exactly "Property
+'aliasOf' does not exist on type 'Domain'"/"'aliasOf' does not exist in type '...Input'" - confirms nothing else is broken, this is purely the
+package-boundary gap the intro paragraph describes).

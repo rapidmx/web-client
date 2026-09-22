@@ -493,6 +493,92 @@ describe("DomainDetailPage", () => {
         expect(await screen.findByText("Domain not found.")).toBeInTheDocument();
     });
 
+    it("shows an 'Alias of' row in the status panel once the domain has one", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, { ...domain, verified: true, aliasOf: "powerlevel.gg" });
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, []);
+            throw new Error(`unexpected ${url}`);
+        });
+        renderDomainPage();
+
+        expect(await screen.findByText("Alias of", { selector: "dt" })).toBeInTheDocument();
+        expect(screen.getByText(/powerlevel\.gg/)).toBeInTheDocument();
+    });
+
+    it("saves a new Alias of value and reflects it in the status panel", async () => {
+        let updateBody: any;
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com" && init?.method === "PUT") {
+                updateBody = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...domain, aliasOf: "powerlevel.gg", version: 1 });
+            }
+            if (url === "/api/mail/domains/example.com") {
+                return jsonResponse(200, updateBody ? { ...domain, aliasOf: "powerlevel.gg", version: 1 } : domain);
+            }
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        renderDomainPage();
+
+        const input = await screen.findByLabelText("Alias of");
+        const saveButton = screen.getByRole("button", { name: "Save" });
+        expect(saveButton).toBeDisabled();
+
+        await user.type(input, "powerlevel.gg");
+        expect(saveButton).toBeEnabled();
+        await user.click(saveButton);
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(updateBody).toEqual({ uid: "example.com", version: 0, aliasOf: "powerlevel.gg" });
+        expect(await screen.findByText(/powerlevel\.gg/)).toBeInTheDocument();
+    });
+
+    it("clearing Alias of back to blank sends aliasOf: undefined", async () => {
+        let updateBody: any;
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com" && init?.method === "PUT") {
+                updateBody = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...domain, version: 1 });
+            }
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, { ...domain, aliasOf: "powerlevel.gg" });
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        renderDomainPage();
+
+        const input = await screen.findByLabelText("Alias of");
+        await vi.waitFor(() => expect(input).toHaveValue("powerlevel.gg"));
+        await user.clear(input);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await vi.waitFor(() => expect(updateBody).toEqual({ uid: "example.com", version: 0, aliasOf: undefined }));
+    });
+
+    it("shows an error message when saving Alias of fails", async () => {
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com" && init?.method === "PUT") {
+                return jsonResponse(400, { message: "'no-such-domain.gg' is not a domain known to this server - add it first." });
+            }
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        renderDomainPage();
+
+        const input = await screen.findByLabelText("Alias of");
+        await user.type(input, "no-such-domain.gg");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("'no-such-domain.gg' is not a domain known to this server - add it first.")).toBeInTheDocument();
+    });
+
     it("closes the delete confirmation modal on Cancel without deleting", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
