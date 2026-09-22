@@ -2963,3 +2963,11 @@ single sent message rather than the genuine forwarded/re-sent/Bcc case it's mean
 `MessageDetailPane.tsx` on `!isSentItems` (the same folder-type signal the Recall button already uses) instead of touching the shared
 `messageSecurity.ts` check, which the Inbox/other-folder case still needs unchanged. One new test in `MessageDetailPane.test.tsx`
 (160/160 passing in that file). `yarn tsc --noEmit` and `yarn lint` clean.
+
+### 2026-09-22 - Autodiscover on the Domain DNS setup page
+
+`DomainDnsSetup.tsx` gained labels and a "why this matters" explanation for the two new Autodiscover checklist rows (`autodiscover_cname`/
+`autodiscover_srv`), with SRV-specific priority/weight/port/target value splitting mirroring the existing MX split.
+
+Files: changed `DomainDnsSetup.tsx`. Full suite (isolated run): 270/270 files, 4139/4139 tests, 100/99.91/100/100 (one pre-existing flaky contacts
+test - a cold compose-window code-load race - reproduced under concurrent load and passed clean alone, unrelated to this change).

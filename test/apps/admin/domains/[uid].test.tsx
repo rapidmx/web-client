@@ -94,6 +94,24 @@ const fullDnsSetup = [
         found: false,
         matches: false,
     },
+    {
+        type: "autodiscover_cname",
+        recordKind: "CNAME",
+        recordName: "autodiscover.example.com",
+        configured: true,
+        recommendedValue: "mail.example.com",
+        found: false,
+        matches: false,
+    },
+    {
+        type: "autodiscover_srv",
+        recordKind: "SRV",
+        recordName: "_autodiscover._tcp.example.com",
+        configured: true,
+        recommendedValue: "0 0 443 mail.example.com",
+        found: false,
+        matches: false,
+    },
 ];
 
 function renderDomainPage() {
@@ -205,6 +223,13 @@ describe("DomainDetailPage", () => {
             ["Copy value for the DKIM record", DKIM_VALUE],
             ["Copy name for the DMARC record", "_dmarc.example.com"],
             ["Copy value for the DMARC record", "v=DMARC1; p=none;"],
+            ["Copy name for the Autodiscover CNAME record", "autodiscover.example.com"],
+            ["Copy value for the Autodiscover CNAME record", "mail.example.com"],
+            ["Copy name for the Autodiscover SRV record", "_autodiscover._tcp.example.com"],
+            ["Copy priority for the Autodiscover SRV record", "0"],
+            ["Copy weight for the Autodiscover SRV record", "0"],
+            ["Copy port for the Autodiscover SRV record", "443"],
+            ["Copy target for the Autodiscover SRV record", "mail.example.com"],
         ];
         for (const [name, value] of expected) {
             const button = screen.getAllByRole("button", { name })[0];
@@ -212,10 +237,44 @@ describe("DomainDetailPage", () => {
             expect(writeText).toHaveBeenLastCalledWith(value);
         }
         // Nothing else offers a copy: ownership's two buttons appear twice (block and checklist row), the MX row has a name,
-        // a priority and a server button but no whole-value one, and each remaining row has a name and a value button.
-        expect(screen.getAllByRole("button", { name: /^Copy / })).toHaveLength(2 + 2 + 3 + 2 + 2 + 2);
+        // a priority and a server button but no whole-value one, each of SPF/DKIM/DMARC/the autodiscover CNAME has a name
+        // and a value button, and the autodiscover SRV row has a name plus its four split fields.
+        expect(screen.getAllByRole("button", { name: /^Copy / })).toHaveLength(2 + 2 + 3 + 2 + 2 + 2 + 2 + 5);
         expect(screen.queryByRole("button", { name: "Copy value for the MX record" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Copy value for the Autodiscover SRV record" })).not.toBeInTheDocument();
         expect(screen.getByText(/Some DNS providers want the name relative/)).toBeInTheDocument();
+        // The two autodiscover rows get a "why this matters" explanation the well-known record types don't.
+        expect(screen.getByText(/So EAS and Outlook clients can find this server automatically/)).toBeInTheDocument();
+        expect(screen.getByText(/needs no extra TLS certificate/)).toBeInTheDocument();
+    });
+
+    it("copies a malformed autodiscover SRV value whole instead of splitting it into fields", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com/dns-setup") {
+                return jsonResponse(200, [
+                    {
+                        type: "autodiscover_srv",
+                        recordKind: "SRV",
+                        recordName: "_autodiscover._tcp.example.com",
+                        configured: true,
+                        recommendedValue: "not-a-valid-srv-value",
+                        found: false,
+                        matches: false,
+                    },
+                ]);
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        const user = userEvent.setup();
+        mockClipboard(writeText);
+        renderDomainPage();
+
+        await user.click(await screen.findByRole("button", { name: "Copy value for the Autodiscover SRV record" }));
+        expect(writeText).toHaveBeenLastCalledWith("not-a-valid-srv-value");
+        expect(screen.queryByRole("button", { name: /priority/i })).not.toBeInTheDocument();
     });
 
     it("shows each record's type and name, and leaves a dash where there is nothing to copy yet", async () => {

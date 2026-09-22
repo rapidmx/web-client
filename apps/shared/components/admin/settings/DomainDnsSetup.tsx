@@ -15,6 +15,8 @@ const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
     spf: "SPF",
     dkim: "DKIM",
     dmarc: "DMARC",
+    autodiscover_cname: "Autodiscover (CNAME)",
+    autodiscover_srv: "Autodiscover (SRV)",
 };
 
 /** How each record is named in a Copy button's accessible name ("Copy value for the SPF record"). */
@@ -24,12 +26,29 @@ const RECORD_TYPE_NAMES: Record<DnsRecordCheck["type"], string> = {
     spf: "SPF",
     dkim: "DKIM",
     dmarc: "DMARC",
+    autodiscover_cname: "Autodiscover CNAME",
+    autodiscover_srv: "Autodiscover SRV",
+};
+
+/** A one-line "why this matters", shown under a checklist row's label - only for record types unfamiliar
+ * enough to need one; the well-known mail records (ownership/MX/SPF/DKIM/DMARC) don't. */
+const RECORD_TYPE_HELP: Partial<Record<DnsRecordCheck["type"], string>> = {
+    autodiscover_cname:
+        "So EAS and Outlook clients can find this server automatically from just an email address. This hostname also needs to be covered by this server's TLS certificate.",
+    autodiscover_srv:
+        "Same purpose as the CNAME above, for clients that check DNS SRV instead - and, unlike the CNAME, needs no extra TLS certificate, since it points at a hostname already covered. Prefer this one when a second certificate is hard to obtain.",
 };
 
 /** An MX record's recommended value is `"<priority> <mail server>"` - two separate fields in a DNS provider's form. */
 function splitMxValue(value: string): { priority: string; server: string } | null {
     const match = /^(\d+)\s+(\S+)$/.exec(value.trim());
     return match ? { priority: match[1], server: match[2] } : null;
+}
+
+/** A SRV record's recommended value is `"<priority> <weight> <port> <target>"` - four separate fields in a DNS provider's form. */
+function splitSrvValue(value: string): { priority: string; weight: string; port: string; target: string } | null {
+    const match = /^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)$/.exec(value.trim());
+    return match ? { priority: match[1], weight: match[2], port: match[3], target: match[4] } : null;
 }
 
 /** A value to type into a DNS provider's form, shown in full (long DKIM keys wrap) with a Copy button beside it. */
@@ -181,6 +200,9 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                                         <td className="py-2.5 px-2.5 border-b border-border">
                                             {RECORD_TYPE_LABELS[check.type]}
                                             <div className="text-xs text-text-muted">Type: {check.recordKind}</div>
+                                            {RECORD_TYPE_HELP[check.type] && (
+                                                <div className="text-xs text-text-muted mt-1 max-w-xs">{RECORD_TYPE_HELP[check.type]}</div>
+                                            )}
                                         </td>
                                         <td className="py-2.5 px-2.5 border-b border-border">
                                             {!check.configured ? (
@@ -228,23 +250,47 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
     );
 }
 
-/** The value cell of a checklist row: an MX value as its two form fields (priority and mail server), anything else whole. */
+/** The value cell of a checklist row: an MX value as its two form fields (priority and mail server), a SRV value as
+ * its four form fields (priority, weight, port and target), anything else whole. */
 function DnsRecordValue({ check, value }: { check: DnsRecordCheck; value: string }) {
     const recordName = RECORD_TYPE_NAMES[check.type];
     const mx = check.type === "mx" ? splitMxValue(value) : null;
-    if (!mx) {
-        return <CopyableValue value={value} copyLabel={`Copy value for the ${recordName} record`} />;
+    if (mx) {
+        return (
+            <div className="flex flex-col gap-1.5">
+                <div className="flex items-start gap-2">
+                    <span className="text-xs w-20 shrink-0 pt-1">Priority</span>
+                    <CopyableValue value={mx.priority} copyLabel={`Copy priority for the ${recordName} record`} />
+                </div>
+                <div className="flex items-start gap-2">
+                    <span className="text-xs w-20 shrink-0 pt-1">Mail server</span>
+                    <CopyableValue value={mx.server} copyLabel={`Copy mail server for the ${recordName} record`} />
+                </div>
+            </div>
+        );
     }
-    return (
-        <div className="flex flex-col gap-1.5">
-            <div className="flex items-start gap-2">
-                <span className="text-xs w-20 shrink-0 pt-1">Priority</span>
-                <CopyableValue value={mx.priority} copyLabel={`Copy priority for the ${recordName} record`} />
+    const srv = check.type === "autodiscover_srv" ? splitSrvValue(value) : null;
+    if (srv) {
+        return (
+            <div className="flex flex-col gap-1.5">
+                <div className="flex items-start gap-2">
+                    <span className="text-xs w-20 shrink-0 pt-1">Priority</span>
+                    <CopyableValue value={srv.priority} copyLabel={`Copy priority for the ${recordName} record`} />
+                </div>
+                <div className="flex items-start gap-2">
+                    <span className="text-xs w-20 shrink-0 pt-1">Weight</span>
+                    <CopyableValue value={srv.weight} copyLabel={`Copy weight for the ${recordName} record`} />
+                </div>
+                <div className="flex items-start gap-2">
+                    <span className="text-xs w-20 shrink-0 pt-1">Port</span>
+                    <CopyableValue value={srv.port} copyLabel={`Copy port for the ${recordName} record`} />
+                </div>
+                <div className="flex items-start gap-2">
+                    <span className="text-xs w-20 shrink-0 pt-1">Target</span>
+                    <CopyableValue value={srv.target} copyLabel={`Copy target for the ${recordName} record`} />
+                </div>
             </div>
-            <div className="flex items-start gap-2">
-                <span className="text-xs w-20 shrink-0 pt-1">Mail server</span>
-                <CopyableValue value={mx.server} copyLabel={`Copy mail server for the ${recordName} record`} />
-            </div>
-        </div>
-    );
+        );
+    }
+    return <CopyableValue value={value} copyLabel={`Copy value for the ${recordName} record`} />;
 }
