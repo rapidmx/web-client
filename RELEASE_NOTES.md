@@ -1,5 +1,7 @@
 # Release Notes
 
+## Unreleased
+
 ## v0.11.0
 
 Needs `@rapidmx/react-shared`'s next release (`queueMessageSend`, the send-event parser and the 401 observer) and, for the background send, an `@rapidmx/restapi` that answers `POST /mail/messages/:id/send` with `{ "background": true }` by `202 { "status": "queued" }` and publishes `send-succeeded` / `send-retrying` / `send-failed` events. Against a server without them Send still works: the client then sends the ordinary way and shows "Message sent" when it is done. Appearance needs `@rapidmx/react-shared`'s `appearance/preferencesApi.js` and an `@rapidmx/restapi` and `@rapidmx/server` with the `/mail/preferences/appearance` routes and the `appearance` page prop; without them a change is undone with a message when its save fails.
