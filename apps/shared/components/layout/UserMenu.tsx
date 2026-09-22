@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { HiOutlineShieldCheck } from "react-icons/hi2";
 import { formatProfileName, getMyProfile, getMyUsername, Profile, profileInitials } from "@rapidmx/react-shared/auth/profileApi.js";
 import { accountUrlOf } from "../../auth/accountUrl.js";
@@ -11,6 +12,7 @@ import { ariaKeyShortcuts } from "../../keyboard/format.js";
 import { SHORTCUTS } from "../../keyboard/keymap.js";
 import { useKeyEnvironment } from "../../keyboard/ShortcutProvider.js";
 import { SETTINGS_HREF } from "../../navigation/appHrefs.js";
+import ThemeSwitch from "./ThemeSwitch.js";
 import {
     DesktopPermission,
     desktopPermission,
@@ -49,6 +51,12 @@ export interface UserMenuProps {
     /** Shows a "Keyboard shortcuts" item that calls this - opening the help dialog (`?` and Ctrl+/ do too). For the shells that have the
      * keyboard layer (`AppChrome`); the consoles don't offer it. */
     onShowShortcuts?: () => void;
+    /** Which way the menu opens from its button: `"down"` (the default; in a header) or `"up"` (in a footer, where there is no room below). */
+    placement?: "down" | "up";
+    /** Shows a "Recent notifications" item that calls this - opening the history of the last pop-ups (`AppChrome` only). */
+    onShowNotifications?: () => void;
+    /** Errors in that history nobody has looked at yet: a count beside the item, and a dot on the menu button. */
+    unseenErrors?: number;
 }
 
 function Avatar({ profile, initials, large }: { profile?: Profile; initials: string; large?: boolean }) {
@@ -91,9 +99,16 @@ export default function UserMenu({
     showSettingsLink,
     showNotificationSettings,
     onShowShortcuts,
+    placement = "down",
+    onShowNotifications,
+    unseenErrors = 0,
 }: UserMenuProps) {
     const env = useKeyEnvironment();
     const [open, setOpen] = useState(false);
+    // Where the menu sits, in window coordinates: it is drawn through a portal into `<body>` with `position: fixed`, so no ancestor's
+    // `overflow`, `z-index` or stacking context - a custom branding header's, say - can clip it or put it behind the page.
+    const [anchor, setAnchor] = useState<{ right: number; top?: number; bottom?: number } | null>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
     const [detectedAdmin, setDetectedAdmin] = useState(false);
     const [popups, setPopups] = useState(true);
     const [permission, setPermission] = useState<DesktopPermission>("unsupported");
@@ -172,7 +187,13 @@ export default function UserMenu({
             return;
         }
         function handlePointerDown(e: MouseEvent) {
-            if (containerRef.current && e.target instanceof Node && !containerRef.current.contains(e.target)) {
+            // The menu is portalled out of the container, so it and the button are checked separately.
+            if (
+                containerRef.current &&
+                e.target instanceof Node &&
+                !containerRef.current.contains(e.target) &&
+                !menuRef.current?.contains(e.target)
+            ) {
                 setOpen(false);
             }
         }
@@ -189,6 +210,26 @@ export default function UserMenu({
         };
     }, [open]);
 
+    // Measured before paint, and again whenever the window resizes or anything scrolls (a footer's button moves with the page).
+    useLayoutEffect(() => {
+        if (!open) {
+            setAnchor(null);
+            return;
+        }
+        function place() {
+            const rect = containerRef.current!.getBoundingClientRect();
+            const right = Math.max(8, window.innerWidth - rect.right);
+            setAnchor(placement === "up" ? { right, bottom: window.innerHeight - rect.top + 8 } : { right, top: rect.bottom + 8 });
+        }
+        place();
+        window.addEventListener("resize", place);
+        window.addEventListener("scroll", place, true);
+        return () => {
+            window.removeEventListener("resize", place);
+            window.removeEventListener("scroll", place, true);
+        };
+    }, [open, placement]);
+
     const name = formatProfileName(profile) ?? username ?? userUid;
     const initials = profileInitials(profile, userUid, username);
     const accountUrl = accountUrlOf(authServerUrl);
@@ -201,9 +242,12 @@ export default function UserMenu({
                 aria-haspopup="true"
                 aria-expanded={open}
                 aria-label="Account menu"
-                className="flex items-center gap-1.5 rounded-pill py-1 pl-1 pr-2 hover:bg-surface-alt"
+                className="relative flex items-center gap-1.5 rounded-pill py-1 pl-1 pr-2 hover:bg-surface-alt"
             >
                 <Avatar profile={profile} initials={initials} />
+                {unseenErrors > 0 && (
+                    <span data-testid="unseen-errors-dot" aria-hidden="true" className="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-danger" />
+                )}
                 <svg
                     width="14"
                     height="14"
@@ -215,15 +259,20 @@ export default function UserMenu({
                     <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
             </button>
-            {open && (
+            {open &&
+                anchor &&
+                createPortal(
                 <div
+                    ref={menuRef}
                     role="menu"
-                    className="absolute right-0 top-full mt-2 w-60 bg-surface border border-border rounded-md shadow-modal py-1.5 z-10"
+                    style={{ position: "fixed", right: anchor.right, top: anchor.top, bottom: anchor.bottom }}
+                    className="w-60 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-5rem)] overflow-y-auto bg-surface border border-border rounded-md shadow-modal py-1.5 z-[70]"
                 >
                     <div className="flex items-center gap-3 px-3.5 py-2.5 border-b border-border">
                         <Avatar profile={profile} initials={initials} large />
                         <span className="text-sm font-semibold text-text truncate">{name}</span>
                     </div>
+                    <ThemeSwitch />
                     {accountUrl && (
                         <a
                             role="menuitem"
@@ -264,6 +313,25 @@ export default function UserMenu({
                             Turn on desktop notifications
                         </button>
                     )}
+                    {onShowNotifications && (
+                        <button
+                            role="menuitem"
+                            type="button"
+                            onClick={() => {
+                                setOpen(false);
+                                onShowNotifications();
+                            }}
+                            className="flex w-full items-center justify-between gap-2 px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
+                        >
+                            <span>Recent notifications</span>
+                            {unseenErrors > 0 && (
+                                <span className="rounded-pill bg-danger px-1.5 text-xs font-bold text-white">
+                                    <span aria-hidden="true">{unseenErrors}</span>
+                                    <span className="sr-only">{unseenErrors} unseen {unseenErrors === 1 ? "error" : "errors"}</span>
+                                </span>
+                            )}
+                        </button>
+                    )}
                     {onShowShortcuts && (
                         <button
                             role="menuitem"
@@ -296,7 +364,8 @@ export default function UserMenu({
                     >
                         Sign Out
                     </button>
-                </div>
+                </div>,
+                document.body,
             )}
         </div>
     );

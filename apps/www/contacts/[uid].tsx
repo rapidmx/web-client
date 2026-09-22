@@ -12,6 +12,7 @@ import ContactDetailPane from "../../shared/components/contacts/ContactDetailPan
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigners.js";
+import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 
 /**
  * Only reached on mobile (below the `md` breakpoint) — desktop's `apps/www/contacts/index.tsx` keeps its
@@ -34,9 +35,6 @@ function ContactDetailContent({ uid }: { uid: string }) {
     const [contact, setContact] = useState<Contact | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    // Kept apart from the load `error` - a failed delete must leave the contact on screen (with the
-    // reason) rather than replacing the whole page with an error as if it had never loaded.
-    const [deleteError, setDeleteError] = useState<string | null>(null);
     const [mode, setMode] = useState<Mode>("view");
 
     useEffect(() => {
@@ -53,14 +51,14 @@ function ContactDetailContent({ uid }: { uid: string }) {
     // rendered once `contact` is already resolved (see the `error || !contact` guard above it), so this
     // never runs with a stale/absent contact — no redundant null check needed here.
     async function handleDelete(contact: Contact) {
-        setDeleteError(null);
         try {
             await deleteContact(contact.uid, contact.version);
             // A deleted contact's pinned signing keys must stop vouching for signatures.
             clearPinnedSignerCache();
             navigate("/contacts");
         } catch (err) {
-            setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this contact.");
+            // A pop-up: a failed delete leaves the contact on screen rather than replacing the page with an error.
+            notifyApiError(err, "Couldn't delete the contact");
         }
     }
 
@@ -79,8 +77,8 @@ function ContactDetailContent({ uid }: { uid: string }) {
     const backHref = "/contacts";
     if (mode === "edit") {
         return (
-            <div className="p-6">
-                <a href={backHref} className="text-sm text-primary-dark hover:underline block mb-4">
+            <div>
+                <a href={backHref} className="text-sm text-primary-dark hover:underline block px-6 pt-6">
                     &larr; Back to contacts
                 </a>
                 <ContactForm
@@ -97,7 +95,6 @@ function ContactDetailContent({ uid }: { uid: string }) {
 
     return (
         <div className="p-6">
-            {deleteError && <Alert>{deleteError}</Alert>}
             <ContactDetailPane
                 contact={contact}
                 onEdit={() => setMode("edit")}

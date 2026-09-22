@@ -4,15 +4,20 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { PropsWithChildren } from "react";
 import { Branding } from "@rapidmx/react-shared/branding/brandingApi.js";
+import { AppearanceHead, appearanceHtmlAttributes } from "../shared/appearance/AppearanceHead.js";
 import { CUSTOM_STYLESHEET_LINK_ID } from "@rapidmx/react-shared/branding/useBranding.js";
 
 export interface LayoutProps {
     /** See `apps/www/_layout.tsx`'s `LayoutProps` doc comment - identical mechanism, supplied by
      * `AdminConsoleRoute`'s `fetchProps()` override. */
     branding?: Branding;
+    /** The signed-in user's stored appearance preferences (a page prop from the same `fetchProps()`, present only on the www pages and only when the user has any): rendered as a stylesheet in the `<head>` so the very first paint is themed - see `AppearanceHead`. */
+    appearance?: unknown;
+    /** The signed-in user (supplied by the framework), so a cached appearance from another account on this browser is never applied. */
+    userUid?: string;
 }
 
-export default function Layout({ children, branding }: PropsWithChildren<LayoutProps>) {
+export default function Layout({ children, branding, appearance, userUid }: PropsWithChildren<LayoutProps>) {
     const title = branding?.title || branding?.companyName
         ? `${branding?.title || branding?.companyName}: Mail Admin Console`
         : "RapidMX: Mail Admin Console";
@@ -20,7 +25,7 @@ export default function Layout({ children, branding }: PropsWithChildren<LayoutP
     const stylesheetHref = branding?.stylesheetUrl;
 
     return (
-        <html lang="en">
+        <html lang="en" {...appearanceHtmlAttributes(appearance, userUid)}>
             <head>
                 <meta charSet="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -34,6 +39,7 @@ export default function Layout({ children, branding }: PropsWithChildren<LayoutP
                     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
                 />
                 {stylesheetHref && <link rel="stylesheet" href={stylesheetHref} id={CUSTOM_STYLESHEET_LINK_ID} />}
+                <AppearanceHead appearance={appearance} />
             </head>
             <body>{children}</body>
         </html>

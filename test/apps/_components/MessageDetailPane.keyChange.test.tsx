@@ -12,7 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { PinnedKeyChangedError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { mockFetch } from "../testUtils.js";
+import { mockFetchWithServerBody as mockFetch } from "./paneFetch.js";
 import MessageDetailPane, { KEPT_CURRENT_SIGNING_KEY_MESSAGE } from "../../../apps/shared/components/mail/MessageDetailPane.js";
 import {
     KEY_CHANGE_FORBIDDEN_MESSAGE,

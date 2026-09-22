@@ -41,7 +41,13 @@ describe("AppRouter server-side", () => {
                 routes={[{ path: "/items/:uid", active: "contacts", load: () => Promise.resolve({ default: () => null }), idlePrefetch: true }]}
                 initialPath="/items/:uid"
                 initialPage={Page}
-                pageProps={{ userUid: "u1", params: { uid: "abc" }, branding: { title: "not for the chrome" } }}
+                pageProps={{
+                    userUid: "u1",
+                    params: { uid: "abc" },
+                    branding: { title: "for the chrome" },
+                    appearance: { version: 1, mode: "dark" },
+                    other: "not for the chrome",
+                }}
             />,
         );
         expect(html).toContain('data-active="contacts"');
@@ -50,8 +56,14 @@ describe("AppRouter server-side", () => {
         expect(html).toContain("&quot;pathname&quot;:&quot;&quot;");
         expect(html).toContain("function");
         expect(html).toContain("takeover");
-        // Only what the chrome takes is passed to it.
-        expect(chromeProps.seen[0]).toMatchObject({ userUid: "u1", routeKey: "initial" });
-        expect(chromeProps.seen[0].branding).toBeUndefined();
+        // Only what the chrome takes is passed to it: the user, the branding and the appearance the server rendered the page with - not the rest.
+        expect(chromeProps.seen[0]).toMatchObject({
+            userUid: "u1",
+            routeKey: "initial",
+            branding: { title: "for the chrome" },
+            appearance: { version: 1, mode: "dark" },
+        });
+        expect(chromeProps.seen[0].other).toBeUndefined();
+        expect(chromeProps.seen[0].params).toBeUndefined();
     });
 });

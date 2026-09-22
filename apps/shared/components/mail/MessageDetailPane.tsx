@@ -11,6 +11,8 @@ import {
     HiOutlineExclamationTriangle,
     HiOutlineFolderArrowDown,
     HiOutlineLockClosed,
+    HiOutlineMoon,
+    HiOutlineSun,
 } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -40,7 +42,6 @@ import {
     forwardSubject,
     replySubject,
 } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
-import { sanitizeMessageBodyHtml } from "@rapidmx/react-shared/mail/messageBodySanitizer.js";
 import MoveToFolderDialog from "./MoveToFolderDialog.js";
 import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { MessageSecurityResult, SignatureFailureReason } from "@rapidmx/react-shared/crypto/messageSecurity.js";
@@ -56,7 +57,7 @@ import { ComposeLateInput, prefetchComposeWindow, useCompose } from "./compose/C
 import { loadOriginalMessage, prefetchOriginalMessage } from "./compose/quotedBody.js";
 import { formatRecipient } from "./compose/recipients.js";
 import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
-import { RecipientLine } from "./MailAddress.js";
+import MailAddress, { RecipientLine } from "./MailAddress.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { ariaKeyShortcuts, withHint } from "../../keyboard/format.js";
 import { SHORTCUTS, ShortcutDef } from "../../keyboard/keymap.js";
@@ -68,6 +69,13 @@ import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import LabelMenuButton from "./labelMenu.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import EncryptedBody from "./reading/EncryptedBody.js";
+import { displaySubject } from "./reading/EncryptedPreview.js";
+import MessageBody, { BodySkeleton } from "./reading/MessageBody.js";
+import { BODY_FONT_STYLE, CardShell, SenderAvatar, SubjectCard } from "./reading/MessageCard.js";
+import type { BodyContent } from "./reading/bodyContent.js";
+import { useViewOriginal } from "./reading/viewOriginal.js";
+import { ROW_FOCUS_CLASS, UnreadLabel, dateClass, senderClass } from "./unreadStyle.js";
 
 /** Labels/styling for `specs/end-to-end_encryption.md`'s "Message Security Indicators" table - kept as
  * plain data (not JSX) so `SecurityIndicator` below stays a trivial lookup. "Signature failed" MUST NOT
@@ -229,7 +237,14 @@ function IconAction({
 function SecurityIndicator({ security }: { security: MessageSecurityResult }) {
     const { label, className } = SECURITY_INDICATOR[security.state];
     if (security.state !== "verified_at_first_open") {
-        return <span className={`text-xs font-medium shrink-0 py-1 px-2.5 rounded-pill ${className}`}>{label}</span>;
+        // Every encrypted state carries a small lock, so the badge reads at a glance; the words are unchanged.
+        const encrypted = security.state.startsWith("encrypted");
+        return (
+            <span className={`inline-flex items-center gap-1 text-xs font-medium shrink-0 py-1 px-2.5 rounded-pill ${className}`}>
+                {encrypted && <HiOutlineLockClosed size={12} aria-hidden="true" />}
+                {label}
+            </span>
+        );
     }
     return (
         <span
@@ -266,18 +281,6 @@ const GENERIC_SIGNATURE_FAILURE_MESSAGE = "This message's digital signature coul
 /** Fallback when the raw MIME for an encrypted message can't even be fetched/evaluated - an encrypted
  * message must never be mislabeled "Unprotected" just because loading failed. */
 const ENCRYPTED_LOAD_ERROR = "Couldn't load this message's encrypted content.";
-
-/** Content Security Policy prepended to every client-rendered (decrypted/verified) body's `srcDoc` - the
- * backstop behind the sanitizer below: nothing in the document may load any remote resource at all, only
- * inline styles and `data:`/`cid:` images. */
-const BODY_CSP_META =
-    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'\">";
-
-/** Sanitizes a client-rendered body for `srcDoc` (DOMPurify plus every remote resource reference stripped - see
- * react-shared's `messageBodySanitizer.ts`), with the CSP meta as its very first element. */
-export function buildSecureSrcDoc(html: string): string {
-    return BODY_CSP_META + sanitizeMessageBodyHtml(html);
-}
 
 export interface MessageDetailPaneProps {
     message: Message | null;
@@ -338,16 +341,39 @@ export interface MessageDetailPaneProps {
     /** Handed a label created from the Labels menu, for the caller to add to `labels`. Without it the menu
      * offers no "New label" row, only the link to where labels are managed. */
     onLabelCreated?: (label: Label) => void;
-    /** Rendered as one message of a thread (`ConversationThreadPane`) rather than as the pane itself: the
-     * subject becomes a heading under the thread's own, since a document has one `h1` and the thread's is
-     * the conversation. Everything else - the badges, the actions, the body - is identical. */
+    /** Rendered as one message of a thread (`ConversationThreadPane`) rather than as the pane itself: only its card is drawn - the thread
+     * owns the subject card, the scrolling and the `h1` - and the message's own subject appears (as an `h3`) only when it differs from the
+     * thread's (`threadSubject`). Everything else - the badges, the actions, the body - is identical. */
     inThread?: boolean;
+    /** The thread's subject, for a message of a thread to tell whether its own subject is worth showing. */
+    threadSubject?: string;
+    /** In a thread, what makes the sender line of this expanded card the button that collapses it: the id of the body it controls, whether the
+     * message is unread (which draws the accent bar and tint), what it does, and where to put its ref. */
+    threadHeader?: {
+        bodyId: string;
+        unread: boolean;
+        onToggle: () => void;
+        buttonRef: (node: HTMLButtonElement | null) => void;
+    };
+    /** Draw the Reply and Forward buttons at the foot of the card - by default for the single-message pane, and in a thread only where the
+     * caller asks (the newest expanded message). */
+    footer?: boolean;
     /**
      * Registers this pane's keyboard shortcuts - Reply, Reply all, Forward, Archive, Move to - so they act on this message. Only the message
      * the keyboard is acting on should set it: the one pane beside the list, or the opened message of a thread (each expanded message of a
      * thread is a pane, and two of them must not both claim Ctrl+R). Also puts the shortcut in those buttons' tooltips.
      */
     shortcuts?: boolean;
+}
+
+/** A subject without its \`Re:\`/\`Fwd:\` prefixes, lower-cased - what makes two messages of one thread the same subject. */
+function subjectCore(subject: string | undefined): string {
+    return (subject ?? "").replace(/^(\s*(re|fw|fwd|aw|sv)\s*:)+/i, "").trim().toLowerCase();
+}
+
+/** Whether a message's subject says nothing its thread's subject doesn't. */
+function sameSubject(subject: string, threadSubject: string | undefined): boolean {
+    return subjectCore(subject) === subjectCore(threadSubject);
 }
 
 function formatBytes(bytes: number): string {
@@ -357,7 +383,8 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * A message's reading pane — header (subject/from/to/attachments) plus a sandboxed iframe for the body.
+ * A message's reading pane - a subject card, and under it the message as a card: header (sender, recipients, time, actions), notices, attachments,
+ * the body (`reading/MessageBody`: an isolated frame exactly as tall as its content, or text) and a footer. Rendered with `inThread`, only the card.
  * Shared by the desktop inline pane (`apps/www/index.tsx`, always visible alongside the message list),
  * and the mobile detail route (`apps/www/messages/[uid].tsx`, a full page on its own reached by tapping
  * a message row) — see each call site for how `message`/`attachments`/`isSentItems` are sourced. The
@@ -399,6 +426,9 @@ function MessageDetailContent({
     onLabelsChanged,
     onLabelCreated,
     inThread,
+    threadSubject,
+    threadHeader,
+    footer,
     shortcuts,
 }: MessageDetailPaneProps & { message: Message }) {
     // A copy re-read from the server after an Outbox action was refused (409/403) or a send lease ran out - see
@@ -450,6 +480,14 @@ function MessageDetailContent({
     // effect could read reactively otherwise (getUnlockedKeys() is a plain module-level read, not React
     // state; see keySession.ts's own doc comment).
     const [unlockRefresh, setUnlockRefresh] = useState(0);
+    // "View original": this message exactly as its author wrote it instead of adapted to the theme, remembered for the session. Offered only
+    // once the body says adapting would change something (`MessageBody`'s `onAdaptable`), or when the reader already chose it.
+    const [viewOriginal, setViewOriginal] = useViewOriginal(messageProp.uid);
+    const [adaptable, setAdaptable] = useState(viewOriginal);
+    // The locked body's Unlock button is waiting on the unlock prompt; and, once it has answered, the focus is to move to the body region.
+    const [unlocking, setUnlocking] = useState(false);
+    const focusBodyRef = useRef(false);
+    const bodyRegionRef = useRef<HTMLDivElement>(null);
 
     // The newest copy of this message known to the Labels popover - normally just the `message` prop,
     // but a successful label toggle's server response is held here too, so a follow-up toggle always
@@ -576,14 +614,33 @@ function MessageDetailContent({
         };
     }, [message.uid, message.mailboxUid, message.from.address, message.encrypted, rawEvaluationNeeded, unlockRefresh, readerAddressesKey]);
 
+    // Whether the body is the locked state right now (an encrypted message this device holds no unlocked keys for), for the subscription below.
+    const lockedRef = useRef(false);
+    lockedRef.current = security?.decryptError !== undefined && !getUnlockedKeys(message.mailboxUid);
+
+    // After an unlock from the button, the message (or the reason it can't be read) is where the reader's attention is: the focus moves to it once it is
+    // there, since the button that had it is gone.
+    useEffect(() => {
+        if (focusBodyRef.current && security !== null) {
+            focusBodyRef.current = false;
+            bodyRegionRef.current?.focus({ preventScroll: true });
+        }
+    }, [security]);
+
     // Decrypted plaintext must not outlive the key session that produced it: the moment this mailbox's
     // keys are destroyed (logout, idle timeout, explicit lock), drop the recovered html/text and
-    // re-evaluate - an encrypted message then falls back to its "Unlock to view" state.
+    // re-evaluate - an encrypted message then falls back to its locked state. And the other way round: keys unlocked
+    // from anywhere (compose, another message, the unlock prompt) open a message that was waiting on them, in place.
     useEffect(
         () =>
             subscribeKeySession((event) => {
-                if (event.mailboxUid === message.mailboxUid && event.state === "locked") {
+                if (event.mailboxUid !== message.mailboxUid) {
+                    return;
+                }
+                if (event.state === "locked") {
                     setSecurity(null);
+                    setUnlockRefresh((n) => n + 1);
+                } else if (lockedRef.current) {
                     setUnlockRefresh((n) => n + 1);
                 }
             }),
@@ -622,11 +679,16 @@ function MessageDetailContent({
     async function handleUnlockToView() {
         const mailboxUid = message.mailboxUid;
         const mailboxKeys = mailboxes.find((mb) => mb.uid === mailboxUid)?.keys ?? [];
+        setUnlocking(true);
         try {
             await requestUnlock(mailboxUid, mailboxKeys);
+            // The Unlock button is about to be replaced by the message (or by why it can't be read): the focus goes there, once it has been evaluated.
+            focusBodyRef.current = true;
             setUnlockRefresh((n) => n + 1);
         } catch {
             // User dismissed the unlock dialog - security state stays exactly as it was.
+        } finally {
+            setUnlocking(false);
         }
     }
 
@@ -915,255 +977,122 @@ function MessageDetailContent({
             ? senderKeyState!.conflict
             : undefined;
 
-    const shownSubject = (protectedSubject ?? message.subject) || "(no subject)";
-    /**
-     * How tall the message body is - the one thing on this pane worth every pixel it can have.
-     *
-     * The same rule in both places: the pane is a full-height flex column and the body is its one growing
-     * child, so it fills whatever the header leaves (`min-h-0` on both, or a tall body would stretch the
-     * column past the pane instead of scrolling inside it). Inside a thread that height comes from the
-     * message's own row, which `ConversationThreadPane` gives `min-h-full` of its scrolling list - so the
-     * height is still the window's, resolved down the flex chain rather than written here as a `vh`
-     * number, and it follows a resize with no breakpoint to cross.
-     *
-     * Why not size it to its content: that would need the document *inside* the frame to measure and
-     * report itself, and these frames are `sandbox=""` - scripts off - because they render mail from
-     * strangers. So a message longer than the pane keeps its own scrollbar, and everything shorter shows
-     * whole with the frame reaching the bottom of the pane either way.
-     */
-    const bodyClassName = "flex-1 min-h-0 w-full";
+    const shownSubject = (protectedSubject ?? displaySubject(message.subject)) || "(no subject)";
+    // What the body area shows. Text or HTML the client recovered from a signed or encrypted message is shown as it is (its own sanitizing
+    // happens in `MessageBody`, like every body's); anything else is the server's own `/content`. An encrypted message has nothing worth
+    // fetching until it has been decrypted (the server only has the ciphertext), so it shows the skeleton meanwhile.
+    const bodyContent: BodyContent | undefined =
+        security?.text !== undefined
+            ? { kind: "text", text: security.text }
+            : security?.html !== undefined
+              ? { kind: "html", html: security.html }
+              : undefined;
+    const bodyTitle = message.subject || "Message content";
+    const answered = message.flags.answered === true;
+    const forwarded = message.flags.forwarded === true;
+    const cardUnread = threadHeader?.unread ?? false;
+    const showFooter = footer ?? !inThread;
 
-    return (
-        // `h-full` outside a thread only: the standalone message route renders this pane straight into a
-        // *block* (`MailShell`'s own `<main>`), where nothing stretches it and a percentage of that block's
-        // own resolved height is the height. Inside a thread the parent is a flex row whose own height came
-        // out of the flex algorithm - Chrome won't resolve a percentage against that, and an explicit
-        // height would also opt the pane out of the stretching that does size it correctly there.
-        <div className={`flex-1 min-w-0 min-h-0 flex flex-col${inThread ? "" : " h-full"}`}>
-            <div className="border-b border-border p-4">
-                {backHref && (
-                    <a href={backHref} className="text-sm text-primary-dark hover:underline block mb-2">
-                        &larr; Back to messages
-                    </a>
-                )}
-                <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                        {/* One `h1` per document: inside a thread the conversation's own subject is it. */}
-                        {inThread ? (
-                            <h3 className="text-sm font-semibold truncate">{shownSubject}</h3>
+    const senderRecipient = { displayName: senderName, address: senderAddress };
+    const sendingStatus = (
+        <>
+            {sendInProgress && (
+                <span className="text-xs font-medium text-text-muted shrink-0 py-1 px-2.5 rounded-pill bg-surface-alt">Sending&hellip;</span>
+            )}
+            {isSentItems &&
+                (message.recallRequestedAt ? (
+                    <span className="text-xs font-medium text-text-muted shrink-0 py-1 px-2.5 rounded-pill bg-surface-alt">Recall requested</span>
+                ) : (
+                    <Button type="button" variant="secondary" className="!w-auto shrink-0" onClick={() => setConfirming(true)}>
+                        Recall this message
+                    </Button>
+                ))}
+            {inOutbox && !sendInProgress && message.scheduledSendTime && (
+                <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs font-medium text-text-muted py-1 px-2.5 rounded-pill bg-surface-alt">
+                        Scheduled for {new Date(message.scheduledSendTime).toLocaleString()}
+                    </span>
+                    <Button type="button" variant="secondary" className="!w-auto" loading={canceling} disabled={canceling} onClick={handleCancelScheduledSend}>
+                        Cancel
+                    </Button>
+                </div>
+            )}
+            {/* A message left in Outbox with no active schedule - a scheduled send that failed or was refused
+                (restapi's ScheduledSendJob clears scheduledSendTime and leaves it there), which can't be sent
+                again from Outbox (409) or archived - would otherwise be stuck. Moving it back to Drafts works for
+                any Outbox message. */}
+            {inOutbox && !sendInProgress && !message.scheduledSendTime && draftsFolderUid && (
+                <Button type="button" variant="secondary" className="!w-auto shrink-0" loading={canceling} disabled={canceling} onClick={handleCancelScheduledSend}>
+                    Move to Drafts
+                </Button>
+            )}
+        </>
+    );
+
+    const card = (
+        <CardShell unread={cardUnread}>
+            {/* Header row: who it is from, when, and what can be done with it. Wraps: on a phone the actions drop under the sender. */}
+            <div className={["flex flex-wrap items-start gap-x-3 gap-y-1 px-4 pt-3 pb-2", cardUnread ? "bg-primary/[0.07]" : ""].join(" ")}>
+                <SenderAvatar from={senderRecipient} />
+                <div className="flex-1 min-w-[12rem]">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        {threadHeader ? (
+                            // The sender line of a message in a thread is the button that collapses it again.
+                            <h2 className="min-w-0 flex-1" style={BODY_FONT_STYLE}>
+                                <button
+                                    type="button"
+                                    ref={threadHeader.buttonRef}
+                                    onClick={threadHeader.onToggle}
+                                    aria-expanded={true}
+                                    aria-controls={threadHeader.bodyId}
+                                    className={[
+                                        "w-full text-left rounded-sm text-sm",
+                                        ROW_FOCUS_CLASS,
+                                    ].join(" ")}
+                                >
+                                    <UnreadLabel unread={cardUnread} />
+                                    <MailAddress recipient={senderRecipient} className={senderClass(cardUnread)} />
+                                </button>
+                            </h2>
                         ) : (
-                            <h1 className="text-lg font-bold tracking-tight truncate">{shownSubject}</h1>
+                            <p className="text-sm break-words min-w-0">
+                                From <span className="font-semibold text-text">{senderLabel}</span>
+                            </p>
                         )}
                         {security && <SecurityIndicator security={security} />}
                     </div>
-                    {sendInProgress && (
-                        <span className="text-xs font-medium text-text-muted shrink-0 py-1 px-2.5 rounded-pill bg-surface-alt">
-                            Sending&hellip;
-                        </span>
-                    )}
-                    {isSentItems &&
-                        (message.recallRequestedAt ? (
-                            <span className="text-xs font-medium text-text-muted shrink-0 py-1 px-2.5 rounded-pill bg-surface-alt">
-                                Recall requested
-                            </span>
-                        ) : (
-                            <Button
-                                type="button"
-                                variant="secondary"
-                                className="!w-auto shrink-0"
-                                onClick={() => setConfirming(true)}
-                            >
-                                Recall this message
-                            </Button>
-                        ))}
-                    {inOutbox && !sendInProgress && message.scheduledSendTime && (
-                        <div className="flex items-center gap-2 shrink-0">
-                            <span className="text-xs font-medium text-text-muted py-1 px-2.5 rounded-pill bg-surface-alt">
-                                Scheduled for {new Date(message.scheduledSendTime).toLocaleString()}
-                            </span>
-                            <Button
-                                type="button"
-                                variant="secondary"
-                                className="!w-auto"
-                                loading={canceling}
-                                disabled={canceling}
-                                onClick={handleCancelScheduledSend}
-                            >
-                                Cancel
-                            </Button>
-                        </div>
-                    )}
-                    {/* A message left in Outbox with no active schedule - a scheduled send that failed or was refused
-                        (restapi's ScheduledSendJob clears scheduledSendTime and leaves it there), which can't be sent
-                        again from Outbox (409) or archived - would otherwise be stuck. Moving it back to Drafts works for
-                        any Outbox message. */}
-                    {inOutbox && !sendInProgress && !message.scheduledSendTime && draftsFolderUid && (
-                        <Button
-                            type="button"
-                            variant="secondary"
-                            className="!w-auto shrink-0"
-                            loading={canceling}
-                            disabled={canceling}
-                            onClick={handleCancelScheduledSend}
-                        >
-                            Move to Drafts
-                        </Button>
-                    )}
-                </div>
-                {inOutbox && message.scheduledSendError && (
-                    <div className="mt-2">
-                        <Alert>This message wasn&rsquo;t sent: {message.scheduledSendError}</Alert>
-                    </div>
-                )}
-                {cancelError && (
-                    <div className="mt-2">
-                        <Alert>{cancelError}</Alert>
-                    </div>
-                )}
-                {keyChangeNotice && (
-                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
-                        {keyChangeNotice}
-                    </p>
-                )}
-                {security && UNVERIFIED_SIGNER_STATES.has(security.state) && (
-                    // Informational: the signature is intact, but nothing ties its certificate to this sender - anyone can
-                    // create a certificate naming any address. "Trust this signer" (below) pins it once the reader has
-                    // confirmed the fingerprint.
-                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
-                        Signed, but the signer isn&rsquo;t a trusted contact key, so the sender isn&rsquo;t verified.
-                        {security.signerEmails && security.signerEmails.length > 0 && <> Certificate for {security.signerEmails.join(", ")}.</>}
-                        {security.signerFingerprint && (
-                            <>
-                                {" "}
-                                Fingerprint <span className="font-mono text-xs break-all">{security.signerFingerprint}</span>.
-                            </>
-                        )}
-                    </p>
-                )}
-                {pendingConflict && (
-                    // Only an unverified signer's result loads the key state while the sender is unpinned, and a conflict
-                    // always comes from a matching contact, so its uid is known.
-                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
-                        This sender has a signing key change waiting for your review, so this signer can&rsquo;t be trusted from
-                        here.{" "}
-                        <a
-                            href={`/contacts/${encodeURIComponent(senderKeyState.contactUid!)}`}
-                            className="font-medium text-primary-dark hover:underline"
-                        >
-                            Review it in Contacts
-                        </a>
-                    </p>
-                )}
-                {trustableCertificate && (
-                    <div className="mt-1.5">
-                        <Button
-                            type="button"
-                            variant="secondary"
-                            className="!w-auto"
-                            disabled={trusting}
-                            onClick={() => {
-                                setTrustError(null);
-                                setTrustConfirmOpen(true);
-                            }}
-                        >
-                            Trust this signer
-                        </Button>
-                    </div>
-                )}
-                {subjectDiffers && (
-                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
-                        The subject shown above is the one the sender signed. It differs from the subject this message was
-                        delivered with (&ldquo;{message.subject}&rdquo;), which may have been changed on the way, e.g. by a
-                        mailing list.
-                    </p>
-                )}
-                {security?.headerTamperDetected && (
-                    <div className="mt-2">
-                        <Alert>
-                            This message's visible From/To/Cc/Date/Subject don't match what the sender actually signed or
-                            encrypted — an intermediary may have altered them after sending. Treat the fields shown above with
-                            caution.
-                        </Alert>
-                    </div>
-                )}
-                {security?.state === "verified_at_first_open" && (
-                    // A seal outranks only a key-status failure (see `evaluateMessageSecurityWithSeal()`). A signer key
-                    // later reported compromised is a warning, never reassurance.
-                    <p
-                        role="status"
-                        className={`mt-2 py-2 px-3 rounded-sm text-sm text-text ${security.laterCompromised ? "bg-warning/15" : "bg-surface-alt"}`}
-                    >
-                        {verifiedAtFirstOpenMessage(security)}
-                    </p>
-                )}
-                {keyChanged && (
-                    <section aria-label="Signing key changed" className="mt-2 py-3 px-3 rounded-sm text-sm bg-warning/15 text-text flex flex-col gap-2">
-                        <h2 className="font-semibold">This sender&rsquo;s signing key changed</h2>
-                        <p>
-                            The signature on this message is valid and its certificate names {senderAddress}, but it was made
-                            with a different key than the one you trust for this sender
-                            {keyChanged.state === "verified_at_first_open" ? "." : <>, so it isn&rsquo;t verified.</>}
+                    {senderNameCheck.misleading && (
+                        <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
+                            The sender&rsquo;s name &ldquo;{senderName}&rdquo; looks like an email address, but this message was
+                            sent from <span className="font-medium">{senderAddress}</span>. Don&rsquo;t trust it based on the name.
                         </p>
-                        <KeyChangeReview
-                            mailboxUid={message.mailboxUid}
-                            address={senderAddress}
-                            useType="sign"
-                            ownerName="the sender"
-                            current={pinnedSignerKey && { fingerprint: pinnedSignerKey.fingerprint, since: senderKeyState.pinnedSince! }}
-                            proposed={{
-                                fingerprint: keyChanged.signerFingerprint!,
-                                emails: keyChanged.signerEmails,
-                                observedAt: recordedConflict?.observedAt,
-                                source: recordedConflict?.source,
-                            }}
-                            certificate={keyChanged.signerCertificate}
-                            canReject={recordedConflict !== undefined}
-                            canResolve={canUpdateMailbox}
-                            onResolved={(action) => refreshAfterKeyChange(action === "reject" ? KEPT_CURRENT_SIGNING_KEY_MESSAGE : null)}
-                            onPinnedKeyChanged={() => refreshAfterKeyChange(KEY_CHANGE_STALE_MESSAGE)}
-                        />
-                    </section>
-                )}
-                {security?.state === "signature_failed" && !keyChanged && (
-                    // Deliberately an informational notice, not an error `Alert`: an unverifiable signature
-                    // means "don't trust the signer", not "this message is broken" - the body stays readable.
-                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
-                        {security.signatureFailureReason
-                            ? SIGNATURE_FAILURE_MESSAGE[security.signatureFailureReason]
-                            : GENERIC_SIGNATURE_FAILURE_MESSAGE}
-                    </p>
-                )}
-                {verifiedOrSealed && !security.protectedHeaders && (
-                    // A legacy S/MIME sender signs only the body: the outer Subject/To/Cc shown here were never signed.
-                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
-                        The signature covers this message&rsquo;s content and attachments only. Its Subject, To and Cc
-                        weren&rsquo;t signed, so they could have been changed after it was sent.
-                    </p>
-                )}
-                {security?.notAddressedToReader && (
-                    // Informational, like the notice above: a Bcc recipient legitimately sees this too.
-                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
-                        The recipients this message was signed or encrypted for don&rsquo;t include this mailbox - it may have
-                        been forwarded or re-sent to you unchanged, or you were Bcc&rsquo;d.
-                    </p>
-                )}
-                <p className="text-sm text-text-muted mt-1 break-words">
-                    From <span className="font-medium text-text">{senderLabel}</span> &middot;{" "}
-                    {new Date(message.receivedDate).toLocaleString()}
-                </p>
-                {senderNameCheck.misleading && (
-                    <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
-                        The sender&rsquo;s name &ldquo;{senderName}&rdquo; looks like an email address, but this message was
-                        sent from <span className="font-medium">{senderAddress}</span>. Don&rsquo;t trust it based on the name.
-                    </p>
-                )}
-                {/* Every recipient with their address, grouped as the sender addressed them; a long list folds. */}
-                <RecipientLine label="To" recipients={message.recipients.filter((r) => r.type !== "cc" && r.type !== "bcc")} />
-                <RecipientLine label="Cc" recipients={message.recipients.filter((r) => r.type === "cc")} />
-                <RecipientLine label="Bcc" recipients={message.recipients.filter((r) => r.type === "bcc")} />
-                {/* Wraps: in a thread the pane can be as narrow as the reading pane gets (the list takes
-                    384px of it), and these are six controls. */}
-                <div className="flex flex-wrap gap-1 mt-3">
+                    )}
+                    {/* Every recipient with their address, grouped as the sender addressed them; a long list folds. */}
+                    <RecipientLine label="To" recipients={message.recipients.filter((r) => r.type !== "cc" && r.type !== "bcc")} />
+                    <RecipientLine label="Cc" recipients={message.recipients.filter((r) => r.type === "cc")} />
+                    <RecipientLine label="Bcc" recipients={message.recipients.filter((r) => r.type === "bcc")} />
+                </div>
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+                    <time dateTime={message.receivedDate} className={["text-xs mr-1", dateClass(cardUnread)].join(" ")}>
+                        {new Date(message.receivedDate).toLocaleString()}
+                    </time>
+                    {adaptable && (
+                        <button
+                            type="button"
+                            aria-label="View original"
+                            aria-pressed={viewOriginal}
+                            title={viewOriginal ? "Follow the theme" : "View original"}
+                            onClick={() => setViewOriginal(!viewOriginal)}
+                            className={[
+                                "inline-flex items-center justify-center p-1.5 rounded-md border border-border text-sm text-text hover:bg-surface-alt",
+                                viewOriginal ? "bg-primary/10" : "",
+                            ].join(" ")}
+                        >
+                            {viewOriginal ? <HiOutlineMoon size={16} aria-hidden="true" /> : <HiOutlineSun size={16} aria-hidden="true" />}
+                        </button>
+                    )}
+                    {/* Wraps: in a thread the pane can be as narrow as the reading pane gets (the list takes
+                        384px of it), and these are six controls. */}
                     <IconAction
                         icon={<HiOutlineArrowUturnLeft size={16} aria-hidden="true" />}
                         label="Reply"
@@ -1231,18 +1160,154 @@ function MessageDetailContent({
                         />
                     )}
                 </div>
-                {archiveError && (
-                    <div className="mt-2">
-                        <Alert>{archiveError}</Alert>
+            </div>
+
+            {/* A slim bar for what has been done with the message. */}
+            {(answered || forwarded) && (
+                <p className="px-4 py-1.5 text-xs text-text-muted bg-surface-alt border-y border-border">
+                    {answered && forwarded ? "You replied to and forwarded this message." : answered ? "You replied to this message." : "You forwarded this message."}
+                </p>
+            )}
+
+            <div id={threadHeader?.bodyId} className="px-4 pb-3 flex flex-col gap-2">
+                {inThread && (subjectDiffers || !sameSubject(shownSubject, threadSubject)) && (
+                    <h3 className="text-sm font-semibold break-words">{shownSubject}</h3>
+                )}
+                <div className="flex flex-wrap items-center gap-2 empty:hidden">{sendingStatus}</div>
+                {inOutbox && message.scheduledSendError && <Alert>This message wasn&rsquo;t sent: {message.scheduledSendError}</Alert>}
+                {cancelError && <Alert>{cancelError}</Alert>}
+                {keyChangeNotice && (
+                    <p role="status" className="py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        {keyChangeNotice}
+                    </p>
+                )}
+                {security && UNVERIFIED_SIGNER_STATES.has(security.state) && (
+                    // Informational: the signature is intact, but nothing ties its certificate to this sender - anyone can
+                    // create a certificate naming any address. "Trust this signer" (below) pins it once the reader has
+                    // confirmed the fingerprint.
+                    <p role="status" className="py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        Signed, but the signer isn&rsquo;t a trusted contact key, so the sender isn&rsquo;t verified.
+                        {security.signerEmails && security.signerEmails.length > 0 && <> Certificate for {security.signerEmails.join(", ")}.</>}
+                        {security.signerFingerprint && (
+                            <>
+                                {" "}
+                                Fingerprint <span className="font-mono text-xs break-all">{security.signerFingerprint}</span>.
+                            </>
+                        )}
+                    </p>
+                )}
+                {pendingConflict && (
+                    // Only an unverified signer's result loads the key state while the sender is unpinned, and a conflict
+                    // always comes from a matching contact, so its uid is known.
+                    <p role="status" className="py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
+                        This sender has a signing key change waiting for your review, so this signer can&rsquo;t be trusted from
+                        here.{" "}
+                        <a
+                            href={`/contacts/${encodeURIComponent(senderKeyState.contactUid!)}`}
+                            className="font-medium text-primary-dark hover:underline"
+                        >
+                            Review it in Contacts
+                        </a>
+                    </p>
+                )}
+                {trustableCertificate && (
+                    <div>
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto"
+                            disabled={trusting}
+                            onClick={() => {
+                                setTrustError(null);
+                                setTrustConfirmOpen(true);
+                            }}
+                        >
+                            Trust this signer
+                        </Button>
                     </div>
                 )}
-                {labelsError && (
-                    <div className="mt-2">
-                        <Alert>{labelsError}</Alert>
-                    </div>
+                {subjectDiffers && (
+                    <p role="status" className="py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        The subject shown above is the one the sender signed. It differs from the subject this message was
+                        delivered with (&ldquo;{message.subject}&rdquo;), which may have been changed on the way, e.g. by a
+                        mailing list.
+                    </p>
                 )}
+                {security?.headerTamperDetected && (
+                    <Alert>
+                        This message's visible From/To/Cc/Date/Subject don't match what the sender actually signed or
+                        encrypted — an intermediary may have altered them after sending. Treat the fields shown above with
+                        caution.
+                    </Alert>
+                )}
+                {security?.state === "verified_at_first_open" && (
+                    // A seal outranks only a key-status failure (see `evaluateMessageSecurityWithSeal()`). A signer key
+                    // later reported compromised is a warning, never reassurance.
+                    <p
+                        role="status"
+                        className={`py-2 px-3 rounded-sm text-sm text-text ${security.laterCompromised ? "bg-warning/15" : "bg-surface-alt"}`}
+                    >
+                        {verifiedAtFirstOpenMessage(security)}
+                    </p>
+                )}
+                {keyChanged && (
+                    <section aria-label="Signing key changed" className="py-3 px-3 rounded-sm text-sm bg-warning/15 text-text flex flex-col gap-2">
+                        <h2 className="font-semibold">This sender&rsquo;s signing key changed</h2>
+                        <p>
+                            The signature on this message is valid and its certificate names {senderAddress}, but it was made
+                            with a different key than the one you trust for this sender
+                            {keyChanged.state === "verified_at_first_open" ? "." : <>, so it isn&rsquo;t verified.</>}
+                        </p>
+                        <KeyChangeReview
+                            mailboxUid={message.mailboxUid}
+                            address={senderAddress}
+                            useType="sign"
+                            ownerName="the sender"
+                            current={pinnedSignerKey && { fingerprint: pinnedSignerKey.fingerprint, since: senderKeyState.pinnedSince! }}
+                            proposed={{
+                                fingerprint: keyChanged.signerFingerprint!,
+                                emails: keyChanged.signerEmails,
+                                observedAt: recordedConflict?.observedAt,
+                                source: recordedConflict?.source,
+                            }}
+                            certificate={keyChanged.signerCertificate}
+                            canReject={recordedConflict !== undefined}
+                            canResolve={canUpdateMailbox}
+                            onResolved={(action) => refreshAfterKeyChange(action === "reject" ? KEPT_CURRENT_SIGNING_KEY_MESSAGE : null)}
+                            onPinnedKeyChanged={() => refreshAfterKeyChange(KEY_CHANGE_STALE_MESSAGE)}
+                        />
+                    </section>
+                )}
+                {security?.state === "signature_failed" && !keyChanged && (
+                    // Deliberately an informational notice, not an error `Alert`: an unverifiable signature
+                    // means "don't trust the signer", not "this message is broken" - the body stays readable.
+                    <p role="status" className="py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        {security.signatureFailureReason
+                            ? SIGNATURE_FAILURE_MESSAGE[security.signatureFailureReason]
+                            : GENERIC_SIGNATURE_FAILURE_MESSAGE}
+                    </p>
+                )}
+                {verifiedOrSealed && !security.protectedHeaders && (
+                    // A legacy S/MIME sender signs only the body: the outer Subject/To/Cc shown here were never signed.
+                    <p role="status" className="py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        The signature covers this message&rsquo;s content and attachments only. Its Subject, To and Cc
+                        weren&rsquo;t signed, so they could have been changed after it was sent.
+                    </p>
+                )}
+                {security?.notAddressedToReader && !isSentItems && (
+                    // Informational, like the notice above: a Bcc recipient legitimately sees this too. Never shown in Sent
+                    // Items: the sender's own address is (by design, see ComposeWindow/sendJob) never one of the protected
+                    // To/Cc headers of a message it sent to someone else, so this would otherwise fire on every ordinary sent
+                    // message rather than the genuine forwarded/re-sent/Bcc cases it's meant to flag.
+                    <p role="status" className="py-2 px-3 rounded-sm text-sm bg-surface-alt text-text">
+                        The recipients this message was signed or encrypted for don&rsquo;t include this mailbox - it may have
+                        been forwarded or re-sent to you unchanged, or you were Bcc&rsquo;d.
+                    </p>
+                )}
+                {archiveError && <Alert>{archiveError}</Alert>}
+                {labelsError && <Alert>{labelsError}</Alert>}
                 {labels && (currentLabelsMessage.labelUids?.length ?? 0) > 0 && (
-                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                         {currentLabelsMessage
                             .labelUids!.map((uid) => labels.find((l) => l.uid === uid))
                             .filter((l): l is Label => !!l)
@@ -1262,10 +1327,7 @@ function MessageDetailContent({
                 {(["delivery", "read"] as const)
                     .filter((type) => (type === "delivery" ? message.deliveryReceiptPending : message.readReceiptPending))
                     .map((type) => (
-                        <div
-                            key={type}
-                            className="flex flex-wrap items-center gap-2 mt-2 py-2 px-3 rounded-sm bg-surface-alt text-sm"
-                        >
+                        <div key={type} className="flex flex-wrap items-center gap-2 py-2 px-3 rounded-sm bg-surface-alt text-sm">
                             <span>
                                 {senderLabel} requested a {type} receipt for this
                                 message.
@@ -1280,30 +1342,21 @@ function MessageDetailContent({
                             >
                                 Send receipt
                             </Button>
-                            <Button
-                                type="button"
-                                variant="text"
-                                disabled={receiptBusy !== null}
-                                onClick={() => handleReceipt(type, "decline")}
-                            >
+                            <Button type="button" variant="text" disabled={receiptBusy !== null} onClick={() => handleReceipt(type, "decline")}>
                                 Decline
                             </Button>
                         </div>
                     ))}
-                {receiptError && (
-                    <div className="mt-2">
-                        <Alert>{receiptError}</Alert>
-                    </div>
-                )}
+                {receiptError && <Alert>{receiptError}</Alert>}
                 {security?.state === "signature_failed" && innerAttachments && innerAttachments.length > 0 && (
-                    <p role="status" className="mt-3 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
+                    <p role="status" className="py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
                         These attachments come from a message whose signature couldn&rsquo;t be verified. Open them only if
                         you trust the sender.
                     </p>
                 )}
                 {innerAttachments
                     ? innerAttachments.length > 0 && (
-                          <ul className="flex flex-wrap gap-2 mt-3">
+                          <ul className="flex flex-wrap gap-2">
                               {innerAttachments.map((attachment, index) => (
                                   <li key={`${index}:${attachment.filename ?? ""}`}>
                                       <button
@@ -1318,7 +1371,7 @@ function MessageDetailContent({
                           </ul>
                       )
                     : attachments.length > 0 && (
-                          <ul className="flex flex-wrap gap-2 mt-3">
+                          <ul className="flex flex-wrap gap-2">
                               {attachments.map((attachment) => (
                                   <li key={attachment.uid}>
                                       <a
@@ -1331,50 +1384,76 @@ function MessageDetailContent({
                               ))}
                           </ul>
                       )}
-            </div>
-            {security?.decryptError && (
-                <div className="px-4 pt-2">
-                    <Alert>{security.decryptError}</Alert>
-                    {!getUnlockedKeys(message.mailboxUid) && (
-                        <button
-                            type="button"
-                            onClick={handleUnlockToView}
-                            className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
-                        >
-                            <HiOutlineLockClosed size={12} aria-hidden="true" />
-                            Unlock to view this message
-                        </button>
+                {/* The body: an isolated frame exactly as tall as its content (or text), in the card's own place. A decrypted or verified
+                    body never came through the server's own sanitizer (the server never saw the plaintext); `MessageBody` sanitizes every body
+                    client-side regardless, behind a no-remote-loads CSP, in a frame that runs no script. */}
+                <div ref={bodyRegionRef} tabIndex={-1} className="outline-none">
+                    {message.encrypted && security === null ? (
+                        <BodySkeleton />
+                    ) : security?.decryptError !== undefined ? (
+                        // An encrypted message that could not be read: locked (no unlocked keys - the button asks the app's own unlock prompt, and the message
+                        // then decrypts in place) or genuinely unreadable (keys unlocked and it still didn't open - the reason, and nothing to click).
+                        <EncryptedBody locked={lockedRef.current} reason={security.decryptError} unlocking={unlocking} onUnlock={() => void handleUnlockToView()} />
+                    ) : (
+                        <MessageBody
+                            messageUid={message.uid}
+                            messageVersion={message.version}
+                            title={bodyTitle}
+                            content={bodyContent}
+                            attachments={attachments}
+                            inlineParts={innerAttachments}
+                            original={viewOriginal}
+                            onAdaptable={setAdaptable}
+                        />
                     )}
                 </div>
+            </div>
+
+            {showFooter && (
+                <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-border print:hidden">
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto"
+                        aria-label="Reply to this message"
+                        disabled={preparingCompose}
+                        onClick={() => void handleReplyOrForward("reply")}
+                    >
+                        Reply
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto"
+                        aria-label="Forward this message"
+                        disabled={preparingCompose}
+                        onClick={() => void handleReplyOrForward("forward")}
+                    >
+                        Forward
+                    </Button>
+                </div>
             )}
-            {security?.text !== undefined ? (
-                // A recovered text/plain body renders as text (React escapes it) - never as markup.
-                <pre
-                    aria-label={message.subject || "Message content"}
-                    className={`${bodyClassName} overflow-auto p-4 m-0 text-sm font-sans whitespace-pre-wrap break-words`}
-                >
-                    {security.text}
-                </pre>
-            ) : security?.html !== undefined ? (
-                // A decrypted/verified body never came through the server's own sanitize-html pass (it
-                // couldn't - the server never saw the plaintext) - it's sanitized here, client-side, before
-                // it ever touches the DOM (remote images/stylesheets/`url()`s stripped too, so opening it
-                // can't ping a tracker), behind a no-remote-loads CSP, on top of the iframe's `sandbox=""`.
-                <iframe
-                    key={message.uid}
-                    title={message.subject || "Message content"}
-                    srcDoc={buildSecureSrcDoc(security.html)}
-                    sandbox=""
-                    className={`${bodyClassName} border-0`}
-                />
+        </CardShell>
+    );
+
+    return (
+        // `h-full` outside a thread only: the standalone message route renders this pane straight into a
+        // *block* (`MailShell`'s own `<main>`), where nothing stretches it and a percentage of that block's
+        // own resolved height is the height. Inside a thread the card is one row of the thread's own list.
+        <div className={inThread ? "min-w-0" : "flex-1 min-w-0 min-h-0 flex flex-col h-full"}>
+            {inThread ? (
+                card
             ) : (
-                <iframe
-                    key={message.uid}
-                    title={message.subject || "Message content"}
-                    src={`/api/mail/messages/${encodeURIComponent(message.uid)}/content`}
-                    sandbox=""
-                    className={`${bodyClassName} border-0`}
-                />
+                <>
+                    {backHref && (
+                        <a href={backHref} className="text-sm text-primary-dark hover:underline block px-4 pt-3">
+                            &larr; Back to messages
+                        </a>
+                    )}
+                    {/* The subject has a card of its own, above the message, that stays put while the message scrolls. */}
+                    <SubjectCard subject={shownSubject} />
+                    <div className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3 flex flex-col gap-3">{card}</div>
+                </>
             )}
 
             <MoveToFolderDialog

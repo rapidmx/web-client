@@ -50,7 +50,8 @@ function IngestQueueContent() {
         let cancelled = false;
         setLoading(true);
         setError(null);
-        listIngestQueue(mailboxUid, { page, limit: PAGE_SIZE })
+        // The administration scope: any mailbox's pending mail, recorded in the audit log.
+        listIngestQueue(mailboxUid, { page, limit: PAGE_SIZE, scope: "admin" })
             .then((data) => {
                 if (!cancelled) setEntries(data);
             })

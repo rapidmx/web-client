@@ -2,11 +2,15 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { PropsWithChildren, createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { PropsWithChildren, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DraftThreading } from "@rapidmx/react-shared/mail/mailApi.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import { ResumeCompose, registerComposeOpener } from "../../../mail/outbox/composeBridge.js";
 import { markComposePhase } from "./composePerf.js";
 import ComposeWindowPlaceholder from "./ComposeWindowPlaceholder.js";
+
+/** The CSS variable (on `<html>`) that holds how far down the screen the open compose windows start, in px. */
+export const COMPOSE_TOP_VAR = "--rr-compose-top";
 
 type ComposeWindowComponent = typeof import("./ComposeWindow.js").default;
 
@@ -102,6 +106,8 @@ export interface ComposeSession {
     quotePending?: boolean;
     /** What `OpenComposeInput.pending` resolved with, once it has - see `ComposeLateInput`. */
     late?: ComposeLateInput;
+    /** See `OpenComposeInput.resume`. */
+    resume?: ResumeCompose;
     minimized: boolean;
 }
 
@@ -155,6 +161,9 @@ export interface OpenComposeInput {
      * until it resolves.
      */
     pending?: Promise<ComposeLateInput | undefined>;
+    /** Re-opens a message that was already composed - a failed send's "Open draft": the window continues that server draft, with every field
+     * exactly as it was typed, instead of starting a new one. */
+    resume?: ResumeCompose;
 }
 
 export interface ComposeContextValue {
@@ -181,6 +190,26 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
     const isMobile = useIsMobile();
     const { Component: ComposeWindow, failed, retry: retryLoad } = useComposeWindowComponent(sessions.length > 0);
 
+    // The top edge of the compose windows, published as `--rr-compose-top` so the pop-up stack (`NotificationCenter`) can keep clear of them.
+    const windowsRef = useRef<HTMLDivElement>(null);
+    const hasSessions = sessions.length > 0;
+    useEffect(() => {
+        const element = windowsRef.current;
+        if (!element) {
+            return;
+        }
+        const publish = () => document.documentElement.style.setProperty(COMPOSE_TOP_VAR, `${Math.round(element.getBoundingClientRect().top)}px`);
+        publish();
+        const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(publish);
+        observer?.observe(element);
+        window.addEventListener("resize", publish);
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener("resize", publish);
+            document.documentElement.style.removeProperty(COMPOSE_TOP_VAR);
+        };
+    }, [hasSessions]);
+
     function openCompose({
         mailboxUid,
         to,
@@ -192,6 +221,7 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
         encrypt,
         threading,
         pending,
+        resume,
     }: OpenComposeInput) {
         const id = crypto.randomUUID();
         markComposePhase(id, "click");
@@ -209,6 +239,7 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
                 signatureContext,
                 suppressSigning,
                 quotePending: !!pending,
+                resume,
                 minimized: false,
             },
         ]);
@@ -233,6 +264,8 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
     }
 
     const value = useMemo<ComposeContextValue>(() => ({ openCompose }), []);
+    // Code with no React context - a failed send's "Open draft" pop-up - opens windows through this.
+    useEffect(() => registerComposeOpener((input) => value.openCompose(input)), [value]);
 
     // On mobile, a non-minimized `ComposeWindow` renders full-screen (see that component's own doc
     // comment) — Gmail-style stacking of several full-screen overlays at once makes no sense there, so
@@ -247,7 +280,7 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
         <ComposeContext.Provider value={value}>
             {children}
             {sessions.length > 0 && (
-                <div className="fixed bottom-0 right-6 flex items-end gap-3 z-50">
+                <div ref={windowsRef} className="fixed bottom-0 right-6 flex items-end gap-3 z-50">
                     {sessions.map((session) => {
                         const hidden = isMobile && !session.minimized && session.id !== lastNonMinimizedId;
                         return (

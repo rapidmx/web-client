@@ -9,7 +9,8 @@ import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch } from "../testUtils.js";
+import { jsonResponse } from "../testUtils.js";
+import { mockFetchWithServerBody as mockFetch } from "./paneFetch.js";
 import MessageDetailPane, { checkSenderName } from "../../../apps/shared/components/mail/MessageDetailPane.js";
 
 const { evaluateMessageSecurity, getUnlockedKeys, getPinnedSignerFingerprints } = vi.hoisted(() => ({
@@ -66,7 +67,7 @@ function renderSecure(overrides: Record<string, unknown> = {}, attachments: unkn
 }
 
 function fromLine(): HTMLElement {
-    return screen.getByText(/^From /);
+    return screen.getByText(/^From$/);
 }
 
 afterEach(() => {
@@ -138,12 +139,12 @@ describe("MessageDetailPane (round 6)", () => {
             renderSecure({ from: { address: "sender@example.com", type: "to" } });
 
             await screen.findByText("Signed & verified");
-            expect(fromLine()).toHaveTextContent(/^From sender@example\.com ·/);
+            expect(fromLine()).toHaveTextContent(/^From sender@example\.com$/);
         });
 
         it("shows the name and the address for an unprotected or encrypted-only message with an ordinary name", async () => {
             render(<MessageDetailPane message={messageFixture({ hasAttachments: false }) as never} attachments={[]} />);
-            expect(fromLine()).toHaveTextContent(/^From Sender One <sender@example\.com> ·/);
+            expect(fromLine()).toHaveTextContent(/^From Sender One <sender@example\.com>$/);
         });
 
         it("shows the address, with a warning, for any message whose name uses a look-alike @", () => {

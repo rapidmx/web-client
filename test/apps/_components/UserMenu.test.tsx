@@ -525,3 +525,39 @@ describe("UserMenu keyboard shortcuts item", () => {
         expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     });
 });
+
+describe("UserMenu recent notifications item", () => {
+    it("is left out unless the frame offers the history, and has no dot or count without unseen errors", async () => {
+        const user = userEvent.setup();
+        render(<UserMenu userUid="jane" onSignOut={vi.fn()} />);
+
+        expect(screen.queryByTestId("unseen-errors-dot")).not.toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        expect(screen.queryByRole("menuitem", { name: /Recent notifications/ })).not.toBeInTheDocument();
+    });
+
+    it("opens the history and closes the menu, with no count while nothing is unseen", async () => {
+        const onShowNotifications = vi.fn();
+        const user = userEvent.setup();
+        render(<UserMenu userUid="jane" onSignOut={vi.fn()} onShowNotifications={onShowNotifications} />);
+
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        const item = screen.getByRole("menuitem", { name: "Recent notifications" });
+        expect(item.textContent).toBe("Recent notifications");
+        await user.click(item);
+
+        expect(onShowNotifications).toHaveBeenCalledTimes(1);
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    });
+
+    it("shows how many errors nobody has seen - a dot on the button, a count on the item - said out loud too", async () => {
+        const user = userEvent.setup();
+        const { rerender } = render(<UserMenu userUid="jane" onSignOut={vi.fn()} onShowNotifications={vi.fn()} unseenErrors={1} />);
+
+        expect(screen.getByTestId("unseen-errors-dot")).toHaveAttribute("aria-hidden", "true");
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        expect(screen.getByRole("menuitem", { name: /Recent notifications/ })).toHaveTextContent("1 unseen error");
+        rerender(<UserMenu userUid="jane" onSignOut={vi.fn()} onShowNotifications={vi.fn()} unseenErrors={3} />);
+        expect(screen.getByRole("menuitem", { name: /Recent notifications/ })).toHaveTextContent("3 unseen errors");
+    });
+});

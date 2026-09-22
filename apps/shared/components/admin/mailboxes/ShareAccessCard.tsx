@@ -2,73 +2,93 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { AccessControlList, getMailboxAcl, grantMailboxAccess, revokeMailboxAccess } from "@rapidmx/react-shared/mail/mailApi.js";
+import {
+    listMailboxAccess,
+    MailboxAccessMember,
+    MailboxAccessRole,
+    removeMailboxAccess,
+    setMailboxAccess,
+} from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import PrincipalPicker from "../../sharing/PrincipalPicker.js";
 
-const DEFAULT_DELEGATE_ACTIONS = ["read", "list", "count", "exists"];
+const ROLE_LABELS: Record<MailboxAccessRole, string> = { viewer: "Read only", manager: "Full access" };
 
 export interface ShareAccessCardProps {
     mailboxUid: string;
-    /** The mailbox's owner - their own grant is shown but can't be revoked from here. */
+    /** The mailbox's owner: with one, only the owner can grant access to it. Without, the mailbox is shared and an
+     * administrator grants access here - to themselves included. */
     ownerUserUid?: string;
+    /** The signed-in administrator, for "Add me" on a shared mailbox. */
+    currentUserUid?: string;
+}
+
+function roleLabel(member: MailboxAccessMember): string {
+    if (member.role === "viewer") return ROLE_LABELS.viewer;
+    if (member.role === "manager") return ROLE_LABELS.manager;
+    return (member.actions ?? []).join(", ");
 }
 
 /**
- * Lets an admin (or, eventually, the mailbox owner) view and edit a mailbox's delegate access — the
- * mechanism behind Exchange-style shared mailboxes. `records` on a mailbox's own ACL doubles as both the
- * owner's grant (if any) and every delegate's — see `BaseMailboxRoute`'s doc comment in `@rapidmx/restapi`.
+ * A mailbox's members - the mechanism behind Exchange-style shared mailboxes - through the Sharing endpoints
+ * (`/mail/mailboxes/:id/access`), the audited way an administrator reaches a mailbox they hold no grant on. An
+ * administrator can review any mailbox's members and revoke any of them; they can grant access only on a shared
+ * (ownerless) mailbox - themselves included, which is how it appears in their own mail client. A personal mailbox is
+ * shared by its owner (or by an administrator impersonating them).
  */
-export default function ShareAccessCard({ mailboxUid, ownerUserUid }: ShareAccessCardProps) {
-    const [acl, setAcl] = useState<AccessControlList | null>(null);
+export default function ShareAccessCard({ mailboxUid, ownerUserUid, currentUserUid }: ShareAccessCardProps) {
+    const [members, setMembers] = useState<MailboxAccessMember[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [notice, setNotice] = useState<string | null>(null);
-    const [newUserUid, setNewUserUid] = useState("");
     const [saving, setSaving] = useState(false);
     const [revokeTarget, setRevokeTarget] = useState<string | null>(null);
+    // An entry that is not a user uid, being replaced with the user it was meant for.
+    const [replacing, setReplacing] = useState<MailboxAccessMember | null>(null);
 
     function reload() {
         setLoading(true);
         setError(null);
-        getMailboxAcl(mailboxUid)
-            .then(setAcl)
+        listMailboxAccess(mailboxUid)
+            .then(setMembers)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load share settings."))
             .finally(() => setLoading(false));
     }
 
     useEffect(reload, [mailboxUid]);
 
-    async function handleGrant(e: FormEvent) {
-        e.preventDefault();
-        const userUid = newUserUid.trim();
-        if (!userUid) {
-            return;
-        }
+    async function addMe(userUid: string) {
         setSaving(true);
         setError(null);
-        setNotice(null);
         try {
-            // `grantMailboxAccess()` replaces any existing record for this uid, so granting read access to someone
-            // who already has more (e.g. the owner) would silently downgrade them. Merge with their current actions.
-            const current = await getMailboxAcl(mailboxUid);
-            const existing = current.records.find((record) => record.userOrRoleId === userUid)?.actions ?? [];
-            const missing = DEFAULT_DELEGATE_ACTIONS.filter((action) => !existing.includes(action));
-            if (missing.length === 0) {
-                setNotice(`${userUid} already has this access.`);
-                setNewUserUid("");
-                return;
-            }
-            await grantMailboxAccess(mailboxUid, userUid, [...existing, ...missing]);
-            setNewUserUid("");
+            await setMailboxAccess(mailboxUid, userUid, "manager");
             reload();
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not grant access.");
         } finally {
             setSaving(false);
+        }
+    }
+
+    // Once the person is granted, the entry they replace (if any) is removed: the string it named never matched anyone.
+    async function handleGranted() {
+        const stale = replacing;
+        setReplacing(null);
+        let failure: string | null = null;
+        if (stale) {
+            try {
+                await removeMailboxAccess(mailboxUid, stale.userOrRoleId);
+            } catch (err) {
+                failure = err instanceof ApiRequestError ? err.message : "Could not remove the old entry.";
+            }
+        }
+        reload();
+        // After the reload, which clears the error it started with.
+        if (failure) {
+            setError(failure);
         }
     }
 
@@ -78,9 +98,8 @@ export default function ShareAccessCard({ mailboxUid, ownerUserUid }: ShareAcces
         setRevokeTarget(null);
         setSaving(true);
         setError(null);
-        setNotice(null);
         try {
-            await revokeMailboxAccess(mailboxUid, userOrRoleId);
+            await removeMailboxAccess(mailboxUid, userOrRoleId);
             reload();
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not revoke access.");
@@ -89,61 +108,89 @@ export default function ShareAccessCard({ mailboxUid, ownerUserUid }: ShareAcces
         }
     }
 
+    const shared = !ownerUserUid;
+    const isMember = members.some((member) => member.userOrRoleId === currentUserUid);
+
     return (
         <div className="bg-surface border border-border rounded-md p-6">
             <h2 className="text-base font-bold uppercase tracking-wide mb-1">Shared access</h2>
             <p className="text-sm text-text-muted mb-4">
-                Grants read access to this mailbox for another user, independent of ownership.
+                {shared
+                    ? "Who has access to this shared mailbox. Adding yourself is how it appears in your own mail client; every change is recorded in the audit log."
+                    : "Who the owner has shared this mailbox with. You can review and revoke access; only the owner can grant it (impersonate them to do so)."}
             </p>
 
             {error && <Alert>{error}</Alert>}
-            {notice && !error && <div className="mb-4 text-sm text-text-muted">{notice}</div>}
 
             {loading ? (
                 <p className="text-sm text-text-muted">Loading&hellip;</p>
             ) : (
                 <ul className="flex flex-col gap-2 mb-4">
-                    {(acl?.records ?? []).length === 0 && (
-                        <li className="text-sm text-text-muted">No grants on this mailbox yet.</li>
-                    )}
-                    {acl?.records.map((record) => (
+                    {members.length === 0 && <li className="text-sm text-text-muted">No grants on this mailbox yet.</li>}
+                    {members.map((member) => (
                         <li
-                            key={record.userOrRoleId}
+                            key={member.userOrRoleId}
                             className="flex items-center justify-between gap-3 py-2 px-3 border border-border rounded-sm"
                         >
                             <div>
-                                <div className="text-sm font-medium">{record.userOrRoleId}</div>
-                                <div className="text-xs text-text-muted">{record.actions.join(", ")}</div>
+                                <div className="text-sm font-medium">{member.userOrRoleId}</div>
+                                <div className="text-xs text-text-muted">{roleLabel(member)}</div>
+                                {member.noEffect && (
+                                    <div className="text-xs text-danger mt-0.5">
+                                        Not a user - this entry has no effect
+                                        {shared ? " - replace it with the user it was meant for or remove it." : " - remove it."}
+                                    </div>
+                                )}
                             </div>
-                            {record.userOrRoleId === ownerUserUid ? (
-                                <span className="text-xs font-bold uppercase tracking-wide text-text-muted">Owner</span>
-                            ) : (
+                            <span className="flex items-center gap-3 shrink-0">
+                                {member.noEffect && shared && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setReplacing(member)}
+                                        disabled={saving}
+                                        className="text-sm text-primary-dark hover:underline disabled:opacity-55"
+                                    >
+                                        Replace with a user
+                                    </button>
+                                )}
                                 <button
                                     type="button"
-                                    onClick={() => setRevokeTarget(record.userOrRoleId)}
+                                    onClick={() => setRevokeTarget(member.userOrRoleId)}
                                     disabled={saving}
                                     className="text-sm text-danger hover:underline disabled:opacity-55"
                                 >
                                     Revoke
                                 </button>
-                            )}
+                            </span>
                         </li>
                     ))}
                 </ul>
             )}
 
-            <form onSubmit={handleGrant} className="flex gap-2">
-                <input
-                    type="text"
-                    value={newUserUid}
-                    onChange={(e) => setNewUserUid(e.target.value)}
-                    placeholder="User uid to grant access to"
-                    className="flex-1 text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary"
-                />
-                <Button type="submit" loading={saving} disabled={saving} className="!w-auto">
-                    Grant
-                </Button>
-            </form>
+            {shared && (
+                <>
+                    {currentUserUid && !isMember && !loading && (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto mb-3"
+                            disabled={saving}
+                            onClick={() => void addMe(currentUserUid)}
+                        >
+                            Add me
+                        </Button>
+                    )}
+                    <PrincipalPicker
+                        key={replacing?.userOrRoleId ?? "new"}
+                        mailboxUid={mailboxUid}
+                        roleLabels={ROLE_LABELS}
+                        initialPrincipal={replacing?.userOrRoleId}
+                        defaultRole={replacing?.role === "manager" ? "manager" : "viewer"}
+                        onGranted={handleGranted}
+                        onCancel={replacing ? () => setReplacing(null) : undefined}
+                    />
+                </>
+            )}
 
             <Modal open={revokeTarget !== null} onClose={() => setRevokeTarget(null)} title="Revoke access">
                 <p className="text-sm mb-5">

@@ -23,12 +23,16 @@ function formatBytes(bytes: number): string {
 export default function MailboxDetailPage(props: Omit<AdminShellProps, "active"> & { params: { uid: string } }) {
     return (
         <AdminShell {...props} active="mailboxes">
-            <MailboxDetailContent uid={props.params.uid} impersonationBaseUrl={props.impersonationBaseUrl} />
+            <MailboxDetailContent uid={props.params.uid} impersonationBaseUrl={props.impersonationBaseUrl} currentUserUid={props.userUid} />
         </AdminShell>
     );
 }
 
-function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & Pick<AdminShellProps, "impersonationBaseUrl">) {
+function MailboxDetailContent({
+    uid,
+    impersonationBaseUrl,
+    currentUserUid,
+}: { uid: string; currentUserUid?: string } & Pick<AdminShellProps, "impersonationBaseUrl">) {
     const [mailbox, setMailbox] = useState<Mailbox | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -47,7 +51,7 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
         setAccessError(null);
     }
 
-    // Only ever invoked from the access-confirmation modal below, which only renders for a loaded mailbox that has
+    // Only ever invoked from the impersonation-confirmation modal below, which only renders for a loaded mailbox that has
     // an owner. A failure stays in the modal rather than replacing the whole page.
     async function handleAccessMailbox() {
         setImpersonating(true);
@@ -56,7 +60,7 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
             await impersonateUser(impersonationBaseUrl ?? "", mailbox!.ownerUserUid!);
             window.location.href = "/";
         } catch (err) {
-            setAccessError(err instanceof ApiRequestError ? err.message : "Could not access this mailbox.");
+            setAccessError(err instanceof ApiRequestError ? err.message : "Could not impersonate this user.");
             setImpersonating(false);
         }
     }
@@ -86,7 +90,8 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
     useEffect(() => {
         setLoading(true);
         setError(null);
-        getMailbox(uid)
+        // The administration scope: administrative metadata only - the console never shows a mailbox's mail or settings.
+        getMailbox(uid, { scope: "admin" })
             .then(setMailbox)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this mailbox."))
             .finally(() => setLoading(false));
@@ -114,7 +119,7 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
                 <div className="flex gap-3 shrink-0">
                     {mailbox.ownerUserUid && (
                         <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingAccess(true)}>
-                            Access this mailbox
+                            Impersonate this user
                         </Button>
                     )}
                     <Button
@@ -127,6 +132,13 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
                     </Button>
                 </div>
             </div>
+
+            <p className="text-sm text-text-muted">
+                The console shows administrative details only - never a mailbox&rsquo;s mail or settings.
+                {mailbox.ownerUserUid
+                    ? " To see this mailbox as its owner sees it, impersonate them: that is recorded, and you can stop at any time."
+                    : " This shared mailbox has no owner: add yourself under Shared access to open it in the mail client."}
+            </p>
 
             <div className="bg-surface border border-border rounded-md p-6">
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
@@ -161,17 +173,18 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
                 </div>
             </div>
 
-            <ShareAccessCard mailboxUid={mailbox.uid} ownerUserUid={mailbox.ownerUserUid} />
+            <ShareAccessCard mailboxUid={mailbox.uid} ownerUserUid={mailbox.ownerUserUid} currentUserUid={currentUserUid} />
 
             <EscrowScopeCard mailbox={mailbox} onUpdate={setMailbox} />
 
             {mailbox.isResource && <ResourceSettingsCard mailbox={mailbox} onUpdate={setMailbox} />}
 
-            <Modal open={confirmingAccess} onClose={closeAccessModal} title="Access this mailbox">
+            <Modal open={confirmingAccess} onClose={closeAccessModal} title="Impersonate this user">
                 <p className="text-sm mb-3">
                     You&rsquo;ll be signed in as <strong className="break-all">{mailbox.ownerUserUid}</strong>, the owner
                     of <strong className="break-all">{mailbox.primarySmtpAddress}</strong>, and see everything they can -
-                    and act as them, until you stop impersonating.
+                    and act as them, until you stop impersonating. This is the only way an administrator sees another
+                    user&rsquo;s mail.
                 </p>
                 {accessError && <Alert>{accessError}</Alert>}
                 <div className="flex gap-3 justify-end mt-5">
@@ -179,7 +192,7 @@ function MailboxDetailContent({ uid, impersonationBaseUrl }: { uid: string } & P
                         Cancel
                     </Button>
                     <Button type="button" className="!w-auto" loading={impersonating} disabled={impersonating} onClick={handleAccessMailbox}>
-                        Access mailbox
+                        Impersonate
                     </Button>
                 </div>
             </Modal>

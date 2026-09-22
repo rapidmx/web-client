@@ -20,6 +20,7 @@ import {
     createFolder,
     getMessage,
     getMessageRawContent,
+    listFolders,
     listMessages,
     moveMessages,
     setMessagesFlagged,
@@ -46,6 +47,7 @@ import MailShell, {
     useMailShell,
 } from "../shared/components/mail/layout/MailShell.js";
 import MailAddress from "../shared/components/mail/MailAddress.js";
+import OutboxRowStatus from "../shared/components/mail/OutboxRowStatus.js";
 import { mergeFirstPage } from "../shared/mail/mergeFirstPage.js";
 import { listSnapshotKey, readListSnapshot, saveListScroll, writeListSnapshot } from "../shared/mail/listSnapshots.js";
 import { setReadStateMany } from "../shared/mail/messageReadState.js";
@@ -53,6 +55,7 @@ import { useMarkMessageRead } from "../shared/mail/useMarkMessageRead.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "../shared/components/mail/unreadStyle.js";
 import { LazyConversationThreadPane, LazyMessageDetailPane, prefetchReadingPane } from "../shared/components/mail/LazyReadingPane.js";
 import ConversationList from "../shared/components/mail/ConversationList.js";
+import { EncryptedPreview } from "../shared/components/mail/reading/EncryptedPreview.js";
 import MailListToolbar from "../shared/components/mail/MailListToolbar.js";
 import MailSelectionBar from "../shared/components/mail/MailSelectionBar.js";
 import {
@@ -70,6 +73,7 @@ import { useUnlockPrompt } from "../shared/components/layout/UnlockPromptProvide
 import { SHORTCUTS } from "../shared/keyboard/keymap.js";
 import { isActivatable } from "../shared/keyboard/targets.js";
 import { useShortcut } from "../shared/keyboard/useShortcut.js";
+import { notifyApiError } from "../shared/notifications/apiErrors.js";
 
 const MESSAGE_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -461,7 +465,7 @@ function InboxPage(props: MailShellProps) {
 }
 
 function InboxContent({ userUid }: { userUid?: string }) {
-    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, live, trackMessageChange } = useMailShell();
+    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, noteFolderUids, live, trackMessageChange } = useMailShell();
     const isMobile = useIsMobile();
     const navigate = useNavigate();
     const { requestUnlock } = useUnlockPrompt();
@@ -503,7 +507,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // or it would act on a selection that is still arriving.
     const [resolvingSelection, setResolvingSelection] = useState(0);
     const [bulkBusy, setBulkBusy] = useState(false);
-    const [bulkError, setBulkError] = useState<string | null>(null);
     // Bumped to force the list effect below to re-run - a bulk update is deliberately neither atomic nor
     // all-or-nothing (see `bulkUpdateMessages()`), so a rejection means refetching rather than guessing
     // which half of the selection actually landed.
@@ -1120,9 +1123,17 @@ function InboxContent({ userUid }: { userUid?: string }) {
         unlockRefresh,
         searchAllMail,
         aggregateFolderType,
-        mailboxFolders,
+        // Only a merged view is built from the folder tree; for a single folder a folder appearing in the sidebar (the Outbox, Sent Items) must not reload
+        // the list on screen and forget its selection.
+        aggregateFolderType ? mailboxFolders : null,
         activeMailboxUid,
     ]);
+
+    // Which folders the messages on screen live in: one the sidebar does not know (the Outbox and Sent Items are made by the server on first use) is looked for -
+    // its mailbox's folders are listed again, once - so it appears without a reload. A conversation names every folder it has a message in.
+    useEffect(() => {
+        noteFolderUids([...messages.map((message) => message.folderUid), ...conversations.flatMap((conversation) => conversation.folderUids)]);
+    }, [messages, conversations, noteFolderUids]);
 
     // New mail without a reload. `live` is bumped by a push event, a reconnect, the safety-net poll or the tab coming back (see
     // `useMailLiveUpdates()`); this then quietly refetches the first page of whatever is listed and folds it in - unlike the
@@ -1454,7 +1465,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
         setSelectMode(false);
         setSelectedUids(new Set());
         setSelectedConversationIds(new Set());
-        setBulkError(null);
     }
 
     function toggleSelected(uid: string) {
@@ -1471,7 +1481,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     /** Loads (once) the messages behind each of `ids`, so a ticked conversation resolves to the messages
      * every bulk action below acts on. If any of them fails to load, none of that batch stays ticked and
-     * the bar says why - better than acting on the part of a selection that happened to arrive. */
+     * a pop-up says why - better than acting on the part of a selection that happened to arrive. */
     async function resolveConversations(ids: string[]) {
         const missing = ids.filter((id) => !conversationMessagesById[id]);
         if (missing.length === 0) {
@@ -1484,9 +1494,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             );
             setConversationMessagesById((prev) => ({ ...prev, ...Object.fromEntries(loaded) }));
         } catch (err) {
-            setBulkError(
-                err instanceof ApiRequestError ? err.message : "Could not load the messages in one of those conversations.",
-            );
+            notifyApiError(err, "Couldn't load the messages in one of those conversations");
             setSelectedConversationIds((prev) => {
                 const next = new Set(prev);
                 for (const id of missing) {
@@ -1528,7 +1536,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
      *
      * A bulk update is applied element by element server-side and stops at its first rejection, so a
      * failure leaves an unknown prefix of the selection already changed (see `bulkUpdateMessages()`) -
-     * which is why a failure reloads the list rather than trying to reconcile it, and says so.
+     * which is why a failure reloads the list rather than trying to reconcile it, and says so ("all of those messages" in the pop-up's
+     * title: some may have changed).
      *
      * `chosen` is the selection bar's ticked messages unless the caller (a keyboard shortcut acting on the one open message or conversation)
      * names its own. Resolves whether it succeeded.
@@ -1539,7 +1548,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
         chosen: Message[] = selectedMessages,
     ): Promise<boolean> {
         setBulkBusy(true);
-        setBulkError(null);
         try {
             const updated = await action(chosen);
             if (removesRows) {
@@ -1569,9 +1577,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             setSelectedUids(new Set());
             return true;
         } catch (err) {
-            setBulkError(
-                `${err instanceof ApiRequestError ? err.message : "Those messages couldn't all be updated."} Some of them may already have changed, so the list has been reloaded.`,
-            );
+            notifyApiError(err, chosen.length === 1 ? "Couldn't update the message" : "Couldn't update all of those messages");
             setSelectedUids(new Set());
             setSelectedConversationIds(new Set());
             setConversationMessagesById({});
@@ -1596,18 +1602,25 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     /**
-     * This mailbox's folder of `type`, created on demand. A mailbox is provisioned with only the folders it
-     * has needed so far, so Deleted Items and Junk may genuinely not exist the first time a selection is
-     * deleted or reported - and unlike Archive, neither has a server-side lazy-create route to go through.
+     * This mailbox's folder of `type`. The server makes every well-known folder itself (when the mailbox is made, and again when the folders are listed
+     * if one is missing), so a folder the page's tree lacks is asked for - the tree may simply be out of date - and used, never created a second time: a
+     * duplicate of a well-known type is invisible to the server (it answers with the oldest) but would be a second row in the sidebar. Only a server that
+     * really has none (an older one, which makes Deleted Items and Junk on first use) is asked to create it.
      *
-     * A folder created here isn't in `mailboxFolders` (the shell fetched that once), so it's remembered per
-     * mailbox and type until the page reloads; otherwise a second Delete would create a second folder.
+     * A folder found or created here may not be in `mailboxFolders` yet, so it is filed there and remembered per mailbox and type until the page
+     * reloads; otherwise a second Delete would ask again.
      */
     async function resolveFolderOfType(type: Folder["type"], name: string): Promise<string> {
         const key = `${activeMailboxUid}:${type}`;
         const known = currentFolders.find((f) => f.type === type)?.uid ?? lazyFoldersRef.current.get(key);
         if (known) {
             return known;
+        }
+        const listed = (await listFolders(activeMailboxUid)).find((f) => f.type === type);
+        if (listed) {
+            onFolderCreated(listed);
+            lazyFoldersRef.current.set(key, listed.uid);
+            return listed.uid;
         }
         const created = await createFolder({ mailboxUid: activeMailboxUid, name, type });
         lazyFoldersRef.current.set(key, created.uid);
@@ -1784,7 +1797,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         try {
             chosen = selectMode ? selectedMessages : inConversations ? await loadOpenConversation(openThread!.conversation) : [selected!];
         } catch (err) {
-            setBulkError(err instanceof ApiRequestError ? err.message : "Could not load the messages in that conversation.");
+            notifyApiError(err, "Couldn't load the messages in that conversation");
             return;
         }
         chosen = chosen.filter(applies);
@@ -1934,7 +1947,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         onReportJunk={() => void moveSelectionToType("junk", "Junk Email")}
                         onDelete={() => void moveSelectionToType("deleted_items", "Deleted Items")}
                         busy={bulkBusy || resolvingSelection > 0}
-                        error={bulkError}
                     />
                 ) : (
                     <MailListToolbar
@@ -2079,12 +2091,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         <Alert>{error}</Alert>
                     </div>
                 )}
-                {/* Select mode shows a bulk action's failure in its own bar; the keyboard's actions on the one open message need somewhere too. */}
-                {!selectMode && bulkError && (
-                    <div className="p-4">
-                        <Alert>{bulkError}</Alert>
-                    </div>
-                )}
 
                 {loading ? (
                     // A skeleton of rows rather than a line of text: the list keeps its shape while a folder that was not shown a
@@ -2189,13 +2195,18 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                                 </div>
                                                 <div className="flex items-center gap-2 text-xs text-text-muted font-normal">
                                                     <span className="truncate">
-                                                        {snippets[message.uid] || decryptedRows[message.uid]?.preview || message.bodyPreview}
+                                                        {snippets[message.uid] ||
+                                                            decryptedRows[message.uid]?.preview ||
+                                                            message.bodyPreview ||
+                                                            (message.encrypted ? <EncryptedPreview /> : null)}
                                                     </span>
                                                     {message.hasAttachments && <HiOutlinePaperClip size={12} aria-label="Has attachments" />}
                                                     {message.flags.flagged && (
                                                         <HiOutlineFlag size={12} aria-label="Flagged" className="text-danger" />
                                                     )}
                                                 </div>
+                                                {/* What the server is doing with a message in Outbox: sending, retrying, or why it wasn't sent. */}
+                                                {isOutbox && <OutboxRowStatus message={message} />}
                                             </>
                                         )}
                                     </button>

@@ -11,6 +11,7 @@ import { useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHook
 import { useMarkMessageRead } from "../../shared/mail/useMarkMessageRead.js";
 import MailShell, { MailShellProps, useMailShell } from "../../shared/components/mail/layout/MailShell.js";
 import { LazyMessageDetailPane } from "../../shared/components/mail/LazyReadingPane.js";
+import { ReadingPaneSkeleton } from "../../shared/components/mail/reading/MessageCard.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 /**
@@ -66,7 +67,8 @@ function MessageDetailContent({ uid }: { uid: string }) {
     useMarkMessageRead(message, setMessage);
 
     if (loading) {
-        return <p className="p-8 text-sm text-text-muted">Loading&hellip;</p>;
+        // The pane's own frame - a header card and a message card - rather than a line of text: what is coming is known, only not yet its contents.
+        return <ReadingPaneSkeleton />;
     }
     if (error || !message) {
         return <Alert>{error ?? "Message not found."}</Alert>;

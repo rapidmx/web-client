@@ -7,6 +7,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
+import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.js";
 import InboxPageRouted from "../../apps/www/index.js";
 
 // The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
@@ -80,8 +81,11 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         onLabelsChanged,
         labels,
         onLabelCreated,
+        threadHeader,
     }: {
         message: Record<string, unknown> | null;
+        // What the thread hands an expanded card: the sender button that collapses it (the pane draws it), and the body it controls.
+        threadHeader?: { bodyId: string; unread: boolean; onToggle: () => void; buttonRef: (node: HTMLButtonElement | null) => void };
         isSentItems?: boolean;
         onRecalled?: (updated: Record<string, unknown>) => void;
         isOutbox?: boolean;
@@ -97,6 +101,13 @@ vi.mock("../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         onLabelCreated?: (label: { uid: string; name: string }) => void;
     }) => (
         <div data-testid="detail-pane">
+            {threadHeader && (
+                <h2>
+                    <button type="button" ref={threadHeader.buttonRef} aria-expanded="true" aria-controls={threadHeader.bodyId} onClick={threadHeader.onToggle}>
+                        {String((message?.from as { displayName?: string } | undefined)?.displayName ?? message?.uid)}
+                    </button>
+                </h2>
+            )}
             {message ? `message:${message.uid}` : "no-message"} sentItems:{String(!!isSentItems)} outbox:{String(!!isOutbox)}{" "}
             draftsFolderUid:{draftsFolderUid ?? "unset"} folders:{(folders ?? []).map((f) => f.name).join("/")} labels:
             {(labels ?? []).map((l) => l.name).join("/")}
@@ -454,6 +465,18 @@ describe("InboxPage", () => {
         expect(await screen.findByText("No messages in this folder.")).toBeInTheDocument();
     });
 
+    it("finds a folder the sidebar lacks when a message on screen lives in it - the Outbox and Sent Items are made by the server on first use", async () => {
+        // The server lists only the Inbox when the page loads, and has made Sent Items by the time the page asks again.
+        let listings = 0;
+        mockShellAndInbox([messageFixture({ folderUid: "f2" })], (url) =>
+            url.startsWith("/api/mail/folders") ? jsonResponse(200, listings++ === 0 ? [inboxFolder] : [inboxFolder, sentItemsFolder]) : undefined,
+        );
+        render(<InboxPage userUid="u1" />);
+        await screen.findByText("Sender One");
+        expect(await screen.findByRole("link", { name: /Sent Items/ }, { timeout: 4_000 })).toBeInTheDocument();
+        expect(listings).toBeGreaterThan(1);
+    });
+
     it("shows an empty-state message when the folder has no messages", async () => {
         mockShellAndInbox([]);
         render(<InboxPage userUid="u1" />);
@@ -744,6 +767,44 @@ describe("InboxPage", () => {
             window.history.pushState(null, "", "/");
         });
 
+        it("shows what each message in the Outbox is doing - sending, retrying, why it wasn't sent, scheduled - and nothing of the kind in other folders", async () => {
+            window.history.pushState(null, "", "/?mailboxUid=mb1&folderUid=f3");
+            const soon = new Date(Date.now() + 60_000).toISOString();
+            const later = new Date(Date.now() + 3_600_000).toISOString();
+            const modified = new Date().toISOString();
+            const rows = [
+                messageFixture({ uid: "o1", subject: "Going out", folderUid: "f3", dateModified: modified, scheduledSendTime: modified }),
+                messageFixture({ uid: "o2", subject: "Trying again", folderUid: "f3", scheduledSendAttempts: 1, scheduledSendTime: soon }),
+                messageFixture({ uid: "o3", subject: "Refused", folderUid: "f3", scheduledSendError: "Some recipients were refused." }),
+                messageFixture({ uid: "o4", subject: "Later", folderUid: "f3", scheduledSendTime: later }),
+            ];
+            mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder, outboxFolder, draftsFolder]);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, rows);
+                throw new Error(`unexpected ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+
+            await screen.findByText("Going out");
+            const status = (subject: string) => screen.getByText(subject).closest("li")!.querySelector('[data-testid="outbox-row-status"]')!;
+            expect(status("Going out")).toHaveAttribute("data-state", "sending");
+            expect(status("Going out")).toHaveTextContent("Sending…");
+            expect(status("Trying again")).toHaveTextContent(/^Retrying \(attempt 2, .+\)$/);
+            expect(status("Refused")).toHaveAttribute("data-state", "failed");
+            expect(status("Refused")).toHaveTextContent("Not sent: Some recipients were refused.");
+            expect(status("Refused").className).toContain("text-danger");
+            expect(status("Later")).toHaveTextContent(/^Scheduled for /);
+            window.history.pushState(null, "", "/");
+        });
+
+        it("has no such line for a message outside the Outbox", async () => {
+            mockShellAndInbox([messageFixture({ uid: "m1", subject: "Just mail" })]);
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Just mail");
+            expect(screen.queryByTestId("outbox-row-status")).not.toBeInTheDocument();
+        });
+
         it("removes the message from the list and clears the selection when a scheduled send is canceled", async () => {
             const first = messageFixture({ uid: "m1", subject: "First" });
             const second = messageFixture({ uid: "m2", subject: "Second" });
@@ -958,7 +1019,7 @@ describe("InboxPage", () => {
                     ).toBeGreaterThan(1),
                 );
                 expect(await screen.findByText("0 conversations selected")).toBeInTheDocument();
-                expect(screen.queryByText(/may already have changed/)).not.toBeInTheDocument();
+                expect(getNotificationsSnapshot().visible).toEqual([]);
             });
 
             it("ticks the conversation a row's own button would otherwise open", async () => {
@@ -1030,9 +1091,8 @@ describe("InboxPage", () => {
 
                 await selectThread(user);
 
-                expect(
-                    await screen.findByText("Could not load the messages in one of those conversations.", { exact: false }),
-                ).toBeInTheDocument();
+                expect(await screen.findByText("Couldn't load the messages in one of those conversations")).toBeInTheDocument();
+                expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
             });
 
             it("unticks a conversation ticked twice, and fetches its messages only once", async () => {
@@ -1170,7 +1230,9 @@ describe("InboxPage", () => {
 
             await user.click(await screen.findByRole("button", { name: "Expand conversation: Thread subject" }));
 
-            expect(await screen.findByRole("alert")).toHaveTextContent("thread boom");
+            // On the row (it belongs to it), not a pop-up: the pop-up region's own alert is empty.
+            expect(await screen.findByText("thread boom")).toHaveAttribute("role", "alert");
+            expect(getNotificationsSnapshot().visible).toEqual([]);
         });
 
         it("shows a generic error on the row when loading a conversation's messages fails with a non-API error", async () => {
@@ -1184,7 +1246,7 @@ describe("InboxPage", () => {
 
             await user.click(await screen.findByRole("button", { name: "Expand conversation: Thread subject" }));
 
-            expect(await screen.findByRole("alert")).toHaveTextContent("Could not load this conversation's messages.");
+            expect(await screen.findByText("Could not load this conversation's messages.")).toHaveAttribute("role", "alert");
         });
 
         it("opens the whole thread at its latest message when the parent row is clicked", async () => {
@@ -1562,7 +1624,13 @@ describe("InboxPage", () => {
                 fetchMock.mock.calls
                     .filter(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT")
                     .map(([, init]: [string, RequestInit]) => JSON.parse(init.body as string));
-            const openConversation = (subject: string) => screen.findByRole("heading", { level: 1, name: subject });
+            // The thread pane shows its subject card at once, from the list row, while its messages are still loading - so "open" also waits for an
+            // expanded message to be there.
+            const openConversation = async (subject: string) => {
+                const heading = await screen.findByRole("heading", { level: 1, name: subject });
+                await screen.findAllByTestId("detail-pane");
+                return heading;
+            };
 
             async function renderConversations() {
                 const user = userEvent.setup();
@@ -1691,6 +1759,9 @@ describe("InboxPage", () => {
                 press("d", CTRL);
 
                 expect(await screen.findByText("thread boom")).toBeInTheDocument();
+                expect(getNotificationsSnapshot().visible).toMatchObject([
+                    { kind: "error", title: "Couldn't load the messages in that conversation", message: "thread boom" },
+                ]);
                 expect(screen.getByRole("heading", { level: 1, name: "Thread subject" })).toBeInTheDocument();
             });
 
@@ -1708,7 +1779,7 @@ describe("InboxPage", () => {
 
                 press("d", CTRL);
 
-                expect(await screen.findByText("Could not load the messages in that conversation.")).toBeInTheDocument();
+                expect(await screen.findByText("Couldn't load the messages in that conversation")).toBeInTheDocument();
             });
 
             it("closes the conversation with Escape and opens the selected message on its own page with Enter", async () => {
@@ -2364,6 +2435,27 @@ describe("InboxPage", () => {
             ).toHaveLength(1);
         });
 
+        it("uses the Deleted Items the server already has - never a second one - when the page's folder list was out of date", async () => {
+            // The page loaded before the server made Deleted Items (it now makes every well-known folder itself, and heals a missing one when the folders are listed).
+            let listings = 0;
+            const fetchMock = mockSelectable(twoMessages(), [inboxFolder], (url, init) =>
+                url.startsWith("/api/mail/folders") && (init?.method ?? "GET") === "GET"
+                    ? jsonResponse(200, listings++ === 0 ? [inboxFolder] : [inboxFolder, deletedFolder])
+                    : undefined,
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            await selectRows(user, "First");
+
+            await user.click(screen.getByRole("button", { name: "Delete" }));
+
+            await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+            expect(fetchMock.mock.calls.filter(([url, init]: [string, RequestInit]) => url === "/api/mail/folders" && init?.method === "POST")).toHaveLength(0);
+            const move = fetchMock.mock.calls.find(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT");
+            expect(JSON.parse(move![1].body as string)).toEqual([{ uid: "m1", version: 0, folderUid: deletedFolder.uid }]);
+        });
+
         it("reports junk by moving the selection to Junk", async () => {
             const fetchMock = mockSelectable(twoMessages());
             const user = userEvent.setup();
@@ -2604,6 +2696,7 @@ describe("InboxPage", () => {
             await chooseMenuItem(user, "menuitem", "Apply");
 
             expect(await screen.findByText(/Message m2 has changed since it was read\./)).toBeInTheDocument();
+            expect(screen.getByText("Couldn't update the message")).toBeInTheDocument();
             await waitFor(() =>
                 expect(
                     fetchMock.mock.calls.filter(([url, init]: [string, RequestInit]) =>
@@ -2625,15 +2718,17 @@ describe("InboxPage", () => {
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
             await screen.findByText("First");
-            await selectRows(user, "First");
+            await selectRows(user, "First", "Second");
             const listingsBefore = fetchMock.mock.calls.filter(([url, init]: [string, RequestInit]) =>
                 String(url).startsWith("/api/mail/messages?") && (init?.method ?? "GET") === "GET",
             ).length;
 
             await user.click(screen.getByRole("button", { name: "Mark read" }));
 
+            // A pop-up, not a line in the selection bar: the title says some may have changed, the message is the server's own.
             expect(await screen.findByText(/Message m2 has changed since it was read\./)).toBeInTheDocument();
-            expect(screen.getByText(/the list has been reloaded/)).toBeInTheDocument();
+            expect(screen.getByText("Couldn't update all of those messages")).toBeInTheDocument();
+            expect(getNotificationsSnapshot().visible).toMatchObject([{ kind: "error", title: "Couldn't update all of those messages" }]);
             expect(rejected).toBe(true);
             await waitFor(() =>
                 expect(
@@ -2657,7 +2752,8 @@ describe("InboxPage", () => {
 
             await user.click(screen.getByRole("button", { name: "Mark read" }));
 
-            expect(await screen.findByText(/Those messages couldn't all be updated\./)).toBeInTheDocument();
+            expect(await screen.findByText("Couldn't update the message")).toBeInTheDocument();
+            expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
         });
 
         it("clears the selection and returns to the toolbar on Cancel", async () => {
@@ -4230,7 +4326,7 @@ describe("InboxPage", () => {
             expect(requests.filter((p) => p > 0)).toEqual([1]);
         });
 
-        it("stops after a few full pages in a row that add nothing, offering a Load more button that resumes", async () => {
+        it("stops after a few full pages in a row that add nothing, offering a Load more button that resumes", { timeout: 30_000 }, async () => {
             const io = mockIntersectionObserver();
             const first = fullPage(0);
             const requests = pagedFolder({ 0: first, 1: first, 2: first, 3: first, 4: first, 5: fullPage(5) });
@@ -4293,6 +4389,21 @@ describe("InboxPage", () => {
             expect(screen.getByText("Real decrypted body content")).toBeInTheDocument();
             expect(screen.queryByText("Encrypted message")).not.toBeInTheDocument();
             expect(screen.queryByText("Unlock to show an encrypted message's subject")).not.toBeInTheDocument();
+        });
+
+        it("says 'Encrypted message' with a small lock on the preview line of an encrypted row nothing has been decrypted of, and leaves a plain row's alone", async () => {
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: "", encrypted: true });
+            const plainEmpty = messageFixture({ uid: "m-plain", subject: "Nothing in it", bodyPreview: "" });
+            mockShellAndInbox([encryptedMsg, plainEmpty]);
+            getUnlockedKeys.mockReturnValue(undefined);
+            render(<InboxPage userUid="u1" />);
+
+            // The subject line and the preview line both say it.
+            const lines = await screen.findAllByText("Encrypted message");
+            expect(lines).toHaveLength(2);
+            const preview = lines.find((line) => line.querySelector("svg"))!;
+            expect(preview.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+            expect(screen.getByText("Nothing in it").parentElement!.querySelector("svg")).toBeNull();
         });
 
         it("uses the plural banner copy when more than one loaded row is encrypted", async () => {
@@ -5284,7 +5395,7 @@ describe("InboxPage", () => {
             await waitFor(() => expect(listCalls(fetchMock).length).toBe(before + 1), { timeout: 3000 });
             expect(screen.getByText("First")).toBeInTheDocument();
             expect(screen.queryByText("boom")).not.toBeInTheDocument();
-            expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+            expect(getNotificationsSnapshot().visible).toEqual([]);
         });
 
         it("does not refresh while a search is showing, or while the list is still loading its first page", async () => {

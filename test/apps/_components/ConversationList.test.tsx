@@ -249,6 +249,34 @@ describe("ConversationList", () => {
         expect(fetchMock.mock.calls.filter(([url]: [string]) => String(url).includes("/conversations/c1"))).toHaveLength(1);
     });
 
+    it("says 'Encrypted message' with a small lock where an encrypted latest message has no preview - on the conversation's row and on its child rows - and only there", async () => {
+        const user = userEvent.setup();
+        renderList(
+            {
+                conversations: [
+                    conversationFixture({ conversationId: "c1", subject: "[...]", latestPreview: "" }),
+                    conversationFixture({ conversationId: "c2", subject: "Plainly empty", latestPreview: "" }),
+                    conversationFixture({ conversationId: "c3", subject: "[...]", latestPreview: "Decrypted elsewhere" }),
+                ],
+            },
+            [
+                messageFixture({ uid: "m1", bodyPreview: "", encrypted: true }),
+                messageFixture({ uid: "m2", bodyPreview: "", encrypted: false }),
+                messageFixture({ uid: "m3", bodyPreview: "Has a preview", encrypted: true }),
+            ],
+        );
+
+        const previews = screen.getAllByText("Encrypted message");
+        expect(previews).toHaveLength(1);
+        expect(previews[0].querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+        expect(screen.getByText("Decrypted elsewhere")).toBeInTheDocument();
+
+        await user.click(screen.getAllByRole("button", { name: /^Expand conversation/ })[0]);
+        await screen.findByText("Has a preview");
+        // The one empty encrypted child joins the parent's; the plain empty one and the one with a preview do not.
+        expect(screen.getAllByText("Encrypted message")).toHaveLength(2);
+    });
+
     it("shows a loading row while a conversation's messages are being fetched", async () => {
         let resolveChildren: ((value: Response) => void) | undefined;
         mockFetch(

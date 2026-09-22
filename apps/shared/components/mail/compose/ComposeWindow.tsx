@@ -20,7 +20,6 @@ import {
     Mailbox,
     Message,
     assembleDraft,
-    assembleDraftRaw,
     attachmentContentUrl,
     createDraft,
     deleteMessage,
@@ -28,21 +27,20 @@ import {
     getMessage,
     listFolders,
     listMailboxes,
-    sendMessage,
-    setMessageRequestReceipt,
     uploadAttachment,
 } from "@rapidmx/react-shared/mail/mailApi.js";
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
-import { describeSendFailure } from "@rapidmx/react-shared/mail/sendFailure.js";
 import { buildComposeBodyHtml } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import { peekMailboxWritability, useMailboxWritability } from "../writableMailboxes.js";
-import { decideMessageEncryption, resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
+import { resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
 import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { useUnlockPrompt } from "../../layout/UnlockPromptProvider.js";
-import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
-import type { ProtectedHeaders } from "@rapidmx/react-shared/crypto/smimeMessage.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import { notify } from "../../../notifications/store.js";
+import { evaluateEncryptionRequirement } from "./encryptionRequirement.js";
+import { decideSend, SendBlock } from "../../../mail/outbox/sendDecision.js";
+import { SendRequest, sendDecisionInput, startSend } from "../../../mail/outbox/sendJob.js";
 import { useCompose, type ComposeSession } from "./ComposeContext.js";
 import { ariaKeyShortcuts, withHint } from "../../../keyboard/format.js";
 import { SHORTCUTS, ShortcutDef } from "../../../keyboard/keymap.js";
@@ -54,7 +52,6 @@ import RecipientInput from "./RecipientInput.js";
 import { parseRecipientList } from "./recipients.js";
 import RichTextEditor from "./RichTextEditor.js";
 import ScheduleSendPicker from "./ScheduleSendPicker.js";
-import SendFailureAlert from "./SendFailureAlert.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
@@ -79,29 +76,12 @@ export interface ComposeWindowProps {
 /** Debounce between the last edit and the draft autosave. */
 export const DEFAULT_AUTOSAVE_DELAY_MS = 2000;
 
-/** Automatic retries of a failed mailbox/encryption-policy load; after the last one only "Retry" tries again. */
-export const DEFAULT_CRYPTO_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+/** Automatic, silent retries of a failed mailbox/encryption-policy (or recipient key) load, one entry per retry - a flapping gateway is waited out
+ * in the background, without a word to the user. */
+export const DEFAULT_CRYPTO_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000, 60000];
 
-/** Signed/encrypted bodies are built client-side from the editor's HTML verbatim, so an inline image
- * (an uploaded attachment previewed via its content URL, or a `cid:` reference) would never be carried -
- * only `assembleDraft()`'s server-side plaintext path rewrites those into real MIME parts. */
-const INLINE_IMAGE_PATTERN = /<img\b[^>]*\bsrc\s*=\s*["']?(?:cid:|[^"'\s>]*\/mail\/attachments\/[^"'\s>]+\/content)/i;
-
-const KEYS_LOCKED_SIGN_MESSAGE =
-    "This message can't be signed right now - your signing key is locked or your mailbox details couldn't be loaded. Unlock and send again, or send it without signing.";
-const KEYS_LOCKED_ENCRYPT_MESSAGE =
-    "This message can't be encrypted right now - your encryption key is locked. Unlock and send again, or send it without encryption.";
-const POLICY_UNAVAILABLE_MESSAGE =
-    "Your encryption settings couldn't be loaded, so this message can't be encrypted right now. Try again, or send it without encryption.";
-const BCC_ENCRYPTED_MESSAGE = "Bcc recipients can't be used with encrypted messages. Remove Bcc recipients or turn off encryption.";
-const LOOKUP_UNAVAILABLE_MESSAGE =
-    "Your recipients' encryption keys couldn't be checked, so this message might go out unencrypted when it should be encrypted. Try again, or send it without encryption.";
 /** Thrown by `deleteDraft()` when the server copy is no longer this window's draft (sent or scheduled elsewhere). */
 const NO_LONGER_A_DRAFT_MESSAGE = "This message was already sent or scheduled from another window, so it wasn't deleted.";
-
-/** The server refuses signed/encrypted mail whose From display name differs from its own safe form, which drops a
- * name containing `@` (or a look-alike) or a line break. */
-const UNSAFE_DISPLAY_NAME_PATTERN = /[@＠﹫\r\n]/;
 
 /** Whether `fresh` (a re-read of a draft) is still an unsent draft in `folderUid`: never delete a message another
  * window has since sent, scheduled, or started sending. */
@@ -109,41 +89,16 @@ function isStillDraft(fresh: Message, folderUid: string): boolean {
     return fresh.folderUid === folderUid && !fresh.scheduledSendTime && !fresh.scheduledSendLeaseExpiresAt && !fresh.scheduledSendRelayedAt;
 }
 
-/** Any tier of `policy` auto-encrypts - only then can a message with recipients still to be added turn out encrypted
- * without the user asking. */
-function policyCanAutoEncrypt(policy: EncryptionPolicy): boolean {
-    return [policy.encryptSameOrg, policy.encryptFederated, policy.encryptExternal].includes("automatic");
-}
-
 const SAVE_STATUS_LABEL = { idle: "", saving: "Saving…", saved: "Draft saved", error: "Couldn't save draft" } as const;
 
 const DISCARD_TITLE = "Discard this draft?";
+/** Shown only for a message that is actually headed for encryption (asked for, or applied by the loaded policy) - see `encryptionRequirement.ts`. */
 const ENCRYPTED_CLOSE_MESSAGE = "Encrypted messages aren't saved as drafts, so closing this window discards what you've written.";
-const CHECKING_CLOSE_MESSAGE =
-    "This message may be encrypted, and that's still being checked, so it can't be saved as a draft yet. Keep editing and close again in a moment, or discard it.";
-const CRYPTO_UNAVAILABLE_MESSAGE =
-    "Your encryption settings couldn't be checked, so this draft isn't being saved - it might be a message that must be encrypted.";
-const NO_RECIPIENTS_CLOSE_MESSAGE =
-    "This message may be encrypted once its recipients are known, so it isn't saved as a draft until you add them. Add a recipient and close again, or discard it.";
-
-const SEND_FAILED_TITLE = "This message wasn't sent";
-function sendFailedCloseMessage(reason: string): string {
-    return `Sending it failed (${reason.replace(/\.$/, "")}). Closing keeps it as a draft, unsent. Keep editing to try again, or discard it.`;
-}
 
 /** The confirmation shown before a Close/Discard throws content away (or when a Close couldn't save it). */
 interface ClosePrompt {
     title: string;
     message: string;
-    /** Also offer "Retry" for loading the encryption settings. */
-    retry?: boolean;
-    /** Also offer "Close, keep draft": a failed send's close prompt, where closing keeps the unsent draft as it is. */
-    closeAnyway?: boolean;
-}
-
-interface SecurityBlock {
-    message: string;
-    overrideLabel: string;
 }
 
 const FIELD_ROW = "flex items-center gap-2 px-3 py-1.5 border-b border-border";
@@ -224,7 +179,7 @@ export default function ComposeWindow({
     autosaveDelayMs = DEFAULT_AUTOSAVE_DELAY_MS,
     cryptoRetryDelaysMs = DEFAULT_CRYPTO_RETRY_DELAYS_MS,
 }: ComposeWindowProps) {
-    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, initialEncrypt, signatureContext, suppressSigning, minimized, quotePending, late } = session;
+    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, initialEncrypt, signatureContext, suppressSigning, minimized, quotePending, late, resume } = session;
     // What a reply worked out after this window opened (see `OpenComposeInput.pending`): better recipients, applied below
     // only to fields still exactly as they opened - so these, not `initialTo`/`initialCc`, are what "untouched" is measured against.
     const baselineTo = late?.to ?? initialTo;
@@ -241,7 +196,7 @@ export default function ComposeWindow({
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
     // Attachments and inline images upload onto the current draft's uid, which lives in one mailbox's
     // Drafts folder - so once anything has been uploaded the sender can no longer be switched.
-    const [hasUploads, setHasUploads] = useState(false);
+    const [hasUploads, setHasUploads] = useState(!!resume && resume.attachments.length > 0);
     const isMobile = useIsMobile();
     const { requestUnlock } = useUnlockPrompt();
     const { openCompose } = useCompose();
@@ -253,26 +208,29 @@ export default function ComposeWindow({
     const windowRef = useRef<HTMLDivElement>(null);
     const [draftsFolderUid, setDraftsFolderUid] = useState<string | undefined>();
     const [folderError, setFolderError] = useState<string | null>(null);
-    const [draft, setDraft] = useState<Message | null>(null);
+    // A window re-opened around a message that was already composed (a failed send's "Open draft") continues that server draft and starts with
+    // every field as it was typed; its body is not seeded from a signature or a quote.
+    const [draft, setDraft] = useState<Message | null>(resume?.draft ?? null);
     // Drafts replaced by a From switch, awaiting deletion until their replacement has actually been created.
     const supersededDraftsRef = useRef<Message[]>([]);
     const [draftError, setDraftError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState(false);
     const [manualSize, setManualSize] = useState<Size | null>(null);
-    const [to, setTo] = useState(initialTo ?? "");
-    const [cc, setCc] = useState(initialCc ?? "");
-    const [bcc, setBcc] = useState("");
-    const [showCcBcc, setShowCcBcc] = useState(!!initialCc);
-    const [subject, setSubject] = useState(initialSubject ?? "");
-    const [html, setHtml] = useState("");
-    const [contentReady, setContentReady] = useState(false);
-    const [attachments, setAttachments] = useState<Attachment[]>([]);
+    const [to, setTo] = useState(resume?.to ?? initialTo ?? "");
+    const [cc, setCc] = useState(resume?.cc ?? initialCc ?? "");
+    const [bcc, setBcc] = useState(resume?.bcc ?? "");
+    const [showCcBcc, setShowCcBcc] = useState(!!(resume ? resume.cc || resume.bcc : initialCc));
+    const [subject, setSubject] = useState(resume?.subject ?? initialSubject ?? "");
+    const [html, setHtml] = useState(resume?.html ?? "");
+    const [contentReady, setContentReady] = useState(!!resume);
+    const [attachments, setAttachments] = useState<Attachment[]>(resume?.attachments ?? []);
     const [attachError, setAttachError] = useState<string | null>(null);
+    // A problem with the message as composed (no recipient, an attachment that can't be signed): shown here, and the window stays open. What
+    // goes wrong after Send was accepted is a pop-up instead (see `sendJob.ts`).
     const [sendError, setSendError] = useState<string | null>(null);
-    // The technical facts behind `sendError` (per-recipient SMTP results, a transport error), when the server gave any.
-    const [sendDetails, setSendDetails] = useState<string[]>([]);
-    const [sending, setSending] = useState(false);
-    const [requestReceipt, setRequestReceipt] = useState(false);
+    // Send was pressed while an attachment was still uploading: the window waits (and says so) rather than send without it.
+    const [waitingForUploads, setWaitingForUploads] = useState(false);
+    const [requestReceipt, setRequestReceipt] = useState(!!resume?.requestReceipt);
     const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
     const scheduleButtonRef = useRef<HTMLButtonElement>(null);
     const [mailbox, setMailbox] = useState<Mailbox | null>(null);
@@ -281,11 +239,10 @@ export default function ComposeWindow({
     // Digital Signatures - a list that appends a footer after signing invalidates the signature) - see
     // `MessageDetailPane.tsx`'s handleReply()/handleReplyAll() for where this is computed. The user can
     // still turn it back on; this only changes the default.
-    const [signEnabled, setSignEnabled] = useState(!suppressSigning);
+    const [signEnabled, setSignEnabled] = useState(resume ? resume.signEnabled : !suppressSigning);
     // A reply to or forward of an encrypted message starts (and, after a From switch, restarts) with encryption
     // requested - see `OpenComposeInput.encrypt`.
-    const [encryptRequested, setEncryptRequested] = useState(!!initialEncrypt);
-    const [encryptionBlocked, setEncryptionBlocked] = useState<RecipientEncryptionStatus[] | null>(null);
+    const [encryptRequested, setEncryptRequested] = useState(resume ? resume.encryptRequested : !!initialEncrypt);
     // Compose-time discovery (spec: "Discovery occurs ... when the user addresses a new message to a
     // recipient", never on receipt) - keyed by address so a recipient already looked up isn't re-fetched
     // just because the user re-focuses the field. Only ever grows via `checkRecipientDiscovery()` below;
@@ -295,17 +252,15 @@ export default function ComposeWindow({
     // look one up twice), and a counter bumped by a From switch so a lookup for the previous sender is dropped.
     const lookupsInFlightRef = useRef(new Set<string>());
     const discoveryGenerationRef = useRef(0);
-    // A failed lookup stores no status (it would read as "no key" and let a message that must be encrypted autosave
-    // or send as plaintext): it's retried with the same backoff as the mailbox/policy load, and once those retries
-    // run out the address is "exhausted" - shown as a check that couldn't be done, with Retry.
+    // A failed lookup stores no status: the recipient is simply "not known to be encryptable" (fail open - see `encryptionRequirement.ts`), and
+    // the lookup is retried in the background with the same backoff as the mailbox/policy load, without a word to the user.
     const lookupFailuresRef = useRef(new Map<string, number>());
     const lookupRetryTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
     const [lookupRetryToken, setLookupRetryToken] = useState(0);
-    const [exhaustedLookups, setExhaustedLookups] = useState<Record<string, true>>({});
-    // A send refused because signing/encryption was wanted but can't happen right now (keys locked, the
-    // encryption policy/mailbox couldn't be loaded, or Bcc recipients on an encrypted message) - never a
-    // silent downgrade to plaintext; the user has to explicitly pick the override.
-    const [securityBlock, setSecurityBlock] = useState<SecurityBlock | null>(null);
+    // A send refused *before it left* because signing/encryption was asked for (or the loaded policy applies it) but can't happen right now
+    // (keys locked, Bcc recipients on an encrypted message, a recipient without a key) - never a silent downgrade to plaintext; the user
+    // has to explicitly pick the override.
+    const [securityBlock, setSecurityBlock] = useState<SendBlock | null>(null);
     // The schedule time of the send that got blocked (undefined for an immediate send), so the banners'
     // override buttons replay the same kind of send the user originally asked for.
     const [blockedScheduleIso, setBlockedScheduleIso] = useState<string | undefined>();
@@ -326,8 +281,11 @@ export default function ComposeWindow({
     const lastSavedRef = useRef<string | null>(null);
     /** An edit is waiting on the autosave debounce - flushed if the window unmounts first. */
     const pendingSaveRef = useRef(false);
-    /** Mirrors `sending` for the page-leave/sign-out flushes, which run outside React's render cycle. */
-    const sendingRef = useRef(false);
+    /** Send was pressed and is being validated/handed over: a second press (a double click, the shortcut held or repeated) does nothing. */
+    const submittingRef = useRef(false);
+    /** Attachment/inline-image uploads on the wire, and who is waiting for them to finish (Send pressed meanwhile). */
+    const uploadsInFlightRef = useRef(0);
+    const uploadWaitersRef = useRef<(() => void)[]>([]);
     /** The latest save request, if any - each save is chained after the one before it. Always settles (never
      * rejects), to the saved message, or `undefined` when that save failed. */
     const saveInFlightRef = useRef<Promise<Message | undefined>>(Promise.resolve(undefined));
@@ -336,13 +294,10 @@ export default function ComposeWindow({
 
     // A mailbox with no keys enrolled yet just means sign/encrypt stay unavailable for this compose session -
     // encryption is optional and gradual by design (see `KeyEnrollmentGate`'s own doc comment).
-    // `cryptoContextReady` (below) gates Send/Send-later until both calls have settled either way, so a
-    // send that happens to race this fetch can't silently skip encryption the spec says should apply.
-    // A failed load is retried with backoff (`cryptoRetryDelaysMs`), then on demand ("Retry"): until both have
-    // loaded, whether this message must be encrypted is unknown, so it isn't autosaved (see `autosaveSuppressed`).
-    const [cryptoContextReady, setCryptoContextReady] = useState(false);
-    const [cryptoLoadFailed, setCryptoLoadFailed] = useState(false);
-    const [cryptoRetryToken, setCryptoRetryToken] = useState(0);
+    // The mailbox and the encryption policy load in the background and *nothing waits for them*: until both have loaded, the message is treated as
+    // not encrypted - its draft saves, Close and Send work, and no message about it is shown (see `encryptionRequirement.ts`). A failed load is
+    // retried silently with backoff (`cryptoRetryDelaysMs`); if it later turns out the message must be encrypted, `encryptionDecided` (below) starts
+    // to apply - see the transition rules there.
 
     useEffect(() => {
         let cancelled = false;
@@ -379,8 +334,6 @@ export default function ComposeWindow({
         let mailboxLoaded = mailbox?.uid === mailboxUid;
         let policyLoaded = !!encryptionPolicy;
         let retries = 0;
-        setCryptoContextReady(false);
-        setCryptoLoadFailed(false);
         async function load() {
             await Promise.all([
                 mailboxLoaded ||
@@ -404,13 +357,7 @@ export default function ComposeWindow({
                         () => undefined,
                     ),
             ]);
-            if (cancelled) {
-                return;
-            }
-            const failed = !mailboxLoaded || !policyLoaded;
-            setCryptoContextReady(true);
-            setCryptoLoadFailed(failed);
-            if (failed && retries < cryptoRetryDelaysMs.length) {
+            if (!cancelled && (!mailboxLoaded || !policyLoaded) && retries < cryptoRetryDelaysMs.length) {
                 timer = setTimeout(() => void load(), cryptoRetryDelaysMs[retries++]);
             }
         }
@@ -419,7 +366,7 @@ export default function ComposeWindow({
             cancelled = true;
             clearTimeout(timer);
         };
-    }, [mailboxUid, cryptoRetryToken]);
+    }, [mailboxUid]);
 
     useEffect(() => {
         if (!mailboxUid) {
@@ -448,14 +395,14 @@ export default function ComposeWindow({
      * Runs discovery for whichever of `addresses` haven't already been looked up this compose session,
      * caching the result so the small per-recipient indicator below the recipient fields can update
      * without waiting for Send. Called from the To/Cc/Bcc fields' own `onBlur` - not on every keystroke,
-     * and not the same lookup `assembleForSend()` performs again at send time (deliberately: this is a
+     * and not the lookup the background send (`sendJob.ts`) performs again at send time (deliberately: this is a
      * best-effort UI hint, not something a stale value here should be trusted to skip at send time).
      * A mailbox/policy fetch that hasn't resolved yet just leaves that address with no indicator - the effect
      * below runs it again for every current recipient once both have loaded. A failed lookup leaves it without
-     * a status too, and is retried after `cryptoRetryDelaysMs` (then only on blur, Close or Retry).
+     * a status too, and is retried silently after `cryptoRetryDelaysMs` (then only on blur).
      *
-     * The statuses also drive autosave: a recipient without one yet (lookup pending, failed or never run) or a
-     * decision that would auto-encrypt keeps the plaintext draft save off (see `autosaveSuppressed`).
+     * The statuses also drive `encryptionRequirement.ts`: only when every recipient has one, and the loaded policy
+     * auto-encrypts for all of them, does the message turn into one that is never saved as a plaintext draft.
      */
     function checkRecipientDiscovery(addresses: ComposeRecipientInput[]) {
         if (!mailbox || !encryptionPolicy) {
@@ -488,12 +435,11 @@ export default function ComposeWindow({
         }
     }
 
-    /** Schedules the next automatic retry of a failed lookup, or marks the address exhausted once they've run out. */
+    /** Schedules the next automatic, silent retry of a failed lookup (until the backoff has run out; a later blur tries again). */
     function noteLookupFailed(address: string) {
         const failures = (lookupFailuresRef.current.get(address) ?? 0) + 1;
         lookupFailuresRef.current.set(address, failures);
         if (failures > cryptoRetryDelaysMs.length) {
-            setExhaustedLookups((prev) => ({ ...prev, [address]: true }));
             return;
         }
         const timer = setTimeout(() => {
@@ -518,7 +464,7 @@ export default function ComposeWindow({
         checkRecipientDiscovery([...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)]);
     }, [mailbox, encryptionPolicy, lookupRetryToken]);
 
-    // Resolves the mailbox's default signature (if any) for `signatureContext` and seeds `html` with it
+    // Resolves the mailbox's default signature (if any) for `signatureContext` and seeds `html` with it (not for a window re-opened around a composed message)
     // plus any quoted original message (laid out by `buildComposeBodyHtml()`: an empty first paragraph for the
     // caret, then the signature, then the quote), before `RichTextEditor` ever mounts (gated by `contentReady`
     // below) — `RichTextEditor`'s own doc comment is explicit that `value` only seeds its *initial*
@@ -676,9 +622,7 @@ export default function ComposeWindow({
         discoveryGenerationRef.current += 1;
         lookupsInFlightRef.current = new Set();
         lookupFailuresRef.current = new Map();
-        setExhaustedLookups({});
         setEncryptRequested(!!initialEncrypt);
-        setEncryptionBlocked(null);
         setSecurityBlock(null);
         offeredCryptoRef.current = { sign: false, encrypt: false };
         setFromMailboxUid(nextMailboxUid);
@@ -738,6 +682,7 @@ export default function ComposeWindow({
             setAttachError("Please wait for the draft to finish loading before inserting an image.");
             return null;
         }
+        uploadStarted();
         try {
             const attachment = await uploadAttachment(draft.uid, file);
             setHasUploads(true);
@@ -746,6 +691,21 @@ export default function ComposeWindow({
         } catch (err) {
             setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload image.");
             return null;
+        } finally {
+            uploadFinished();
+        }
+    }
+
+    /** Send waits for every upload started before it: see `submit()`. */
+    function uploadStarted() {
+        uploadsInFlightRef.current += 1;
+    }
+    function uploadFinished() {
+        uploadsInFlightRef.current -= 1;
+        if (uploadsInFlightRef.current === 0) {
+            for (const resolve of uploadWaitersRef.current.splice(0)) {
+                resolve();
+            }
         }
     }
 
@@ -770,228 +730,108 @@ export default function ComposeWindow({
         const files = Array.from(e.target.files ?? []);
         e.target.value = "";
         setAttachError(null);
-        for (const file of files) {
-            try {
-                const attachment = await uploadAttachment(draft!.uid, file);
-                setHasUploads(true);
-                setAttachments((prev) => [...prev, attachment]);
-                void refreshDraftVersion(draft!.uid);
-            } catch (err) {
-                setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload attachment.");
+        uploadStarted();
+        try {
+            for (const file of files) {
+                try {
+                    const attachment = await uploadAttachment(draft!.uid, file);
+                    setHasUploads(true);
+                    setAttachments((prev) => [...prev, attachment]);
+                    void refreshDraftVersion(draft!.uid);
+                } catch (err) {
+                    setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload attachment.");
+                }
             }
+        } finally {
+            uploadFinished();
         }
     }
 
     /**
-     * Builds this draft's final body — plaintext, signed-only, or signed+encrypted per
-     * `specs/end-to-end_encryption.md` — then stores it via `assembleDraft()`/`assembleDraftRaw()`.
-     * Shared by immediate and scheduled sends (and the banners' override buttons rendered below, via
-     * `forcePlaintext`) so the sign/encrypt decision lives in exactly one place.
+     * Send (or, given `scheduledSendTimeIso`, Send later) - and get out of the way. The window is the place the message is *written*; nothing
+     * about getting it to the server is waited for here.
      *
-     * Returns `"blocked"` (never throws for this case) whenever the message can't go out the way the user
-     * asked for — never a silent downgrade to plaintext:
-     * encryption was requested (or auto-applies) but not every recipient can currently be encrypted to -
-     * the spec's "Multiple Recipients" all-or-nothing rule (sets `encryptionBlocked`); signing/encryption was
-     * on offer this session but the keys have since locked, or the mailbox/encryption policy needed to decide
-     * couldn't be loaded (sets `securityBlock`, and re-prompts the unlock dialog when the keys are merely
-     * locked); or the message would be encrypted but has Bcc recipients - every recipient's certificate goes
-     * into one shared envelope, which would disclose the Bcc list to every other recipient, and the send API
-     * has no per-recipient-copy submission to avoid that (sets `securityBlock`).
-     * Callers must stop (not send) when they get this back. `forcePlaintext` (the user's explicit choice
-     * from one of those banners) skips every one of these checks and never encrypts; signing still
-     * happens if it's currently possible.
+     * 1. **Validate synchronously**, from what the window already knows (no request): a recipient is required; and if the message is one
+     * that must be signed or encrypted and can't be right now (keys locked, Bcc on an encrypted message, a recipient with no key, an
+     * attachment that can't be signed) that is shown right here and the window stays open - the sender fixes it or picks the override.
+     * An attachment still uploading is waited for, inline (Send says so), never left behind.
+     * 2. **Close immediately** (`onClose()`): `startSend()` (see `sendJob.ts`) takes over with a snapshot of the message. From here the only
+     * feedback is the Outbox indicator; a failure at any stage is a sticky pop-up with the reason and Retry / Open draft.
      *
-     * Discovery (`lookupKeys()`) and the resulting sign/encrypt decision only run at this, the final
-     * pre-send step — `checkRecipientDiscovery()`'s on-blur badges are a best-effort hint only.
-     */
-    async function assembleForSend(
-        toRecipients: ComposeRecipientInput[],
-        ccRecipients: ComposeRecipientInput[],
-        bccRecipients: ComposeRecipientInput[],
-        forcePlaintext: boolean,
-    ): Promise<Message | "blocked"> {
-        // Keys are read at the moment they're needed, and again after any await: they can lock (idle
-        // timeout, sign-out elsewhere) mid-send, and a destroyed `UnlockedKeys` object must count as locked.
-        // Only reachable once a draft exists, which itself requires `mailboxUid` to have resolved.
-        function readKeys() {
-            const stored = getUnlockedKeys(mailboxUid!);
-            const unlocked = stored?.destroyed ? undefined : stored;
-            return {
-                unlocked,
-                // `mailbox` is required to build protected headers (own From address) whenever signing or
-                // encrypting - not just guarded on the encryption branch below, since a signed-only message
-                // needs it too.
-                canSign: signEnabled && !!mailbox && !!unlocked?.signingPrivateKey && !!unlocked.signingCertDer,
-                canEncryptSelf: !!unlocked?.encryptionPrivateKey && !!unlocked.encryptionCertDer,
-            };
-        }
-        let keys = readKeys();
-        const allRecipients = [...toRecipients, ...ccRecipients, ...bccRecipients];
-
-        // The Sign toggle was shown (and is still checked), but signing can't actually happen any more.
-        const signingLost = () => !forcePlaintext && signEnabled && offeredCryptoRef.current.sign && !keys.canSign;
-        if (signingLost()) {
-            return blockSend(KEYS_LOCKED_SIGN_MESSAGE, "Send without signing or encryption", !keys.unlocked);
-        }
-
-        if (!forcePlaintext && !mailbox) {
-            // The mailbox's enrolled keys are what say whether this message could be encrypted at all - with keys
-            // that aren't unlocked in this session, a failed mailbox load would otherwise skip encryption silently.
-            return blockSend(POLICY_UNAVAILABLE_MESSAGE, "Send without encryption", false);
-        }
-
-        let wantEncrypt = false;
-        let recipientCertDers: Uint8Array[] = [];
-        // Entered whenever this message could be encrypted at all - including a mailbox with an enrolled
-        // encryption key that this session never unlocked: policy may still auto-encrypt, and that must block
-        // (and prompt to unlock) rather than quietly send plaintext.
-        if (!forcePlaintext && (keys.canEncryptSelf || offeredCryptoRef.current.encrypt || hasEnrolledEncryptionKey)) {
-            if (!encryptionPolicy) {
-                // Without it, there's no telling whether policy auto-encrypts this message.
-                return blockSend(POLICY_UNAVAILABLE_MESSAGE, "Send without encryption", false);
-            }
-            // Reachable only with `mailbox` loaded (checked above).
-            const ownPrefersMutual = mailbox!.encryptPreference?.preferEncrypt === "mutual";
-            const lookups = await Promise.all(
-                allRecipients.map((r) =>
-                    lookupKeys(mailboxUid!, r.address).then(
-                        (lookup) => ({ lookup }),
-                        () => null,
-                    ),
-                ),
-            );
-            keys = readKeys();
-            if (signingLost()) {
-                return blockSend(KEYS_LOCKED_SIGN_MESSAGE, "Send without signing or encryption", !keys.unlocked);
-            }
-            // A failed lookup isn't "no key": treating it as one could send plaintext that policy would encrypt.
-            if (lookups.some((result) => !result) && (encryptRequested || policyCanAutoEncrypt(encryptionPolicy))) {
-                return blockSend(LOOKUP_UNAVAILABLE_MESSAGE, "Send without encryption", false);
-            }
-            const statuses = allRecipients.map((r, i) =>
-                resolveRecipientEncryption(mailbox!.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, r.address, lookups[i]?.lookup),
-            );
-            const decision = decideMessageEncryption(statuses);
-            wantEncrypt = encryptRequested || decision.autoEncrypt;
-            if (wantEncrypt) {
-                if (!keys.canEncryptSelf) {
-                    return blockSend(KEYS_LOCKED_ENCRYPT_MESSAGE, "Send without encryption", !keys.unlocked);
-                }
-                if (!decision.canEncryptAll) {
-                    setEncryptionBlocked(decision.blockedRecipients);
-                    return "blocked";
-                }
-                if (bccRecipients.length > 0) {
-                    return blockSend(BCC_ENCRYPTED_MESSAGE, "Send without encryption", false);
-                }
-                recipientCertDers = [keys.unlocked!.encryptionCertDer!, ...statuses.map((s) => fromBase64(s.encryptCert!.publicKey))];
-            }
-        }
-
-        const { canSign } = keys;
-        if ((wantEncrypt || canSign) && attachments.length > 0) {
-            // Matches BaseMailComposeRoute.assembleRaw()'s own server-side rejection, surfaced here with a
-            // clearer explanation than that route's generic 400 rather than via a round trip.
-            throw new ApiRequestError("A signed or encrypted message cannot include file attachments yet - remove them before sending.", 400);
-        }
-        if ((wantEncrypt || canSign) && INLINE_IMAGE_PATTERN.test(html)) {
-            throw new ApiRequestError("A signed or encrypted message cannot include inline images yet - remove them before sending.", 400);
-        }
-
-        if (!wantEncrypt && !canSign) {
-            // See the old compose page's identical note: `sanitize-html` is Node-oriented and the server-side
-            // gate in `BaseMailComposeRoute.assemble()` is the sole authoritative sanitizer regardless, so no
-            // client-side pass is done here either.
-            return assembleDraft(draft!.uid, { to: toRecipients, cc: ccRecipients, bcc: bccRecipients, subject, html });
-        }
-
-        const domain = mailbox!.primarySmtpAddress.split("@")[1] ?? "localhost";
-        const displayName = mailbox!.displayName && !UNSAFE_DISPLAY_NAME_PATTERN.test(mailbox!.displayName) ? mailbox!.displayName : "";
-        const protectedHeaders: ProtectedHeaders = {
-            from: displayName
-                ? `"${displayName.replace(/"/g, '\\"')}" <${mailbox!.primarySmtpAddress}>`
-                : mailbox!.primarySmtpAddress,
-            to: toRecipients.map((r) => r.address).join(", "),
-            cc: ccRecipients.length > 0 ? ccRecipients.map((r) => r.address).join(", ") : undefined,
-            date: new Date().toUTCString(),
-            subject,
-            messageId: `<${crypto.randomUUID()}@${domain}>`,
-        };
-        const bodyContentType = 'text/html; charset="utf-8"';
-        const signing = canSign ? { certDer: keys.unlocked!.signingCertDer!, privateKey: keys.unlocked!.signingPrivateKey! } : undefined;
-
-        // The S/MIME code (PKI.js and the ASN.1/X.509 libraries, over half a megabyte) is only needed here, to sign or
-        // encrypt - a plain message never loads it, and it is kept out of the compose window's own chunk.
-        const { applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } = await import(
-            "@rapidmx/react-shared/crypto/smimeMessage.js"
-        );
-        const outerHeaders = wantEncrypt ? applyBaselineOuterHeaders(protectedHeaders) : protectedHeaders;
-        const mimePart = wantEncrypt
-            ? await buildEncryptedMessage(bodyContentType, html, protectedHeaders, outerHeaders, recipientCertDers, signing)
-            : await buildSignedOnlyMessage(bodyContentType, html, protectedHeaders, signing!.certDer, signing!.privateKey);
-        const rawMime = assembleOutboundMime(outerHeaders, mimePart);
-        return assembleDraftRaw(draft!.uid, { to: toRecipients, cc: ccRecipients, bcc: bccRecipients, subject: outerHeaders.subject, rawMime });
-    }
-
-    /** Records why a send was refused (see `assembleForSend()`), re-prompting the unlock dialog when the
-     * cause is keys that are enrolled but locked. */
-    function blockSend(message: string, overrideLabel: string, keysLocked: boolean): "blocked" {
-        setSecurityBlock({ message, overrideLabel });
-        if (keysLocked && (hasEnrolledSigningKey || hasEnrolledEncryptionKey)) {
-            void handleUnlockForCrypto();
-        }
-        return "blocked";
-    }
-
-    /**
-     * Sends (or, given `scheduledSendTimeIso`, schedules) the draft. Same reasoning as `handleFilesSelected`
-     * above: Send and the "Send later" caret are both `disabled` until `draft` resolves, so this is never
-     * reachable with a null `draft`. A scheduled send assembles the draft first (same as an immediate send),
-     * then sets `scheduledSendTime` on the *freshly assembled* copy before calling `sendMessage()` — `send()`
-     * itself is what reads the field and defers relay into Outbox instead of sending immediately (see
-     * `mailApi.ts`'s own doc comment on `setMessageScheduledSendTime`). A blocked send remembers its schedule
-     * time so the banners' override buttons replay it as the same kind of send.
+     * Pressed twice (a double click, the shortcut repeated) it sends once: the first press sets `submittingRef` before any `await`, and
+     * `startSend()` itself refuses a draft that is already being sent. `forcePlaintext` is the override buttons' choice.
      */
     async function submit(forcePlaintext: boolean, scheduledSendTimeIso?: string) {
-        const toRecipients = parseAddresses(to);
-        if (toRecipients.length === 0) {
+        if (submittingRef.current || finishedRef.current) {
+            return;
+        }
+        if (parseAddresses(latestRef.current.to).length === 0) {
             setSendError("At least one recipient is required.");
             return;
         }
-
-        setSending(true);
-        sendingRef.current = true;
+        submittingRef.current = true;
         setSendError(null);
-        setSendDetails([]);
         setSecurityBlock(null);
-        setEncryptionBlocked(null);
-        pendingSaveRef.current = false;
         try {
-            // An autosave already on the wire must never land after (and overwrite) the send's own assembly.
-            await saveInFlightRef.current;
-            const assembled = await assembleForSend(toRecipients, parseAddresses(cc), parseAddresses(bcc), forcePlaintext);
-            if (assembled === "blocked") {
-                setBlockedScheduleIso(scheduledSendTimeIso);
+            if (uploadsInFlightRef.current > 0) {
+                setWaitingForUploads(true);
+                await new Promise<void>((resolve) => uploadWaitersRef.current.push(resolve));
+                // The editor puts an image it has just uploaded into the message a moment after the upload resolves: let the window catch up.
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                setWaitingForUploads(false);
+            }
+            const current = latestRef.current;
+            const request: SendRequest = {
+                draft: current.draft!,
+                mailboxUid: current.mailboxUid!,
+                mailbox: current.mailbox ?? undefined,
+                policy: current.encryptionPolicy ?? undefined,
+                toText: current.to,
+                ccText: current.cc,
+                bccText: current.bcc,
+                to: parseAddresses(current.to),
+                cc: parseAddresses(current.cc),
+                bcc: parseAddresses(current.bcc),
+                subject: current.subject,
+                html: current.html,
+                attachments: current.attachments,
+                requestReceipt: current.requestReceipt,
+                scheduledSendTime: scheduledSendTimeIso,
+                signEnabled: current.signEnabled,
+                offeredSign: offeredCryptoRef.current.sign,
+                offeredEncrypt: offeredCryptoRef.current.encrypt,
+                encryptRequested: current.encryptRequested,
+                forcePlaintext,
+                saved: saveInFlightRef.current,
+            };
+            if (request.to.length === 0) {
+                setSendError("At least one recipient is required.");
                 return;
             }
-            // The draft now holds exactly this content (possibly signed/encrypted) - don't autosave a
-            // plaintext copy over it if the rest of the send fails.
-            lastSavedRef.current = `${assembled.uid}:${contentKey}`;
-            const withReceipt = requestReceipt ? await setMessageRequestReceipt(assembled, true) : assembled;
-            await sendMessage(withReceipt.uid, scheduledSendTimeIso ? { scheduledSendTime: scheduledSendTimeIso } : undefined);
+            const early = decideSend(sendDecisionInput(request, request.mailbox, request.policy, current.statuses, false));
+            if (early.action === "rejected") {
+                setSendError(early.message);
+                return;
+            }
+            if (early.action === "blocked") {
+                setBlockedScheduleIso(scheduledSendTimeIso);
+                setSecurityBlock(early.block);
+                if (early.block.keysLocked && (hasEnrolledSigningKey || hasEnrolledEncryptionKey)) {
+                    void handleUnlockForCrypto();
+                }
+                return;
+            }
+            pendingSaveRef.current = false;
             finishedRef.current = true;
+            if (!startSend(request)) {
+                finishedRef.current = false;
+                setSendError("This message is already being sent.");
+                return;
+            }
             onClose();
-        } catch (err) {
-            // The window stays open with the draft exactly as it was; nothing here closes, discards or saves over it.
-            const failure = describeSendFailure(
-                err,
-                scheduledSendTimeIso ? "Could not schedule this message." : "Could not send this message.",
-            );
-            setSendError(failure.message);
-            setSendDetails(failure.lines);
         } finally {
-            sendingRef.current = false;
-            setSending(false);
+            submittingRef.current = false;
+            setWaitingForUploads(false);
         }
     }
 
@@ -1003,7 +843,7 @@ export default function ComposeWindow({
     async function handleUnlockForCrypto() {
         try {
             // Only reachable when hasEnrolledSigningKey/hasEnrolledEncryptionKey found a real enrolled key
-            // in mailbox.keys (the unlock button below, or blockSend()), so neither is empty/undefined here.
+            // in mailbox.keys (the unlock button below, or a blocked send()), so neither is empty/undefined here.
             await requestUnlock(mailbox!.uid, mailbox!.keys!);
             setUnlockRefresh((n) => n + 1);
         } catch {
@@ -1018,7 +858,7 @@ export default function ComposeWindow({
      * `latestRef` only once it actually runs, so it saves what was last typed (skipping the request when the
      * save before it already stored exactly that). Whether a save may happen at all is re-checked at that same
      * moment: while it waited, the message may have become one that must not be stored as plaintext (Encrypt
-     * turned on, a recipient that auto-encrypts), or the window may have started sending or finished - then it
+     * turned on, a recipient that auto-encrypts), or the window may have been sent or finished - then it
      * resolves `{ skipped: true }` without a request (`message` then being the previous save's result). Never
      * rejects; `message` is `undefined` when the save failed.
      */
@@ -1030,7 +870,7 @@ export default function ComposeWindow({
         const outcome = (async (): Promise<{ message?: Message; skipped?: boolean }> => {
             const before = await previous;
             const current = latestRef.current;
-            if (current.autosaveSuppressed || sendingRef.current || finishedRef.current) {
+            if (current.autosaveSuppressed || finishedRef.current) {
                 setSaveStatus("idle");
                 // Still the newest copy the server holds, for the version a later delete needs.
                 return { skipped: true, message: before };
@@ -1150,37 +990,17 @@ export default function ComposeWindow({
     }
 
     /** "Close": keeps the draft (saving any unsaved edits first, and closing only once that save succeeded) -
-     * unless there's nothing in it worth keeping, or it can't be saved because it's headed for encryption, or
-     * whether it is can't be told yet (settings loading or unavailable, recipient lookups pending): those need
-     * the same confirmation as a discard. A failed save keeps the window open with Discard / Keep editing.
-     * Close and Discard are both disabled while a send is in progress: deleting the draft, or saving a
-     * plaintext copy over the message the send just assembled, mid-send would lose or leak it. */
-    async function handleClose(sendFailureAcknowledged = false) {
+     * unless there's nothing in it worth keeping, or it can't be saved because it's really headed for encryption
+     * (asked for, or applied by the loaded policy): that needs the same confirmation as a discard. Whatever is
+     * *unknown* (settings loading or failed, a lookup pending) is not a reason to hold the window: it is saved like any
+     * other message. A failed save keeps the window open with Discard / Keep editing. */
+    async function handleClose() {
         if (!hasUserContent) {
             void discardNow();
             return;
         }
-        if (sendError && !sendFailureAcknowledged) {
-            // Closing would keep the draft and say nothing, which reads as if it had been sent.
-            setClosePrompt({ title: SEND_FAILED_TITLE, message: sendFailedCloseMessage(sendError), closeAnyway: true });
-            return;
-        }
         if (encryptionDecided) {
             setClosePrompt({ title: DISCARD_TITLE, message: ENCRYPTED_CLOSE_MESSAGE });
-            return;
-        }
-        if (cryptoCheckUnavailable) {
-            setClosePrompt({ title: DISCARD_TITLE, message: CRYPTO_UNAVAILABLE_MESSAGE, retry: true });
-            return;
-        }
-        if (awaitingRecipients) {
-            setClosePrompt({ title: DISCARD_TITLE, message: NO_RECIPIENTS_CLOSE_MESSAGE });
-            return;
-        }
-        if (encryptionUndetermined) {
-            // A recipient typed but never blurred has no lookup running yet.
-            checkRecipientDiscovery([...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)]);
-            setClosePrompt({ title: DISCARD_TITLE, message: CHECKING_CLOSE_MESSAGE });
             return;
         }
         if (!draft || !contentReady) {
@@ -1194,7 +1014,7 @@ export default function ComposeWindow({
             setClosing(false);
             if (outcome.skipped) {
                 // It became a message that mustn't be saved as plaintext while waiting on an earlier save.
-                setClosePrompt({ title: DISCARD_TITLE, message: latestRef.current.encryptionDecided ? ENCRYPTED_CLOSE_MESSAGE : CHECKING_CLOSE_MESSAGE });
+                setClosePrompt({ title: DISCARD_TITLE, message: ENCRYPTED_CLOSE_MESSAGE });
                 return;
             }
             if (!outcome.message) {
@@ -1204,14 +1024,6 @@ export default function ComposeWindow({
         }
         finishedRef.current = true;
         onClose();
-    }
-
-    function retryCryptoContext() {
-        setClosePrompt(null);
-        setCryptoRetryToken((n) => n + 1);
-        lookupFailuresRef.current = new Map();
-        setExhaustedLookups({});
-        setLookupRetryToken((n) => n + 1);
     }
 
     // A plain read from keySession.ts's module-level session store, not React state - see that module's
@@ -1248,29 +1060,65 @@ export default function ComposeWindow({
     const contentKey = JSON.stringify([to, cc, bcc, subject, html]);
     const baselineKey = JSON.stringify([baselineTo ?? "", baselineCc ?? "", "", initialSubject ?? "", seededHtml ?? ""]);
     const hasUserContent = contentKey !== baselineKey || hasUploads;
-    // A message headed for encryption is never autosaved: the draft would store its plaintext server-side,
-    // defeating end-to-end encryption. Until it's known not to be, it isn't either: while the mailbox (whose
-    // enrolled keys say whether encryption is possible at all) or the encryption policy hasn't loaded, and -
-    // whenever this message could be encrypted (an unlocked or enrolled encryption key) - while the policy is
-    // missing or any current recipient's lookup is still pending (or failed, or hasn't run) - and while there are no
-    // recipients at all when policy auto-encrypts some tier, since the first one added may turn encryption on.
+    // Whether this message is *really* headed for encryption - `encryptionRequirement.ts` decides, and it fails open: the message is plain (its
+    // draft saves, Close and Send work, nothing is shown) unless the user asked for encryption or the policy was loaded and applies it to every
+    // recipient (whose keys were all looked up). What has not loaded, or failed to, is not held against the message.
+    //
+    // Transitions, when a later load turns a plain message into an encrypted one (the policy arrives, a slow lookup answers, a recipient is
+    // added): (1) autosave stops at once (`autosaveSuppressed`); (2) a plaintext copy this window already saved is *replaced by an empty draft*
+    // (`scrubSavedDraft()` below) so the plaintext doesn't sit on the server; (3) Close asks first ("Encrypted messages aren't saved as drafts");
+    // (4) Send encrypts (or is refused, with the override, when it can't) - never silently plaintext. And back: when it stops being encrypted
+    // (a recipient removed) autosave simply resumes.
     const currentAddresses = [...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)].map((r) => r.address);
     const currentStatuses = currentAddresses.map((address) => recipientStatuses[address]);
-    const encryptionPossible = !!unlockedKeys?.encryptionPrivateKey || hasEnrolledEncryptionKey || offeredCryptoRef.current.encrypt;
-    /** Could be auto-encrypted, but has no recipients yet to decide by. */
-    const awaitingRecipients = encryptionPossible && !!encryptionPolicy && currentAddresses.length === 0 && policyCanAutoEncrypt(encryptionPolicy);
-    const encryptionUndetermined =
-        !cryptoContextReady || !mailbox || awaitingRecipients || (encryptionPossible && (!encryptionPolicy || currentStatuses.some((s) => !s)));
-    /** Known to be headed for encryption: requested, or policy auto-encrypts it. */
-    const encryptionDecided = encryptRequested || (!encryptionUndetermined && encryptionPossible && decideMessageEncryption(currentStatuses).autoEncrypt);
-    const autosaveSuppressed = encryptionDecided || encryptionUndetermined;
-    /** Loading the mailbox/policy failed (retries may still be pending) and this message's encryption hinges on it, or
-     * a current recipient's key lookup kept failing. */
-    const cryptoCheckUnavailable =
-        (cryptoContextReady && cryptoLoadFailed && (!mailbox || (encryptionPossible && !encryptionPolicy))) ||
-        (encryptionPossible && currentAddresses.some((address) => exhaustedLookups[address] && !recipientStatuses[address]));
-    const latestRef = useRef({ draft, to, cc, bcc, subject, html, seededHtml, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided });
-    latestRef.current = { draft, to, cc, bcc, subject, html, seededHtml, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided };
+    const hasEncryptionKey = !!unlockedKeys?.encryptionPrivateKey || hasEnrolledEncryptionKey || offeredCryptoRef.current.encrypt;
+    const requirement = evaluateEncryptionRequirement({
+        encryptRequested,
+        policy: encryptionPolicy ?? undefined,
+        mailboxLoaded: !!mailbox,
+        hasEncryptionKey,
+        recipients: currentStatuses,
+    });
+    const encryptionDecided = requirement.required;
+    const autosaveSuppressed = encryptionDecided;
+    const latestRef = useRef({
+        draft, mailboxUid, mailbox, encryptionPolicy, to, cc, bcc, subject, html, attachments, requestReceipt, signEnabled, encryptRequested,
+        statuses: currentStatuses, seededHtml, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided,
+    });
+    latestRef.current = {
+        draft, mailboxUid, mailbox, encryptionPolicy, to, cc, bcc, subject, html, attachments, requestReceipt, signEnabled, encryptRequested,
+        statuses: currentStatuses, seededHtml, contentKey, saveStatus, hasUserContent, autosaveSuppressed, encryptionDecided,
+    };
+
+    /** A message that turned out to need encryption after a plaintext copy of it was saved: the saved copy is replaced by an empty draft (the same
+     * uid, so attachments and the folder are undisturbed), chained after any save still on the wire. Best effort - a failure is reported once. */
+    function scrubSavedDraft(target: Message) {
+        lastSavedRef.current = null;
+        setSaveStatus("idle");
+        const previous = saveInFlightRef.current;
+        const scrub = (async (): Promise<Message | undefined> => {
+            await previous;
+            try {
+                // Its answer (the new version) is what a later delete waits for through `saveInFlightRef`, like any save's.
+                return await assembleDraft(target.uid, { to: [], cc: [], bcc: [], subject: "", html: "" });
+            } catch {
+                notify({
+                    id: `scrub-draft:${target.uid}`,
+                    kind: "warning",
+                    title: "An earlier draft copy is still saved",
+                    message: "This message needs encryption, but the copy saved before that was known couldn't be replaced. Discarding the draft removes it.",
+                });
+                return undefined;
+            }
+        })();
+        saveInFlightRef.current = scrub;
+    }
+    // Only a message that was really saved (`lastSavedRef` names its draft) has a plaintext copy to replace.
+    useEffect(() => {
+        if (encryptionDecided && draft && lastSavedRef.current?.startsWith(`${draft.uid}:`)) {
+            scrubSavedDraft(draft);
+        }
+    }, [encryptionDecided, draft?.uid]);
 
     // Recipients a reply could only work out after this window opened (Reply All: whoever the original's headers name)
     // replace the ones it opened with - but only in a field the user hasn't touched, never over what they typed.
@@ -1292,8 +1140,6 @@ export default function ComposeWindow({
         const due =
             !!draft &&
             contentReady &&
-            cryptoContextReady &&
-            !sending &&
             !autosaveSuppressed &&
             hasUserContent &&
             lastSavedRef.current !== `${draft.uid}:${contentKey}`;
@@ -1303,7 +1149,7 @@ export default function ComposeWindow({
         }
         const timer = setTimeout(() => void saveDraftNow(), autosaveDelayMs);
         return () => clearTimeout(timer);
-    }, [draft, contentReady, cryptoContextReady, sending, autosaveSuppressed, hasUserContent, contentKey]);
+    }, [draft, contentReady, autosaveSuppressed, hasUserContent, contentKey]);
 
     // Unmounting with an edit still waiting on the debounce (e.g. the whole app shell unmounting) saves it
     // right away rather than losing it.
@@ -1352,7 +1198,7 @@ export default function ComposeWindow({
     // out - that navigation must not be cancellable.
     useEffect(() => {
         function handleBeforeUnload(event: BeforeUnloadEvent) {
-            if (finishedRef.current || sendingRef.current || isSigningOut()) {
+            if (finishedRef.current || isSigningOut()) {
                 return;
             }
             const latest = latestRef.current;
@@ -1374,7 +1220,7 @@ export default function ComposeWindow({
     // Where the caret starts, once per session: a reply/forward in the body (at its top), a new message in To - or,
     // with To already filled in (e.g. Contacts' "Email"), in Subject. Minimizing unmounts the fields, so restoring a
     // window must not move the caret there again.
-    const isReplyOrForward = initialQuotedHtml !== undefined || !!quotePending;
+    const isReplyOrForward = initialQuotedHtml !== undefined || !!quotePending || !!resume;
     const fieldsFocusedRef = useRef(false);
     const bodyFocusedRef = useRef(false);
     const focusToOnMount = !isReplyOrForward && !initialTo && !fieldsFocusedRef.current;
@@ -1410,13 +1256,15 @@ export default function ComposeWindow({
     // Keyboard shortcuts, active while the focus is inside this window (`container`; the scope attribute on its root is what tells the
     // dispatcher the focus is in a compose window at all). They do what the Send and Close buttons and autosave do, under the same conditions -
     // a shortcut pressed while its button would be disabled is consumed and does nothing.
-    const canSend = !!draft && !sending && !closing && cryptoContextReady;
+    // Send never waits for the encryption settings to load (fail open, see `encryptionRequirement.ts`); it only needs the draft to exist. Pressed
+    // while an earlier press is still being handled it does nothing (`submit()` guards that itself).
+    const canSend = !!draft && !closing && !waitingForUploads;
     useShortcut(SHORTCUTS.compose.send, () => void (canSend && submit(false)), { container: windowRef });
     useShortcut(
         SHORTCUTS.compose.saveDraft,
         () => {
-            // Autosave's own conditions: never a draft that must not be stored as plaintext, and nothing while a send is on the wire.
-            if (draft && contentReady && cryptoContextReady && !sending && !closing && !autosaveSuppressed && hasUserContent) {
+            // Autosave's own conditions: never a draft that must not be stored as plaintext.
+            if (draft && contentReady && !closing && !autosaveSuppressed && hasUserContent) {
                 void saveDraftNow();
             }
         },
@@ -1425,7 +1273,7 @@ export default function ComposeWindow({
     useShortcut(
         SHORTCUTS.compose.close,
         () => {
-            if (!sending && !closing) {
+            if (!closing) {
                 void handleClose();
             }
         },
@@ -1440,25 +1288,7 @@ export default function ComposeWindow({
         <Modal open={closePrompt !== null} onClose={() => setClosePrompt(null)} title={closePrompt?.title ?? DISCARD_TITLE}>
             <p className="text-sm text-text-muted mb-4">{closePrompt?.message}</p>
             <div className="flex gap-3">
-                {closePrompt?.retry && (
-                    <Button type="button" onClick={retryCryptoContext} className="!w-auto">
-                        Retry
-                    </Button>
-                )}
-                {closePrompt?.closeAnyway && (
-                    <Button
-                        type="button"
-                        onClick={() => {
-                            setClosePrompt(null);
-                            void handleClose(true);
-                        }}
-                        disabled={sending || closing}
-                        className="!w-auto"
-                    >
-                        Close, keep draft
-                    </Button>
-                )}
-                <Button type="button" onClick={() => void discardNow()} disabled={sending || closing} className="!w-auto">
+                <Button type="button" onClick={() => void discardNow()} disabled={closing} className="!w-auto">
                     Discard
                 </Button>
                 <Button type="button" variant="secondary" onClick={() => setClosePrompt(null)} className="!w-auto">
@@ -1477,10 +1307,9 @@ export default function ComposeWindow({
                     onClick={onToggleMinimize}
                 >
                     <span className="text-sm font-medium truncate">{title}</span>
-                    {sendError && <span className="shrink-0 text-xs font-bold uppercase tracking-wide">Not sent</span>}
                     <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
                         <HeaderButton label="Restore" onClick={onToggleMinimize} icon={HiOutlineArrowsPointingOut} />
-                        <HeaderButton label="Discard draft" onClick={handleDiscard} icon={HiOutlineXMark} disabled={sending || closing} />
+                        <HeaderButton label="Discard draft" onClick={handleDiscard} icon={HiOutlineXMark} disabled={closing} />
                     </div>
                 </div>
             </div>
@@ -1541,47 +1370,20 @@ export default function ComposeWindow({
                             icon={expanded ? HiOutlineArrowsPointingIn : HiOutlineArrowsPointingOut}
                         />
                     )}
-                    <HeaderButton label="Close" onClick={() => void handleClose()} icon={HiOutlineXMark} disabled={sending || closing} shortcut={SHORTCUTS.compose.close} />
+                    <HeaderButton label="Close" onClick={() => void handleClose()} icon={HiOutlineXMark} disabled={closing} shortcut={SHORTCUTS.compose.close} />
                 </div>
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col">
                 {(folderError || draftError || sendError || attachError || discardError) && (
-                    // Scrolls inside the window when it is tall (a failed send's expanded Technical details), instead of pushing the
-                    // editor and the Send button out of the window's fixed height, where they can't be reached.
+                    // Scrolls inside the window when it is tall, instead of pushing the editor and the Send button out of the window's
+                    // fixed height, where they can't be reached.
                     <div className="px-3 pt-2 shrink-0 max-h-[45%] overflow-y-auto">
                         {folderError && <Alert>{folderError}</Alert>}
                         {draftError && <Alert>{draftError}</Alert>}
-                        {sendError && <SendFailureAlert message={sendError} lines={sendDetails} />}
+                        {sendError && <Alert>{sendError}</Alert>}
                         {attachError && <Alert>{attachError}</Alert>}
                         {discardError && <Alert>{discardError}</Alert>}
-                    </div>
-                )}
-
-                {cryptoCheckUnavailable && (
-                    <div className="px-3 pt-2">
-                        <Alert>
-                            <p className="mb-2">{CRYPTO_UNAVAILABLE_MESSAGE}</p>
-                            <Button type="button" variant="secondary" className="!w-auto" onClick={retryCryptoContext}>
-                                Retry
-                            </Button>
-                        </Alert>
-                    </div>
-                )}
-
-                {encryptionBlocked && (
-                    <div className="px-3 pt-2">
-                        <Alert>
-                            <p className="mb-2">
-                                This message can&rsquo;t be encrypted for everyone: {encryptionBlocked.map((r) => r.address).join(", ")}
-                                {encryptionBlocked[0]?.prohibitedReason ? ` — ${encryptionBlocked[0].prohibitedReason}` : " has no encryption key on file"}.
-                                Remove {encryptionBlocked.length > 1 ? "these recipients" : "this recipient"} from To/Cc/Bcc, or send the
-                                whole message in plaintext.
-                            </p>
-                            <Button type="button" disabled={sending} onClick={() => void submit(true, blockedScheduleIso)}>
-                                Send without encryption
-                            </Button>
-                        </Alert>
                     </div>
                 )}
 
@@ -1589,7 +1391,7 @@ export default function ComposeWindow({
                     <div className="px-3 pt-2">
                         <Alert>
                             <p className="mb-2">{securityBlock.message}</p>
-                            <Button type="button" disabled={sending} onClick={() => void submit(true, blockedScheduleIso)}>
+                            <Button type="button" onClick={() => void submit(true, blockedScheduleIso)}>
                                 {securityBlock.overrideLabel}
                             </Button>
                         </Alert>
@@ -1605,7 +1407,7 @@ export default function ComposeWindow({
                             id={`compose-from-${id}`}
                             className={`${FIELD_INPUT} disabled:opacity-55`}
                             value={mailboxUid ?? ""}
-                            disabled={hasUploads || sending}
+                            disabled={hasUploads}
                             title={hasUploads ? "The sender can't be changed after adding attachments or images." : undefined}
                             onChange={(e) => handleFromChange(e.target.value)}
                         >
@@ -1762,7 +1564,7 @@ export default function ComposeWindow({
                 )}
 
                 {/* Only rendered once this session actually has a usable signing/encryption key - see
-                    `assembleForSend()`'s own doc comment for why signing rarely shows today (no signing
+                    `sendJob.ts`'s signing path for why signing rarely shows today (no signing
                     certificate exists until RFC 8823 ACME enrollment lands). */}
                 {unlockedKeys?.signingPrivateKey && (
                     <label className="flex items-center gap-1.5 px-3 pb-1 text-xs text-text-muted">
@@ -1784,10 +1586,10 @@ export default function ComposeWindow({
                             onClick={() => void submit(false)}
                             title={withHint("Send", SHORTCUTS.compose.send, keyEnv)}
                             aria-keyshortcuts={ariaKeyShortcuts(SHORTCUTS.compose.send, keyEnv)}
-                            disabled={!draft || sending || closing || !cryptoContextReady}
+                            disabled={!draft || closing || waitingForUploads}
                             className="py-1.5 pl-5 pr-3 font-semibold text-sm hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >
-                            {sending ? "Sending…" : "Send"}
+                            Send
                         </button>
                         <button
                             ref={scheduleButtonRef}
@@ -1795,7 +1597,7 @@ export default function ComposeWindow({
                             aria-label="Send later"
                             aria-haspopup="true"
                             aria-expanded={schedulePickerOpen}
-                            disabled={!draft || sending || closing || !cryptoContextReady}
+                            disabled={!draft || closing || waitingForUploads}
                             onClick={() => setSchedulePickerOpen((o) => !o)}
                             className="py-1.5 px-2 border-l border-white/30 hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >
@@ -1820,7 +1622,7 @@ export default function ComposeWindow({
                     </label>
 
                     <span role="status" aria-live="polite" className="ml-auto text-xs text-text-muted">
-                        {SAVE_STATUS_LABEL[saveStatus]}
+                        {waitingForUploads ? "Waiting for attachments to finish uploading…" : SAVE_STATUS_LABEL[saveStatus]}
                     </span>
 
                     <button
@@ -1828,7 +1630,7 @@ export default function ComposeWindow({
                         aria-label="Discard draft"
                         title="Discard draft"
                         onClick={handleDiscard}
-                        disabled={sending || closing}
+                        disabled={closing}
                         className="w-8 h-8 flex items-center justify-center rounded-full text-text-muted hover:bg-surface-alt hover:text-text disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                         <HiOutlineTrash size={18} />

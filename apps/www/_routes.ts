@@ -20,6 +20,7 @@ export const wwwRoutes: readonly RouteDefinition[] = [
     { path: "/contacts", active: "contacts", load: () => import("./contacts/index.js"), idlePrefetch: true },
     { path: "/contacts/:uid", active: "contacts", load: () => import("./contacts/[uid].js") },
     { path: "/tasks", active: "tasks", load: () => import("./tasks/index.js"), idlePrefetch: true },
+    { path: "/settings/appearance", active: "settings", load: () => import("./settings/appearance/index.js") },
     { path: "/settings/auto-reply", active: "settings", load: () => import("./settings/auto-reply/index.js") },
     { path: "/settings/encryption", active: "settings", load: () => import("./settings/encryption/index.js") },
     { path: "/settings/filters", active: "settings", load: () => import("./settings/filters/index.js") },

@@ -195,8 +195,8 @@ describe("the mail connection in the persistent frame", () => {
 
         act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
 
-        const region = screen.getByRole("status", { name: "New mail" });
-        expect(screen.getAllByRole("status", { name: "New mail" })).toHaveLength(1);
+        const region = screen.getByTestId("notification-others");
+        expect(screen.getAllByTestId("notification-others")).toHaveLength(1);
         const toast = within(region).getByRole("link");
         expect(toast).toHaveAttribute("href", "/messages/m9");
         expect(toast).toHaveTextContent("Dana Whitfield");
@@ -212,8 +212,8 @@ describe("the mail connection in the persistent frame", () => {
 
         act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
 
-        expect(screen.getAllByRole("status", { name: "New mail" })).toHaveLength(1);
-        expect(within(screen.getByRole("status", { name: "New mail" })).getAllByRole("link")).toHaveLength(1);
+        expect(screen.getAllByTestId("notification-others")).toHaveLength(1);
+        expect(within(screen.getByTestId("notification-others")).getAllByRole("link")).toHaveLength(1);
     });
 
     it("does not announce a message twice when the user goes to another app and back", async () => {
@@ -229,7 +229,7 @@ describe("the mail connection in the persistent frame", () => {
 
         act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
 
-        expect(within(screen.getByRole("status", { name: "New mail" })).getAllByRole("link")).toHaveLength(1);
+        expect(within(screen.getByTestId("notification-others")).getAllByRole("link")).toHaveLength(1);
     });
 
     it("offers desktop notifications in the first pop-up while another app is showing, asking the browser only from the click", async () => {

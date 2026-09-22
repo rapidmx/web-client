@@ -3,11 +3,12 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { resetEnrollmentTracker } from "../../../../apps/shared/signing/enrollmentTracker.js";
 import SettingsEncryptionPageRouted from "../../../../apps/www/settings/encryption/index.js";
 
 // The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
@@ -21,6 +22,8 @@ const {
     rekey,
     startSignEnrollment,
     checkSignEnrollmentStatus,
+    checkSignEnrollmentNow,
+    getCurrentSignEnrollment,
     cancelSignEnrollment,
     getEscrowInfo,
 } = vi.hoisted(() => ({
@@ -31,6 +34,8 @@ const {
     rekey: vi.fn(),
     startSignEnrollment: vi.fn(),
     checkSignEnrollmentStatus: vi.fn(),
+    checkSignEnrollmentNow: vi.fn(),
+    getCurrentSignEnrollment: vi.fn(),
     cancelSignEnrollment: vi.fn(),
     getEscrowInfo: vi.fn(),
 }));
@@ -38,7 +43,7 @@ vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) =>
     // `findActivePublicKey` is a pure function this page also imports - kept real (via importOriginal)
     // rather than added to every test's mock list, unlike the network-calling functions below.
     const actual = await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>();
-    return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus, cancelSignEnrollment, getEscrowInfo };
+    return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus, checkSignEnrollmentNow, getCurrentSignEnrollment, cancelSignEnrollment, getEscrowInfo };
 });
 
 const { getUnlockedKeys, destroyUnlockedKeys, unlockWithPassword } = vi.hoisted(() => ({
@@ -152,6 +157,8 @@ function mockShell(extra?: (url: string, init?: RequestInit) => Response | undef
 // Every write checks that the session master key still opens the vault (round 6) - by default it does.
 beforeEach(() => {
     openWithKey.mockImplementation(async () => new Uint8Array(4));
+    // No enrollment on the server, unless a test says there is one.
+    getCurrentSignEnrollment.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -164,6 +171,8 @@ afterEach(() => {
     rekey.mockReset();
     startSignEnrollment.mockReset();
     checkSignEnrollmentStatus.mockReset();
+    checkSignEnrollmentNow.mockReset();
+    getCurrentSignEnrollment.mockReset();
     cancelSignEnrollment.mockReset();
     getEscrowInfo.mockReset();
     getUnlockedKeys.mockReset();
@@ -292,7 +301,9 @@ describe("SettingsEncryptionPage", () => {
         await user.click(within(recoveryRow).getByRole("button", { name: "Remove" }));
         await user.click(await screen.findByRole("button", { name: "Remove method" }));
 
+        // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("cannot remove your last unlock method")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't remove this unlock method")).toBeInTheDocument();
     });
 
     it("shows a generic error when removing an unlock method fails with a non-API error", async () => {
@@ -308,7 +319,8 @@ describe("SettingsEncryptionPage", () => {
         await user.click(within(recoveryRow).getByRole("button", { name: "Remove" }));
         await user.click(await screen.findByRole("button", { name: "Remove method" }));
 
-        expect(await screen.findByText("Could not remove this unlock method.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't remove this unlock method")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("never offers removing the last password wrap, even alongside other unlock methods, but does when there are two", async () => {
@@ -1504,6 +1516,9 @@ describe("SettingsEncryptionPage", () => {
         expect(checkSignEnrollmentStatus).toHaveBeenCalledWith("mb1", "enr-1");
         expect(screen.getByText(/Requested/)).toBeInTheDocument();
 
+        // The backoff: the next look is 30 s after the first (then 60 s).
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        expect(checkSignEnrollmentStatus).toHaveBeenCalledTimes(1);
         await act(() => vi.advanceTimersByTimeAsync(15_000));
         expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
         expect(screen.getByText(/Enabled — outgoing mail/)).toBeInTheDocument();
@@ -1529,8 +1544,10 @@ describe("SettingsEncryptionPage", () => {
         expect(await screen.findByText(/Requested/)).toBeInTheDocument();
 
         await act(() => vi.advanceTimersByTimeAsync(15_000));
-        expect(await screen.findByText("the CA rejected this request")).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Enable digital signatures" })).toBeInTheDocument();
+        expect(await screen.findByText("Failed: the CA rejected this request")).toBeInTheDocument();
+        // A failed certificate is a card of its own with "Try again" (which starts a new request the way "Enable digital signatures" did).
+        expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Enable digital signatures" })).not.toBeInTheDocument();
     });
 
     it("ignores a poll response that resolves after the component has unmounted", async () => {
@@ -1626,7 +1643,7 @@ describe("SettingsEncryptionPage", () => {
         expect(await screen.findByText(/Requested/)).toBeInTheDocument();
 
         await act(() => vi.advanceTimersByTimeAsync(15_000));
-        expect(await screen.findByText("Signing certificate enrollment failed.")).toBeInTheDocument();
+        expect(await screen.findByText("Failed: the certificate authority did not issue a certificate.")).toBeInTheDocument();
     });
 
     it("shows no Escrow section when the mailbox has no escrow scope assigned", async () => {
@@ -1837,7 +1854,7 @@ describe("SettingsEncryptionPage", () => {
             mockShell();
             render(<SettingsEncryptionPage userUid="u1" />);
 
-            expect(await screen.findByText("CA said no")).toBeInTheDocument();
+            expect(await screen.findByText("Failed: CA said no")).toBeInTheDocument();
             expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
             expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
         });
@@ -1881,32 +1898,32 @@ describe("SettingsEncryptionPage", () => {
             expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
 
             await act(() => vi.advanceTimersByTimeAsync(15_000));
-            expect(await screen.findByText("Signing certificate enrollment failed.")).toBeInTheDocument();
+            expect(await screen.findByText(/^Failed: /)).toBeInTheDocument();
             expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
         });
 
-        it("ignores a reload status check that answers after unmounting, whether it succeeds or fails", async () => {
+        it("keeps following after the page is left: an answer that arrives later still ends the enrollment (the stored id is forgotten), a 404 too", async () => {
             getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
             getKeyVault.mockResolvedValue(vault);
             localStorage.setItem(STORAGE_KEY, "enr-1");
             let resolveStatus: (value: { status: "failed" }) => void = () => undefined;
-            let rejectStatus: (err: Error) => void = () => undefined;
-            checkSignEnrollmentStatus
-                .mockReturnValueOnce(new Promise((resolve) => (resolveStatus = resolve)))
-                .mockReturnValueOnce(new Promise((_resolve, reject) => (rejectStatus = reject)));
+            checkSignEnrollmentStatus.mockReturnValueOnce(new Promise((resolve) => (resolveStatus = resolve)));
             mockShell();
 
             const first = render(<SettingsEncryptionPage userUid="u1" />);
             await screen.findByText("Password");
             first.unmount();
             await act(async () => resolveStatus({ status: "failed" }));
-            expect(localStorage.getItem(STORAGE_KEY)).toBe("enr-1");
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
 
+            localStorage.setItem(STORAGE_KEY, "enr-2");
+            let rejectStatus: (err: Error) => void = () => undefined;
+            checkSignEnrollmentStatus.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectStatus = reject)));
             const second = render(<SettingsEncryptionPage userUid="u1" />);
             await screen.findByText("Password");
             second.unmount();
             await act(async () => rejectStatus(new ApiRequestError("not found", 404)));
-            expect(localStorage.getItem(STORAGE_KEY)).toBe("enr-1");
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
         });
 
         it("still works when localStorage is blocked", async () => {
@@ -1935,7 +1952,7 @@ describe("SettingsEncryptionPage", () => {
                 await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
                 expect(await screen.findByText(/Requested/)).toBeInTheDocument();
                 await act(() => vi.advanceTimersByTimeAsync(15_000));
-                expect(await screen.findByText("nope")).toBeInTheDocument();
+                expect(await screen.findByText("Failed: nope")).toBeInTheDocument();
                 expect(setItem).toHaveBeenCalled();
                 expect(removeItem).toHaveBeenCalled();
             } finally {
@@ -2185,6 +2202,339 @@ describe("SettingsEncryptionPage", () => {
             expect(await screen.findByText(/were locked before this could finish/)).toBeInTheDocument();
             expect(destroyUnlockedKeys).not.toHaveBeenCalled();
             expect(buildPasswordWrap).not.toHaveBeenCalled();
+        });
+    });
+
+    describe("the digital signature certificate card", () => {
+        const STORAGE_KEY = "rapidmx.signEnrollment.mb1";
+        const inDays = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+        const signKey = (notAfter: number, extra: Record<string, unknown> = {}) => ({
+            ...mailbox.keys[0],
+            useType: "sign" as const,
+            fingerprint: "sign-fp-" + notAfter,
+            notAfter,
+            ...extra,
+        });
+        const withKeys = (...keys: unknown[]) => ({ ...mailbox, keys: [...mailbox.keys, ...keys] });
+
+        function mockSigningCrypto() {
+            generateKeyPairWithCsr.mockResolvedValue({ keyPair: { privateKey: {} as CryptoKey, publicKey: {} as CryptoKey }, csrPem: "csr-pem" });
+            exportPrivateKeyPkcs8.mockResolvedValue(new Uint8Array([1]));
+            buildAad.mockReturnValue(new Uint8Array([9]));
+            sealWithKey.mockResolvedValue({ ciphertext: "ct", nonce: "n" });
+        }
+
+        async function renderPage(mb: Record<string, unknown> = mailbox) {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockShell(mailboxRoutes(mb));
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+        }
+
+        it("shows a progress bar, the steps and a plain status line for a pending certificate, with when it was requested and checked", async () => {
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({
+                status: "pending",
+                stage: "awaiting-challenge",
+                progress: 35,
+                requestedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+                lastCheckedAt: new Date(Date.now() - 20_000).toISOString(),
+                stages: [
+                    { id: "submitted", label: "Request sent", state: "done", at: new Date(Date.now() - 3 * 60_000).toISOString() },
+                    { id: "awaiting-challenge", label: "Verification e-mail from the CA", state: "active" },
+                    { id: "issued", label: "Certificate installed", state: "pending" },
+                ],
+            });
+            await renderPage();
+
+            expect(await screen.findByRole("progressbar", { name: "Certificate progress" })).toHaveAttribute("aria-valuenow", "35");
+            expect(screen.getByText("Waiting for the CA's verification e-mail", { selector: "p" })).toBeInTheDocument();
+            expect(within(screen.getByRole("list", { name: "Certificate steps" })).getAllByRole("listitem")).toHaveLength(3);
+            expect(screen.getByText(/^Requested 3 min ago - last checked /)).toBeInTheDocument();
+            // Rotation stays blocked while it is pending.
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+        });
+
+        it("'Check status' asks the server to re-check, shows it busy, updates at once and says what came of it", async () => {
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "pending", stage: "awaiting-challenge", progress: 30 });
+            let answer: (value: unknown) => void = () => undefined;
+            checkSignEnrollmentNow.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+            await renderPage();
+            const user = userEvent.setup();
+
+            await user.click(await screen.findByRole("button", { name: "Check status" }));
+            expect(checkSignEnrollmentNow).toHaveBeenCalledWith("mb1", "enr-1");
+            expect(screen.getByRole("button", { name: "Checking..." })).toBeDisabled();
+
+            await act(async () => answer({ status: "pending", stage: "challenge-answered", progress: 60 }));
+            expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "60");
+            expect(screen.getByText(/^Updated - Verification answered - waiting for the certificate/)).toBeInTheDocument();
+            // Not again straight away: the server would answer 429.
+            expect(screen.getByRole("button", { name: /^Check again in \d+ s$/ })).toBeDisabled();
+        });
+
+        it("reports 'Still waiting' when the check finds nothing new", async () => {
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "pending", stage: "awaiting-challenge", progress: 30 });
+            checkSignEnrollmentNow.mockResolvedValueOnce({ status: "pending", stage: "awaiting-challenge", progress: 30 });
+            await renderPage();
+            const user = userEvent.setup();
+            await user.click(await screen.findByRole("button", { name: "Check status" }));
+            expect(await screen.findByText(/^Still waiting - checked just now/)).toBeInTheDocument();
+        });
+
+        it("shows an issued certificate's details, copyable serial number and expiry, and refreshes the keys so the new key is listed", async () => {
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({
+                status: "issued",
+                subject: "E=jane@example.com",
+                issuer: "CN=Example CA",
+                serialNumber: "0A1B2C3D4E5F60718293A4B5C6D7E8F9",
+                notAfter: inDays(300),
+            });
+            const issued = withKeys(signKey(Date.now() + 300 * 86_400_000));
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockShell((url) => (url === "/api/mail/mailboxes/mb1" ? jsonResponse(200, issued) : undefined));
+            render(<SettingsEncryptionPage userUid="u1" />);
+
+            expect(await screen.findByText("E=jane@example.com")).toBeInTheDocument();
+            expect(screen.getByText("CN=Example CA")).toBeInTheDocument();
+            expect(screen.getByText("0A1B2C3D...C6D7E8F9")).toBeInTheDocument();
+            expect(await screen.findByText(/Signing key: sign-fp-/)).toBeInTheDocument();
+            expect(screen.getByText(/Enabled — outgoing mail/)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+        });
+
+        it("shows the active certificate with its expiry when nothing is being enrolled, warns inside 30 days and Renew starts a new request", async () => {
+            mockSigningCrypto();
+            startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-2" });
+            await renderPage(withKeys(signKey(Date.now() + 9 * 86_400_000)));
+            const user = userEvent.setup();
+
+            expect(await screen.findByRole("alert")).toHaveTextContent("This certificate expires in 9 days.");
+            await user.click(screen.getByRole("button", { name: "Renew" }));
+
+            expect(startSignEnrollment).toHaveBeenCalledTimes(1);
+            // The renewal is pending at once (the server has just accepted it): the card is the pending one, and the old certificate's expiry warning is gone.
+            expect(await screen.findByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
+            expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+            expect(localStorage.getItem(STORAGE_KEY)).toBe("enr-2");
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+        });
+
+        it("shows an expired certificate as expired and offers a new one", async () => {
+            await renderPage(withKeys(signKey(Date.now() - 86_400_000)));
+            expect(await screen.findByText("Expired", { selector: "span" })).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Request a new certificate" })).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Enable digital signatures" })).not.toBeInTheDocument();
+        });
+
+        it("says when the newest of several expired certificates expired, and keeps the original flow when the server cannot say what the current enrollment is", async () => {
+            getCurrentSignEnrollment.mockRejectedValue(new Error("network"));
+            await renderPage(withKeys(signKey(Date.now() - 40 * 86_400_000), signKey(Date.now() - 2 * 86_400_000)));
+            expect(await screen.findByText(/^Expired on /)).toBeInTheDocument();
+            expect(getCurrentSignEnrollment).toHaveBeenCalled();
+        });
+
+        it("still offers Enable digital signatures when looking up the current enrollment fails", async () => {
+            getCurrentSignEnrollment.mockRejectedValue(new Error("network"));
+            await renderPage();
+            expect(await screen.findByRole("button", { name: "Enable digital signatures" })).toBeEnabled();
+        });
+
+        it("shows a certificate that is issued but not installed yet as installing - never the Enable button - and asks for the mailbox's keys every 15 s until the key is there", async () => {
+            const issuedAt = new Date(Date.now() - 60_000).toISOString();
+            getCurrentSignEnrollment.mockResolvedValue({ enrollmentId: "done", status: "issued", issuedAt, notAfter: inDays(300), subject: "E=jane@example.com", note: "A background job installs it." });
+            let installed = false;
+            let mailboxReads = 0;
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockShell((url) => {
+                if (url !== "/api/mail/mailboxes/mb1") return undefined;
+                mailboxReads++;
+                return jsonResponse(200, installed ? withKeys(signKey(Date.now() + 300 * 86_400_000)) : mailbox);
+            });
+            vi.useFakeTimers({ shouldAdvanceTime: true });
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+
+            expect(await screen.findByText("Issued - installing it on your mailbox (this takes a few minutes)")).toBeInTheDocument();
+            expect(screen.getByText("A background job installs it.")).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Enable digital signatures" })).not.toBeInTheDocument();
+            const readsBefore = mailboxReads;
+
+            installed = true;
+            await act(() => vi.advanceTimersByTimeAsync(15_000));
+            expect(await screen.findByText(/Signing key: sign-fp-/)).toBeInTheDocument();
+            expect(mailboxReads).toBeGreaterThan(readsBefore);
+            // It stops asking once the key is there.
+            const readsAfter = mailboxReads;
+            await act(() => vi.advanceTimersByTimeAsync(60_000));
+            expect(mailboxReads).toBe(readsAfter);
+        });
+
+        it("gives up asking for the keys of a certificate that stays uninstalled after ten minutes", async () => {
+            getCurrentSignEnrollment.mockResolvedValue({ enrollmentId: "done", status: "issued", issuedAt: new Date().toISOString(), notAfter: inDays(300) });
+            let mailboxReads = 0;
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockShell((url) => {
+                if (url === "/api/mail/mailboxes/mb1") {
+                    mailboxReads++;
+                    return jsonResponse(200, mailbox);
+                }
+                return undefined;
+            });
+            vi.useFakeTimers({ shouldAdvanceTime: true });
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+            await screen.findByText(/installing it on your mailbox/);
+
+            await act(() => vi.advanceTimersByTimeAsync(11 * 60_000));
+            const reads = mailboxReads;
+            await act(() => vi.advanceTimersByTimeAsync(5 * 60_000));
+            expect(mailboxReads).toBe(reads);
+            expect(reads).toBeGreaterThan(30);
+        });
+
+        it("clears an enrollment id the server does not know any more, says the request is no longer active, and offers a new one - never spinning", async () => {
+            localStorage.setItem(STORAGE_KEY, "left-over");
+            checkSignEnrollmentStatus.mockRejectedValue(new ApiRequestError("Unknown.", 404, "signing-enrollment-unknown"));
+            await renderPage();
+
+            expect(await screen.findByText("This request is no longer active - request a new certificate.")).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Enable digital signatures" })).toBeEnabled();
+            expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+            expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            expect(checkSignEnrollmentStatus).toHaveBeenCalledTimes(1);
+        });
+
+        describe("what the deployment says about how certificates are issued", () => {
+            const answers = (info: unknown) => (url: string) => (url === "/api/system/signing-enrollment" ? (info ? jsonResponse(200, info) : jsonResponse(404, { message: "no" })) : undefined);
+
+            async function renderWith(info: unknown, mb: Record<string, unknown> = mailbox) {
+                getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+                getKeyVault.mockResolvedValue(vault);
+                const routes = mailboxRoutes(mb);
+                mockShell((url, init) => answers(info)(url) ?? routes(url));
+                render(<SettingsEncryptionPage userUid="u1" />);
+                await screen.findByText("Password");
+            }
+
+            it("tells a manual deployment's user, before they ask, that an administrator has to upload the certificate", async () => {
+                await renderWith({ backend: "manual", automatic: false, adminUpload: true });
+                expect(await screen.findByText(/^This server issues signing certificates manually: an administrator has to upload/)).toBeInTheDocument();
+                expect(screen.getByRole("button", { name: "Enable digital signatures" })).toBeEnabled();
+            });
+
+            it("tells an automatic deployment's user which CA it will ask and where its e-mail goes", async () => {
+                await renderWith({ backend: "rfc8823", automatic: true, adminUpload: false, ca: { host: "acme.ca.example" }, typicalDurationMinutes: 5 });
+                expect(
+                    await screen.findByText("A certificate is issued automatically by acme.ca.example: it sends a verification e-mail to u1@example.com, usually within about 5 minutes."),
+                ).toBeInTheDocument();
+            });
+
+            it("offers no request where the server issues no certificates, and warns when the CA has been reporting a problem", async () => {
+                await renderWith({ backend: "none", automatic: false, adminUpload: false, health: { ok: false, lastError: "Down", lastSuccessAt: "2026-09-21T09:00:00Z" } });
+                expect(await screen.findByText("This server does not issue signing certificates.")).toBeInTheDocument();
+                expect(screen.queryByRole("button", { name: "Enable digital signatures" })).not.toBeInTheDocument();
+                expect(screen.getByText(/^The certificate authority reported a problem: Down/)).toBeInTheDocument();
+            });
+
+            it("words a pending request by the deployment: a manual one waits for an administrator, an automatic one names its CA", async () => {
+                localStorage.setItem(STORAGE_KEY, "enr-1");
+                checkSignEnrollmentStatus.mockResolvedValue({ status: "pending", provider: "manual", requestedAt: new Date(Date.now() - 60_000).toISOString() });
+                await renderWith({ backend: "manual", automatic: false, adminUpload: true, contactEmail: "admin@example.com" });
+                expect(await screen.findByText(/^This server issues signing certificates manually.*Contact your administrator\.$/)).toBeInTheDocument();
+                expect(screen.getByText("Administrator: admin@example.com")).toBeInTheDocument();
+                expect(screen.queryByText(/takes effect automatically/)).not.toBeInTheDocument();
+                cleanup();
+                resetEnrollmentTracker();
+
+                localStorage.setItem(STORAGE_KEY, "enr-1");
+                checkSignEnrollmentStatus.mockResolvedValue({ status: "pending", provider: "rfc8823", stage: "awaiting-challenge", progress: 30 });
+                await renderWith({ backend: "rfc8823", automatic: true, adminUpload: false, ca: { host: "acme.ca.example" }, typicalDurationMinutes: 5 });
+                expect(await screen.findByText("Requested from acme.ca.example. The CA sends a verification e-mail to u1@example.com; this usually takes about 5 minutes.")).toBeInTheDocument();
+            });
+        });
+
+        it("keeps the original 'Enable digital signatures' flow for a mailbox that never asked for one", async () => {
+            await renderPage();
+            expect(await screen.findByRole("button", { name: "Enable digital signatures" })).toBeEnabled();
+            expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+        });
+
+        it("shows a failed enrollment (found on the server) with its reason and Try again, which starts a new request", async () => {
+            getCurrentSignEnrollment.mockResolvedValue({ enrollmentId: "old", status: "failed", error: "The CA refused.", stage: "failed" });
+            mockSigningCrypto();
+            startSignEnrollment.mockResolvedValue({ enrollmentId: "enr-3" });
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "pending" });
+            await renderPage();
+            const user = userEvent.setup();
+
+            expect(await screen.findByText("Failed: The CA refused.")).toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: "Try again" }));
+
+            expect(await screen.findByText(/^Requested - waiting for the certificate/)).toBeInTheDocument();
+            expect(screen.queryByText("Failed: The CA refused.")).not.toBeInTheDocument();
+        });
+
+        it("shows why a new request could not be started, above the failed card", async () => {
+            getCurrentSignEnrollment.mockResolvedValue({ enrollmentId: "old", status: "failed", error: "The CA refused." });
+            mockSigningCrypto();
+            startSignEnrollment.mockRejectedValue(new ApiRequestError("Too many requests.", 429));
+            await renderPage();
+            const user = userEvent.setup();
+
+            await user.click(await screen.findByRole("button", { name: "Try again" }));
+
+            expect(await screen.findByText("Too many requests.")).toBeInTheDocument();
+            expect(screen.getByText("Failed: The CA refused.")).toBeInTheDocument();
+        });
+
+        it("adopts a pending enrollment started on another device: progress, Check status and blocked rotation", async () => {
+            getCurrentSignEnrollment.mockResolvedValue({ enrollmentId: "elsewhere", status: "pending", stage: "validating", progress: 70 });
+            checkSignEnrollmentNow.mockResolvedValue({ status: "issued" });
+            await renderPage();
+
+            expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "70");
+            expect(localStorage.getItem(STORAGE_KEY)).toBe("elsewhere");
+            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeDisabled();
+        });
+
+        it("shows a certificate issued long ago from the server's record when the mailbox's keys carry it", async () => {
+            getCurrentSignEnrollment.mockResolvedValue({ enrollmentId: "done", status: "issued", subject: "E=old@example.com", notAfter: inDays(200) });
+            await renderPage(withKeys(signKey(Date.now() + 200 * 86_400_000)));
+            expect(await screen.findByText("E=old@example.com")).toBeInTheDocument();
+
+        });
+
+        it("shows a pending enrollment of a mailbox the user does not own without a way to check it", async () => {
+            localStorage.setItem(STORAGE_KEY, "enr-1");
+            checkSignEnrollmentStatus.mockResolvedValue({ status: "pending", progress: 20, stage: "submitted" });
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockShell(mailboxRoutes({ ...mailbox, ownerUserUid: "someone-else" }));
+            render(<SettingsEncryptionPage userUid="u1" />);
+            expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "20");
+            expect(screen.queryByRole("button", { name: "Check status" })).not.toBeInTheDocument();
+        });
+
+        it("offers a mailbox that is not the user's own no way to check or request, only what is known", async () => {
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            getKeyVault.mockResolvedValue(vault);
+            mockShell(mailboxRoutes({ ...withKeys(signKey(Date.now() + 5 * 86_400_000)), ownerUserUid: "someone-else" }));
+            render(<SettingsEncryptionPage userUid="u1" />);
+            await screen.findByText("Password");
+            expect(await screen.findByText(/Enabled — outgoing mail/)).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Renew" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+            expect(getCurrentSignEnrollment).not.toHaveBeenCalled();
         });
     });
 });

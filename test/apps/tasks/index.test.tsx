@@ -275,7 +275,8 @@ describe("TasksPage", () => {
         await user.type(screen.getByLabelText("Add a task"), "Team chore");
         await user.click(screen.getByRole("button", { name: "Add" }));
 
-        const status = await screen.findByRole("status");
+        // The notice stays in the page (it carries the link); the pop-up region is a status of its own, so it is found by its text.
+        const status = await screen.findByText(/was added to/);
         expect(status).toHaveTextContent("“Team chore” was added to Team.");
         expect(within(status).getByRole("link", { name: "View that mailbox’s tasks" })).toHaveAttribute("href", "/tasks?mailboxUid=mb2");
         const post = fetchMock.mock.calls.find((c) => c[0] === "/api/mail/tasks" && (c[1] as RequestInit).method === "POST")!;
@@ -322,7 +323,7 @@ describe("TasksPage", () => {
         await user.type(screen.getByLabelText("Add a task"), "Team chore");
         await user.click(screen.getByRole("button", { name: "Add" }));
 
-        expect(await screen.findByRole("status")).toHaveTextContent("“Team chore” was added to another mailbox.");
+        expect(await screen.findByText(/was added to/)).toHaveTextContent("“Team chore” was added to another mailbox.");
     });
 
     it("shows a validation error and does not submit when the title is blank", async () => {
@@ -438,7 +439,9 @@ describe("TasksPage", () => {
         const checkbox = await screen.findByLabelText('Mark "Today task" as complete');
         await user.click(checkbox);
 
-        expect(await screen.findByText("Could not update this task.")).toBeInTheDocument();
+        // A pop-up (see `NotificationCenter`), not a line in the list.
+        expect(await screen.findByText("Couldn't update the task")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("deletes a task, removing it from the list", async () => {
@@ -485,7 +488,8 @@ describe("TasksPage", () => {
         await user.click(await screen.findByRole("button", { name: 'Delete "Today task"' }));
         await confirmDelete(user);
 
-        expect(await screen.findByText("Could not delete this task.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't delete the task")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 });
 
@@ -884,7 +888,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
         await user.click(screen.getByLabelText("Select Today task"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Complete"));
 
-        expect(await screen.findByText("Could not update one or more tasks.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't update some of the tasks")).toBeInTheDocument();
     });
 
     it("toolbar Add to My Day adds every checked task to My Day.", async () => {
@@ -938,7 +942,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
         await user.click(screen.getByLabelText("Select Today task"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Add to My Day"));
 
-        expect(await screen.findByText("Could not update one or more tasks.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't update some of the tasks")).toBeInTheDocument();
     });
 
     it("toolbar Delete removes every checked task.", async () => {
@@ -993,7 +997,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
         await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
         await confirmDelete(user);
 
-        expect(await screen.findByText("Could not delete one or more tasks.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't delete some of the tasks")).toBeInTheDocument();
     });
 
     it("wraps the task table (Grid view) in a horizontally-scrollable container, so it doesn't break the layout on a narrow screen.", async () => {

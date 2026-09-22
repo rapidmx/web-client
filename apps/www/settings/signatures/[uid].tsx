@@ -12,6 +12,7 @@ import RichTextEditor from "../../../shared/components/mail/compose/RichTextEdit
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -91,7 +92,8 @@ function SignatureDetailContent({ uid }: { uid: string }) {
             setOriginal(updated);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save this signature.");
+            // A pop-up: `error` is only this form's own validation (and the load failure above).
+            notifyApiError(err, "Couldn't save the signature");
         } finally {
             setSaving(false);
         }

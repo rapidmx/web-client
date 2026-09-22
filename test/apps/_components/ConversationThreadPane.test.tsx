@@ -3,15 +3,20 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ConversationThreadPane from "../../../apps/shared/components/mail/ConversationThreadPane.js";
+import MailAddress from "../../../apps/shared/components/mail/MailAddress.js";
 
 // `MessageDetailPane`'s own rendering is exhaustively tested in its own file - mocked here so this file
 // only exercises the thread pane's own concerns: loading the thread, which messages are expanded, where it
-// scrolls, per-message actions and keeping the caller's list in step.
+// scrolls, per-message actions and keeping the caller's list in step. The mock draws what the thread hands an expanded card: the sender
+// button that collapses it (`threadHeader`), and the body it controls.
+// A stand-in pane can leave out the sender button (the pane draws it and registers its ref); the thread must cope.
+const paneOptions = vi.hoisted(() => ({ omitHeaderButton: false }));
+
 vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
     default: ({
         message,
@@ -20,26 +25,49 @@ vi.mock("../../../apps/shared/components/mail/MessageDetailPane.js", () => ({
         isOutbox,
         draftsFolderUid,
         inThread,
+        threadSubject,
+        threadHeader,
+        footer,
         shortcuts,
         onArchived,
         onLabelsChanged,
         labels,
     }: {
-        message: { uid: string; labelUids?: string[] } | null;
+        message: { uid: string; labelUids?: string[]; from: { address: string; displayName?: string } } | null;
         attachments: { filename: string }[];
         isSentItems?: boolean;
         isOutbox?: boolean;
         draftsFolderUid?: string;
         inThread?: boolean;
+        threadSubject?: string;
+        threadHeader?: { bodyId: string; unread: boolean; onToggle: () => void; buttonRef: (node: HTMLButtonElement | null) => void };
+        footer?: boolean;
         shortcuts?: boolean;
         onArchived?: (updated: Record<string, unknown>) => void;
         onLabelsChanged?: (updated: Record<string, unknown>) => void;
         labels?: { uid: string }[];
     }) => (
         <div data-testid={`detail-${message!.uid}`}>
-            body:{message!.uid} attachments:{attachments.map((a) => a.filename).join(",")} sentItems:
+            {threadHeader && !paneOptions.omitHeaderButton && (
+                <h2>
+                    <button
+                        type="button"
+                        ref={threadHeader.buttonRef}
+                        aria-expanded="true"
+                        aria-controls={threadHeader.bodyId}
+                        onClick={threadHeader.onToggle}
+                        data-unread-header={String(threadHeader.unread)}
+                    >
+                        {threadHeader.unread && <span className="sr-only">Unread. </span>}
+                        <MailAddress recipient={message!.from} />
+                    </button>
+                </h2>
+            )}
+            <span id={threadHeader?.bodyId}>
+            thread-subject:{threadSubject} footer:{String(!!footer)} body:{message!.uid} attachments:{attachments.map((a) => a.filename).join(",")} sentItems:
             {String(!!isSentItems)} outbox:{String(!!isOutbox)} drafts:
             {draftsFolderUid ?? "unset"} inThread:{String(!!inThread)} shortcuts:{String(!!shortcuts)} labels:{(labels ?? []).length}
+            </span>
             <button type="button" onClick={() => onArchived!({ ...message, folderUid: "f-archive" })}>
                 archive-{message!.uid}
             </button>
@@ -168,6 +196,7 @@ function renderedPattern(): [string, string | null][] {
 }
 
 afterEach(() => {
+    paneOptions.omitHeaderButton = false;
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
 });
@@ -300,23 +329,24 @@ describe("ConversationThreadPane", () => {
         expect(order[order.length - 1]).toBe("x0");
     });
 
-    it("gives an expanded message the height of the list it scrolls in, and no height of its own", async () => {
+    it("scrolls the messages as a whole, each card exactly as tall as its message, with a gap between the cards", async () => {
         renderThread();
         await screen.findByTestId("detail-m3");
 
-        // The scrolling list is the pane's one growing child...
+        // The scrolling list is the pane's one growing child, under the subject card that stays put...
         const list = screen.getByTestId("detail-m3").closest("ul")!;
         expect(list.className).toContain("flex-1");
         expect(list.className).toContain("min-h-0");
         expect(list.className).toContain("overflow-y-auto");
-        // ...and an expanded message is a full list's worth of it, resolved from the window down the flex
-        // chain rather than written as a `vh` number the body iframe couldn't follow on a resize.
-        const expandedRow = screen.getByTestId("detail-m3").closest("li")!;
-        expect(expandedRow.className).toContain("min-h-full");
-        expect(expandedRow.className).toContain("flex-col");
-        expect(expandedRow.className).not.toMatch(/h-\[\d/);
-        // A collapsed message takes only the room its one-line summary needs.
-        expect(header("Alice").closest("li")!.className).not.toContain("min-h-full");
+        // ...its cards separated by a gap rather than a rule...
+        expect(list.className).toContain("gap-3");
+        // ...and no card has a height of its own: a message is as tall as what it holds, expanded or not.
+        for (const row of [screen.getByTestId("detail-m3").closest("li")!, header("Alice").closest("li")!]) {
+            expect(row.className).not.toMatch(/min-h-full|h-full|h-\[\d/);
+        }
+        const subjectCard = screen.getByRole("heading", { level: 1 }).closest("header")!;
+        expect(list.parentElement!.firstElementChild).toBe(subjectCard);
+        expect(subjectCard.className).toContain("shrink-0");
     });
 
     it("expands the run from the message that was opened through to the newest", async () => {
@@ -525,6 +555,43 @@ describe("ConversationThreadPane", () => {
         expect(header("Carol")).toHaveAttribute("aria-expanded", "false");
     });
 
+    it("copes with a message pane that draws no sender button: nothing to focus, and expanding still works", async () => {
+        paneOptions.omitHeaderButton = true;
+        const user = userEvent.setup();
+        renderThread({ selectedUid: "m3" });
+        await screen.findByTestId("detail-m3");
+
+        await user.click(header("Alice"));
+
+        expect(screen.getByTestId("detail-m1")).toBeInTheDocument();
+    });
+
+    it("keeps the focus on a message's header button as it collapses and expands, though each state draws its own button", async () => {
+        const user = userEvent.setup();
+        renderThread();
+        await screen.findByTestId("detail-m3");
+
+        header("Carol").focus();
+        await user.keyboard("{Enter}");
+        expect(header("Carol")).toHaveAttribute("aria-expanded", "false");
+        expect(document.activeElement).toBe(header("Carol"));
+
+        await user.keyboard("{Enter}");
+        expect(header("Carol")).toHaveAttribute("aria-expanded", "true");
+        expect(document.activeElement).toBe(header("Carol"));
+
+        // A click focuses the button it lands on, as a browser does, and that stays true after the swap.
+        await user.click(header("Alice"));
+        expect(screen.getByTestId("detail-m1")).toBeInTheDocument();
+        expect(document.activeElement).toBe(header("Alice"));
+
+        // Toggled with the focus elsewhere - as when another control expanded it - the focus is left alone.
+        (document.activeElement as HTMLElement).blur();
+        fireEvent.click(header("Bob"));
+        expect(header("Bob")).toHaveAttribute("aria-expanded", "true");
+        expect(document.activeElement).toBe(document.body);
+    });
+
     it("marks only the expanded messages as read, and hands the newer copies to the list", async () => {
         const unread = { read: false, flagged: false, answered: false, forwarded: false };
         const thread = [
@@ -601,11 +668,12 @@ describe("ConversationThreadPane", () => {
         expect(screen.getByTestId("detail-m3")).toHaveTextContent("labels:1");
     });
 
-    it("pages a long thread, and says so once it stops", async () => {
+    it("pages a long thread, and says so once it stops", { timeout: 30_000 }, async () => {
         const many = Array.from({ length: 500 }, (_, i) => messageFixture(`x${i}`, `Sender${i}`));
         const { fetchMock } = renderThread({ selectedUid: `x499` }, many);
 
-        expect(await screen.findByTestId("detail-x499")).toBeInTheDocument();
+        // 500 cards (an avatar, an address and a preview each) take a while to lay out, longer under coverage.
+        expect(await screen.findByTestId("detail-x499", undefined, { timeout: 15_000 })).toBeInTheDocument();
         const pages = fetchMock.mock.calls
             .filter(([url]: [string]) => String(url).includes("/conversations/c1"))
             .map(([url]: [string]) => new URLSearchParams(String(url).split("?")[1]).get("page"));
@@ -628,7 +696,7 @@ describe("ConversationThreadPane", () => {
         expect(screen.getByText("120 messages")).toBeInTheDocument();
     });
 
-    it("shows a loading line while the thread is being fetched", async () => {
+    it("draws the subject card and a skeleton card per message at once while the thread is being fetched, then fills them in", async () => {
         let resolveThread: ((value: Response) => void) | undefined;
         mockFetch(() => new Promise<Response>((resolve) => (resolveThread = resolve)));
         render(
@@ -642,9 +710,16 @@ describe("ConversationThreadPane", () => {
             />,
         );
 
-        expect(screen.getByText("Loading…")).toBeInTheDocument();
+        // The list row already knows the subject and the count, so the pane's frame is there before any message is.
+        expect(screen.getByRole("status")).toHaveTextContent("Loading the message");
+        expect(screen.getByRole("heading", { level: 1, name: "Project Zeus" })).toBeInTheDocument();
+        expect(screen.getByText("3 messages")).toBeInTheDocument();
+        expect(document.querySelectorAll("[aria-hidden='true'].rounded-lg")).toHaveLength(3);
         resolveThread!(jsonResponse(200, THREAD));
         expect(await screen.findByTestId("detail-m3")).toBeInTheDocument();
+        expect(screen.queryByRole("status")).not.toBeInTheDocument();
+        // The same header card stays: it was not swapped for another.
+        expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     });
 
     it("says why a thread couldn't be loaded", async () => {
@@ -684,8 +759,35 @@ describe("ConversationThreadPane", () => {
     it("names a conversation with no subject, and counts a single message in the singular", async () => {
         renderThread({ conversation: conversationFixture({ subject: "", messageCount: 1 }) }, [messageFixture("m1", "Alice")]);
 
-        expect(await screen.findByRole("heading", { level: 1, name: "(no subject)" })).toBeInTheDocument();
+        await screen.findByTestId("detail-m1");
+        expect(screen.getByRole("heading", { level: 1, name: "(no subject)" })).toBeInTheDocument();
         expect(screen.getByText("1 message")).toBeInTheDocument();
+    });
+
+    it("calls an encrypted thread 'Encrypted message' rather than by the placeholder subject, and a collapsed encrypted message says so with a lock", async () => {
+        renderThread(
+            { conversation: conversationFixture({ subject: "[...]", messageCount: 2 }), selectedUid: "m2" },
+            [
+                messageFixture("m1", "Alice", { subject: "[...]", bodyPreview: "", encrypted: true }),
+                messageFixture("m2", "Bob", { subject: "[...]", bodyPreview: "", encrypted: true }),
+            ],
+        );
+
+        await screen.findByTestId("detail-m2");
+        expect(screen.getByRole("heading", { level: 1, name: "Encrypted message" })).toBeInTheDocument();
+        const collapsed = header("Alice");
+        expect(collapsed).toHaveTextContent("Encrypted message");
+        expect(collapsed.querySelector("svg[aria-hidden=true]")).not.toBeNull();
+    });
+
+    it("leaves a collapsed message with no preview and no encryption blank", async () => {
+        renderThread({ selectedUid: "m2", conversation: conversationFixture({ messageCount: 2 }) }, [
+            messageFixture("m1", "Alice", { bodyPreview: "" }),
+            messageFixture("m2", "Bob"),
+        ]);
+
+        await screen.findByTestId("detail-m2");
+        expect(header("Alice")).not.toHaveTextContent("Encrypted message");
     });
 
     it("falls back to a sender's address when it has no display name", async () => {
@@ -693,7 +795,8 @@ describe("ConversationThreadPane", () => {
             messageFixture("m1", "Alice", { from: { address: "nameless@example.com", type: "to" } }),
         ]);
 
-        expect(await screen.findByRole("button", { name: /^nameless@example\.com/ })).toBeInTheDocument();
+        await screen.findByTestId("detail-m1");
+        expect(screen.getByRole("button", { name: /^nameless@example\.com/ })).toBeInTheDocument();
     });
 
     it("drops attachments that land after the reader has moved to another conversation", async () => {

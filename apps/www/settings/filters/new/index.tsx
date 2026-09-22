@@ -18,6 +18,7 @@ import { MAIL_FILTER_CONDITION_FIELDS, buildMailFilterActionTypes } from "../_ma
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { notifyApiError } from "../../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -76,7 +77,8 @@ function NewMailFilterForm() {
             const created = await createMailFilterRule({ mailboxUid: mailboxUid!, name: name.trim(), ...rule });
             navigate(`/settings/filters/${encodeURIComponent(created.uid)}?mailboxUid=${encodeURIComponent(mailboxUid!)}`);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not create the mail filter.");
+            // A pop-up: `error` above is only the form's own validation.
+            notifyApiError(err, "Couldn't create the mail filter");
         } finally {
             setSaving(false);
         }

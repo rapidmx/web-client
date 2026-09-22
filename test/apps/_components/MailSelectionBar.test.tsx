@@ -95,7 +95,6 @@ function renderBar(props: Partial<React.ComponentProps<typeof MailSelectionBar>>
             labels={LABELS}
             mailboxUid="mb1"
             busy={false}
-            error={null}
             {...handlers}
             {...props}
         />,
@@ -275,11 +274,6 @@ describe("MailSelectionBar", () => {
 
         renderBar({ busy: true });
         expect(screen.getAllByRole("button", { name: "Mark read" })[1]).toBeDisabled();
-    });
-
-    it("shows a failure message", () => {
-        renderBar({ error: "Those messages couldn't all be updated." });
-        expect(screen.getByText("Those messages couldn't all be updated.")).toBeInTheDocument();
     });
 
     describe("counted in conversations", () => {

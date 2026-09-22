@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import TasksSidebar, { tasksViewKey, TasksView } from "../../../apps/shared/components/tasks/TasksSidebar.js";
+import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import type { Task } from "@rapidmx/react-shared/tasks/tasksApi.js";
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -213,7 +214,12 @@ describe("TasksSidebar", () => {
         await user.type(screen.getByLabelText("New list name"), "Oops");
         await user.click(screen.getByRole("button", { name: "Add" }));
 
-        expect(await screen.findByText("Could not create this list.")).toBeInTheDocument();
+        // No pop-up host here (that is `AppShell`'s): what was raised is in the notification store.
+        await vi.waitFor(() =>
+            expect(getNotificationsSnapshot().visible).toMatchObject([
+                { kind: "error", title: "Couldn't create the list", message: "Something unexpected went wrong." },
+            ]),
+        );
         expect(fetchMock).toHaveBeenCalled();
     });
 
@@ -230,6 +236,10 @@ describe("TasksSidebar", () => {
         await user.type(screen.getByLabelText("New list name"), "Oops");
         await user.click(screen.getByRole("button", { name: "Add" }));
 
-        expect(await screen.findByText("list name already taken")).toBeInTheDocument();
+        await vi.waitFor(() =>
+            expect(getNotificationsSnapshot().visible).toMatchObject([
+                { kind: "error", title: "Couldn't create the list", message: "list name already taken" },
+            ]),
+        );
     });
 });

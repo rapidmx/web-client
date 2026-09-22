@@ -11,6 +11,8 @@ import MailShell, { MAILBOX_LIST_LIMIT, useMailShell } from "../../../apps/share
 import { getKeyVault } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { resetPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { beginPendingSend, finishPendingSend } from "../../../apps/shared/mail/outbox/pendingSends.js";
+import { sendState } from "../../../apps/shared/mail/outbox/sendState.js";
 
 // MailShell now wraps its content in KeyEnrollmentGate (see that component), which checks
 // getKeyVault() once mailboxUid resolves. Mocked at the module level rather than via the shared
@@ -245,7 +247,7 @@ describe("MailShell", () => {
         ]);
     });
 
-    it("renders a well-known Archive folder (type: archive) with its label, sorted after Junk and before Deleted Items", async () => {
+    it("renders a well-known Archive folder (type: archive) with its label, sorted after Deleted Items and Junk, the last of the well-known folders", async () => {
         const junkFolder = { ...inboxFolder, uid: "f-junk", name: "Junk Email", type: "junk" as const, unreadCount: 0 };
         const archiveWellKnownFolder = { ...inboxFolder, uid: "f-archive-wk", name: "Archive", type: "archive" as const, unreadCount: 0 };
         const deletedFolder = { ...inboxFolder, uid: "f-deleted", name: "Deleted Items", type: "deleted_items" as const, unreadCount: 0 };
@@ -258,9 +260,9 @@ describe("MailShell", () => {
         const folderLinks = screen.getAllByRole("link").filter((el) => el.getAttribute("href")?.includes("folderUid="));
         expect(folderLinks.map((el) => el.getAttribute("href"))).toEqual([
             "/?mailboxUid=mb-a&folderUid=f-inbox",
+            "/?mailboxUid=mb-a&folderUid=f-deleted",
             "/?mailboxUid=mb-a&folderUid=f-junk",
             "/?mailboxUid=mb-a&folderUid=f-archive-wk",
-            "/?mailboxUid=mb-a&folderUid=f-deleted",
         ]);
     });
 
@@ -846,9 +848,9 @@ describe("MailShell", () => {
                     "Drafts4 4 messages",
                     "Outbox1 1 message",
                     "Sent Items",
+                    "Deleted Items",
                     "Junk Email",
                     "Archive2 2 unread",
-                    "Deleted Items",
                     "Projects",
                 ]);
             });
@@ -868,6 +870,107 @@ describe("MailShell", () => {
                 expect(aggregate("inbox").textContent).toBe("Inbox6 6 unread");
                 // Junk has no badge whatever its unread count.
                 expect(aggregate("junk").textContent).toBe("Junk Email");
+            });
+
+            describe("the Outbox indicator", () => {
+                const outboxLink = () => screen.getAllByRole("link").find((el) => el.getAttribute("href")?.includes("folderUid=fo"))!;
+
+                function mockWithOutbox(outboxMessages: unknown[], outboxTotal = 2) {
+                    return mockFetch((url) => {
+                        if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                        if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
+                        if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [folderOf("inbox", "f1", 0, 1, "Inbox"), folderOf("outbox", "fo", 0, outboxTotal, "Outbox")]);
+                        if (url.startsWith("/api/mail/messages")) return jsonResponse(200, outboxMessages);
+                        throw new Error(`unexpected ${url}`);
+                    });
+                }
+
+                it("is a red pill when a message failed and is waiting, saying so to a screen reader", async () => {
+                    mockWithOutbox([{ uid: "m1", scheduledSendError: "Refused" }, { uid: "m2" }]);
+                    render(<MailShell userUid="u1">content</MailShell>);
+                    await screen.findByText("Outbox");
+                    await waitFor(() => expect(within(outboxLink()).getByTestId("outbox-badge")).toHaveAttribute("data-state", "failed"));
+                    expect(outboxLink().textContent).toBe("Outbox2 2 messages, 1 failed");
+                });
+
+                it("animates while messages are on their way, from the server's view or from a message this tab is still handing over", async () => {
+                    mockWithOutbox([{ uid: "m1" }], 1);
+                    render(<MailShell userUid="u1">content</MailShell>);
+                    await screen.findByText("Outbox");
+                    await waitFor(() => expect(within(outboxLink()).getByTestId("outbox-badge")).toHaveAttribute("data-state", "sending"));
+                    expect(outboxLink().textContent).toBe("Outbox1 1 message sending");
+                });
+
+                it("counts a scheduled message plainly", async () => {
+                    mockWithOutbox([{ uid: "m1", scheduledSendTime: "2999-01-01T00:00:00.000Z" }], 1);
+                    render(<MailShell userUid="u1">content</MailShell>);
+                    await screen.findByText("Outbox");
+                    await waitFor(() => expect(outboxLink().textContent).toBe("Outbox1 1 message scheduled"));
+                    expect(within(outboxLink()).getByTestId("outbox-badge")).toHaveAttribute("data-state", "idle");
+                });
+
+                it("shows the Outbox already - with the message being sent - before the server has created it, and hands over to the real folder", async () => {
+                    mockMailboxesAndFolders([mailboxA], [folderOf("inbox", "f1", 0, 1, "Inbox")]);
+                    render(<MailShell userUid="u1">content</MailShell>);
+                    await screen.findByText("Inbox");
+                    expect(screen.queryByText("Outbox")).not.toBeInTheDocument();
+                    act(() => {
+                        beginPendingSend({ draftUid: "d1", mailboxUid: "mb-a", subject: "S", recipients: ["a@example.com"], scheduled: false });
+                    });
+                    const row = screen.getByText("Outbox").parentElement!;
+                    expect(row.tagName).toBe("DIV");
+                    expect(row.textContent).toBe("Outbox1 1 message sending");
+                    expect(within(row).getByTestId("outbox-badge")).toHaveAttribute("data-state", "sending");
+                    act(() => finishPendingSend("d1"));
+                    expect(screen.queryByText("Outbox")).not.toBeInTheDocument();
+                });
+
+                it("shows the Outbox and Sent Items - in their places, without a link - the moment a message is on its way in a brand-new account, and hands over to the real folders without a duplicate row", async () => {
+                    let folders: unknown[] = [folderOf("inbox", "f1", 0, 1, "Inbox"), folderOf("drafts", "f2", 0, 0, "Drafts"), folderOf("deleted_items", "f9", 0, 0, "Deleted Items")];
+                    mockFetch((url) => {
+                        if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                        if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
+                        if (url.startsWith("/api/mail/folders")) return jsonResponse(200, folders);
+                        throw new Error(`unexpected ${url}`);
+                    });
+                    render(<MailShell userUid="u1">content</MailShell>);
+                    await screen.findByText("Inbox");
+                    const rows = () =>
+                        Array.from(document.body.querySelectorAll("a[href*='folderUid='], [data-folder-placeholder]")).map((el) =>
+                            el.hasAttribute("data-folder-placeholder") ? `~${el.textContent?.replace(/[0-9].*/, "")}` : el.textContent?.replace(/[0-9].*/, ""),
+                        );
+                    expect(rows()).toEqual(["Inbox", "Drafts", "Deleted Items"]);
+
+                    act(() => {
+                        beginPendingSend({ draftUid: "d1", mailboxUid: "mb-a", subject: "S", recipients: ["a@example.com"], scheduled: false });
+                    });
+                    expect(rows()).toEqual(["Inbox", "Drafts", "~Outbox", "~Sent Items", "Deleted Items"]);
+                    expect(screen.getAllByText("Outbox")).toHaveLength(1);
+
+                    // The server accepted it, made the folders (all of them, at once) and said so.
+                    folders = [...folders, folderOf("outbox", "f3", 0, 1, "Outbox"), folderOf("sent_items", "f4", 0, 0, "Sent Items"), folderOf("junk", "f5", 0, 0, "Junk Email"), folderOf("archive", "f6", 0, 0, "Archive")];
+                    await act(async () => {
+                        sendState.queuedListener!("mb-a");
+                    });
+                    await waitFor(() => expect(rows()).toEqual(["Inbox", "Drafts", "Outbox", "Sent Items", "Deleted Items", "Junk Email", "Archive"]));
+                    expect(screen.getAllByText("Outbox")).toHaveLength(1);
+                    expect(screen.getAllByText("Sent Items")).toHaveLength(1);
+                    expect(document.querySelector("[data-folder-placeholder]")).toBeNull();
+                    act(() => finishPendingSend("d1"));
+                    expect(rows()).toEqual(["Inbox", "Drafts", "Outbox", "Sent Items", "Deleted Items", "Junk Email", "Archive"]);
+                });
+
+                it("says a message this tab is still handing over is sending, next to the folder's own count", async () => {
+                    mockWithOutbox([], 1);
+                    render(<MailShell userUid="u1">content</MailShell>);
+                    await screen.findByText("Outbox");
+                    await waitFor(() => expect(outboxLink().textContent).toBe("Outbox1 1 message"));
+                    act(() => {
+                        beginPendingSend({ draftUid: "d1", mailboxUid: "mb-a", subject: "S", recipients: ["a@example.com"], scheduled: false });
+                    });
+                    expect(outboxLink().textContent).toBe("Outbox1 1 message sending");
+                    act(() => finishPendingSend("d1"));
+                });
             });
         });
 
@@ -1007,7 +1110,7 @@ describe("MailShell", () => {
                 const socket = await shellWithSocket();
                 act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
 
-                const region = screen.getByRole("status", { name: "New mail" });
+                const region = screen.getByTestId("notification-others");
                 expect(region).toHaveAttribute("aria-live", "polite");
                 const toast = within(region).getByRole("link");
                 expect(toast).toHaveAttribute("href", "/messages/m9");
@@ -1025,20 +1128,20 @@ describe("MailShell", () => {
                     socket.receive({ type: "MessageMongo", action: "update", data: newMail("update") });
                     socket.receive({ type: "MessageMongo", action: "create", data: newMail("mine", { from: { address: "a@example.com", type: "to" } }) });
                 });
-                expect(within(screen.getByRole("status", { name: "New mail" })).queryByRole("link")).not.toBeInTheDocument();
+                expect(within(screen.getByTestId("notification-others")).queryByRole("link")).not.toBeInTheDocument();
 
                 act(() => {
                     socket.receive({ type: "MessageMongo", action: "create", data: newMail("dup") });
                     socket.receive({ type: "MessageMongo", action: "create", data: newMail("dup") });
                 });
-                expect(within(screen.getByRole("status", { name: "New mail" })).getAllByRole("link")).toHaveLength(1);
+                expect(within(screen.getByTestId("notification-others")).getAllByRole("link")).toHaveLength(1);
             });
 
             it("shows nothing while the user has turned pop-ups off", async () => {
                 localStorage.setItem("rapidmx-new-mail-popups", "off");
                 const socket = await shellWithSocket();
                 act(() => socket.receive({ type: "MessageMongo", action: "create", data: newMail("m9") }));
-                expect(within(screen.getByRole("status", { name: "New mail" })).queryByRole("link")).not.toBeInTheDocument();
+                expect(within(screen.getByTestId("notification-others")).queryByRole("link")).not.toBeInTheDocument();
             });
 
             it("offers desktop notifications in the pop-up, and remembers 'Not now'", async () => {

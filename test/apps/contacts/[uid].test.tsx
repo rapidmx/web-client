@@ -230,7 +230,9 @@ describe("ContactDetailPage", () => {
 
         await user.click(await screen.findByRole("button", { name: "Delete" }));
 
+        // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("boom")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't delete the contact")).toBeInTheDocument();
         // The contact stays on screen - a failed delete isn't a failed load.
         expect(screen.getByRole("heading", { name: "Jane Doe" })).toBeInTheDocument();
         expect(clearPinnedSignerCache).not.toHaveBeenCalled();
@@ -247,7 +249,8 @@ describe("ContactDetailPage", () => {
 
         await user.click(await screen.findByRole("button", { name: "Delete" }));
 
-        expect(await screen.findByText("Could not delete this contact.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't delete the contact")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     // Mocks window.location wholesale (see testUtils.mockLocation), which isn't undone between tests

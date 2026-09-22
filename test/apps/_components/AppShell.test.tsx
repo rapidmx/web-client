@@ -3,12 +3,14 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import AppShell, { LOGOUT_TIMEOUT_MS } from "../../../apps/shared/components/layout/AppShell.js";
 import { clearSigningOut, isSigningOut, registerComposeFlush } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
+import { apiFetch } from "@rapidmx/react-shared/util/api.js";
+import { dismissAll, getNotificationsSnapshot, notify } from "../../../apps/shared/notifications/store.js";
 
 // The hook's own behavior (activity resets the clock, disabled at 0, cleans up on unmount, ...) is
 // already exercised end to end in react-shared's own test suite - this file only needs to confirm
@@ -579,7 +581,7 @@ describe("AppShell", () => {
         expect(screen.getByRole("menuitem", { name: "Settings" })).toBeInTheDocument();
     });
 
-    it("renders the branding header/footer HTML once loaded, and swaps in the configured logo", async () => {
+    it("renders the branding header/footer HTML once loaded - the header replaces the title bar and the rail's icon - and swaps in the configured logo without a header", async () => {
         mockFetch(() =>
             jsonResponse(200, {
                 companyName: "Acme",
@@ -593,8 +595,15 @@ describe("AppShell", () => {
 
         expect(await screen.findByTestId("brand-header")).toHaveTextContent("Acme banner");
         expect(screen.getByTestId("brand-footer")).toHaveTextContent("Acme footer");
+        // The custom header is the top of the app: no title bar of its own (its label and menu), no icon at the top of the rail.
         const rail = screen.getByRole("navigation", { name: "Apps" });
-        expect(rail.querySelector("img")).toHaveAttribute("src", "https://cdn.example.com/logo.png");
+        expect(rail.querySelector("img")).toBeNull();
+        expect(screen.queryByText("Mail", { selector: "span.uppercase" })).not.toBeInTheDocument();
+        cleanup();
+
+        mockFetch(() => jsonResponse(200, { companyName: "Acme", title: "Acme Mail", logoUrl: "https://cdn.example.com/logo.png", footerHtml: "<p>footer</p>" }));
+        render(<AppShell active="mail" userUid="u1">content</AppShell>);
+        await waitFor(() => expect(screen.getByRole("navigation", { name: "Apps" }).querySelector("img")).toHaveAttribute("src", "https://cdn.example.com/logo.png"));
     });
 
     it("renders no header/footer chrome and the default logo when branding has none configured", async () => {
@@ -707,5 +716,112 @@ describe("AppShell keyboard shortcuts", () => {
 
         expect(press("M", CTRL_SHIFT)).toBe(true);
         expect(press("?", { shiftKey: true })).toBe(true);
+    });
+});
+
+describe("AppShell notifications", () => {
+    it("publishes the header's height (the title bar's, or a branding header's) so the pop-up stack sticks just below it", async () => {
+        const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+            const height = this.hasAttribute("data-branding-header") ? 120 : 64;
+            return { height, width: 0, top: 0, left: 0, right: 0, bottom: height, x: 0, y: 0, toJSON: () => ({}) };
+        });
+        try {
+            mockFetch(() => jsonResponse(404, {}));
+            render(
+                <AppShell active="mail" userUid="u1">
+                    content
+                </AppShell>,
+            );
+            expect(document.documentElement.style.getPropertyValue("--rr-header-h")).toBe("64px");
+            cleanup();
+
+            mockFetch(() => jsonResponse(200, { companyName: "Acme", title: "Acme Mail", headerHtml: '<div data-testid="brand-header">Acme banner</div>' }));
+            render(
+                <AppShell active="mail" userUid="u1">
+                    content
+                </AppShell>,
+            );
+            await screen.findByTestId("brand-header");
+            await waitFor(() => expect(document.documentElement.style.getPropertyValue("--rr-header-h")).toBe("120px"));
+        } finally {
+            rect.mockRestore();
+        }
+    });
+
+    it("draws every pop-up in one stack right under the header row, where it can't cover the account menu", async () => {
+        mockFetch(() => jsonResponse(404, {}));
+        render(
+            <AppShell active="mail" userUid="u1">
+                content
+            </AppShell>,
+        );
+        const header = screen.getByRole("banner");
+        expect(header.nextElementSibling).toBe(screen.getByTestId("notification-anchor"));
+        act(() => {
+            notify({ kind: "success", title: "Saved" });
+        });
+        expect(within(screen.getByTestId("notification-anchor")).getByText("Saved")).toBeInTheDocument();
+        expect(header.contains(screen.getByText("Saved"))).toBe(false);
+    });
+
+    it("lists the recent notifications from the account menu, counting the errors nobody has seen", async () => {
+        mockFetch(() => jsonResponse(404, {}));
+        const user = userEvent.setup();
+        render(
+            <AppShell active="mail" userUid="u1">
+                content
+            </AppShell>,
+        );
+        act(() => {
+            notify({ kind: "error", title: "Couldn't archive the message", message: "Server said no", sticky: false, timeoutMs: 1 });
+        });
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        expect(screen.getByRole("menuitem", { name: /Recent notifications/ })).toHaveTextContent("1 unseen error");
+        await user.click(screen.getByRole("menuitem", { name: /Recent notifications/ }));
+
+        const dialog = await screen.findByRole("dialog", { name: "Recent notifications" });
+        expect(within(dialog).getByText("Couldn't archive the message")).toBeInTheDocument();
+        expect(within(dialog).getByText("Server said no")).toBeInTheDocument();
+        // Opening it counted as seeing them.
+        expect(getNotificationsSnapshot().unseenErrors).toBe(0);
+        await user.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog", { name: "Recent notifications" })).not.toBeInTheDocument();
+    });
+
+    it("says 'Your session expired' once, with a Sign in action, when any request is answered 401 - and stops listening when it goes", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/mail";
+        const fetchMock = mockFetch(() => jsonResponse(401, { message: "Unauthorized" }));
+        const view = render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+        await expect(apiFetch("/mail/mailboxes")).rejects.toMatchObject({ status: 401 });
+        await expect(apiFetch("/mail/folders")).rejects.toMatchObject({ status: 401 });
+        expect(await screen.findAllByText("Your session expired")).toHaveLength(1);
+        // Both requests (and whatever else the frame asked for - branding, appearance - that was refused the same way) are one pop-up with a count.
+        await waitFor(() => expect(getNotificationsSnapshot().visible[0].count).toBeGreaterThanOrEqual(2));
+        expect(await screen.findByText(/\(\d+ times\)/)).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+        expect(location.href).toBe(`${AUTH_SERVER_URL}/auth/signin?return_to=${encodeURIComponent("https://mail.example.com/mail")}`);
+        expect(fetchMock).toHaveBeenCalled();
+
+        view.unmount();
+        act(() => dismissAll());
+        await expect(apiFetch("/mail/mailboxes")).rejects.toMatchObject({ status: 401 });
+        expect(getNotificationsSnapshot().visible).toEqual([]);
+    });
+
+    it("does not listen for an expired session while nobody is signed in", async () => {
+        mockLocation();
+        mockFetch(() => jsonResponse(401, { message: "Unauthorized" }));
+        render(
+            <AppShell active="mail" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+        await expect(apiFetch("/mail/mailboxes")).rejects.toMatchObject({ status: 401 });
+        expect(getNotificationsSnapshot().visible).toEqual([]);
     });
 });

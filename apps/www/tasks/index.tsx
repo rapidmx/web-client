@@ -30,6 +30,7 @@ import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/
 import { SHORTCUTS } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
+import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
     "text-sm py-1.5 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -198,7 +199,6 @@ function TasksContent() {
     }
 
     async function handleToggle(task: Task) {
-        setError(null);
         const nextCompleted = !task.completed;
         setTasks((prev) => prev.map((t) => (t.uid === task.uid ? { ...t, completed: nextCompleted } : t)));
         try {
@@ -206,17 +206,16 @@ function TasksContent() {
             setTasks((prev) => prev.map((t) => (t.uid === task.uid ? updated : t)));
         } catch (err) {
             setTasks((prev) => prev.map((t) => (t.uid === task.uid ? task : t)));
-            setError(err instanceof ApiRequestError ? err.message : "Could not update this task.");
+            notifyApiError(err, "Couldn't update the task");
         }
     }
 
     async function handleDelete(task: Task) {
-        setError(null);
         try {
             await deleteTask(task.uid, task.version);
             setTasks((prev) => prev.filter((t) => t.uid !== task.uid));
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not delete this task.");
+            notifyApiError(err, "Couldn't delete the task");
         }
     }
 
@@ -258,46 +257,41 @@ function TasksContent() {
 
     const checkedTasks = viewFiltered.filter((t) => checkedUids.has(t.uid));
 
+    // The bulk handlers try every task and report each failure: the same failure repeated is one pop-up with a count.
     async function handleBulkComplete() {
-        let bulkError: string | null = null;
         for (const task of checkedTasks) {
             try {
                 await setTaskCompleted(task, true);
             } catch (err) {
-                bulkError = err instanceof ApiRequestError ? err.message : "Could not update one or more tasks.";
+                notifyApiError(err, "Couldn't update some of the tasks");
             }
         }
         setCheckedUids(new Set());
         await reload();
-        setError(bulkError);
     }
 
     async function handleBulkAddToMyDay() {
-        let bulkError: string | null = null;
         for (const task of checkedTasks) {
             try {
                 await setTaskMyDay(task, true);
             } catch (err) {
-                bulkError = err instanceof ApiRequestError ? err.message : "Could not update one or more tasks.";
+                notifyApiError(err, "Couldn't update some of the tasks");
             }
         }
         setCheckedUids(new Set());
         await reload();
-        setError(bulkError);
     }
 
     async function handleBulkDelete() {
-        let bulkError: string | null = null;
         for (const task of checkedTasks) {
             try {
                 await deleteTask(task.uid, task.version);
             } catch (err) {
-                bulkError = err instanceof ApiRequestError ? err.message : "Could not delete one or more tasks.";
+                notifyApiError(err, "Couldn't delete some of the tasks");
             }
         }
         setCheckedUids(new Set());
         await reload();
-        setError(bulkError);
     }
 
     function requestDelete(task: Task) {
@@ -329,7 +323,8 @@ function TasksContent() {
     const completedTasks = viewFiltered.filter((t) => t.completed);
 
     return (
-        <div className="flex-1 flex min-h-0">
+        // Below `lg` the tasks menu is a drawer (its button sits above the list), so the list keeps the whole width.
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col lg:flex-row">
             <TasksSidebar mailboxUid={mailboxUid} tasks={tasks} userUid={userUid} active={view} onSelect={handleSelectView} />
             <div className="flex-1 min-w-0 flex flex-col overflow-y-auto">
                 <TasksToolbar
@@ -354,13 +349,13 @@ function TasksContent() {
                         <FlaggedEmailList loading={flaggedLoading} error={flaggedError} messages={flaggedMessages} />
                     ) : (
                         <>
-                            <form onSubmit={handleCreate} className="flex items-center gap-2 bg-surface border border-border rounded-md p-2">
+                            <form onSubmit={handleCreate} className="flex flex-wrap items-center gap-2 bg-surface border border-border rounded-md p-2">
                                 <input
                                     ref={addTaskRef}
                                     type="text"
                                     aria-label="Add a task"
                                     {...addTaskHint}
-                                    className={`${INPUT_CLASS} flex-1`}
+                                    className={`${INPUT_CLASS} min-w-40 basis-40 flex-1`}
                                     value={title}
                                     onChange={(e) => setTitle(e.target.value)}
                                     placeholder="Add a task"

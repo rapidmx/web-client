@@ -5,9 +5,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import { getPushClient, PushEvent } from "@rapidmx/react-shared/mail/pushClient.js";
+import { SendEvent, parseSendEvent } from "@rapidmx/react-shared/mail/sendEvents.js";
 import type { MailboxFolders } from "../components/mail/layout/MailShell.js";
 import { SIGN_OUT_CHANNEL } from "../search/localIndexRpcClient.js";
 import { FolderCounts, useFolderCounts } from "./folderCounts.js";
+import { FolderChange, sortFolders } from "./folderTree.js";
 
 /** How often the safety-net poll runs while the tab is visible. The push socket does the real work; this is for a network
  * that blocks or silently drops it, and for events published while it was reconnecting (Redis pub/sub is never replayed). */
@@ -34,19 +36,26 @@ const MESSAGE_ACTIONS = new Set(["create", "update", "delete"]);
 
 /**
  * The channels to subscribe to, most important first (the push client keeps the first `PUSH_MAX_CHANNELS`): every
- * mailbox's Inbox - where mail lands - then each mailbox's other folders in the sidebar's own order, then the mailbox uids
- * themselves (which announce new folders). A folder is a channel of its own; subscribing to a mailbox does not deliver its
- * folders' events.
+ * mailbox's Inbox - where mail lands - then the mailbox uids themselves (which announce new, renamed and deleted folders, so
+ * they must outrank any folder's own mail), then each mailbox's other folders in the sidebar's own order - a folder that has
+ * just appeared is filed by its type like any other, so when the server's cap bites it is the last of them that go without live
+ * updates. A folder is a channel of its own; subscribing to a mailbox does not deliver its folders' events.
  */
 export function pushChannelsFor(mailboxFolders: MailboxFolders[], mailboxes: Mailbox[]): string[] {
     const inboxes = mailboxFolders.flatMap((entry) => entry.folders.filter((folder) => folder.type === "inbox"));
-    const others = mailboxFolders.flatMap((entry) => entry.folders.filter((folder) => folder.type !== "inbox"));
-    return [...new Set([...inboxes, ...others].map((folder) => folder.uid).concat(mailboxes.map((mailbox) => mailbox.uid)))];
+    const others = mailboxFolders.flatMap((entry) => sortFolders(entry.folders.filter((folder) => folder.type !== "inbox")));
+    return [...new Set([...inboxes.map((folder) => folder.uid), ...mailboxes.map((mailbox) => mailbox.uid), ...others.map((folder) => folder.uid)])];
 }
 
 function isFolder(value: unknown): value is Folder {
     const folder = value as Partial<Folder> | null;
     return !!folder && typeof folder.uid === "string" && typeof folder.mailboxUid === "string" && typeof folder.type === "string";
+}
+
+/** A `Folder` update event that says the folder's name or type changed (and names the folder): the counts-only ones the server publishes after every message change do not. */
+function isFolderChange(value: unknown): value is FolderChange {
+    const change = value as Partial<FolderChange> | null;
+    return !!change && typeof change.uid === "string" && (typeof change.name === "string" || typeof change.type === "string");
 }
 
 function isMessage(value: unknown): value is Message {
@@ -76,10 +85,20 @@ export interface UseMailLiveUpdatesOptions {
     mailboxFolders: MailboxFolders[];
     /** Called with a folder another client (or this one) created, so the sidebar shows it. Called only for one not already known. */
     onFolderCreated: (folder: Folder) => void;
+    /** Called when a folder's name or type was changed elsewhere (a `Folder` update event that says so - one that only carries counts is not this). */
+    onFolderChanged?: (change: FolderChange) => void;
+    /** Called with the uid of a folder that was deleted elsewhere. */
+    onFolderDeleted?: (folderUid: string) => void;
+    /** Called with a mailbox's folders as the server just listed them - on every refresh (a message event, the poll, a reconnect, the tab
+     * coming back, a send) - so a folder the tree does not know is found whichever way it appeared. */
+    onFoldersListed?: (folders: Folder[]) => void;
     /** Called with each new message the push connection announces (a `create` event) - once per message, never for a list
      * refetch, the initial load or a reconnect (nothing published while the socket was down is replayed). The caller decides
      * whether it is worth telling the user about. */
     onMessageCreated?: (message: Message) => void;
+    /** Called with the outcome of a message sent in the background (`send-succeeded`, `send-failed`, `send-retrying`). Every one also
+     * refreshes what is on screen (the Outbox and Sent Items lists and counts change with it). */
+    onSendEvent?: (event: SendEvent) => void;
 }
 
 export interface MailLiveUpdates {
@@ -101,13 +120,23 @@ export interface MailLiveUpdates {
  * Sign-out closes the socket for good: another tab's or this one's, heard on the same channel `AppShell` listens on.
  * Renders nothing and does nothing where there is no window (server-side rendering).
  */
-export function useMailLiveUpdates({ userUid, mailboxes, mailboxFolders, onFolderCreated, onMessageCreated }: UseMailLiveUpdatesOptions): MailLiveUpdates {
+export function useMailLiveUpdates({
+    userUid,
+    mailboxes,
+    mailboxFolders,
+    onFolderCreated,
+    onFolderChanged,
+    onFolderDeleted,
+    onFoldersListed,
+    onMessageCreated,
+    onSendEvent,
+}: UseMailLiveUpdatesOptions): MailLiveUpdates {
     const [live, setLive] = useState<LiveUpdates>(NO_LIVE_UPDATES);
     const folders = useMemo(() => mailboxFolders.flatMap((entry) => entry.folders), [mailboxFolders]);
-    const folderCounts = useFolderCounts(mailboxes, folders);
+    const folderCounts = useFolderCounts(mailboxes, folders, onFoldersListed);
     // The latest inputs, for the long-lived listeners below.
-    const latestRef = useRef({ mailboxes, mailboxFolders, onFolderCreated, onMessageCreated, folderCounts });
-    latestRef.current = { mailboxes, mailboxFolders, onFolderCreated, onMessageCreated, folderCounts };
+    const latestRef = useRef({ mailboxes, mailboxFolders, onFolderCreated, onFolderChanged, onFolderDeleted, onMessageCreated, onSendEvent, folderCounts });
+    latestRef.current = { mailboxes, mailboxFolders, onFolderCreated, onFolderChanged, onFolderDeleted, onMessageCreated, onSendEvent, folderCounts };
 
     const channels = useMemo(() => pushChannelsFor(mailboxFolders, mailboxes), [mailboxFolders, mailboxes]);
     const channelKey = channels.join("|");
@@ -149,7 +178,12 @@ export function useMailLiveUpdates({ userUid, mailboxes, mailboxFolders, onFolde
         }
 
         const offEvent = client.onEvent((event) => {
-            if (MESSAGE_EVENT.test(event.type) && MESSAGE_ACTIONS.has(event.action ?? "")) {
+            const sendEvent = parseSendEvent(event);
+            if (sendEvent) {
+                // A queued message was relayed (or failed to be): it left Outbox for Sent Items, or stayed there failed - every list and count may have changed.
+                latestRef.current.onSendEvent?.(sendEvent);
+                schedule();
+            } else if (MESSAGE_EVENT.test(event.type) && MESSAGE_ACTIONS.has(event.action ?? "")) {
                 if (event.action === "create" && isMessage(event.data)) {
                     // Once per message, whatever else the event triggers: the badge first, then whoever announces it.
                     if (latestRef.current.folderCounts.noteCreated(event.data)) {
@@ -158,13 +192,24 @@ export function useMailLiveUpdates({ userUid, mailboxes, mailboxFolders, onFolde
                 }
                 schedule(folderOfMessageEvent(event));
             } else if (FOLDER_EVENT.test(event.type) && event.action === "create" && isFolder(event.data)) {
+                // A folder made by the server (on first use, or by another client) or by this one: filed in the sidebar and subscribed to at once (the
+                // channel list follows the tree), and its real counts read - all without a reload.
                 const folder = event.data;
                 const known = latestRef.current.mailboxFolders.some((entry) => entry.folders.some((f) => f.uid === folder.uid));
                 if (!known) {
                     latestRef.current.onFolderCreated(folder);
+                    latestRef.current.folderCounts.refresh(0);
                 }
             } else if (FOLDER_EVENT.test(event.type) && event.action === "update") {
+                if (isFolderChange(event.data)) {
+                    latestRef.current.onFolderChanged?.(event.data);
+                }
                 latestRef.current.folderCounts.applyFolderEvent(event.data);
+            } else if (FOLDER_EVENT.test(event.type) && event.action === "delete") {
+                const uid = (event.data as { uid?: unknown } | null | undefined)?.uid;
+                if (typeof uid === "string") {
+                    latestRef.current.onFolderDeleted?.(uid);
+                }
             }
         });
         // Anything published while the socket was down is gone for good, so every reconnect is followed by a refresh.

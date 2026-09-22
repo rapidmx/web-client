@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import React, { FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     addPlugin,
@@ -17,6 +17,8 @@ import {
     PluginChangePlan,
     PluginInstanceStatus,
     PluginNamespace,
+    PluginPurgeInfo,
+    PluginPurgeState,
     PluginRegistryLookup,
     PluginSearchResult,
     PluginSettingDefinition,
@@ -24,12 +26,16 @@ import {
     PluginStatus,
     PluginUpdateInfo,
     removePlugin,
+    RemovePluginResult,
+    retryPluginPurge,
     searchPlugins,
     updatePlugin,
 } from "@rapidmx/react-shared/admin/pluginsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { notify } from "../../../notifications/store.js";
+import { isElevationRequired } from "../elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -56,6 +62,23 @@ async function attempt(action: () => Promise<void>, failure: string): Promise<st
         return errorMessage(err, failure);
     }
 }
+
+/** The classes of a confirm button that deletes data, the same as the app's other destructive buttons. */
+const DANGER_BUTTON_CLASS = "!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger";
+
+/** Shown when the server wants the administrator to have confirmed their identity recently (`api-104`). */
+const ELEVATION_MESSAGE = "Deleting data needs you to have recently confirmed your identity. Reload this page, or sign in again, then try once more.";
+
+/** What an administrator sees an uninstalled plugin's data deletion as, without the display name of a plugin that's gone. */
+const purgeName = (purge: PluginPurgeInfo): string => purge.displayName ?? purge.name;
+
+/** Why a data deletion failed: what the server recorded, else the steps that failed. */
+function purgeFailure(purge: PluginPurgeInfo): string {
+    return purge.error ?? (purge.steps.filter((step) => !step.ok).map((step) => step.error ?? step.step).join("; ") || "The reason wasn't recorded.");
+}
+
+/** A day, in the administrator's own format. */
+const formatDate = (iso: string): string => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
 /** A change waiting for the administrator to confirm the other plugins it also installs or enables. */
 interface PendingChange {
@@ -116,6 +139,8 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
     /** How many times status has been retried while none has ever been read. */
     const [statusRetries, setStatusRetries] = useState(0);
     const statusRequest = useRef<Promise<void> | null>(null);
+    /** The state each data deletion was last seen in, so a notification is raised when one that was under way ends. */
+    const seenPurges = useRef<Map<string, PluginPurgeState>>(new Map());
 
     const setBusy = (uid: string, busy: boolean) =>
         setBusyUids((prev) => {
@@ -171,8 +196,12 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
     }, [refreshStatus, refreshUpdates]);
 
     const pending: boolean = !!status && status.instances.some((instance) => instance.hash !== status.hash);
+    // A plugin's data deletion in the status that isn't over yet, for a plugin that's uninstalled (one added again is hidden).
+    const installedNames: Set<string> = new Set(plugins.map((plugin) => plugin.name));
+    const purges: PluginPurgeInfo[] = (status?.purges ?? []).filter((purge) => !installedNames.has(purge.name));
+    const purging: boolean = purges.some((purge) => purge.state === "pending" || purge.state === "running");
     useEffect(() => {
-        if (!pending && pollUntil === 0) {
+        if (!pending && !purging && pollUntil === 0) {
             return;
         }
         const timer = setInterval(() => void refreshStatus(), PENDING_POLL_MS);
@@ -182,7 +211,29 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             clearInterval(timer);
             clearTimeout(stop);
         };
-    }, [pending, pollUntil, refreshStatus]);
+    }, [pending, purging, pollUntil, refreshStatus]);
+
+    // A data deletion seen under way that has now ended is worth a notification: it happens after the servers restart,
+    // long after the administrator asked for it.
+    useEffect(() => {
+        for (const purge of status?.purges ?? []) {
+            const before = seenPurges.current.get(purge.uid);
+            seenPurges.current.set(purge.uid, purge.state);
+            if (before !== "pending" && before !== "running") {
+                continue;
+            }
+            if (purge.state === "done") {
+                notify({ kind: "success", title: `${purgeName(purge)}'s data was deleted`, dedupeKey: `plugin-purge-${purge.uid}-done` });
+            } else if (purge.state === "failed") {
+                notify({
+                    kind: "error",
+                    title: `Deleting ${purgeName(purge)}'s data failed`,
+                    message: purgeFailure(purge),
+                    dedupeKey: `plugin-purge-${purge.uid}-failed`,
+                });
+            }
+        }
+    }, [status]);
 
     // With no status read at all there's nothing pending to poll for, so keep retrying - less often each time.
     const neverRead: boolean = !status && statusStale;
@@ -298,6 +349,10 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             async (plan) => {
                 const result = await addPlugin(name, packageVersion, expectedPlanOf(plan));
                 applied(...result.dependencies, result.plugin);
+                // Adding a plugin cancels the deletion of its data that was waiting for the servers to stop running it.
+                for (const warning of result.warnings ?? []) {
+                    notify({ kind: "warning", title: "Data deletion cancelled", message: warning });
+                }
             },
             `Could not install ${displayName}.`,
         );
@@ -326,6 +381,22 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
 
     function upgrade(plugin: Plugin, packageVersion: string) {
         return onRow(plugin, () => changeVersion(plugin, packageVersion));
+    }
+
+    /** Runs the steps of a failed data deletion that failed, again. */
+    async function retryPurge(purge: PluginPurgeInfo) {
+        setBusy(purge.uid, true);
+        setError(null);
+        setRetryEnableUid(null);
+        try {
+            await retryPluginPurge(purge.uid);
+            // The retry starts on a server shortly; keep reading status until it ends.
+            setPollUntil(Date.now() + AFTER_CHANGE_POLL_MS);
+            await refreshStatus();
+        } catch (err) {
+            setError(isElevationRequired(err) ? ELEVATION_MESSAGE : errorMessage(err, `Could not retry deleting ${purgeName(purge)}'s data.`));
+        }
+        setBusy(purge.uid, false);
     }
 
     // Retried against the plugin as it's listed now (a newer version, or already enabled elsewhere, hides the retry).
@@ -398,7 +469,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             </div>
             {loading ? (
                 <p className="text-sm text-text-muted">Loading&hellip;</p>
-            ) : plugins.length === 0 ? (
+            ) : plugins.length === 0 && purges.length === 0 ? (
                 <p className="text-sm text-text-muted">No plugins installed.</p>
             ) : (
                 <div className="overflow-x-auto">
@@ -492,6 +563,9 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                                     </tr>
                                 );
                             })}
+                            {purges.map((purge) => (
+                                <UninstalledPluginRow key={purge.uid} purge={purge} busy={busyUids.has(purge.uid)} onRetry={() => void retryPurge(purge)} />
+                            ))}
                         </tbody>
                     </table>
                 </div>
@@ -551,10 +625,23 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                 <RemoveModal
                     plugin={removing}
                     onClose={() => setRemoving(null)}
-                    onRemoved={() => {
+                    onRemoved={(result) => {
                         const uid = removing.uid;
+                        const displayName = removing.manifest.displayName;
                         setRemoving(null);
                         setPlugins((prev) => prev.filter((plugin) => plugin.uid !== uid));
+                        if (result.purgeScheduled) {
+                            // Shown at once; the status polling that follows replaces it with what the servers report.
+                            const scheduled = result.purge;
+                            setStatus((prev) =>
+                                prev && scheduled ? { ...prev, purges: [...(prev.purges ?? []).filter((purge) => purge.uid !== scheduled.uid), scheduled] } : prev,
+                            );
+                            notify({
+                                kind: "info",
+                                title: `${displayName} uninstalled`,
+                                message: "Its data is deleted once every server has stopped running it. Adding the plugin again before then cancels the deletion.",
+                            });
+                        }
                         watchRollout();
                     }}
                 />
@@ -808,6 +895,68 @@ function PluginServers({ plugin, status }: { plugin: Plugin; status: PluginStatu
                 </div>
             ))}
         </div>
+    );
+}
+
+/** The row of a plugin that was uninstalled but whose data deletion is still listed: what became of its data. */
+function UninstalledPluginRow({ purge, busy, onRetry }: { purge: PluginPurgeInfo; busy: boolean; onRetry: () => void }) {
+    const failedSteps = purge.steps.filter((step) => !step.ok);
+    return (
+        <tr role="row" className={INSTALLED_ROW_CLASS}>
+            <td role="cell" className={`${INSTALLED_TD_CLASS} basis-full pt-3 pb-2`}>
+                <div className="font-semibold">{purgeName(purge)}</div>
+                <div className="text-xs text-text-muted">{purge.name}</div>
+            </td>
+            <td role="cell" className={`${INSTALLED_TD_CLASS} hidden lg:table-cell`} />
+            <td role="cell" className={`${INSTALLED_TD_CLASS} pt-1 pb-3 basis-full lg:basis-auto`}>
+                <div className="flex flex-col items-start gap-1 text-xs max-w-sm">
+                    <span className={`${BADGE_CLASS} bg-surface-alt text-text-muted`}>Uninstalled</span>
+                    {purge.state === "pending" && (
+                        <>
+                            <span>Uninstalled - data will be deleted after servers restart</span>
+                            {!!purge.serversRunning && (
+                                <span className="text-text-muted">
+                                    {purge.serversRunning} of {purge.serversTotal} {purge.serversTotal === 1 ? "server" : "servers"} still running it
+                                </span>
+                            )}
+                        </>
+                    )}
+                    {purge.state === "running" && <span>Uninstalled - deleting its data now</span>}
+                    {purge.state === "done" && <span className="text-success font-medium">Data deleted{purge.completedAt ? ` ${formatDate(purge.completedAt)}` : ""}</span>}
+                    {purge.state === "failed" && (
+                        <>
+                            <span className="text-danger break-words">Data deletion failed: {purgeFailure(purge)}</span>
+                            {failedSteps.length > 0 && (
+                                <ul className="list-disc pl-4 text-text-muted break-words">
+                                    {failedSteps.map((step) => (
+                                        <li key={step.step}>
+                                            {step.step}: {step.error ?? "failed"}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </>
+                    )}
+                </div>
+            </td>
+            <td role="cell" className={`${INSTALLED_TD_CLASS} basis-full pt-1 pb-3`}>
+                {purge.state === "failed" && (
+                    <div className="flex lg:justify-end">
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="!w-auto"
+                            aria-label={`Retry deleting the data of ${purgeName(purge)}`}
+                            disabled={busy}
+                            loading={busy}
+                            onClick={onRetry}
+                        >
+                            Retry
+                        </Button>
+                    </div>
+                )}
+            </td>
+        </tr>
     );
 }
 
@@ -1252,37 +1401,91 @@ function SettingField({
     );
 }
 
-function RemoveModal({ plugin, onClose, onRemoved }: { plugin: Plugin; onClose: () => void; onRemoved: () => void }) {
+function RemoveModal({ plugin, onClose, onRemoved }: { plugin: Plugin; onClose: () => void; onRemoved: (result: RemovePluginResult) => void }) {
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [purgeData, setPurgeData] = useState(false);
+    const [typed, setTyped] = useState("");
+    const helpId = useId();
+    const displayName = plugin.manifest.displayName;
+    // Deleting data is destructive and permanent, so it also takes the plugin's name typed out.
+    const confirmed = !purgeData || typed.trim().toLowerCase() === displayName.trim().toLowerCase();
 
-    async function remove() {
+    async function remove(event: FormEvent) {
+        event.preventDefault();
         setBusy(true);
         setError(null);
         try {
-            await removePlugin(plugin.uid);
-            onRemoved();
+            onRemoved(await removePlugin(plugin.uid, { purgeData }));
         } catch (err) {
-            setError(errorMessage(err, "Could not uninstall the plugin."));
+            setError(isElevationRequired(err) ? ELEVATION_MESSAGE : errorMessage(err, "Could not uninstall the plugin."));
             setBusy(false);
         }
     }
 
     return (
-        <Modal open onClose={onClose} title={`Uninstall ${plugin.manifest.displayName}?`}>
-            {error && <Alert>{error}</Alert>}
-            <p className="text-sm mb-4">
-                The servers stop running this plugin after they restart. Data it stored stays in the database, and adding
-                the plugin again brings it back.
-            </p>
-            <div className="flex gap-2 justify-end">
-                <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
-                    Cancel
-                </Button>
-                <Button type="button" className="!w-auto" loading={busy} disabled={busy} onClick={() => void remove()}>
-                    Uninstall
-                </Button>
-            </div>
+        <Modal open onClose={onClose} title={`Uninstall ${displayName}?`}>
+            <form onSubmit={(event) => void remove(event)}>
+                {error && <Alert>{error}</Alert>}
+                <p className="text-sm mb-4">
+                    {purgeData
+                        ? "The servers stop running this plugin after they restart, and then all the data it stored is deleted."
+                        : "The servers stop running this plugin after they restart. Data it stored stays in the database, and adding the plugin again brings it back."}
+                </p>
+                <div className="mb-4">
+                    <label className="flex items-start gap-2 text-sm font-semibold cursor-pointer">
+                        <input
+                            type="checkbox"
+                            className="mt-0.5 h-4 w-4 shrink-0 accent-danger"
+                            checked={purgeData}
+                            disabled={busy}
+                            aria-describedby={helpId}
+                            onChange={(e) => setPurgeData(e.target.checked)}
+                        />
+                        <span>Also delete all data this plugin stored</span>
+                    </label>
+                    <div id={helpId} className="mt-2 pl-6 text-xs text-text-muted">
+                        <p>What is deleted:</p>
+                        <ul className="list-disc pl-5 mt-1 space-y-0.5">
+                            <li>the database collections and tables the plugin&apos;s features use, with everything in them</li>
+                            <li>the plugin&apos;s saved settings</li>
+                            <li>its downloaded package and cached pages on the servers</li>
+                            <li>whatever else the plugin cleans up itself, such as files it stored or data kept outside the database</li>
+                        </ul>
+                        <p className="mt-2 text-danger font-semibold">This can&apos;t be undone.</p>
+                    </div>
+                </div>
+                {purgeData && (
+                    <>
+                        <p className="text-xs text-text-muted mb-3">
+                            Nothing is deleted while a server is still running the plugin. Once every server has restarted without it, usually
+                            within a few minutes, its data is deleted. Adding the plugin again before then cancels the deletion.
+                        </p>
+                        <label className="block text-sm mb-4">
+                            <span>
+                                Type <strong>{displayName}</strong> to confirm
+                            </span>
+                            <input
+                                type="text"
+                                className={`${INPUT_CLASS} mt-1.5`}
+                                value={typed}
+                                autoComplete="off"
+                                spellCheck={false}
+                                disabled={busy}
+                                onChange={(e) => setTyped(e.target.value)}
+                            />
+                        </label>
+                    </>
+                )}
+                <div className="flex gap-2 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                        Cancel
+                    </Button>
+                    <Button type="submit" className={purgeData ? DANGER_BUTTON_CLASS : "!w-auto"} loading={busy} disabled={busy || !confirmed}>
+                        {purgeData ? "Uninstall and delete data" : "Uninstall"}
+                    </Button>
+                </div>
+            </form>
         </Modal>
     );
 }

@@ -9,7 +9,8 @@
 import React from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch } from "../testUtils.js";
+import { jsonResponse } from "../testUtils.js";
+import { mockFetchWithServerBody as mockFetch } from "./paneFetch.js";
 import MessageDetailPane from "../../../apps/shared/components/mail/MessageDetailPane.js";
 import { clearVerificationSealCache } from "../../../apps/shared/components/mail/verificationSeals.js";
 

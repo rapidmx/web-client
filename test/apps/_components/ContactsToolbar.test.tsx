@@ -3,9 +3,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import ContactsToolbar from "../../../apps/shared/components/contacts/ContactsToolbar.js";
 
 function renderToolbar(overrides: Partial<React.ComponentProps<typeof ContactsToolbar>> = {}) {
@@ -125,5 +125,85 @@ describe("ContactsToolbar keyboard shortcut hint", () => {
         const button = screen.getByText("New contact").closest("button")!;
         expect(button).not.toHaveAttribute("title");
         expect(button).not.toHaveAttribute("aria-keyshortcuts");
+    });
+});
+
+describe("ContactsToolbar in a narrow column", () => {
+    /** A ResizeObserver the test drives, and a measured width. */
+    class FakeResizeObserver {
+        static last: FakeResizeObserver;
+        constructor(public callback: (entries: { contentRect: { width: number } }[]) => void) {
+            FakeResizeObserver.last = this;
+        }
+        observe = vi.fn();
+        disconnect = vi.fn();
+    }
+    function measured(width: number) {
+        vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+        vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width, height: 40, left: 0, right: width, top: 0, bottom: 40, x: 0, y: 0, toJSON: () => ({}) });
+    }
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    it("keeps every action reachable in a column as narrow as the 26 rem list: icons (with tooltips) instead of captions, all in the bar", () => {
+        measured(416);
+        renderToolbar({ selectedCount: 1, shortcuts: true });
+        const bar = screen.getByRole("toolbar", { name: "Contacts actions" });
+        expect(within(bar).getAllByRole("button")).toHaveLength(8);
+        expect(within(bar).getByRole("button", { name: "New contact" })).toHaveAttribute("title", "New contact (Alt+N)");
+        expect(within(bar).getByRole("button", { name: "New contact" })).toHaveAttribute("aria-keyshortcuts", "Alt+N");
+        expect(within(bar).getByRole("button", { name: "Export" })).toHaveAttribute("title", "Export");
+        expect(screen.queryByRole("button", { name: "More actions" })).not.toBeInTheDocument();
+    });
+
+    it("moves Import, Export and Add category into a More menu first - each still works from there, Import through the hidden file input", async () => {
+        measured(280);
+        const handlers = renderToolbar({ selectedCount: 2 });
+        const bar = screen.getByRole("toolbar", { name: "Contacts actions" });
+        expect(within(bar).queryByRole("button", { name: "Import" })).not.toBeInTheDocument();
+        expect(within(bar).queryByRole("button", { name: "Export" })).not.toBeInTheDocument();
+        expect(within(bar).queryByRole("button", { name: "Add category" })).not.toBeInTheDocument();
+        expect(within(bar).getByRole("button", { name: "Favorite" })).toBeInTheDocument();
+
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("button", { name: "More actions" }));
+        const menu = screen.getByRole("menu");
+        expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Add category", "Export", "Import"]);
+
+        await user.click(within(menu).getByRole("menuitem", { name: "Export" }));
+        expect(handlers.onExportVCard).toHaveBeenCalledTimes(1);
+        await user.click(screen.getByRole("button", { name: "More actions" }));
+        await user.click(screen.getByRole("menuitem", { name: "Add category" }));
+        expect(handlers.onAddCategory).toHaveBeenCalledTimes(1);
+
+        const input = screen.getByLabelText("Import contacts file");
+        const pick = vi.spyOn(input, "click").mockImplementation(() => undefined);
+        await user.click(screen.getByRole("button", { name: "More actions" }));
+        await user.click(screen.getByRole("menuitem", { name: "Import" }));
+        expect(pick).toHaveBeenCalledTimes(1);
+        const file = new File(["BEGIN:VCARD"], "people.vcf", { type: "text/vcard" });
+        await user.upload(input, file);
+        expect(handlers.onImportFile).toHaveBeenCalledWith(file);
+    });
+
+    it("greys out the menu's actions that need a selection while nothing is selected", async () => {
+        measured(280);
+        renderToolbar({ selectedCount: 0 });
+        await userEvent.setup().click(screen.getByRole("button", { name: "More actions" }));
+        const menu = screen.getByRole("menu");
+        expect(within(menu).getByRole("menuitem", { name: "Export" })).toBeDisabled();
+        expect(within(menu).getByRole("menuitem", { name: "Add category" })).toBeDisabled();
+        expect(within(menu).getByRole("menuitem", { name: "Import" })).toBeEnabled();
+    });
+
+    it("follows the column when it is resized, and gives the captions back when there is room", () => {
+        measured(280);
+        renderToolbar();
+        expect(screen.getByRole("button", { name: "More actions" })).toBeInTheDocument();
+        act(() => FakeResizeObserver.last.callback([{ contentRect: { width: 700 } }]));
+        expect(screen.queryByRole("button", { name: "More actions" })).not.toBeInTheDocument();
+        expect(screen.getByText("Add category").closest("button")).not.toHaveAttribute("title");
     });
 });

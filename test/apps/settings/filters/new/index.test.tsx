@@ -218,7 +218,9 @@ describe("NewMailFilterPage", () => {
         await user.click(screen.getByRole("checkbox", { name: "Has an attachment" }));
         await user.click(screen.getByRole("button", { name: "Create filter" }));
 
+        // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("boom")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't create the mail filter")).toBeInTheDocument();
     });
 
     it("shows a generic error message when creation fails with a non-API error", async () => {
@@ -234,7 +236,8 @@ describe("NewMailFilterPage", () => {
         await user.click(screen.getByRole("checkbox", { name: "Has an attachment" }));
         await user.click(screen.getByRole("button", { name: "Create filter" }));
 
-        expect(await screen.findByText("Could not create the mail filter.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't create the mail filter")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("refuses to create a filter without any condition, since it would apply to every message", async () => {

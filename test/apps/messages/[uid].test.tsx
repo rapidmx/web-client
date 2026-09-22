@@ -87,7 +87,9 @@ describe("MessageDetailPage", () => {
         render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
 
         await waitFor(() => expect(resolveMessage).toBeDefined());
-        expect(screen.getByText("Loading…")).toBeInTheDocument();
+        // The pane's frame - header card and message card placeholders - at once, not a line of text.
+        expect(screen.getByRole("status")).toHaveTextContent("Loading the message");
+        expect(document.querySelectorAll("[aria-hidden='true'].rounded-lg")).toHaveLength(2);
 
         resolveMessage!();
         await screen.findByRole("heading", { name: "Hello there" });

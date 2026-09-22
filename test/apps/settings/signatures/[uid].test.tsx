@@ -166,7 +166,9 @@ describe("SignatureDetailPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Save changes" }));
 
+        // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("version conflict")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't save the signature")).toBeInTheDocument();
         expect(screen.getByLabelText("Name")).toHaveValue("Work signature");
     });
 
@@ -182,7 +184,8 @@ describe("SignatureDetailPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Save changes" }));
 
-        expect(await screen.findByText("Could not save this signature.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't save the signature")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("shows an error message when the signature fails to load", async () => {

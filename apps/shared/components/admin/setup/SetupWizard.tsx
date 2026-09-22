@@ -391,7 +391,8 @@ function MailboxesStep({ userUid, domain }: { userUid: string; domain?: string }
     const [formKey, setFormKey] = useState(0);
 
     useEffect(() => {
-        listMailboxes({ limit: 100 })
+        // The administration scope: every mailbox that exists (administrative metadata), not only the administrator's own.
+        listMailboxes({ limit: 100, scope: "admin" })
             .then((list) =>
                 // Keep any mailbox created here while the list was loading.
                 setMailboxes((prev) => [...list, ...prev.filter((mine) => !list.some((mailbox) => mailbox.uid === mine.uid))]),

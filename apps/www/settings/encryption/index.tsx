@@ -6,15 +6,14 @@ import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
-    EnrollmentResult,
     KeyVault,
     MasterKeyWrap,
     PublicKey,
     WrappedPrivateKey,
     addMasterKeyWrap,
     cancelSignEnrollment,
-    checkSignEnrollmentStatus,
     findActivePublicKey,
+    getCurrentSignEnrollment,
     getEscrowInfo,
     getKeyVault,
     rekey,
@@ -45,15 +44,32 @@ import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../sh
 import KeyEnrollmentGate from "../../../shared/components/layout/KeyEnrollmentGate.js";
 import { useUnlockPrompt } from "../../../shared/components/layout/UnlockPromptProvider.js";
 import { destroyLocalIndex } from "../../../shared/search/localIndexRpcClient.js";
+import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import SigningCertificateCard, { SigningCertificateMode } from "../../../shared/components/settings/SigningCertificateCard.js";
+import { readStoredSignEnrollment, storeSignEnrollment } from "../../../shared/signing/enrollmentStorage.js";
+import {
+    checkEnrollmentNow,
+    forgetEnrollment,
+    recordEnrollmentResult,
+    useEnrollmentSnapshot,
+    watchCurrentEnrollment,
+    watchEnrollment,
+} from "../../../shared/signing/enrollmentTracker.js";
+import { STALE_REQUEST_TEXT, beforeRequestText, healthWarning, isInstalling, timeOf } from "../../../shared/signing/enrollmentView.js";
+import { useSigningEnrollmentInfo } from "../../../shared/signing/signingInfo.js";
 
 const MIN_PASSWORD_LENGTH = 8;
 
 /** Mirrors restapi's `BaseKeyVaultRoute` `MAX_MASTER_KEY_WRAPS` - `addMasterKeyWrap()` refuses a vault
  * already holding this many wraps (escrow included). */
 export const MAX_MASTER_KEY_WRAPS = 20;
+
+/** How often, and how many times, the page asks for the mailbox's keys while a certificate is issued but not installed yet. */
+const INSTALL_WATCH_INTERVAL_MS = 15_000;
+const INSTALL_WATCH_ATTEMPTS = 40;
 
 const KEYS_LOCKED_MESSAGE = "Your encryption keys were locked before this could finish. Unlock them and try again.";
 
@@ -157,39 +173,6 @@ async function rewrapVaultPrivateKeys(
         for (const { raw } of opened) {
             raw.fill(0);
         }
-    }
-}
-
-// RFC 8823 ACME issuance is a real email round-trip with a public CA - "likely minutes," not seconds -
-// so this polls infrequently rather than hammering the endpoint.
-const SIGNING_ENROLLMENT_POLL_INTERVAL_MS = 15_000;
-
-/**
- * A started signing enrollment's id, per mailbox. Kept only so a reload can ask the server
- * (`checkSignEnrollmentStatus()`) whether that enrollment is still pending: a rotation while it is pending
- * would strand the enrollment's already-submitted private key under a master key that no longer exists. The
- * stored id is never trusted on its own - the server's answer decides the state, and restapi's own `rekey()`
- * refuses (409) a rotation during an enrollment this browser never saw (e.g. one started on another device).
- */
-const SIGN_ENROLLMENT_STORAGE_PREFIX = "rapidmx.signEnrollment.";
-
-function readStoredSignEnrollment(mailboxUid: string): string | null {
-    try {
-        return localStorage.getItem(SIGN_ENROLLMENT_STORAGE_PREFIX + mailboxUid);
-    } catch {
-        return null;
-    }
-}
-
-function storeSignEnrollment(mailboxUid: string, enrollmentId: string | null): void {
-    try {
-        if (enrollmentId) {
-            localStorage.setItem(SIGN_ENROLLMENT_STORAGE_PREFIX + mailboxUid, enrollmentId);
-        } else {
-            localStorage.removeItem(SIGN_ENROLLMENT_STORAGE_PREFIX + mailboxUid);
-        }
-    } catch {
-        // Storage blocked - restapi's own 409 on rekey still guards a rotation.
     }
 }
 
@@ -304,6 +287,12 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     const [signingEnrollmentId, setSigningEnrollmentId] = useState<string | null>(null);
     const [signingError, setSigningError] = useState<string | null>(null);
     const rotationBlockedBySigning = signingStatus !== "idle";
+    // What is known of the mailbox's signing-certificate enrollment: kept current by the shared tracker (`signing/enrollmentTracker.ts`), which reads
+    // the server with backoff while this page is visible, stops when the enrollment ends, and goes on in the app frame when this page is left.
+    const enrollment = useEnrollmentSnapshot(mailboxUid);
+    const enrollmentResult = enrollment?.result ?? null;
+    // How this deployment issues certificates (a public CA by itself, or an administrator by hand): what the card and the request say follows it. Only the owner asks.
+    const signingInfo = useSigningEnrollmentInfo(canManageKeys);
 
     const [cancelingEnrollment, setCancelingEnrollment] = useState(false);
     const [cancelEnrollmentError, setCancelEnrollmentError] = useState<string | null>(null);
@@ -377,79 +366,80 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         }
     }
 
-    /** Applies a server-reported enrollment status - shared by the reload check and the poll below. */
-    async function applyEnrollmentResult(enrollmentId: string, result: EnrollmentResult, isCancelled: () => boolean) {
-        if (result.status === "pending") {
-            setSigningEnrollmentId(enrollmentId);
-            setSigningStatus("pending");
-            return;
-        }
-        storeSignEnrollment(mailboxUid!, null);
-        setSigningStatus("idle");
-        setSigningEnrollmentId(null);
-        if (result.status === "failed") {
-            setSigningError(result.error ?? "Signing certificate enrollment failed.");
-            return;
-        }
-        try {
-            const refreshed = await getMailbox(mailboxUid!);
-            if (!isCancelled()) {
-                setRefreshedKeys(refreshed.keys ?? []);
-            }
-        } catch {
-            // The new key shows on the next load - the enrollment itself is finished either way.
-        }
-    }
-
-    // Confirms an enrollment started before a reload with the server before rotation is offered again.
+    // Follows the enrollment this browser started (its stored id) - or, for the owner, the one the server names as the mailbox's current one (started
+    // on another device, or long ago), so a pending one blocks rotation and shows its progress here too.
     useEffect(() => {
         const storedId = readStoredSignEnrollment(mailboxUid!);
-        if (!storedId) {
-            return;
-        }
         let cancelled = false;
-        setSigningStatus("checking");
-        checkSignEnrollmentStatus(mailboxUid!, storedId)
-            .then((result) => (cancelled ? undefined : applyEnrollmentResult(storedId, result, () => cancelled)))
-            .catch((err) => {
-                if (cancelled) {
-                    return;
-                }
-                if (err instanceof ApiRequestError && err.status === 404) {
-                    // The server no longer knows this enrollment, so nothing is pending.
-                    storeSignEnrollment(mailboxUid!, null);
-                    setSigningStatus("idle");
-                    return;
-                }
-                // Unknown (e.g. a network error): assume it is still pending, and let polling keep asking.
-                setSigningEnrollmentId(storedId);
-                setSigningStatus("pending");
-            });
+        let release: (() => void) | undefined;
+        if (storedId) {
+            setSigningStatus("checking");
+            release = watchEnrollment(mailboxUid!, storedId);
+        } else if (canManageKeys) {
+            getCurrentSignEnrollment(mailboxUid!)
+                .then((current) => {
+                    if (!cancelled && current) {
+                        if (current.status === "pending") {
+                            storeSignEnrollment(mailboxUid!, current.enrollmentId);
+                        }
+                        release = watchCurrentEnrollment(mailboxUid!, current, current.status === "pending");
+                    }
+                })
+                .catch(() => undefined);
+        }
         return () => {
             cancelled = true;
+            release?.();
         };
-    }, [mailboxUid]);
+    }, [mailboxUid, canManageKeys]);
 
+    // What the tracker knows becomes this page's state: pending (or not heard from yet - assume it is still going, and let the polling keep asking) blocks
+    // rotation; an enrollment that ended, or that the server no longer knows, does not.
     useEffect(() => {
-        if (signingStatus !== "pending" || !signingEnrollmentId) {
+        if (!enrollment) {
+            return;
+        }
+        if (enrollmentResult?.status === "pending" || (!enrollmentResult && enrollment.offline)) {
+            setSigningEnrollmentId(enrollment.enrollmentId);
+            setSigningStatus("pending");
+        } else if (enrollmentResult || enrollment.gone) {
+            setSigningEnrollmentId(null);
+            setSigningStatus("idle");
+        }
+    }, [enrollment?.enrollmentId, enrollmentResult?.status, enrollment?.gone, enrollment?.offline]);
+
+    // Once a certificate is issued the server has installed a new signing key that `mailbox.keys` (fetched once by the shell) never saw. The server installs it
+    // with a job a few minutes after the CA issues it (`installedAt`): until then the key is not there, so ask again every 15 s (for ten minutes at most).
+    const issuedUntil = timeOf(enrollmentResult?.notAfter);
+    const keyIsCurrent = !!activeSigningKey && (issuedUntil === undefined || issuedUntil <= activeSigningKey.notAfter + 60_000);
+    useEffect(() => {
+        if (enrollmentResult?.status !== "issued" || keyIsCurrent) {
             return;
         }
         let cancelled = false;
-        const interval = setInterval(async () => {
-            try {
-                const result = await checkSignEnrollmentStatus(mailboxUid!, signingEnrollmentId);
-                if (!cancelled) {
-                    await applyEnrollmentResult(signingEnrollmentId, result, () => cancelled);
-                }
-            } catch {
-                // Transient network error - keep polling rather than surfacing a one-off failure.
-            }
-        }, SIGNING_ENROLLMENT_POLL_INTERVAL_MS);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let attempts = 0;
+        const refresh = () => {
+            getMailbox(mailboxUid!)
+                .then((refreshed) => {
+                    if (cancelled) {
+                        return;
+                    }
+                    const keys = refreshed.keys ?? [];
+                    setRefreshedKeys(keys);
+                    // Not installed yet, and the server said it is on its way: look again.
+                    if (isInstalling(enrollmentResult) && ++attempts < INSTALL_WATCH_ATTEMPTS && !findActivePublicKey(keys, "sign")) {
+                        timer = setTimeout(refresh, INSTALL_WATCH_INTERVAL_MS);
+                    }
+                })
+                .catch(() => undefined);
+        };
+        refresh();
         return () => {
             cancelled = true;
-            clearInterval(interval);
+            clearTimeout(timer);
         };
-    }, [signingStatus, signingEnrollmentId, mailboxUid]);
+    }, [enrollmentResult?.status, enrollmentResult?.installedAt, enrollment?.enrollmentId, keyIsCurrent, mailboxUid]);
 
     /** Cancels the pending enrollment (restapi's owner-only DELETE), which is what lets rotation run again. */
     async function handleCancelEnrollment(enrollmentId: string) {
@@ -461,16 +451,18 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                 setCancelEnrollmentError("The enrollment couldn't be cancelled yet. Try again.");
             } else if (result.status === "failed") {
                 // Cancelled - the "failure" is the cancellation itself, not something to report.
+                forgetEnrollment(mailboxUid!);
                 storeSignEnrollment(mailboxUid!, null);
                 setSigningStatus("idle");
                 setSigningEnrollmentId(null);
             } else {
                 // Issued before the cancel landed: it finishes like any other issued enrollment.
-                await applyEnrollmentResult(enrollmentId, result, () => false);
+                recordEnrollmentResult(mailboxUid!, enrollmentId, result);
             }
         } catch (err) {
             if (err instanceof ApiRequestError && err.status === 404) {
                 // The server no longer knows this enrollment, so nothing is pending.
+                forgetEnrollment(mailboxUid!);
                 storeSignEnrollment(mailboxUid!, null);
                 setSigningStatus("idle");
                 setSigningEnrollmentId(null);
@@ -499,6 +491,8 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                 wrappedKey: { ciphertext: wrappedKeySealed.ciphertext, nonce: wrappedKeySealed.nonce, algorithm: "AES-256-GCM" },
             });
             storeSignEnrollment(mailboxUid!, enrollmentId);
+            // Followed from now on (and after this page is left): the server has just accepted it, so it is pending - no need to ask first.
+            watchEnrollment(mailboxUid!, enrollmentId, { initial: { status: "pending" } });
             setSigningEnrollmentId(enrollmentId);
             setSigningStatus("pending");
         } catch (err) {
@@ -552,7 +546,8 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             await removeMasterKeyWrap(mailboxUid!, wrap.method, wrap.methodId);
             await loadVault();
         } catch (err) {
-            setActionError(err instanceof ApiRequestError ? err.message : "Could not remove this unlock method.");
+            // A pop-up (the confirmation is already closed); `actionError` keeps the guidance tied to the forms below.
+            notifyApiError(err, "Couldn't remove this unlock method");
         } finally {
             setRemovingMethod(null);
         }
@@ -889,6 +884,27 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         );
     }
 
+    // The "Digital signatures" section: a pending enrollment first (even while an older certificate is still active - it is a renewal); else the
+    // active certificate; else how the last enrollment ended (a failure, or a certificate that has since expired); else nothing has been requested.
+    const expiredSigningKey = displayedKeys
+        .filter((key) => key.useType === "sign" && !key.revokedAt && key.notAfter <= Date.now())
+        .sort((a, b) => b.notAfter - a.notAfter)[0];
+    // A certificate the CA has issued but the server has not installed yet counts as issued too (there is no key to show yet: the card says it is installing).
+    const installing = canManageKeys && isInstalling(enrollmentResult);
+    const certificateMode: SigningCertificateMode | null =
+        signingStatus === "pending"
+            ? "pending"
+            : activeSigningKey || installing
+              ? canManageKeys
+                  ? "issued"
+                  : null
+              : canManageKeys && enrollmentResult?.status === "failed"
+                ? "failed"
+                : canManageKeys && expiredSigningKey
+                  ? "expired"
+                  : null;
+    const certificateEnrollment = certificateMode === "issued" && enrollmentResult?.status !== "issued" ? null : certificateMode === "expired" ? null : enrollmentResult;
+
     return (
         <div className="flex-1 min-w-0 overflow-y-auto p-6">
             <div className="max-w-xl flex flex-col gap-6">
@@ -931,36 +947,55 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">Digital signatures</h2>
-                    {activeSigningKey ? (
-                        <p className="text-sm text-text-muted">
+                    {activeSigningKey && signingStatus !== "pending" && (
+                        <p className={["text-sm text-text-muted", certificateMode ? "mb-3" : ""].join(" ")}>
                             Enabled — outgoing mail from this mailbox is signed with a publicly-trusted
                             certificate.
                         </p>
-                    ) : signingStatus === "pending" ? (
-                        <p className="text-sm text-text-muted">
-                            Requested — a public certificate authority issues this via an automated email
-                            exchange, which can take a few minutes. You can leave this page; it finishes in
-                            the background and takes effect automatically once issued.
-                        </p>
-                    ) : !canManageKeys ? (
+                    )}
+                    {certificateMode && (
+                        <div className="flex flex-col gap-2">
+                            {certificateMode === "failed" && signingError && <Alert>{signingError}</Alert>}
+                            <SigningCertificateCard
+                                mode={certificateMode}
+                                enrollment={certificateEnrollment}
+                                snapshot={enrollment}
+                                info={signingInfo}
+                                address={mailbox.primarySmtpAddress}
+                                keyNotAfter={certificateMode === "expired" ? expiredSigningKey?.notAfter : activeSigningKey?.notAfter}
+                                canRequest={canManageKeys}
+                                requesting={signingStatus === "enrolling"}
+                                onCheck={canManageKeys ? () => void checkEnrollmentNow(mailboxUid!) : undefined}
+                                onRequest={handleEnrollSigning}
+                            />
+                        </div>
+                    )}
+                    {!activeSigningKey && !certificateMode && !canManageKeys ? (
                         <p className="text-sm text-text-muted">Not enabled.</p>
-                    ) : (
+                    ) : activeSigningKey || certificateMode ? null : (
                         <div className="flex flex-col gap-2">
                             <p className="text-xs text-text-muted">
                                 Lets recipients verify that mail from this mailbox is genuinely from you.
                                 Optional — encryption already works without it.
                             </p>
+                            {beforeRequestText(signingInfo, mailbox.primarySmtpAddress) && (
+                                <p className="text-xs text-text-muted">{beforeRequestText(signingInfo, mailbox.primarySmtpAddress)}</p>
+                            )}
+                            {healthWarning(signingInfo) && <Alert>{healthWarning(signingInfo)}</Alert>}
+                            {enrollment?.gone && <Alert>{STALE_REQUEST_TEXT}</Alert>}
                             {signingError && <Alert>{signingError}</Alert>}
-                            <Button
-                                type="button"
-                                variant="secondary"
-                                className="!w-auto"
-                                loading={signingStatus === "enrolling"}
-                                disabled={signingStatus !== "idle"}
-                                onClick={handleEnrollSigning}
-                            >
-                                Enable digital signatures
-                            </Button>
+                            {signingInfo?.backend !== "none" && (
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className="!w-auto"
+                                    loading={signingStatus === "enrolling"}
+                                    disabled={signingStatus !== "idle"}
+                                    onClick={handleEnrollSigning}
+                                >
+                                    Enable digital signatures
+                                </Button>
+                            )}
                         </div>
                     )}
                 </div>

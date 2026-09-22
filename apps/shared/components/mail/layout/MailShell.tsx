@@ -15,7 +15,8 @@ import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { prefetchComposeWindow, useCompose } from "../compose/ComposeContext.js";
 import LocalIndexLifecycle from "../../../search/LocalIndexLifecycle.js";
 import { LiveUpdates, NO_LIVE_UPDATES } from "../../../mail/useMailLiveUpdates.js";
-import { FOLDER_ORDER, MAILBOX_LIST_LIMIT, MailConnectionContext, useMailConnection } from "../../../mail/useMailConnection.js";
+import { MAILBOX_LIST_LIMIT, MailConnectionContext, useMailConnection } from "../../../mail/useMailConnection.js";
+import { folderRows } from "../../../mail/folderTree.js";
 import {
     CountTracker,
     FolderBadge,
@@ -26,7 +27,8 @@ import {
     inboxUnreadTotal,
 } from "../../../mail/folderCounts.js";
 import { useUnreadTitle } from "../../../mail/useUnreadTitle.js";
-import NewMailToasts from "../NewMailToasts.js";
+import { pendingCountFor, usePendingSends } from "../../../mail/outbox/pendingSends.js";
+import OutboxBadge from "../OutboxBadge.js";
 import { ariaKeyShortcuts, withHint } from "../../../keyboard/format.js";
 import { SHORTCUTS } from "../../../keyboard/keymap.js";
 import { useKeyEnvironment } from "../../../keyboard/ShortcutProvider.js";
@@ -79,6 +81,8 @@ export interface MailShellContextValue {
      * A no-op on the default context value, which is only ever read outside a real shell.
      */
     onFolderCreated: (folder: Folder) => void;
+    /** Says which folders the messages on screen live in: one the sidebar does not know is looked for (see `MailConnection.noteFolderUids`). A no-op on the default context value. */
+    noteFolderUids: (folderUids: Iterable<string>) => void;
     /**
      * Bumped whenever new mail (or another change to a message) may have arrived - a push event, a reconnect or the safety-net
      * poll - so the list on screen can quietly refetch its first page. See `useMailLiveUpdates()`. Never changes on the default
@@ -100,6 +104,7 @@ const MailShellContext = createContext<MailShellContextValue>({
     mailboxes: [],
     mailboxFolders: [],
     onFolderCreated: () => undefined,
+    noteFolderUids: () => undefined,
     live: NO_LIVE_UPDATES,
     trackMessageChange: () => NO_TRACKER,
 });
@@ -118,15 +123,6 @@ const FOLDER_LABELS: Record<string, string> = {
     archive: "Archive",
     deleted_items: "Deleted Items",
 };
-
-function folderSortKey(folder: Folder): number {
-    const idx = FOLDER_ORDER.indexOf(folder.type);
-    return idx === -1 ? FOLDER_ORDER.length : idx;
-}
-
-function sortedFoldersOf(folders: Folder[]): Folder[] {
-    return [...folders].sort((a, b) => folderSortKey(a) - folderSortKey(b) || a.name.localeCompare(b.name));
-}
 
 /** The badge an "All Mailboxes" entry shows: the folders of that type, summed across every mailbox, under the same rules as a single folder's. */
 function aggregateBadge(mailboxFolders: MailboxFolders[], type: AggregateFolderType, counts: Record<string, FolderCount>): FolderBadge | undefined {
@@ -234,7 +230,9 @@ export default function MailShell({
     const navigate = useNavigate();
     const hosted = useContext(MailConnectionContext);
     const own = useMailConnection({ userUid, enabled: !hosted, open: navigate });
-    const { status, error, mailboxes, mailboxFolders, foldersLoading, onFolderCreated, live, folderCounts, notifications } = hosted ?? own;
+    const { status, error, mailboxes, mailboxFolders, foldersLoading, onFolderCreated, noteFolderUids, live, folderCounts, outbox: outboxStatuses } = hosted ?? own;
+    // The messages this tab is still handing to the server: the Outbox pill counts them at once.
+    const pendingSends = usePendingSends();
     const [requestedMailboxUid, setRequestedMailboxUid] = useState<string | null>(null);
     const [requestedFolderUid, setRequestedFolderUid] = useState<string | null>(null);
     const [requestedAggregateType, setRequestedAggregateType] = useState<string | null>(null);
@@ -285,8 +283,8 @@ export default function MailShell({
     useUnreadTitle(inboxUnreadTotal(mailboxFolders, counts), { enabled: !hosted });
 
     const contextValue = useMemo<MailShellContextValue>(
-        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, live, trackMessageChange }),
-        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, live, trackMessageChange],
+        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange }),
+        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange],
     );
 
     // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else for a
@@ -369,7 +367,23 @@ export default function MailShell({
                                     </div>
                                 )}
                                 <div className="flex flex-col gap-0.5">
-                                    {sortedFoldersOf(folders).map((folder) => {
+                                    {folderRows(folders, pendingCountFor(mailbox.uid, pendingSends)).map((row) => {
+                                        if (row.kind === "placeholder") {
+                                            // A folder the server has not made (or told us about) yet - the Outbox and Sent Items are made with the first message
+                                            // sent - shown the moment a message is on its way. Nothing to open; the real folder replaces it when it arrives.
+                                            const sending = pendingCountFor(mailbox.uid, pendingSends);
+                                            return (
+                                                <div
+                                                    key={`placeholder-${row.type}`}
+                                                    data-folder-placeholder={row.type}
+                                                    className="flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5 text-text-muted"
+                                                >
+                                                    <span>{FOLDER_LABELS[row.type]}</span>
+                                                    {row.type === "outbox" && <OutboxBadge total={sending} pendingHere={sending} />}
+                                                </div>
+                                            );
+                                        }
+                                        const folder = row.folder;
                                         const badge = badgeFor(folder.type, countOfFolder(folder, counts));
                                         return (
                                         <a
@@ -385,7 +399,16 @@ export default function MailShell({
                                             <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>
                                                 {FOLDER_LABELS[folder.type] ?? folder.name}
                                             </span>
-                                            {badge && <FolderBadgeChip badge={badge} />}
+                                            {badge &&
+                                                (folder.type === "outbox" ? (
+                                                    <OutboxBadge
+                                                        total={badge.value}
+                                                        status={outboxStatuses[folder.uid]}
+                                                        pendingHere={pendingCountFor(mailbox.uid, pendingSends)}
+                                                    />
+                                                ) : (
+                                                    <FolderBadgeChip badge={badge} />
+                                                ))}
                                         </a>
                                         );
                                     })}
@@ -415,15 +438,6 @@ export default function MailShell({
                     </button>
                     <MailShellContext.Provider value={contextValue}>{children}</MailShellContext.Provider>
                 </main>
-                {!hosted && (
-                    <NewMailToasts
-                        toasts={notifications.toasts}
-                        onDismiss={notifications.dismiss}
-                        offerDesktop={notifications.offerDesktop}
-                        onEnableDesktop={() => void notifications.enableDesktop()}
-                        onDeclineDesktop={notifications.declineDesktop}
-                    />
-                )}
             </>
         );
     }

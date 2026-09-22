@@ -8,6 +8,7 @@ import {
     HiOutlineClipboardDocumentList,
     HiOutlineClock,
     HiOutlineDocumentArrowDown,
+    HiOutlineDocumentCheck,
     HiOutlineGlobeAlt,
     HiOutlineInboxStack,
     HiOutlineKey,
@@ -28,7 +29,9 @@ import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
-import { BrandingFooter } from "../../layout/BrandingChrome.js";
+import { FrameBrandingFooter, useBrandingHtml } from "../../layout/BrandingChrome.js";
+import RailIcon from "../../layout/RailIcon.js";
+import AppearanceProvider from "../../../appearance/AppearanceProvider.js";
 import UserMenu from "../../layout/UserMenu.js";
 import {
     clearElevationAttempt,
@@ -55,7 +58,8 @@ export type AdminSection =
     | "setup"
     | "dataRequests"
     | "plugins"
-    | "branding";
+    | "branding"
+    | "signingCertificates";
 
 /** A core `AdminSection`, or a plugin's `adminNav` item id (see `PluginNav`). */
 export type AdminShellActive = AdminSection | (string & {});
@@ -130,6 +134,12 @@ const NAV_ITEMS: NavItem[] = [
         label: "Data Requests",
         icon: HiOutlineDocumentArrowDown,
     },
+    {
+        id: "signingCertificates",
+        href: "/admin/signing-certificates",
+        label: "Signing Certificates",
+        icon: HiOutlineDocumentCheck,
+    },
     { id: "plugins", href: "/admin/plugins", label: "Plugins", icon: HiOutlinePuzzlePiece },
     { id: "branding", href: "/admin/branding", label: "Branding", icon: HiOutlinePaintBrush },
 ];
@@ -177,6 +187,7 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
     // `branding` only feeds the footer below: the admin-configured header is for the webmail and public pages, not the
     // console. `useBranding()` is still what injects the custom stylesheet and supplies the rail's icon.
     const { branding, iconSrc } = useBranding();
+    const footer = useBrandingHtml(branding?.footerHtml);
 
     useRedirectIfUnauthenticated(userUid, authServerUrl);
 
@@ -285,13 +296,13 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
         const navItems = adminNavItems(pluginNav);
         const activeItem = [...navItems, ...OFF_RAIL_ITEMS].find((item) => item.id === active);
         content = (
-            <div className="min-h-screen flex flex-col bg-surface-alt">
+            <div className="rr-frame-bg min-h-screen flex flex-col">
                 <div className="flex-1 flex min-h-0">
                     <nav
                         aria-label="Admin sections"
-                        className="hidden md:flex w-16 shrink-0 bg-surface border-r border-border flex-col items-center py-3 gap-1"
+                        className="hidden md:flex w-16 shrink-0 bg-surface border-r border-border flex-col items-center pb-3 gap-1"
                     >
-                        <img src={iconSrc} width="96" height="96" alt="" className="mb-3" />
+                        <RailIcon src={iconSrc} />
                         {navItems.map(({ id, href, label, icon: Icon }) => (
                             <a
                                 key={id}
@@ -312,11 +323,11 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                     </nav>
                     <BottomTabBar apps={navItems} active={active} />
                     <div className="flex-1 flex flex-col min-w-0">
-                        <header className="h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-6">
+                        <header className="rr-solid sticky top-0 z-30 h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-6">
                             <span className="font-display font-bold text-lg uppercase tracking-wide">{activeItem?.label}</span>
                             <UserMenu userUid={userUid} authServerUrl={authServerUrl} onSignOut={handleSignOut} />
                         </header>
-                        <div className="flex-1 pb-14 md:pb-0">
+                        <div id="app-content" className="flex-1 pb-14 md:pb-0">
                             <main className="max-w-6xl mx-auto px-6 py-8">{children}</main>
                         </div>
                     </div>
@@ -325,10 +336,11 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
         );
     }
 
+    // The user's own colours and background (`AppearanceProvider`), from what the last webmail page cached in this browser: the console never asks the server.
     return (
-        <>
+        <AppearanceProvider userUid={userUid} lookUp={false}>
             {content}
-            <BrandingFooter branding={branding} />
-        </>
+            <FrameBrandingFooter parsed={footer} appTitle={[...adminNavItems(pluginNav), ...OFF_RAIL_ITEMS].find((item) => item.id === active)?.label} />
+        </AppearanceProvider>
     );
 }

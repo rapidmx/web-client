@@ -8,11 +8,12 @@ import { Attachment, Folder, Message, listAttachments } from "@rapidmx/react-sha
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import MailAddress from "./MailAddress.js";
 import MessageDetailPane from "./MessageDetailPane.js";
+import { EncryptedPreview, displaySubject } from "./reading/EncryptedPreview.js";
+import { CollapsedCard, SkeletonCards, SubjectCard } from "./reading/MessageCard.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { setReadState } from "../../mail/messageReadState.js";
-import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, senderClass } from "./unreadStyle.js";
+import { dateClass, isUnread, senderClass } from "./unreadStyle.js";
 
 /** One request's worth of the thread. The server's own default for `listConversationMessages()`. */
 export const THREAD_PAGE_SIZE = 100;
@@ -126,7 +127,8 @@ function hasFocusRing(element: HTMLElement): boolean {
 }
 
 /**
- * The reading pane for the conversation list: the whole thread, **newest at the top**, opened at the message
+ * The reading pane for the conversation list: the conversation's subject in a card of its own, pinned at the top, and under it the whole thread as
+ * a stack of message cards (each exactly as tall as its message; the list scrolls as a whole), **newest at the top**, opened at the message
  * the reader picked. Every message from that one through to the newest is expanded - which in this order is
  * the opened message and the entries above it - and the older ones, below it, are collapsed to a one-line
  * summary (sender, date, preview) that expands on click or Enter. So opening the newest message shows just
@@ -181,6 +183,9 @@ export default function ConversationThreadPane({
     /** Where the toggled message's header sat in the viewport before it expanded, so the run below can put
      * it back there - expanding a message above the one being read must not shove that one off-screen. */
     const anchorRef = useRef<{ uid: string; top: number } | null>(null);
+    /** The message whose header button had the focus when it was toggled: expanding or collapsing swaps that button for the other state's, so the
+     * focus is put back on the new one. */
+    const refocusRef = useRef<string | null>(null);
 
     const conversationId = conversation?.conversationId;
 
@@ -261,7 +266,8 @@ export default function ConversationThreadPane({
         const active = document.activeElement;
         if (!(active instanceof HTMLElement && active.hasAttribute("data-row-open") && hasFocusRing(active))) {
             // `preventScroll` so focusing doesn't scroll it somewhere else again.
-            headerRefs.current[pendingFocusUid]!.focus({ preventScroll: true });
+            // (A card's header button is drawn by the message pane, which registers it; a stand-in pane that doesn't has none to focus.)
+            headerRefs.current[pendingFocusUid]?.focus({ preventScroll: true });
         }
         setPendingFocusUid(null);
     }, [pendingFocusUid, expandedUids]);
@@ -275,6 +281,11 @@ export default function ConversationThreadPane({
         // The row is still there: the anchor was taken from a rendered row, and toggling never removes one.
         const row = rowRefs.current[anchor.uid]!;
         scrollingAncestor(row).scrollTop += row.getBoundingClientRect().top - anchor.top;
+        // The button the reader had focused is gone (a collapsed card and an expanded one each draw their own): keep them where they were.
+        if (refocusRef.current === anchor.uid) {
+            headerRefs.current[anchor.uid]?.focus({ preventScroll: true });
+        }
+        refocusRef.current = null;
     }, [expandedUids]);
 
     // Attachments and mark-as-read, for expanded messages only - mirrors `mailDetailHooks.ts`'s
@@ -341,6 +352,7 @@ export default function ConversationThreadPane({
         markReadRequestedRef.current.delete(uid);
         // The row this button lives in has rendered, so its ref is set.
         anchorRef.current = { uid, top: rowRefs.current[uid]!.getBoundingClientRect().top };
+        refocusRef.current = document.activeElement === headerRefs.current[uid] ? uid : null;
         setExpandedUids((prev) => {
             const next = new Set(prev);
             if (next.has(uid)) {
@@ -363,37 +375,44 @@ export default function ConversationThreadPane({
     if (!conversation) {
         return <p className="p-8 text-sm text-text-muted">Select a conversation to read it.</p>;
     }
-    if (loading) {
-        return <p className="p-8 text-sm text-text-muted">Loading&hellip;</p>;
-    }
-    if (error) {
-        return (
-            <div className="p-4 flex-1">
-                <Alert>{error}</Alert>
-            </div>
-        );
-    }
+    const subject = displaySubject(conversation.subject) || "(no subject)";
+    // The newest message that is open carries the Reply / Forward buttons at the foot of its card.
+    const footerUid = messages.find((message) => expandedUids.has(message.uid))?.uid;
 
     return (
-        // The pane is the window's height, not the thread's: a full-height flex column whose heading is
-        // fixed and whose list of messages is the one scrolling, growing child (`min-h-0`, or the list
-        // would stretch the column past the pane instead of scrolling inside it). That is what gives an
-        // expanded message's own `min-h-full` row - and therefore its body iframe, which can't measure
-        // itself - a real height to resolve against at any window size.
+        // The pane is the window's height, not the thread's: a full-height flex column whose header card is fixed and whose list of
+        // message cards is the one scrolling, growing child (`min-h-0`, or the list would stretch the column past the pane instead of
+        // scrolling inside it). Each card is exactly as tall as its message.
+        // The subject card is the same element while the messages load and once they are here (the subject and the count are known from the
+        // list's row), so nothing shifts or is drawn again when they arrive: a skeleton card per message (up to three) stands where they will be.
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-            <div className="shrink-0 border-b border-border p-4">
-                <h1 className="text-lg font-bold tracking-tight">{conversation.subject || "(no subject)"}</h1>
-                <p className="text-sm text-text-muted mt-1">
-                    {messages.length} message{messages.length === 1 ? "" : "s"}
-                </p>
-                {truncated && (
+            <SubjectCard
+                subject={subject}
+                meta={
+                    loading
+                        ? conversation.messageCount > 1
+                            ? `${conversation.messageCount} messages`
+                            : undefined
+                        : error
+                          ? undefined
+                          : `${messages.length} message${messages.length === 1 ? "" : "s"}`
+                }
+            >
+                {truncated && !loading && !error && (
                     <p className="text-xs text-text-muted mt-1">
                         Only the oldest {THREAD_MESSAGE_LIMIT} messages of this conversation are shown here. The rest
                         are still in the message list.
                     </p>
                 )}
-            </div>
-            <ul className="flex-1 min-h-0 overflow-y-auto">
+            </SubjectCard>
+            {loading ? (
+                <SkeletonCards messageCount={conversation.messageCount} />
+            ) : error ? (
+                <div className="p-2 sm:p-3">
+                    <Alert>{error}</Alert>
+                </div>
+            ) : (
+            <ul className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3 flex flex-col gap-3">
                 {messages.map((message) => {
                     const uid = message.uid;
                     const expanded = expandedUids.has(uid);
@@ -405,71 +424,64 @@ export default function ConversationThreadPane({
                             ref={(node) => {
                                 rowRefs.current[uid] = node;
                             }}
-                            // An expanded message is as tall as the list it scrolls in - `min-h-full`
-                            // against the `<ul>`'s own resolved height - so its `MessageDetailPane` below
-                            // has a full pane of height to fill and its body reaches the bottom of the
-                            // window whatever that window's size is. `min-` rather than `h-`: a message
-                            // whose header alone is taller than the pane still gets the room it needs.
                             data-unread={messageUnread ? "true" : undefined}
-                            className={["relative border-b border-border", expanded ? "flex flex-col min-h-full" : ""].join(" ")}
                         >
-                            <UnreadBar unread={messageUnread} />
-                            <h2 className="shrink-0">
-                                <button
-                                    type="button"
-                                    ref={(node) => {
-                                        headerRefs.current[uid] = node;
+                            {expanded ? (
+                                <MessageDetailPane
+                                    inThread
+                                    threadSubject={subject}
+                                    threadHeader={{
+                                        bodyId,
+                                        unread: messageUnread,
+                                        onToggle: () => toggleExpanded(uid),
+                                        buttonRef: (node) => {
+                                            headerRefs.current[uid] = node;
+                                        },
                                     }}
-                                    onClick={() => toggleExpanded(uid)}
-                                    aria-expanded={expanded}
-                                    aria-controls={bodyId}
-                                    className={[
-                                        "w-full text-left px-4 py-3",
-                                        messageUnread ? "bg-primary/[0.07] hover:bg-primary/10" : "hover:bg-surface-alt",
-                                        ROW_FOCUS_CLASS,
-                                    ].join(" ")}
-                                >
-                                    <UnreadLabel unread={messageUnread} />
-                                    <span className="flex items-center justify-between gap-2 text-sm">
-                                        <MailAddress recipient={message.from} className={senderClass(messageUnread)} />
-                                        <span className={["text-xs shrink-0", dateClass(messageUnread)].join(" ")}>
-                                            {new Date(message.receivedDate).toLocaleString()}
-                                        </span>
-                                    </span>
-                                    {!expanded && (
-                                        <span className="block text-xs text-text-muted truncate font-normal">
-                                            {message.bodyPreview}
-                                        </span>
-                                    )}
-                                </button>
-                            </h2>
-                            <div id={bodyId} hidden={!expanded} className={expanded ? "flex-1 min-h-0 flex" : undefined}>
-                                {expanded && (
-                                    <MessageDetailPane
-                                        inThread
-                                        shortcuts={!!shortcuts && uid === keyboardUid}
-                                        message={message}
-                                        attachments={attachmentsByUid[uid] ?? []}
-                                        isSentItems={folderTypeOf(message) === "sent_items"}
-                                        isOutbox={folderTypeOf(message) === "outbox"}
-                                        draftsFolderUid={folders.find((folder) => folder.type === "drafts")?.uid}
-                                        folders={folders}
-                                        onMoved={removeMessage}
-                                        onFolderCreated={onFolderCreated}
-                                        onRecalled={patchMessage}
-                                        onReceiptHandled={patchMessage}
-                                        onScheduledSendCanceled={removeMessage}
-                                        onArchived={removeMessage}
-                                        labels={labels}
-                                        onLabelsChanged={patchMessage}
-                                        onLabelCreated={onLabelCreated}
+                                    footer={uid === footerUid}
+                                    shortcuts={!!shortcuts && uid === keyboardUid}
+                                    message={message}
+                                    attachments={attachmentsByUid[uid] ?? []}
+                                    isSentItems={folderTypeOf(message) === "sent_items"}
+                                    isOutbox={folderTypeOf(message) === "outbox"}
+                                    draftsFolderUid={folders.find((folder) => folder.type === "drafts")?.uid}
+                                    folders={folders}
+                                    onMoved={removeMessage}
+                                    onFolderCreated={onFolderCreated}
+                                    onRecalled={patchMessage}
+                                    onReceiptHandled={patchMessage}
+                                    onScheduledSendCanceled={removeMessage}
+                                    onArchived={removeMessage}
+                                    labels={labels}
+                                    onLabelsChanged={patchMessage}
+                                    onLabelCreated={onLabelCreated}
+                                />
+                            ) : (
+                                <>
+                                    <CollapsedCard
+                                        from={message.from}
+                                        date={new Date(message.receivedDate).toLocaleString()}
+                                        preview={message.bodyPreview || (message.encrypted ? <EncryptedPreview /> : "")}
+                                        unread={messageUnread}
+                                        senderClassName={senderClass(messageUnread)}
+                                        dateClassName={dateClass(messageUnread)}
+                                        buttonRef={(node) => {
+                                            headerRefs.current[uid] = node;
+                                        }}
+                                        buttonProps={{
+                                            onClick: () => toggleExpanded(uid),
+                                            "aria-expanded": false,
+                                            "aria-controls": bodyId,
+                                        }}
                                     />
-                                )}
-                            </div>
+                                    <div id={bodyId} hidden />
+                                </>
+                            )}
                         </li>
                     );
                 })}
             </ul>
+            )}
         </div>
     );
 }

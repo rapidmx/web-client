@@ -3,21 +3,22 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { routedPage } from "../../_routedPage.js";
-import React, { FormEvent, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     MailboxAccessMember,
     MailboxAccessRole,
     listMailboxAccess,
-    lookupMailboxOwnerByEmail,
     removeMailboxAccess,
     setMailboxAccess,
 } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
+import PrincipalPicker from "../../../shared/components/sharing/PrincipalPicker.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const ROLE_LABELS: Record<MailboxAccessRole, string> = { viewer: "Can view", manager: "Can manage" };
 
@@ -49,10 +50,8 @@ function SharingContent() {
     const [status, setStatus] = useState<Status>("loading");
     const [error, setError] = useState<string | null>(null);
 
-    const [emailInput, setEmailInput] = useState("");
-    const [newRole, setNewRole] = useState<MailboxAccessRole>("viewer");
-    const [adding, setAdding] = useState(false);
-    const [addError, setAddError] = useState<string | null>(null);
+    // An entry that is not a user uid, being replaced with the user it was meant for.
+    const [replacing, setReplacing] = useState<MailboxAccessMember | null>(null);
 
     const [pendingRoleChange, setPendingRoleChange] = useState<string | null>(null);
     const [removeTarget, setRemoveTarget] = useState<MailboxAccessMember | null>(null);
@@ -84,39 +83,27 @@ function SharingContent() {
 
     useEffect(reload, [mailboxUid]);
 
-    async function handleAdd(e: FormEvent) {
-        e.preventDefault();
-        const email = emailInput.trim();
-        if (!email) {
-            return;
-        }
-        setAddError(null);
-        setAdding(true);
-        try {
-            const found = await lookupMailboxOwnerByEmail(email);
-            if (!found) {
-                setAddError("No one found with that email on this platform.");
-                return;
+    // Once the person is granted, the entry they replace (if any) is removed: the string it named never matched anyone.
+    async function handleGranted() {
+        const stale = replacing;
+        setReplacing(null);
+        if (stale) {
+            try {
+                await removeMailboxAccess(mailboxUid!, stale.userOrRoleId);
+            } catch (err) {
+                notifyApiError(err, "Couldn't remove the old entry");
             }
-            await setMailboxAccess(mailboxUid!, found.userUid, newRole);
-            setEmailInput("");
-            setNewRole("viewer");
-            reload();
-        } catch (err) {
-            setAddError(err instanceof ApiRequestError ? err.message : "Could not grant access.");
-        } finally {
-            setAdding(false);
         }
+        reload();
     }
 
     async function handleRoleChange(userOrRoleId: string, role: MailboxAccessRole) {
         setPendingRoleChange(userOrRoleId);
-        setError(null);
         try {
             await setMailboxAccess(mailboxUid!, userOrRoleId, role);
             reload();
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not update this member's role.");
+            notifyApiError(err, "Couldn't change this member's role");
         } finally {
             setPendingRoleChange(null);
         }
@@ -130,13 +117,12 @@ function SharingContent() {
         // Only reachable from the confirm modal's own "Remove" button, and `Modal` renders nothing at all
         // unless `removeTarget` is set, so `removeTarget` is always non-null here.
         setRemoving(true);
-        setError(null);
         try {
             await removeMailboxAccess(mailboxUid!, removeTarget!.userOrRoleId);
             setRemoveTarget(null);
             reload();
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not remove this member.");
+            notifyApiError(err, "Couldn't remove this member");
         } finally {
             setRemoving(false);
         }
@@ -164,8 +150,6 @@ function SharingContent() {
 
                 {status === "ready" && (
                     <>
-                        {error && <Alert>{error}</Alert>}
-
                         <div>
                             <h2 className="text-sm font-semibold mb-2">People with access</h2>
                             {members.length === 0 ? (
@@ -177,8 +161,20 @@ function SharingContent() {
                                             key={member.userOrRoleId}
                                             className="flex items-center justify-between gap-3 text-sm py-1.5 px-3 bg-surface-alt rounded-sm"
                                         >
-                                            <span className="truncate">{member.userOrRoleId}</span>
+                                            <span className="truncate">
+                                                {member.userOrRoleId}
+                                                {member.noEffect && (
+                                                    <span className="block text-xs text-danger">
+                                                        Not a user - this entry has no effect. Replace it with the person it was meant for, or remove it.
+                                                    </span>
+                                                )}
+                                            </span>
                                             <span className="flex items-center gap-2 shrink-0">
+                                                {member.noEffect && (
+                                                    <Button type="button" variant="text" className="!w-auto" onClick={() => setReplacing(member)}>
+                                                        Replace with a user
+                                                    </Button>
+                                                )}
                                                 <select
                                                     aria-label={`Role for ${member.userOrRoleId}`}
                                                     className="text-sm border border-border rounded-sm py-1 px-2 bg-surface"
@@ -216,37 +212,20 @@ function SharingContent() {
                             )}
                         </div>
 
-                        <form onSubmit={handleAdd} className="flex flex-col gap-2">
-                            <h2 className="text-sm font-semibold">Add someone</h2>
-                            {addError && <Alert>{addError}</Alert>}
-                            <div className="flex gap-2">
-                                <input
-                                    type="email"
-                                    aria-label="Email address"
-                                    placeholder="Email address"
-                                    className="flex-1 text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                                    value={emailInput}
-                                    onChange={(e) => setEmailInput(e.target.value)}
-                                    disabled={adding}
-                                />
-                                <select
-                                    aria-label="Role to grant"
-                                    className="text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                                    value={newRole}
-                                    onChange={(e) => setNewRole(e.target.value as MailboxAccessRole)}
-                                    disabled={adding}
-                                >
-                                    {(Object.keys(ROLE_LABELS) as MailboxAccessRole[]).map((role) => (
-                                        <option key={role} value={role}>
-                                            {ROLE_LABELS[role]}
-                                        </option>
-                                    ))}
-                                </select>
-                                <Button type="submit" loading={adding} disabled={adding} className="!w-auto">
-                                    Add
-                                </Button>
-                            </div>
-                        </form>
+                        <div className="flex flex-col gap-2">
+                            <h2 className="text-sm font-semibold">{replacing ? `Replace ${replacing.userOrRoleId}` : "Add someone"}</h2>
+                            {/* The person is looked up and shown - name and address - before anything is saved. */}
+                            <PrincipalPicker
+                                key={replacing?.userOrRoleId ?? "new"}
+                                mailboxUid={mailboxUid!}
+                                roleLabels={ROLE_LABELS}
+                                initialPrincipal={replacing?.userOrRoleId}
+                                defaultRole={replacing?.role === "manager" ? "manager" : "viewer"}
+                                placeholder="Email address or username"
+                                onGranted={handleGranted}
+                                onCancel={replacing ? () => setReplacing(null) : undefined}
+                            />
+                        </div>
                     </>
                 )}
 

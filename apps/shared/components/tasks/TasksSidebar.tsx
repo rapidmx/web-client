@@ -7,6 +7,7 @@ import { HiOutlineBars3 } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Task, TaskList, createTaskList, listTaskLists } from "@rapidmx/react-shared/tasks/tasksApi.js";
 import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
+import { notifyApiError } from "../../notifications/apiErrors.js";
 
 export type TasksView =
     | { type: "myDay" }
@@ -102,7 +103,8 @@ export default function TasksSidebar({ mailboxUid, tasks, userUid, active, onSel
             setNewListName("");
             setAddingList(false);
         } catch (err) {
-            setListsError(err instanceof ApiRequestError ? err.message : "Could not create this list.");
+            // A pop-up: `listsError` is only the lists' own load failure.
+            notifyApiError(err, "Couldn't create the list");
         }
     }
 
@@ -184,13 +186,13 @@ export default function TasksSidebar({ mailboxUid, tasks, userUid, active, onSel
         <>
             <button
                 type="button"
-                className="md:hidden m-3 w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text"
+                className="lg:hidden m-3 mb-0 w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text"
                 aria-label="Open tasks menu"
                 onClick={() => setDrawerOpen(true)}
             >
                 <HiOutlineBars3 size={20} aria-hidden="true" />
             </button>
-            <nav aria-label="Tasks" className="hidden md:flex w-56 shrink-0 border-r border-border flex-col gap-4 p-3 overflow-y-auto">
+            <nav aria-label="Tasks" className="hidden lg:flex w-56 shrink-0 border-r border-border flex-col gap-4 p-3 overflow-y-auto">
                 {navContent("desktop")}
             </nav>
             <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Tasks">

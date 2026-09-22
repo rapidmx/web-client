@@ -5,7 +5,6 @@
 import React, { useState } from "react";
 import { Folder, Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import LabelMenuButton from "./labelMenu.js";
 import MoveToFolderDialog, { MOVE_TARGET_TYPES } from "./MoveToFolderDialog.js";
 import { ariaKeyShortcuts, withHint } from "../../keyboard/format.js";
@@ -43,15 +42,14 @@ export interface MailSelectionBarProps {
     onArchive: () => void;
     /** Moves the selection into `folderUid`, resolving once the bulk update has settled. It resolves
      * whether or not that update was rejected: a bulk update is applied element by element, so a failure
-     * is explained in this bar (along with the reload it triggers) rather than in the prompt, which would
-     * be claiming the move simply didn't happen. */
+     * is explained by a pop-up (see `notifyApiError()`), raised by the page along with the reload it triggers, rather than in the
+     * prompt, which would be claiming the move simply didn't happen. */
     onMoveTo: (folderUid: string) => Promise<void>;
     onReportJunk: () => void;
     onDelete: () => void;
     /** A bulk action is in flight - every action is held until it settles, since the next one would send
      * `version`s the first has already superseded. */
     busy: boolean;
-    error: string | null;
     /** The keyboard acts on this selection (Delete, Ctrl+Q, Ctrl+U, Insert - registered by the page): Mark read, Mark unread, Flag and
      * Delete name their shortcut in the tooltip and `aria-keyshortcuts`. */
     shortcuts?: boolean;
@@ -92,7 +90,6 @@ export default function MailSelectionBar({
     onReportJunk,
     onDelete,
     busy,
-    error,
     shortcuts,
 }: MailSelectionBarProps) {
     const env = useKeyEnvironment();
@@ -225,11 +222,6 @@ export default function MailSelectionBar({
                     Delete
                 </button>
             </div>
-            {error && (
-                <div className="px-3 pb-2">
-                    <Alert>{error}</Alert>
-                </div>
-            )}
         </div>
     );
 }

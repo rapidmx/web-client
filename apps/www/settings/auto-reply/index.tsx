@@ -4,12 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import { updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -38,13 +37,11 @@ function AutoReplyContent() {
     // `SettingsShell`'s `mailboxes` is fetched once - every save bumps the server's version, so a second
     // save without a reload must send the version the previous save returned, not the stale original.
     const [version, setVersion] = useState(mailbox.version);
-    const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
-        setError(null);
         setSaved(false);
         setSaving(true);
         try {
@@ -60,7 +57,7 @@ function AutoReplyContent() {
             setVersion(updated.version);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save automatic reply settings.");
+            notifyApiError(err, "Couldn't save the automatic reply settings");
         } finally {
             setSaving(false);
         }
@@ -75,8 +72,7 @@ function AutoReplyContent() {
                     calendar event with its own automatic reply enabled takes over for its own start/end window.
                 </p>
 
-                {error && <Alert>{error}</Alert>}
-                {saved && !error && <div className="mb-4 text-sm text-success font-medium">Saved.</div>}
+                {saved && <div className="mb-4 text-sm text-success font-medium">Saved.</div>}
 
                 <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                     <label className="flex items-center gap-2 text-sm font-medium">

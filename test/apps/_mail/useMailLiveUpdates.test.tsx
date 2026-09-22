@@ -88,6 +88,7 @@ const FOLDERS = [
 let latest: MailLiveUpdates;
 const onFolderCreated = vi.fn();
 const onMessageCreated = vi.fn();
+const onSendEvent = vi.fn();
 
 function Harness(props: { userUid?: string; mailboxFolders?: typeof FOLDERS; mailboxes?: any[] }) {
     latest = useMailLiveUpdates({
@@ -96,6 +97,7 @@ function Harness(props: { userUid?: string; mailboxFolders?: typeof FOLDERS; mai
         mailboxFolders: props.mailboxFolders ?? FOLDERS,
         onFolderCreated,
         onMessageCreated,
+        onSendEvent,
     });
     return null;
 }
@@ -149,20 +151,20 @@ async function flushTimers(ms: number) {
 }
 
 describe("pushChannelsFor", () => {
-    it("lists every inbox first, then the other folders in each mailbox's order, then the mailbox uids", () => {
+    it("lists every inbox first, then the mailbox uids (they announce folders), then the other folders in the sidebar's order", () => {
         expect(pushChannelsFor(FOLDERS, [MB1 as any, MB2 as any])).toEqual([
             "f1-inbox",
             "f2-inbox",
-            "f1-sent",
-            "f1-user",
             "mb1",
             "mb2",
+            "f1-sent",
+            "f1-user",
         ]);
     });
 
     it("has nothing for no mailboxes and never repeats a channel", () => {
         expect(pushChannelsFor([], [])).toEqual([]);
-        expect(pushChannelsFor([FOLDERS[0], FOLDERS[0]], [MB1 as any, MB1 as any])).toEqual(["f1-inbox", "f1-sent", "f1-user", "mb1"]);
+        expect(pushChannelsFor([FOLDERS[0], FOLDERS[0]], [MB1 as any, MB1 as any])).toEqual(["f1-inbox", "mb1", "f1-sent", "f1-user"]);
     });
 });
 
@@ -174,17 +176,17 @@ describe("useMailLiveUpdates", () => {
         expect(socket().url).toMatch(/^ws:\/\/[^/]+\/push$/);
         socket().greet();
         expect(socket().sent).toEqual([
-            { id: 1, type: "SUBSCRIBE", data: ["f1-inbox", "f2-inbox", "f1-sent", "f1-user", "mb1", "mb2"] },
+            { id: 1, type: "SUBSCRIBE", data: ["f1-inbox", "f2-inbox", "mb1", "mb2", "f1-sent", "f1-user"] },
         ]);
     });
 
     it("shares one connection between components and re-mounts, and re-subscribes when the folders change", () => {
         const { rerender, unmount } = render(<Harness />);
         socket().greet();
-        socket().receive({ id: 1, type: "SUBSCRIBED", data: ["f1-inbox", "f2-inbox", "f1-sent", "f1-user", "mb1", "mb2"] });
+        socket().receive({ id: 1, type: "SUBSCRIBED", data: ["f1-inbox", "f2-inbox", "mb1", "mb2", "f1-sent", "f1-user"] });
 
         rerender(<Harness mailboxFolders={[FOLDERS[1]]} mailboxes={[MB2]} />);
-        expect(socket().sent[1]).toEqual({ id: 2, type: "UNSUBSCRIBE", data: ["f1-inbox", "f1-sent", "f1-user", "mb1"] });
+        expect(socket().sent[1]).toEqual({ id: 2, type: "UNSUBSCRIBE", data: ["f1-inbox", "mb1", "f1-sent", "f1-user"] });
 
         unmount();
         render(<Harness />);
@@ -223,6 +225,23 @@ describe("useMailLiveUpdates", () => {
         await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
         expect(latest.live.tick).toBe(2);
         expect([...latest.live.folderUids!]).toEqual(["f2-inbox"]);
+    });
+
+    it("hands the outcome of a message sent in the background to the caller and refreshes everything - a send changes Outbox and Sent Items", async () => {
+        mockFolderCounts({});
+        render(<Harness />);
+        socket().greet();
+
+        act(() => {
+            socket().receive({ type: "MessageMongo", action: "send-failed", data: { uid: "m1", mailboxUid: "mb1", subject: "S", recipients: ["a@example.com"], attempt: 3, error: { message: "boom" } } });
+            // Malformed: not a send outcome, not a message event either - ignored.
+            socket().receive({ type: "MessageMongo", action: "send-succeeded", data: { subject: "no uid" } });
+        });
+        expect(onSendEvent).toHaveBeenCalledTimes(1);
+        expect(onSendEvent).toHaveBeenCalledWith(expect.objectContaining({ action: "send-failed", uid: "m1", attempt: 3, error: { message: "boom", details: undefined } }));
+        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        expect(latest.live.tick).toBe(1);
+        expect(latest.live.folderUids).toBeNull();
     });
 
     it("takes the folder from the channel when a wrapped event's message doesn't name one, and treats none as 'anything'", async () => {

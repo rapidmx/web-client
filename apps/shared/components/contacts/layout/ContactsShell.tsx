@@ -169,19 +169,24 @@ export default function ContactsShell({
             </>
         );
 
+        // The mailbox switcher (or an error) is all this column holds: with a single mailbox and no error there is nothing to put in it, and an empty
+        // 224 px column beside the contacts' own menu is wasted room.
+        const hasSidebar = mailboxes.length > 1 || !!folderError;
         inner = (
             <>
-                <aside className="hidden md:flex w-56 shrink-0 bg-surface border-r border-border flex-col p-3 gap-3">
-                    {sidebarContent("desktop")}
-                </aside>
+                {hasSidebar && (
+                    <aside className="hidden lg:flex w-56 shrink-0 bg-surface border-r border-border flex-col p-3 gap-3">
+                        {sidebarContent("desktop")}
+                    </aside>
+                )}
                 <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Mailbox">
                     <div className="flex flex-col gap-3">{sidebarContent("mobile")}</div>
                 </Drawer>
                 <main className="flex-1 min-w-0 flex flex-col">
-                    {(mailboxes.length > 1 || folderError) && (
+                    {hasSidebar && (
                         <button
                             type="button"
-                            className="md:hidden m-3 w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text"
+                            className="lg:hidden m-3 w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text"
                             aria-label="Open mailbox switcher"
                             onClick={() => setDrawerOpen(true)}
                         >

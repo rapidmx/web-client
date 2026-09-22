@@ -7,9 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     DESKTOP_BURST_LIMIT,
     DESKTOP_BURST_WINDOW_MS,
-    MAX_TOASTS,
+    TOAST_DURATION_MS,
     useNewMailNotifications,
 } from "../../../apps/shared/mail/useNewMailNotifications.js";
+import { MAX_VISIBLE, dismiss, dismissAll, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
+
+/** The mail pop-ups on screen (they are `mail` notifications - the store owns the stack), by message uid. */
+const popups = () => getNotificationsSnapshot().visible.filter((item) => item.kind === "mail");
+const popupUids = () => popups().map((item) => item.id.replace(/^mail:/, ""));
 import { DESKTOP_OFFER_KEY, NEW_MAIL_POPUPS_KEY } from "../../../apps/shared/mail/newMailNotifications.js";
 
 /** A stand-in for the browser's `Notification` that records what was shown. */
@@ -87,9 +92,37 @@ describe("useNewMailNotifications", () => {
         it("shows one for unread mail arriving in an Inbox", () => {
             const { result } = setup();
             act(() => result.current.announce(mail("m1")));
-            expect(result.current.toasts).toEqual([
-                expect.objectContaining({ uid: "m1", senderName: "Jane Doe", senderAddress: "jane@example.com", subject: "Subject m1", preview: "Preview m1" }),
+            expect(popups()).toEqual([
+                expect.objectContaining({
+                    id: "mail:m1",
+                    kind: "mail",
+                    title: "Jane Doe",
+                    subtitle: "<jane@example.com>",
+                    message: "Subject m1",
+                    preview: "Preview m1",
+                    href: "/messages/m1",
+                    sticky: false,
+                    actions: [],
+                }),
             ]);
+            // Not kept in the history: the inbox holds it.
+            expect(getNotificationsSnapshot().history).toEqual([]);
+        });
+
+        it("shows the address alone for a sender with no name, and no preview line for an empty one", () => {
+            const { result } = setup();
+            act(() => result.current.announce(mail("m1", { from: { address: "bare@example.com", type: "to" }, bodyPreview: "" })));
+            expect(popups()[0]).toMatchObject({ title: "bare@example.com", subtitle: undefined, preview: undefined });
+        });
+
+        it("goes by itself after eight seconds", () => {
+            vi.useFakeTimers();
+            const { result } = setup();
+            act(() => result.current.announce(mail("m1")));
+            vi.advanceTimersByTime(TOAST_DURATION_MS - 1);
+            expect(popups()).toHaveLength(1);
+            vi.advanceTimersByTime(1);
+            expect(popups()).toHaveLength(0);
         });
 
         it("ignores mail that is not worth announcing: another folder, already read, sent by the user (or an alias), or a message it already showed", () => {
@@ -101,48 +134,41 @@ describe("useNewMailNotifications", () => {
                 result.current.announce(mail("alias", { from: { address: "alias@example.com", type: "to" } }));
                 result.current.announce(mail("other", { inferenceClassification: "other" }));
             });
-            expect(result.current.toasts).toEqual([]);
+            expect(popups()).toEqual([]);
 
             act(() => {
                 result.current.announce(mail("dup"));
                 result.current.announce(mail("dup"));
             });
-            expect(result.current.toasts).toHaveLength(1);
+            expect(popups()).toHaveLength(1);
 
             // Dismissed, and the same message delivered again: still not shown a second time.
-            act(() => result.current.dismiss("dup"));
+            act(() => dismiss("mail:dup"));
             act(() => result.current.announce(mail("dup")));
-            expect(result.current.toasts).toEqual([]);
+            expect(popups()).toEqual([]);
         });
 
         it("shows nothing while the user has turned pop-ups off, and again once they turn them back on", () => {
             const { result } = setup();
             localStorage.setItem(NEW_MAIL_POPUPS_KEY, "off");
             act(() => result.current.announce(mail("m1")));
-            expect(result.current.toasts).toEqual([]);
+            expect(popups()).toEqual([]);
             expect(FakeNotification.instances).toEqual([]);
 
             localStorage.removeItem(NEW_MAIL_POPUPS_KEY);
             act(() => result.current.announce(mail("m2")));
-            expect(result.current.toasts).toHaveLength(1);
+            expect(popups()).toHaveLength(1);
         });
 
-        it(`keeps at most ${MAX_TOASTS} on screen, dropping the oldest`, () => {
+        it(`keeps at most ${MAX_VISIBLE} on screen, the rest waiting their turn`, () => {
             const { result } = setup();
             act(() => {
                 for (const uid of ["a", "b", "c", "d"]) result.current.announce(mail(uid));
             });
-            expect(result.current.toasts.map((t) => t.uid)).toEqual(["b", "c", "d"]);
-        });
-
-        it("takes one off when dismissed", () => {
-            const { result } = setup();
-            act(() => {
-                result.current.announce(mail("a"));
-                result.current.announce(mail("b"));
-            });
-            act(() => result.current.dismiss("a"));
-            expect(result.current.toasts.map((t) => t.uid)).toEqual(["b"]);
+            expect(popupUids()).toEqual(["a", "b", "c"]);
+            expect(getNotificationsSnapshot().queued).toBe(1);
+            act(() => dismiss("mail:a"));
+            expect(popupUids()).toEqual(["b", "c", "d"]);
         });
 
         it("remembers only so many uids, so an old message can be announced again after hundreds of others", () => {
@@ -150,10 +176,12 @@ describe("useNewMailNotifications", () => {
             act(() => {
                 for (let i = 0; i < 502; i++) result.current.announce(mail(`m${i}`));
             });
+            act(() => dismissAll());
+            // A recent one is still remembered (announcing it again shows nothing); the oldest was forgotten.
             act(() => result.current.announce(mail("m501")));
-            expect(result.current.toasts.filter((t) => t.uid === "m501")).toHaveLength(1);
+            expect(popupUids()).toEqual([]);
             act(() => result.current.announce(mail("m0")));
-            expect(result.current.toasts.map((t) => t.uid)).toContain("m0");
+            expect(popupUids()).toEqual(["m0"]);
         });
 
         it("has a stable announce, for the listener that holds on to it", () => {
@@ -173,7 +201,7 @@ describe("useNewMailNotifications", () => {
             expect(FakeNotification.instances[0].title).toBe("Jane Doe <jane@example.com>");
             expect(FakeNotification.instances[0].options).toEqual({ body: "Subject m1\nPreview m1", tag: "m1" });
             // And the pop-up too, for when the reader comes back.
-            expect(result.current.toasts).toHaveLength(1);
+            expect(popups()).toHaveLength(1);
         });
 
         it("shows one when the tab is visible but another window has the focus", () => {
@@ -264,12 +292,59 @@ describe("useNewMailNotifications", () => {
             FakeNotification.throwOnCreate = true;
             const { result } = setup();
             act(() => result.current.announce(mail("m1")));
-            expect(result.current.toasts).toHaveLength(1);
+            expect(popups()).toHaveLength(1);
             expect(FakeNotification.instances).toEqual([]);
         });
     });
 
     describe("the offer to turn on desktop notifications", () => {
+        it("is made on the pop-up itself - with its explanation and two actions - and that pop-up still goes by itself", () => {
+            vi.useFakeTimers();
+            FakeNotification.permission = "default";
+            const { result } = setup();
+            act(() => result.current.announce(mail("m1")));
+            expect(popups()[0]).toMatchObject({ sticky: false, hint: expect.stringContaining("desktop notification") });
+            expect(popups()[0].actions.map((action) => action.label)).toEqual(["Turn on desktop notifications", "Not now"]);
+            vi.advanceTimersByTime(TOAST_DURATION_MS);
+            expect(popups()).toHaveLength(0);
+        });
+
+        it("is made on one pop-up at a time - not repeated on every pop-up of a burst - and again once that one has gone", () => {
+            FakeNotification.permission = "default";
+            const { result } = setup();
+            act(() => {
+                result.current.announce(mail("a"));
+                result.current.announce(mail("b"));
+            });
+            expect(popups().find((item) => item.id === "mail:a")!.actions).toHaveLength(2);
+            expect(popups().find((item) => item.id === "mail:b")!.actions).toEqual([]);
+            act(() => dismiss("mail:a"));
+            act(() => result.current.announce(mail("c")));
+            expect(popups().find((item) => item.id === "mail:c")!.actions).toHaveLength(2);
+        });
+
+        it("'Turn on desktop notifications' asks the browser, and 'Not now' puts the offer away - neither is offered on the next pop-up", async () => {
+            FakeNotification.permission = "default";
+            const { result } = setup();
+            act(() => result.current.announce(mail("m1")));
+            FakeNotification.permission = "granted";
+            await act(async () => popups()[0].actions[0].onClick!());
+            expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+            act(() => result.current.announce(mail("m2")));
+            expect(popups().find((item) => item.id === "mail:m2")!.actions).toEqual([]);
+
+            localStorage.clear();
+            FakeNotification.permission = "default";
+            // (The pop-up view dismisses a pop-up when one of its actions is used; without the view, the test does it.)
+            act(() => dismissAll());
+            const declined = setup();
+            act(() => declined.result.current.announce(mail("m3")));
+            act(() => popups().find((item) => item.id === "mail:m3")!.actions[1].onClick!());
+            act(() => dismissAll());
+            act(() => declined.result.current.announce(mail("m4")));
+            expect(popups().find((item) => item.id === "mail:m4")!.actions).toEqual([]);
+        });
+
         it("is made only while the browser can and hasn't been asked, and nobody said 'Not now'", () => {
             FakeNotification.permission = "default";
             const { result } = setup();

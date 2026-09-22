@@ -132,10 +132,10 @@ export interface FolderCounts {
  * Holds the folder counts overlay for `MailShell`. `folders` is every folder the sidebar lists (the overlay starts from what
  * each was loaded with); `mailboxes` is whose folders to read back. The overlay starts again whenever `mailboxes` does.
  */
-export function useFolderCounts(mailboxes: Mailbox[], folders: Folder[]): FolderCounts {
+export function useFolderCounts(mailboxes: Mailbox[], folders: Folder[], onFoldersListed?: (folders: Folder[]) => void): FolderCounts {
     const [counts, setCounts] = useState<Record<string, FolderCount>>({});
-    const latestRef = useRef({ mailboxes, folders });
-    latestRef.current = { mailboxes, folders };
+    const latestRef = useRef({ mailboxes, folders, onFoldersListed });
+    latestRef.current = { mailboxes, folders, onFoldersListed };
     // Bumped by every change of the overlay this page makes, so a read that started before one can tell it is out of date.
     const changesRef = useRef(0);
     const inFlightRef = useRef(0);
@@ -188,6 +188,12 @@ export function useFolderCounts(mailboxes: Mailbox[], folders: Folder[]): Folder
         const results = await Promise.all(latestRef.current.mailboxes.map((mailbox) => listFolders(mailbox.uid).catch(() => undefined)));
         if (stoppedRef.current || run !== runRef.current) {
             return;
+        }
+        // Whatever the counts' fate below, these are the mailboxes' folders as they are: a folder the sidebar does not have yet is filed now.
+        for (const list of results) {
+            if (list) {
+                latestRef.current.onFoldersListed?.(list);
+            }
         }
         if (inFlightRef.current > 0 || changesRef.current !== startedAt) {
             // A change of this page's own began or ended while that was being read, so it may predate it: read again.

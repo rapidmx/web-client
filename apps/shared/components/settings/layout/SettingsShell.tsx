@@ -22,6 +22,7 @@ export interface SettingsSectionDef {
 
 /** Every settings section with its own sidebar entry. */
 export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
+    { id: "appearance", href: "/settings/appearance", label: "Appearance" },
     { id: "auto-reply", href: "/settings/auto-reply", label: "Automatic Replies" },
     { id: "filters", href: "/settings/filters", label: "Mail Filters" },
     { id: "signatures", href: "/settings/signatures", label: "Signatures" },

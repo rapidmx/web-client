@@ -28,14 +28,17 @@ afterEach(() => {
 });
 
 describe("MailboxesListPage", () => {
-    it("lists mailboxes once authorized", async () => {
-        mockFetch((url) => {
+    it("lists mailboxes once authorized - through the administration scope, and says it shows administrative details only", async () => {
+        const fetchMock = mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox(1), mailbox(2)]);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxesListPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         expect(await screen.findByText("u1@example.com")).toBeInTheDocument();
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=25&page=0&scope=admin", expect.anything());
+        expect(screen.getByText(/Administrative details only/)).toBeInTheDocument();
+        expect(screen.getByText(/impersonate them from their mailbox page/)).toBeInTheDocument();
         expect(screen.getByText("u2@example.com")).toBeInTheDocument();
         expect(screen.getByRole("link", { name: "+ New mailbox" })).toHaveAttribute(
             "href",

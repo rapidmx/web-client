@@ -5,7 +5,7 @@
 import React, { ComponentType, useEffect, useState } from "react";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Skeleton from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import { ReadingPaneSkeleton } from "./reading/MessageCard.js";
 import type MessageDetailPaneType from "./MessageDetailPane.js";
 import type ConversationThreadPaneType from "./ConversationThreadPane.js";
 
@@ -21,7 +21,7 @@ import type ConversationThreadPaneType from "./ConversationThreadPane.js";
  * code was already fetched. This reads the loaded component synchronously when there is one, so an already-loaded pane renders
  * on the click's own frame, and it can retry a failed download.
  */
-function lazyComponent<P extends object>(load: () => Promise<{ default: ComponentType<P> }>) {
+function lazyComponent<P extends object>(load: () => Promise<{ default: ComponentType<P> }>, skeleton: (props: P) => React.ReactNode) {
     let loaded: ComponentType<P> | undefined;
     let loading: Promise<ComponentType<P>> | undefined;
 
@@ -57,21 +57,10 @@ function lazyComponent<P extends object>(load: () => Promise<{ default: Componen
             const Component = loaded;
             return <Component {...props} />;
         }
-        return failed ? <ChunkFailed /> : <PaneSkeleton />;
+        return failed ? <ChunkFailed /> : skeleton(props);
     }
 
     return { Lazy, start };
-}
-
-function PaneSkeleton() {
-    return (
-        <div role="status" aria-busy="true" className="flex-1 p-6 flex flex-col gap-3">
-            <span className="sr-only">Loading the message</span>
-            <Skeleton width="w-2/3" height="h-6" />
-            <Skeleton width="w-1/3" />
-            <Skeleton height="h-40" />
-        </div>
-    );
 }
 
 /** A chunk that can't be downloaded (offline, or replaced by a deploy since this page loaded) is the one failure a reading
@@ -89,8 +78,17 @@ function ChunkFailed() {
     );
 }
 
-const messageDetailPane = lazyComponent<React.ComponentProps<typeof MessageDetailPaneType>>(() => import("./MessageDetailPane.js"));
-const conversationThreadPane = lazyComponent<React.ComponentProps<typeof ConversationThreadPaneType>>(() => import("./ConversationThreadPane.js"));
+// While the code loads the pane already draws its frame - the header card with the subject the list row knows, and a card of placeholder lines - so
+// the click is answered on its own frame and the messages only fill in.
+const messageDetailPane = lazyComponent<React.ComponentProps<typeof MessageDetailPaneType>>(
+    () => import("./MessageDetailPane.js"),
+    // `LazyMessageDetailPane` renders the empty state, not this, for no message.
+    (props) => <ReadingPaneSkeleton subject={props.message!.subject} />,
+);
+const conversationThreadPane = lazyComponent<React.ComponentProps<typeof ConversationThreadPaneType>>(
+    () => import("./ConversationThreadPane.js"),
+    (props) => <ReadingPaneSkeleton subject={props.conversation!.subject} messageCount={props.conversation!.messageCount} />,
+);
 
 /** Starts downloading the reading pane's code, for the page to call when it has nothing better to do. Never rejects. */
 export function prefetchReadingPane(): void {

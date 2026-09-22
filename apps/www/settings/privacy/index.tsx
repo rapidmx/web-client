@@ -28,6 +28,7 @@ import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../sh
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const NON_MAIL_FOLDER_TYPES = new Set(["calendar", "contacts", "tasks", "notes"]);
 
@@ -125,7 +126,6 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
     const [loadError, setLoadError] = useState<string | null>(null);
     const [format, setFormat] = useState<DataExportFormat>("json");
     const [creating, setCreating] = useState(false);
-    const [createError, setCreateError] = useState<string | null>(null);
 
     // The create form below isn't gated behind `loading`, so a fast create-then-reload can resolve before
     // the initial mount fetch does; without this guard the mount fetch's now-stale response would land
@@ -152,13 +152,12 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
 
     async function handleCreate(e: FormEvent) {
         e.preventDefault();
-        setCreateError(null);
         setCreating(true);
         try {
             await createExportRequest({ format });
             await loadRequests();
         } catch (err) {
-            setCreateError(err instanceof ApiRequestError ? err.message : "Could not start this export.");
+            notifyApiError(err, "Couldn't start the export");
         } finally {
             setCreating(false);
         }
@@ -191,7 +190,6 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
                 </Button>
             </form>
 
-            {createError && <Alert>{createError}</Alert>}
             {loadError && <Alert>{loadError}</Alert>}
 
             {loading ? (
@@ -242,7 +240,6 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [uploading, setUploading] = useState(false);
-    const [uploadError, setUploadError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Same stale-response guard as ExportSection's loadRequests() - the Upload button is enabled
@@ -287,11 +284,10 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
         if (!file || !targetFolderUid) {
             return;
         }
-        setUploadError(null);
         setUploading(true);
         uploadMailboxImport(file, { format: importFormatFromFilename(file.name), targetFolderUid })
             .then(() => loadRequests())
-            .catch((err) => setUploadError(err instanceof ApiRequestError ? err.message : "Could not upload this file."))
+            .catch((err) => notifyApiError(err, "Couldn't upload the file"))
             .finally(() => setUploading(false));
     }
 
@@ -341,7 +337,6 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
             />
 
             {foldersError && <Alert>{foldersError}</Alert>}
-            {uploadError && <Alert>{uploadError}</Alert>}
             {loadError && <Alert>{loadError}</Alert>}
 
             {loading ? (

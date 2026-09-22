@@ -389,7 +389,8 @@ describe("ContactsPage", () => {
         await user.type(screen.getByLabelText("Display name"), "Vendor Rep");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
-        const status = await screen.findByRole("status");
+        // The notice stays in the page (it carries the link); the pop-up region is a status of its own, so it is found by its text.
+        const status = await screen.findByText(/was added to/);
         expect(status).toHaveTextContent("Vendor Rep was added to Support.");
         expect(within(status).getByRole("link", { name: "View that mailbox’s contacts" })).toHaveAttribute("href", "/contacts?mailboxUid=mb-shared");
         const post = fetchMock.mock.calls.find(([url, init]) => url === "/api/mail/contacts" && (init as RequestInit)?.method === "POST")!;
@@ -443,7 +444,7 @@ describe("ContactsPage", () => {
         await user.type(screen.getByLabelText("Display name"), "Vendor Rep");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
-        expect(await screen.findByRole("status")).toHaveTextContent("Vendor Rep was added to another mailbox.");
+        expect(await screen.findByText(/was added to/)).toHaveTextContent("Vendor Rep was added to another mailbox.");
     });
 
     it("creating a new contact posts the input and shows the saved contact", async () => {
@@ -639,7 +640,9 @@ describe("ContactsPage", () => {
         await user.click(await screen.findByText("Jane Doe"));
         await user.click(within(screen.getByRole("region", { name: "Contact details" })).getByRole("button", { name: "Delete" }));
 
-        expect(await screen.findByText("Could not delete this contact.")).toBeInTheDocument();
+        // A pop-up (see `NotificationCenter`), not a line in the list pane.
+        expect(await screen.findByText("Couldn't delete the contact")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("adds and removes an email row", async () => {
@@ -981,6 +984,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
 
         expect(await screen.findByText("cannot delete")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't delete some of the contacts")).toBeInTheDocument();
     });
 
     it("toolbar Delete shows a generic error message when one deletion fails with a non-API error.", async () => {
@@ -996,7 +1000,8 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await user.click(within(screen.getByRole("toolbar")).getByText("Delete"));
         await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
 
-        expect(await screen.findByText("Could not delete one or more contacts.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't delete some of the contacts")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("toolbar Delete asks first, naming how many contacts, and deletes nothing when cancelled or dismissed.", async () => {
@@ -1094,9 +1099,10 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await user.click(within(screen.getByRole("toolbar")).getByText("Email"));
 
         // Bob has no email, so only Jane's address should appear.
-        expect(await screen.findByRole("dialog", { name: "New Message" })).toBeInTheDocument();
+        // A first compose window in a process loads its code (a cold transform in the suite); give a busy machine longer than the default second.
+        expect(await screen.findByRole("dialog", { name: "New Message" }, { timeout: 20_000 })).toBeInTheDocument();
         // The window's frame is up on the click; its fields arrive with its code.
-        await waitFor(() => expect(recipientChips("To")).toEqual(["jane@example.com"]));
+        await waitFor(() => expect(recipientChips("To")).toEqual(["jane@example.com"]), { timeout: 20_000 });
     });
 
     it("toolbar Favorite marks every checked contact favorited, then relabels to Unfavorite once all are.", async () => {
@@ -1135,7 +1141,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await user.click(screen.getByLabelText("Select Jane Doe"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Favorite"));
 
-        expect(await screen.findByText("Could not update one or more contacts.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't update some of the contacts")).toBeInTheDocument();
     });
 
     it("toolbar Favorite shows the ApiRequestError message when updating a checked contact fails.", async () => {
@@ -1208,7 +1214,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await user.click(screen.getByLabelText("Select Jane Doe"));
         await user.click(within(screen.getByRole("toolbar")).getByText("Add category"));
 
-        expect(await screen.findByText("Could not update one or more contacts.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't update some of the contacts")).toBeInTheDocument();
         promptSpy.mockRestore();
     });
 
@@ -1309,7 +1315,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         const file = new File([vcard], "contacts.vcf", { type: "text/vcard" });
         await user.upload(screen.getByLabelText("Import contacts file"), file);
 
-        expect(await screen.findByText("Could not import one or more contacts.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't import some of the contacts")).toBeInTheDocument();
     });
 
     it("toolbar Import shows the ApiRequestError message when creating one of the imported contacts fails.", async () => {

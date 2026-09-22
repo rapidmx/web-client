@@ -5,7 +5,6 @@
 import { routedPage } from "../../../_routedPage.js";
 import { useNavigate } from "../../../../shared/navigation/AppRouter.js";
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { createMailSignature, listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
 import { clearPreviousDefaults } from "../signatureDefaults.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../../shared/components/settings/layout/SettingsShell.js";
@@ -13,6 +12,7 @@ import RichTextEditor from "../../../../shared/components/mail/compose/RichTextE
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { notifyApiError } from "../../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -68,7 +68,8 @@ function NewSignatureForm() {
             });
             navigate(`/settings/signatures/${encodeURIComponent(created.uid)}?mailboxUid=${encodeURIComponent(mailboxUid!)}`);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not create the signature.");
+            // A pop-up: `error` above is only the form's own validation.
+            notifyApiError(err, "Couldn't create the signature");
         } finally {
             setSaving(false);
         }

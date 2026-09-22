@@ -182,7 +182,9 @@ describe("SettingsPrivacyPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Request export" }));
 
+        // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("caller is not this mailbox's owner")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't start the export")).toBeInTheDocument();
     });
 
     it("shows a generic message when requesting an export fails with a non-API error", async () => {
@@ -197,7 +199,8 @@ describe("SettingsPrivacyPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Request export" }));
 
-        expect(await screen.findByText("Could not start this export.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't start the export")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("discards a stale initial-load response that resolves after a newer create-triggered reload", async () => {
@@ -414,6 +417,7 @@ describe("SettingsPrivacyPage", () => {
         await user.upload(screen.getByLabelText("Upload mail archive"), file);
 
         expect(await screen.findByText("targetFolderUid is required.")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't upload the file")).toBeInTheDocument();
     });
 
     it("shows a generic message when uploading fails with a non-API error", async () => {
@@ -428,7 +432,8 @@ describe("SettingsPrivacyPage", () => {
         const user = userEvent.setup();
         await user.upload(screen.getByLabelText("Upload mail archive"), file);
 
-        expect(await screen.findByText("Could not upload this file.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't upload the file")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("discards a stale initial-load response that resolves after a newer upload-triggered reload", async () => {

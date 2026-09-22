@@ -8,6 +8,7 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
 import MailAddress from "./MailAddress.js";
+import { EncryptedPreview, conversationLooksEncrypted } from "./reading/EncryptedPreview.js";
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "./unreadStyle.js";
 
@@ -188,7 +189,8 @@ export default function ConversationList({
                                 </div>
                                 <div className={["text-sm truncate", subjectClass(unread)].join(" ")}>{conversation.subject || "(no subject)"}</div>
                                 <div className="text-xs text-text-muted truncate font-normal">
-                                    {conversation.latestPreview}
+                                    {/* An encrypted latest message has no preview (the server never had its plaintext): say so, with a lock, not nothing. */}
+                                    {conversationLooksEncrypted(conversation) ? <EncryptedPreview /> : conversation.latestPreview}
                                 </div>
                                 <div className="flex items-center gap-2 mt-1 text-xs text-text-muted font-normal">
                                     {conversation.messageCount > 1 && <span>{conversation.messageCount} messages</span>}
@@ -244,7 +246,7 @@ export default function ConversationList({
                                                 </span>
                                             </div>
                                             <div className="flex items-center gap-2 text-xs text-text-muted font-normal">
-                                                <span className="truncate">{message.bodyPreview}</span>
+                                                <span className="truncate">{message.bodyPreview || (message.encrypted ? <EncryptedPreview /> : null)}</span>
                                                 {message.hasAttachments && (
                                                     <HiOutlinePaperClip size={12} aria-label="Has attachments" />
                                                 )}

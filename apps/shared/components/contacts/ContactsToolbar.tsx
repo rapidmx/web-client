@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ChangeEvent, useRef } from "react";
-import type { IconType } from "react-icons";
 import {
     HiOutlineArrowDownTray,
     HiOutlineArrowUpTray,
@@ -17,6 +16,7 @@ import {
 } from "react-icons/hi2";
 import { SHORTCUTS } from "../../keyboard/keymap.js";
 import { useShortcutProps } from "../../keyboard/useShortcutProps.js";
+import ResponsiveToolbar, { ToolbarAction } from "../layout/ResponsiveToolbar.js";
 
 export interface ContactsToolbarProps {
     selectedCount: number;
@@ -37,40 +37,10 @@ export interface ContactsToolbarProps {
     shortcuts?: boolean;
 }
 
-function ToolbarButton({
-    label,
-    icon: Icon,
-    disabled,
-    onClick,
-    hint,
-}: {
-    label: string;
-    icon: IconType;
-    disabled?: boolean;
-    onClick: () => void;
-    /** `title` and `aria-keyshortcuts` for a button with a shortcut. */
-    hint?: { title: string; "aria-keyshortcuts"?: string };
-}) {
-    return (
-        <button
-            type="button"
-            onClick={onClick}
-            disabled={disabled}
-            {...hint}
-            className="flex flex-col items-center gap-1 text-xs text-text-muted hover:text-text disabled:opacity-40 disabled:cursor-not-allowed px-2.5 py-1.5 rounded-sm hover:not-disabled:bg-surface-alt"
-        >
-            <Icon size={18} aria-hidden="true" />
-            <span>{label}</span>
-        </button>
-    );
-}
-
-function Divider() {
-    return <div className="w-px self-stretch my-1 bg-border" aria-hidden="true" />;
-}
-
 /**
- * Contacts' Outlook-style ribbon toolbar. Deliberately presentational — every action is a callback the
+ * Contacts' Outlook-style ribbon toolbar, fitted to its column (`ResponsiveToolbar`): captions under the icons while there is room, then icons
+ * alone, then the rarely used actions - Import, Export, Add category, and so on up - in a "More" menu; the bar can never spill into the pane
+ * beside it. Every button keeps its tooltip (New contact its shortcut's) and accessible name in every layout. Deliberately presentational — every action is a callback the
  * page (`apps/www/contacts/index.tsx`) implements, since it owns the actual contact data, the current
  * selection, and the mailbox/folder context every real action (create/delete/email/favorite/category)
  * needs. "New contact list" isn't duplicated here — `ContactsSidebar` already has its own inline
@@ -101,25 +71,28 @@ export default function ContactsToolbar({
         }
     }
 
+    const actions: ToolbarAction[] = [
+        { id: "new", label: "New contact", icon: HiOutlineUserPlus, onClick: onNewContact, hint: shortcuts ? newContactHint : undefined, group: 0, rank: 99, essential: true },
+        { id: "edit", label: "Edit", icon: HiOutlinePencil, onClick: onEdit, disabled: selectedCount !== 1, group: 1, rank: 6 },
+        { id: "delete", label: "Delete", icon: HiOutlineTrash, onClick: onDelete, disabled: !hasSelection, group: 1, rank: 5 },
+        { id: "email", label: "Email", icon: HiOutlineEnvelope, onClick: onEmail, disabled: !hasSelection, group: 2, rank: 4 },
+        {
+            id: "favorite",
+            label: allSelectedFavorited ? "Unfavorite" : "Favorite",
+            icon: allSelectedFavorited ? HiStar : HiOutlineStar,
+            onClick: onToggleFavorite,
+            disabled: !hasSelection,
+            group: 2,
+            rank: 3,
+        },
+        { id: "category", label: "Add category", icon: HiOutlineTag, onClick: onAddCategory, disabled: !hasSelection, group: 2, rank: 2 },
+        { id: "export", label: "Export", icon: HiOutlineArrowUpTray, onClick: onExportVCard, disabled: !hasSelection, group: 3, rank: 1 },
+        { id: "import", label: "Import", icon: HiOutlineArrowDownTray, onClick: () => importInputRef.current?.click(), group: 3, rank: 0 },
+    ];
+
     return (
-        <div role="toolbar" aria-label="Contacts actions" className="border-b border-border bg-surface-alt flex items-center gap-0.5 px-2 py-1">
-            <ToolbarButton label="New contact" icon={HiOutlineUserPlus} onClick={onNewContact} hint={shortcuts ? newContactHint : undefined} />
-            <Divider />
-            <ToolbarButton label="Edit" icon={HiOutlinePencil} disabled={selectedCount !== 1} onClick={onEdit} />
-            <ToolbarButton label="Delete" icon={HiOutlineTrash} disabled={!hasSelection} onClick={onDelete} />
-            <Divider />
-            <ToolbarButton label="Email" icon={HiOutlineEnvelope} disabled={!hasSelection} onClick={onEmail} />
-            <ToolbarButton
-                label={allSelectedFavorited ? "Unfavorite" : "Favorite"}
-                icon={allSelectedFavorited ? HiStar : HiOutlineStar}
-                disabled={!hasSelection}
-                onClick={onToggleFavorite}
-            />
-            <ToolbarButton label="Add category" icon={HiOutlineTag} disabled={!hasSelection} onClick={onAddCategory} />
-            <Divider />
-            <ToolbarButton label="Export" icon={HiOutlineArrowUpTray} disabled={!hasSelection} onClick={onExportVCard} />
-            <ToolbarButton label="Import" icon={HiOutlineArrowDownTray} onClick={() => importInputRef.current?.click()} />
+        <ResponsiveToolbar label="Contacts actions" actions={actions}>
             <input ref={importInputRef} type="file" accept=".vcf" className="sr-only" aria-label="Import contacts file" onChange={handleImportFileChosen} />
-        </div>
+        </ResponsiveToolbar>
     );
 }

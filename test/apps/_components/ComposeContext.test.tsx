@@ -324,6 +324,68 @@ describe("ComposeProvider / useCompose", () => {
         });
     });
 
+    describe("keeping the pop-ups clear of the windows", () => {
+        const top = () => document.documentElement.style.getPropertyValue("--rr-compose-top");
+
+        it("publishes where the open windows start as --rr-compose-top, follows their size and the window's, and takes it away when they are closed", async () => {
+            mockDraft();
+            const callbacks: (() => void)[] = [];
+            const disconnect = vi.fn();
+            vi.stubGlobal(
+                "ResizeObserver",
+                class {
+                    constructor(callback: () => void) {
+                        callbacks.push(callback);
+                    }
+                    observe() {
+                        // Nothing to observe in jsdom.
+                    }
+                    disconnect = disconnect;
+                },
+            );
+            const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ top: 380 } as DOMRect);
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <Opener mailboxUid="mb1" />
+                </ComposeProvider>,
+            );
+            expect(top()).toBe("");
+
+            await user.click(screen.getByRole("button", { name: "Open mb1" }));
+            await waitFor(() => expect(top()).toBe("380px"));
+            rect.mockReturnValue({ top: 300 } as DOMRect);
+            act(() => callbacks[0]());
+            expect(top()).toBe("300px");
+            rect.mockReturnValue({ top: 250 } as DOMRect);
+            act(() => {
+                window.dispatchEvent(new Event("resize"));
+            });
+            expect(top()).toBe("250px");
+
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(top()).toBe("");
+            expect(disconnect).toHaveBeenCalled();
+            rect.mockRestore();
+        });
+
+        it("still publishes it where there is no ResizeObserver", async () => {
+            mockDraft();
+            vi.stubGlobal("ResizeObserver", undefined);
+            const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ top: 512 } as DOMRect);
+            const user = userEvent.setup();
+            render(
+                <ComposeProvider>
+                    <Opener mailboxUid="mb1" />
+                </ComposeProvider>,
+            );
+            await user.click(screen.getByRole("button", { name: "Open mb1" }));
+            await waitFor(() => expect(top()).toBe("512px"));
+            rect.mockRestore();
+        });
+    });
+
     it("useCompose()'s default (no enclosing ComposeProvider) is a harmless no-op, not a crash", async () => {
         const user = userEvent.setup();
         render(<Opener mailboxUid="mb1" />);

@@ -129,6 +129,8 @@ describe("ContactsShell", () => {
 
         await screen.findByText("content");
         expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
+        // ...and no empty 224 px column where it would have been.
+        expect(document.querySelector("aside")).toBeNull();
     });
 
     it("shows the mailbox switcher when more than one mailbox is accessible, marking a shared one", async () => {

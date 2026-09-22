@@ -257,6 +257,8 @@ describe("SetupPage", () => {
         renderPage();
 
         expect(await screen.findByRole("heading", { name: "Your mailbox" })).toBeInTheDocument();
+        // The mailboxes that exist are asked for through the administration scope (metadata), not only the administrator's own.
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=100&page=0&scope=admin", expect.anything());
         expect(await screen.findByLabelText("Local part")).toHaveValue("admin");
         expect(screen.getByLabelText("Display name")).toHaveValue("Administrator");
         expect(screen.getByLabelText("Owner user uid (optional)")).toHaveValue("admin-1");

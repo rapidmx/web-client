@@ -4,11 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 export type SettingsReadReceiptsPageProps = Omit<SettingsShellProps, "active">;
 
@@ -34,13 +33,11 @@ function ReadReceiptsContent() {
     const [autoSendReceiptsExternal, setAutoSendReceiptsExternal] = useState(mailbox.autoSendReceiptsExternal ?? false);
     // See auto-reply/index.tsx's identical note - later saves must carry the version the previous save returned.
     const [version, setVersion] = useState(mailbox.version);
-    const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
-        setError(null);
         setSaved(false);
         setSaving(true);
         try {
@@ -57,7 +54,7 @@ function ReadReceiptsContent() {
             setVersion(updated.version);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save read receipt settings.");
+            notifyApiError(err, "Couldn't save the read receipt settings");
         } finally {
             setSaving(false);
         }
@@ -73,8 +70,7 @@ function ReadReceiptsContent() {
                     checkbox in Compose always overrides the request-side settings below for that one message.
                 </p>
 
-                {error && <Alert>{error}</Alert>}
-                {saved && !error && <div className="mb-4 text-sm text-success font-medium">Saved.</div>}
+                {saved && <div className="mb-4 text-sm text-success font-medium">Saved.</div>}
 
                 <form onSubmit={handleSubmit} className="flex flex-col gap-5">
                     <fieldset className="flex flex-col gap-2">

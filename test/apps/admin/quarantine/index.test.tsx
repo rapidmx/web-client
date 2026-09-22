@@ -37,14 +37,15 @@ describe("QuarantinePage", () => {
         expect(await screen.findByText(/No mailbox specified/)).toBeInTheDocument();
     });
 
-    it("shows an empty-state message when nothing is quarantined", async () => {
-        mockFetch((url) => {
+    it("shows an empty-state message when nothing is quarantined - asking the administration scope for the mailbox's entries", async () => {
+        const fetchMock = mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url.startsWith("/api/mail/quarantine")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<QuarantinePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         expect(await screen.findByText("Nothing quarantined for this mailbox.")).toBeInTheDocument();
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1&scope=admin", expect.anything());
     });
 
     it("lists held entries and marks one released after confirming, showing the server's own stamp", async () => {

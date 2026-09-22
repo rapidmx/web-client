@@ -12,8 +12,21 @@ if (typeof document !== "undefined") {
     const { resetPushClient } = await import("@rapidmx/react-shared/mail/pushClient.js");
     const { clearListSnapshots } = await import("../../apps/shared/mail/listSnapshots.js");
     const { clearOriginalMessageCache } = await import("../../apps/shared/components/mail/compose/quotedBody.js");
-    afterEach(() => {
+    const { resetNotifications } = await import("../../apps/shared/notifications/store.js");
+    const { resetPendingSends } = await import("../../apps/shared/mail/outbox/pendingSends.js");
+    const { resetSendJobs } = await import("../../apps/shared/mail/outbox/sendState.js");
+    const { setApiUnauthorizedObserver } = await import("@rapidmx/react-shared/util/api.js");
+    afterEach(async () => {
         cleanup();
+        // The notification stack, its history, the messages being sent and what was kept of them are module-level too: a pop-up (or a send)
+        // one test raised must not be on screen - or block a same-uid send - in the next.
+        resetNotifications();
+        resetPendingSends();
+        resetSendJobs();
+        setApiUnauthorizedObserver(undefined);
+        // A signing-certificate enrollment being followed (a pending one is kept after its page has gone) must not poll into the next test. Imported here,
+        // not above: a module loaded by this setup file would be loaded before a test file's `vi.mock()` of `keyvaultApi` and keep the real one.
+        (await import("../../apps/shared/signing/enrollmentTracker.js")).resetEnrollmentTracker();
         // Short-lived, module-level copies of what a folder listed and of a message's body (see `listSnapshots.ts`,
         // `quotedBody.ts`) would otherwise show a test the previous test's rows and quote for the same uid.
         clearListSnapshots();

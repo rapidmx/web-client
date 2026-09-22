@@ -159,7 +159,9 @@ describe("NewSignaturePage", () => {
         await user.type(screen.getByLabelText("Name"), "Work signature");
         await user.click(screen.getByRole("button", { name: "Create signature" }));
 
+        // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("boom")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't create the signature")).toBeInTheDocument();
     });
 
     it("shows a generic error message when creation fails with a non-API error", async () => {
@@ -174,7 +176,8 @@ describe("NewSignaturePage", () => {
         await user.type(screen.getByLabelText("Name"), "Work signature");
         await user.click(screen.getByRole("button", { name: "Create signature" }));
 
-        expect(await screen.findByText("Could not create the signature.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't create the signature")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
     it("the Cancel link returns to the signatures list", async () => {

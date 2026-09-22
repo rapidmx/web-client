@@ -40,6 +40,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import { SHORTCUTS, ShortcutDef } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
+import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 
 function CalendarPage(props: CalendarShellProps) {
     return (
@@ -109,7 +110,6 @@ function CalendarContent({ userUid }: { userUid?: string }) {
     const [events, setEvents] = useState<CalendarEvent[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [actionError, setActionError] = useState<string | null>(null);
     const [modal, setModal] = useState<ModalState | null>(null);
     // `null` means "not yet customized by the user" — every calendar is treated as checked without
     // needing to be seeded from `calendarFolders` the moment it loads (see `checkedFolderUids` below).
@@ -317,7 +317,6 @@ function CalendarContent({ userUid }: { userUid?: string }) {
         if (!action) {
             return;
         }
-        setActionError(null);
         try {
             if (action.type === "move") {
                 await moveOccurrence(action.occurrence, action.deltaMs);
@@ -326,7 +325,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
             }
             reload();
         } catch (err) {
-            setActionError(err instanceof ApiRequestError ? err.message : "Could not update this event.");
+            notifyApiError(err, action.type === "move" ? "Couldn't move the event" : "Couldn't resize the event");
         }
     }
 
@@ -365,16 +364,17 @@ function CalendarContent({ userUid }: { userUid?: string }) {
     );
 
     return (
-        <div className="flex-1 flex min-h-0">
-            <div className="hidden md:flex w-56 shrink-0 border-r border-border flex-col overflow-y-auto">{sidebarContent}</div>
+        <div className="flex-1 min-w-0 flex min-h-0">
+            <div className="hidden lg:flex w-56 shrink-0 border-r border-border flex-col overflow-y-auto">{sidebarContent}</div>
             <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Calendars">
                 <div className="flex flex-col">{sidebarContent}</div>
             </Drawer>
-            <div className="flex-1 flex flex-col min-h-0">
-                <div className="flex items-center gap-3 p-3 border-b border-border shrink-0">
+            {/* `min-w-0`: without it the column is as wide as its widest row (the toolbar, the month grid) and runs off the window instead of the row wrapping. */}
+            <div className="flex-1 min-w-0 flex flex-col min-h-0">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3 border-b border-border shrink-0">
                     <button
                         type="button"
-                        className="md:hidden w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text shrink-0"
+                        className="lg:hidden w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text shrink-0"
                         aria-label="Open calendars"
                         onClick={() => setDrawerOpen(true)}
                     >
@@ -395,7 +395,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                         </button>
                     </div>
                     <h1 className="hidden md:block text-lg font-bold tracking-tight">{title}</h1>
-                    <div className="ml-auto flex gap-1 overflow-x-auto">
+                    <div className="ml-auto flex flex-wrap gap-1">
                         {VIEW_TYPES.map((v) => (
                             <ViewButton key={v} view={v} current={view} onSelect={setView} />
                         ))}
@@ -405,11 +405,6 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                 {error && (
                     <div className="p-3">
                         <Alert>{error}</Alert>
-                    </div>
-                )}
-                {actionError && (
-                    <div className="p-3">
-                        <Alert>{actionError}</Alert>
                     </div>
                 )}
 

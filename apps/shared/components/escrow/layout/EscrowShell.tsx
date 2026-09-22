@@ -12,6 +12,8 @@ import { getBranding } from "@rapidmx/react-shared/branding/brandingApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import UserMenu from "../../layout/UserMenu.js";
+import RailIcon from "../../layout/RailIcon.js";
+import AppearanceProvider from "../../../appearance/AppearanceProvider.js";
 import { signOutOfConsole } from "../../admin/signOut.js";
 
 export type EscrowSection = "matters" | "auditLog";
@@ -104,13 +106,13 @@ export default function EscrowShell({ active, userUid, authServerUrl, children }
     } else {
         const activeItem = NAV_ITEMS.find((item) => item.id === active);
         content = (
-            <div className="min-h-screen flex flex-col bg-surface-alt">
+            <div className="rr-frame-bg min-h-screen flex flex-col">
                 <div className="flex-1 flex min-h-0">
                     <nav
                         aria-label="Escrow sections"
-                        className="hidden md:flex w-16 shrink-0 bg-surface border-r border-border flex-col items-center py-3 gap-1"
+                        className="hidden md:flex w-16 shrink-0 bg-surface border-r border-border flex-col items-center pb-3 gap-1"
                     >
-                        <img src={iconSrc} width="96" height="96" alt="" className="mb-3" />
+                        <RailIcon src={iconSrc} />
                         {NAV_ITEMS.map(({ id, href, label, icon: Icon }) => (
                             <a
                                 key={id}
@@ -131,11 +133,11 @@ export default function EscrowShell({ active, userUid, authServerUrl, children }
                     </nav>
                     <BottomTabBar apps={NAV_ITEMS} active={active} />
                     <div className="flex-1 flex flex-col min-w-0">
-                        <header className="h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-6">
+                        <header className="rr-solid sticky top-0 z-30 h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-6">
                             <span className="font-display font-bold text-lg uppercase tracking-wide">{activeItem?.label}</span>
                             <UserMenu userUid={userUid} authServerUrl={authServerUrl} onSignOut={handleSignOut} />
                         </header>
-                        <div className="flex-1 pb-14 md:pb-0">
+                        <div id="app-content" className="flex-1 pb-14 md:pb-0">
                             <main className="max-w-6xl mx-auto px-6 py-8">{children}</main>
                         </div>
                     </div>
@@ -144,5 +146,10 @@ export default function EscrowShell({ active, userUid, authServerUrl, children }
         );
     }
 
-    return <>{content}</>;
+    // The user's own colours and background (`AppearanceProvider`), from what the last webmail page cached in this browser: the console never asks the server.
+    return (
+        <AppearanceProvider userUid={userUid} lookUp={false}>
+            {content}
+        </AppearanceProvider>
+    );
 }

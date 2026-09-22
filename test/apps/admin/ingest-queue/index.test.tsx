@@ -110,10 +110,10 @@ describe("IngestQueuePage", () => {
     it("pages through the queue with Next and Previous", async () => {
         const fetchMock = mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1") {
+            if (url === "/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1&scope=admin") {
                 return jsonResponse(200, Array.from({ length: 25 }, (_, i) => ({ ...entry, uid: `iq${i}`, envelopeFrom: `s${i}@example.com` })));
             }
-            if (url === "/api/mail/ingest-queue?limit=25&page=1&mailboxUid=mb1") {
+            if (url === "/api/mail/ingest-queue?limit=25&page=1&mailboxUid=mb1&scope=admin") {
                 return jsonResponse(200, [{ ...entry, uid: "iq25", envelopeFrom: "last@example.com" }]);
             }
             throw new Error(`unexpected ${url}`);
@@ -129,7 +129,7 @@ describe("IngestQueuePage", () => {
         expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
         await user.click(screen.getByRole("button", { name: "Previous" }));
         expect(await screen.findByText("s0@example.com")).toBeInTheDocument();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=1&mailboxUid=mb1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=1&mailboxUid=mb1&scope=admin", expect.anything());
     });
 
     it("ignores a response or failure that lands after the page was left", async () => {

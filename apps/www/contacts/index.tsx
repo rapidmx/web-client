@@ -33,6 +33,7 @@ import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/
 import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigners.js";
 import { SHORTCUTS } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
+import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -98,10 +99,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     const [savedElsewhere, setSavedElsewhere] = useState<{ mailboxUid: string; displayName: string } | null>(null);
     const [confirmingBulkDelete, setConfirmingBulkDelete] = useState(false);
 
-    /** Returns a promise so bulk actions (below) can wait for the refreshed list before re-asserting their
-     * own error message — this always clears `error` first (a legitimate reset for a fresh fetch attempt),
-     * which would otherwise silently wipe out a bulk action's own just-set failure message before the user
-     * ever saw it, since every bulk handler calls this right after its own error-setting loop. */
+    /** Returns a promise so bulk actions (below) can wait for the refreshed list. `error` is only this list's own
+     * load failure (cleared first, for a fresh fetch attempt); a failed action is a pop-up instead
+     * (`notifyApiError()`), which a reload doesn't touch. */
     function reload(): Promise<void> {
         if (!folderUid) {
             setContacts([]);
@@ -299,24 +299,23 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             setMode("view");
             void reload();
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not delete this contact.");
+            notifyApiError(err, "Couldn't delete the contact");
         }
     }
 
+    // The bulk handlers below try every contact and report each failure: the same failure repeated is one pop-up with a count.
     async function handleBulkDelete() {
         setConfirmingBulkDelete(false);
-        let bulkError: string | null = null;
         for (const contact of checkedContacts) {
             try {
                 await deleteContact(contact.uid, contact.version);
             } catch (err) {
-                bulkError = err instanceof ApiRequestError ? err.message : "Could not delete one or more contacts.";
+                notifyApiError(err, "Couldn't delete some of the contacts");
             }
         }
         clearPinnedSignerCache();
         setCheckedUids(new Set());
         await reload();
-        setError(bulkError);
     }
 
     // `ContactsToolbar`'s Edit button — the only caller — is itself `disabled` unless exactly one contact
@@ -337,17 +336,15 @@ function ContactsContent({ userUid }: { userUid?: string }) {
 
     async function handleToggleFavorite() {
         const allFavorited = checkedContacts.every((c) => c.favorite);
-        let bulkError: string | null = null;
         for (const contact of checkedContacts) {
             try {
                 await setContactFavorite(contact, !allFavorited);
             } catch (err) {
-                bulkError = err instanceof ApiRequestError ? err.message : "Could not update one or more contacts.";
+                notifyApiError(err, "Couldn't update some of the contacts");
             }
         }
         clearPinnedSignerCache();
         await reload();
-        setError(bulkError);
     }
 
     async function handleAddCategory() {
@@ -355,7 +352,6 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         if (!category?.trim()) {
             return;
         }
-        let bulkError: string | null = null;
         for (const contact of checkedContacts) {
             const categories = Array.from(new Set([...(contact.categories ?? []), category.trim()]));
             try {
@@ -363,12 +359,11 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 // fields restapi rejects, and would overwrite any concurrent edit to the other fields.
                 await updateContact({ uid: contact.uid, version: contact.version, categories });
             } catch (err) {
-                bulkError = err instanceof ApiRequestError ? err.message : "Could not update one or more contacts.";
+                notifyApiError(err, "Couldn't update some of the contacts");
             }
         }
         clearPinnedSignerCache();
         await reload();
-        setError(bulkError);
     }
 
     function handleExportVCard() {
@@ -384,28 +379,31 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         }
         const text = await file.text();
         const parsed = parseVCards(text);
-        let bulkError: string | null = null;
         for (const input of parsed) {
             try {
                 await createContact({ mailboxUid, folderUid, ...input });
             } catch (err) {
-                bulkError = err instanceof ApiRequestError ? err.message : "Could not import one or more contacts.";
+                notifyApiError(err, "Couldn't import some of the contacts");
             }
         }
         clearPinnedSignerCache();
         await reload();
-        setError(bulkError);
     }
 
     return (
-        <div className="flex-1 flex min-h-0">
+        // From `md` up the page is exactly as tall as the window under the title bar and every column scrolls by itself (the frame's own height is
+        // open-ended, so a column's `overflow` would otherwise never apply); on a phone the whole page scrolls, as it always did. Below `lg` the
+        // contacts menu is a drawer (a button above the columns), so the list and the detail pane keep a usable width.
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col lg:flex-row md:flex-none md:h-[calc(100dvh_-_var(--rr-header-h,4rem))] md:overflow-hidden">
             <ContactsSidebar mailboxUid={mailboxUid} contacts={contacts} active={view} onSelect={handleSelectView} showDeleted={canViewDeleted} />
+            <div className="flex-1 min-w-0 min-h-0 flex">
             {/* Hidden on mobile while the "new contact" form (the one form-pane state mobile keeps
                 in-place — see the pane's own comment below) is showing, so the two never compete for the
-                same row's width. Desktop always shows both side by side, unchanged. */}
+                same row's width. Desktop always shows both side by side. A sensible width for the list - a third of the window, between 16 and
+                26 rem - so the detail pane keeps the rest, and its toolbar fits it (`ResponsiveToolbar`). */}
             <div
                 className={[
-                    "w-full md:w-96 shrink-0 md:border-r border-border md:flex flex-col min-h-0",
+                    "w-full md:w-[clamp(16rem,32vw,26rem)] min-w-0 md:shrink-0 md:border-r border-border md:flex flex-col min-h-0",
                     mode === "new" ? "hidden md:flex" : "flex",
                 ].join(" ")}
             >
@@ -456,12 +454,12 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 ) : sorted.length === 0 ? (
                     <p className="p-4 text-sm text-text-muted">No contacts found.</p>
                 ) : (
-                    <div className="flex-1 overflow-auto">
-                        <table className="w-full text-sm">
+                    <div className="flex-1 min-h-0 overflow-auto">
+                        <table className="w-full table-fixed text-sm">
                             <thead>
                                 <tr className="border-b border-border text-left">
                                     {!isDeletedView && (
-                                        <th className="w-8 px-3 py-2">
+                                        <th className="w-10 px-3 py-2">
                                             <input
                                                 type="checkbox"
                                                 aria-label="Select all contacts"
@@ -470,11 +468,11 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                                             />
                                         </th>
                                     )}
-                                    <th className="px-3 py-2">
+                                    <th className="w-[58%] px-3 py-2">
                                         <button
                                             type="button"
                                             onClick={() => handleSort("name")}
-                                            className="text-xs font-bold uppercase tracking-wide text-text-muted"
+                                            className="block max-w-full truncate text-xs font-bold uppercase tracking-wide text-text-muted"
                                         >
                                             Name{sortColumn === "name" ? (sortDesc ? " ▾" : " ▴") : ""}
                                         </button>
@@ -483,7 +481,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                                         <button
                                             type="button"
                                             onClick={() => handleSort("info")}
-                                            className="text-xs font-bold uppercase tracking-wide text-text-muted"
+                                            className="block max-w-full truncate text-xs font-bold uppercase tracking-wide text-text-muted"
                                         >
                                             Contact info{sortColumn === "info" ? (sortDesc ? " ▾" : " ▴") : ""}
                                         </button>
@@ -509,15 +507,15 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                                             </td>
                                         )}
                                         <td className="px-3 py-2">
-                                            <button type="button" onClick={() => handleSelectRow(contact)} className="flex items-center gap-2 text-left">
+                                            <button type="button" onClick={() => handleSelectRow(contact)} className="flex w-full min-w-0 items-center gap-2 text-left">
                                                 <ContactAvatar displayName={contact.displayName} size={28} />
-                                                <span className="truncate font-medium">
+                                                <span className="min-w-0 truncate font-medium">
                                                     {contact.displayName}
                                                     {contact.favorite && <span aria-label="Favorite"> ★</span>}
                                                 </span>
                                             </button>
                                         </td>
-                                        <td className="px-3 py-2 text-text-muted truncate">{primaryInfo(contact)}</td>
+                                        <td className="max-w-0 truncate px-3 py-2 text-text-muted">{primaryInfo(contact)}</td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -528,9 +526,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             {/* On mobile, "selected"/"edit" are unreachable (row taps navigate to /contacts/:uid instead —
                 see handleSelectRow), so this pane only needs to show there for "new", which stays in-place
                 on every device (an unsaved contact has no uid for a route). Always visible on desktop. */}
-            <div className={["flex-1 min-w-0 overflow-y-auto p-6 md:block", mode === "new" ? "block" : "hidden"].join(" ")}>
+            <div className={["flex-1 min-w-0 min-h-0 flex-col md:flex", mode === "new" ? "flex" : "hidden"].join(" ")}>
                 {savedElsewhere && mode !== "new" && (
-                    <p role="status" className="mb-4 text-sm py-2 px-3 rounded-sm bg-surface-alt text-text">
+                    <p role="status" className="m-6 mb-0 text-sm py-2 px-3 rounded-sm bg-surface-alt text-text">
                         {savedElsewhere.displayName} was added to{" "}
                         {mailboxes.find((mb) => mb.uid === savedElsewhere.mailboxUid)?.displayName ?? "another mailbox"}.{" "}
                         <a
@@ -552,16 +550,21 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 ) : mode === "edit" && selected ? (
                     <ContactForm contact={selected} onSaved={handleSaved} onCancel={handleCancel} />
                 ) : selected ? (
-                    <ContactDetailPane
-                        contact={selected}
-                        onEdit={() => setMode("edit")}
-                        onDelete={() => handleDelete(selected)}
-                        onKeysChanged={() => void reload()}
-                        canResolveKeys={ownsMailbox || delegateCanUpdate}
-                    />
+                    <div className="min-h-0 flex-1 overflow-y-auto p-6">
+                        <ContactDetailPane
+                            contact={selected}
+                            onEdit={() => setMode("edit")}
+                            onDelete={() => handleDelete(selected)}
+                            onKeysChanged={() => void reload()}
+                            canResolveKeys={ownsMailbox || delegateCanUpdate}
+                        />
+                    </div>
                 ) : (
-                    <p className="text-sm text-text-muted">Select a contact, or create a new one.</p>
+                    <div className="flex flex-1 items-center justify-center p-6 text-center">
+                        <p className="text-sm text-text-muted">Select a contact, or create a new one.</p>
+                    </div>
                 )}
+            </div>
             </div>
             <Modal open={confirmingBulkDelete} onClose={() => setConfirmingBulkDelete(false)} title="Delete contacts">
                 <p className="text-sm mb-5">

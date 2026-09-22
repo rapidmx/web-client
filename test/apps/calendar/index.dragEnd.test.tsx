@@ -195,7 +195,27 @@ describe("CalendarPage handleDragEnd", () => {
             await capturedOnDragEnd!({ active: { id: "e1" }, over: { id: dayDropId(new Date("2026-06-16T00:00:00.000Z")) } });
         });
 
+        // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("move failed")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't move the event")).toBeInTheDocument();
+    });
+
+    it("shows an API error message when resizing fails", async () => {
+        mockShellAndEvents((url, init) =>
+            url === "/api/mail/calendar-events/e1" && init?.method === "PUT" ? jsonResponse(500, { message: "resize failed" }) : undefined,
+        );
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByText(/Standup/);
+
+        await act(async () => {
+            await capturedOnDragEnd!({
+                active: { id: resizeDragId({ ...event, occurrenceKey: "e1", isRecurringOccurrence: false }) },
+                over: { id: slotDropId(new Date("2026-06-15T16:00:00.000Z")) },
+            });
+        });
+
+        expect(await screen.findByText("resize failed")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't resize the event")).toBeInTheDocument();
     });
 
     it("shows a generic error message when the mutation fails with a non-API error", async () => {
@@ -213,6 +233,7 @@ describe("CalendarPage handleDragEnd", () => {
             await capturedOnDragEnd!({ active: { id: "e1" }, over: { id: dayDropId(new Date("2026-06-16T00:00:00.000Z")) } });
         });
 
-        expect(await screen.findByText("Could not update this event.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't move the event")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 });

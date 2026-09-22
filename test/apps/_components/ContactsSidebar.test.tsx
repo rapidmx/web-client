@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ContactsSidebar, { contactsViewKey, ContactsView } from "../../../apps/shared/components/contacts/ContactsSidebar.js";
+import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import type { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
 
 function contact(overrides: Partial<Contact> = {}): Contact {
@@ -252,7 +253,12 @@ describe("ContactsSidebar", () => {
         await user.type(screen.getByLabelText("New list name"), "Oops");
         await user.click(screen.getByRole("button", { name: "Add" }));
 
-        expect(await screen.findByText("Could not create this list.")).toBeInTheDocument();
+        // No pop-up host here (that is `AppShell`'s): what was raised is in the notification store.
+        await vi.waitFor(() =>
+            expect(getNotificationsSnapshot().visible).toMatchObject([
+                { kind: "error", title: "Couldn't create the list", message: "Something unexpected went wrong." },
+            ]),
+        );
         expect(fetchMock).toHaveBeenCalled();
     });
 
@@ -271,6 +277,10 @@ describe("ContactsSidebar", () => {
         await user.type(screen.getByLabelText("New list name"), "Oops");
         await user.click(screen.getByRole("button", { name: "Add" }));
 
-        expect(await screen.findByText("list name already taken")).toBeInTheDocument();
+        await vi.waitFor(() =>
+            expect(getNotificationsSnapshot().visible).toMatchObject([
+                { kind: "error", title: "Couldn't create the list", message: "list name already taken" },
+            ]),
+        );
     });
 });

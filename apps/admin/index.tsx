@@ -31,7 +31,8 @@ function MailboxesListContent() {
     useEffect(() => {
         setLoading(true);
         setError(null);
-        listMailboxes({ page, limit: PAGE_SIZE })
+        // The administration scope: every mailbox as administrative metadata - the console never shows anybody's mail.
+        listMailboxes({ page, limit: PAGE_SIZE, scope: "admin" })
             .then(setMailboxes)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load mailboxes."))
             .finally(() => setLoading(false));
@@ -68,6 +69,11 @@ function MailboxesListContent() {
                     </a>
                 </div>
             </div>
+
+            <p className="text-sm text-text-muted mb-4">
+                Administrative details only (addresses, owners, quota). The console never shows a mailbox&rsquo;s mail:
+                to see someone&rsquo;s account, impersonate them from their mailbox page.
+            </p>
 
             {error && <Alert>{error}</Alert>}
 

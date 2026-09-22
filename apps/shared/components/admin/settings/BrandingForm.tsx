@@ -16,11 +16,18 @@ import {
 } from "@rapidmx/react-shared/branding/brandingApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import CopyButton from "@rapidmx/react-shared/components/buttons/CopyButton.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+/** A header that uses both variables - the snippet the Branding page offers to copy. */
+export const HEADER_HTML_EXAMPLE = `<div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem 1rem">
+    <span>{APP_TITLE}</span>
+    <span>{USER_MENU}</span>
+</div>`;
 
 /** SVG logo/icon uploads are refused (the server refuses them too): an SVG served from this origin can carry script. */
 export function isSvgFile(file: File): boolean {
@@ -376,7 +383,21 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
                             value={headerHtml}
                             onChange={(e) => setHeaderHtml(e.target.value)}
                         />
+                        <span className="text-xs text-text-muted">
+                            A header replaces the app's own title bar and the icon at the top of the icon rail, and stays at the top of the window. Write{" "}
+                            <code>{"{USER_MENU}"}</code> where the account menu (avatar, Settings, Sign Out) should go, and <code>{"{APP_TITLE}"}</code>{" "}
+                            where the name of the app on screen should show. Both work in the footer too. <code>{"{USER_MENU}"}</code> is replaced once
+                            (the header's, else the footer's); without it the menu sits in a small cell at the right end of the header, so it is never lost.
+                            Put it where your styles don't hide it on a phone.
+                        </span>
                     </label>
+                    <div className="flex flex-col gap-1.5 text-sm" role="group" aria-label="Header example">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold">Example header</span>
+                            <CopyButton value={HEADER_HTML_EXAMPLE} label="Copy the example header HTML" />
+                        </div>
+                        <pre className="overflow-x-auto rounded-sm border border-border bg-surface-alt p-3 font-mono text-xs text-text">{HEADER_HTML_EXAMPLE}</pre>
+                    </div>
                     <label className="flex flex-col gap-1.5 text-sm">
                         <span className="font-semibold">Footer HTML (optional)</span>
                         <textarea
@@ -386,6 +407,9 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
                             value={footerHtml}
                             onChange={(e) => setFooterHtml(e.target.value)}
                         />
+                        <span className="text-xs text-text-muted">
+                            <code>{"{APP_TITLE}"}</code> works here as well, and <code>{"{USER_MENU}"}</code> takes the account menu (opening upward) when the header has none.
+                        </span>
                     </label>
                     <div>
                         <Button type="submit" loading={saving} disabled={saving} className="!w-auto">

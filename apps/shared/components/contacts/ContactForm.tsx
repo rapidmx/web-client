@@ -144,7 +144,11 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
     }
 
     return (
-        <form onSubmit={handleSubmit} className="max-w-xl flex flex-col gap-1">
+        // The form fills the pane it is in: the fields scroll in their own area and Save / Cancel stay in view under them (`rr-solid`: opaque over a
+        // background image). Outside a bounded pane (the phone's page, which scrolls as a whole) the footer sticks above the bottom tab bar instead.
+        <form onSubmit={handleSubmit} className="@container flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto p-6">
+            <div className="flex max-w-xl flex-col gap-1">
             <h1 className="text-xl font-bold uppercase tracking-wide mb-3">{contact ? "Edit contact" : "New contact"}</h1>
 
             {error && <Alert>{error}</Alert>}
@@ -177,7 +181,7 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 />
             </FormField>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 @md:grid-cols-2 gap-3">
                 <FormField label="First name" htmlFor="contact-givenName">
                     <input id="contact-givenName" type="text" className={INPUT_CLASS} value={givenName} onChange={(e) => setGivenName(e.target.value)} />
                 </FormField>
@@ -186,7 +190,7 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 </FormField>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 @md:grid-cols-2 gap-3">
                 <FormField label="Company" htmlFor="contact-company">
                     <input id="contact-company" type="text" className={INPUT_CLASS} value={company} onChange={(e) => setCompany(e.target.value)} />
                 </FormField>
@@ -291,7 +295,7 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 <div className="flex flex-col gap-3">
                     {addresses.map((address, i) => (
                         <div key={i} className="flex flex-col gap-2">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div className="grid grid-cols-1 @md:grid-cols-2 gap-2">
                                 <input
                                     type="text"
                                     placeholder="Street"
@@ -364,7 +368,9 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 <textarea id="contact-notes" rows={3} className={INPUT_CLASS} value={notes} onChange={(e) => setNotes(e.target.value)} />
             </FormField>
 
-            <div className="flex gap-3 mt-2">
+            </div>
+            </div>
+            <div className="rr-solid sticky bottom-14 z-10 flex shrink-0 gap-3 border-t border-border bg-surface px-6 py-3 md:bottom-0">
                 <Button type="submit" loading={saving} disabled={saving} className="!w-auto">
                     Save
                 </Button>

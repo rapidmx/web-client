@@ -18,11 +18,9 @@ import {
     setDesktopOfferDismissed,
     shouldAnnounce,
 } from "./newMailNotifications.js";
+import { getNotificationsSnapshot, notify } from "../notifications/store.js";
 
-/** The most pop-ups on screen at once; a new one pushes the oldest off. */
-export const MAX_TOASTS = 3;
-
-/** How long a pop-up stays before it goes by itself (while it is neither hovered nor focused, and the tab is in view). */
+/** How long a new-mail pop-up stays before it goes by itself (while it is neither hovered nor focused, and the tab is in view). */
 export const TOAST_DURATION_MS = 8_000;
 
 /** At most this many desktop notifications in `DESKTOP_BURST_WINDOW_MS`: a flood of mail is a few notifications, not a hundred. */
@@ -33,11 +31,7 @@ export const DESKTOP_BURST_WINDOW_MS = 30_000;
 const ANNOUNCED_LIMIT = 500;
 
 export interface NewMailNotifications {
-    /** The pop-ups on screen, oldest first. */
-    toasts: NewMailNotice[];
-    /** Takes one off the screen. */
-    dismiss(uid: string): void;
-    /** Whether the first pop-up should also offer to turn on desktop notifications: the browser can, has not been asked,
+    /** Whether the next pop-up should also offer to turn on desktop notifications: the browser can, has not been asked,
      * and the user has not said "Not now". */
     offerDesktop: boolean;
     /** The offer's "Turn on desktop notifications": asks the browser. Must be called from a click. */
@@ -65,7 +59,8 @@ function defaultOpen(href: string): void {
 }
 
 /**
- * New-mail announcements: an in-app pop-up for each message that arrives (`MAX_TOASTS` at most on screen), and - while the tab
+ * New-mail announcements: an in-app pop-up for each message that arrives (a `mail` notification - see `notifications/store.ts`, which owns the
+ * stack, its limit of three and the clock), and - while the tab
  * is in the background and the user has allowed it - a desktop notification with the same content, one per message however
  * many events name it. `announce()` is what `useMailLiveUpdates()`'s `onMessageCreated` calls; nothing else feeds it, so a
  * page load, a list refetch and a reconnect never announce anything.
@@ -74,7 +69,6 @@ function defaultOpen(href: string): void {
  * first pop-up, or from Settings. What the user answered is remembered in `localStorage` (see `newMailNotifications.ts`).
  */
 export function useNewMailNotifications({ mailboxes, mailboxFolders, open = defaultOpen }: UseNewMailNotificationsOptions): NewMailNotifications {
-    const [toasts, setToasts] = useState<NewMailNotice[]>([]);
     const [permission, setPermission] = useState<DesktopPermission>("unsupported");
     const [offerDismissed, setOfferDismissed] = useState(true);
     const folders = useMemo(() => mailboxFolders.flatMap((entry) => entry.folders), [mailboxFolders]);
@@ -88,10 +82,6 @@ export function useNewMailNotifications({ mailboxes, mailboxFolders, open = defa
     useEffect(() => {
         setPermission(desktopPermission());
         setOfferDismissed(getDesktopOfferDismissed());
-    }, []);
-
-    const dismiss = useCallback((uid: string) => {
-        setToasts((previous) => previous.filter((toast) => toast.uid !== uid));
     }, []);
 
     const showDesktop = useCallback((notice: NewMailNotice) => {
@@ -117,6 +107,24 @@ export function useNewMailNotifications({ mailboxes, mailboxFolders, open = defa
         }
     }, []);
 
+    const enableDesktop = useCallback(async () => {
+        const answer = await requestDesktopPermission();
+        setPermission(answer);
+        // Answered either way, so the offer goes: on granted it has done its job, on denied it can't be made again.
+        setDesktopOfferDismissed(true);
+        setOfferDismissed(true);
+    }, []);
+
+    const declineDesktop = useCallback(() => {
+        setDesktopOfferDismissed(true);
+        setOfferDismissed(true);
+    }, []);
+
+    // The offer's current state and answers, for the stable `announce` below.
+    const offerDesktop = permission === "default" && !offerDismissed;
+    const offerRef = useRef({ offered: offerDesktop, enable: enableDesktop, decline: declineDesktop });
+    offerRef.current = { offered: offerDesktop, enable: enableDesktop, decline: declineDesktop };
+
     const announce = useCallback(
         (message: Message) => {
             if (!getNewMailPopupsEnabled() || announcedRef.current.has(message.uid)) {
@@ -131,7 +139,29 @@ export function useNewMailNotifications({ mailboxes, mailboxFolders, open = defa
                 announcedRef.current.delete(announcedRef.current.values().next().value!);
             }
             const notice = noticeFor(message);
-            setToasts((previous) => [...previous.filter((toast) => toast.uid !== notice.uid), notice].slice(-MAX_TOASTS));
+            const offer = offerRef.current;
+            notify({
+                id: `mail:${notice.uid}`,
+                kind: "mail",
+                title: notice.senderName || notice.senderAddress,
+                subtitle: notice.senderName ? `<${notice.senderAddress}>` : undefined,
+                message: notice.subject,
+                preview: notice.preview || undefined,
+                href: notice.href,
+                timeoutMs: TOAST_DURATION_MS,
+                // Actions make a notification sticky; a new-mail pop-up with the offer still goes by itself.
+                sticky: false,
+                // The offer is made once at a time: on a pop-up only while none of the pop-ups still showing carries it.
+                ...(offer.offered && !getNotificationsSnapshot().visible.some((item) => item.kind === "mail" && item.actions.length > 0)
+                    ? {
+                          hint: "Get a desktop notification when mail arrives while this tab is in the background.",
+                          actions: [
+                              { label: "Turn on desktop notifications", onClick: () => void offer.enable() },
+                              { label: "Not now", onClick: offer.decline },
+                          ],
+                      }
+                    : {}),
+            });
             if (desktopPermission() === "granted" && tabIsInBackground()) {
                 showDesktop(notice);
             }
@@ -139,23 +169,8 @@ export function useNewMailNotifications({ mailboxes, mailboxFolders, open = defa
         [showDesktop],
     );
 
-    const enableDesktop = useCallback(async () => {
-        const answer = await requestDesktopPermission();
-        setPermission(answer);
-        // Answered either way, so the offer goes: on granted it has done its job, on denied it can't be made again.
-        setDesktopOfferDismissed(true);
-        setOfferDismissed(true);
-    }, []);
-
-    const declineDesktop = useCallback(() => {
-        setDesktopOfferDismissed(true);
-        setOfferDismissed(true);
-    }, []);
-
     return {
-        toasts,
-        dismiss,
-        offerDesktop: permission === "default" && !offerDismissed,
+        offerDesktop,
         enableDesktop,
         declineDesktop,
         announce,

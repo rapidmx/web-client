@@ -199,7 +199,10 @@ describe("SettingsAutoReplyPage", () => {
         await screen.findByRole("checkbox", { name: "Automatic replies are on" });
         await user.click(screen.getByRole("button", { name: "Save" }));
 
+        // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("boom")).toBeInTheDocument();
+        expect(screen.getByText("Couldn't save the automatic reply settings")).toBeInTheDocument();
+        expect(screen.queryByText("Saved.")).not.toBeInTheDocument();
     });
 
     it("shows a generic error message when saving fails with a non-API error", async () => {
@@ -215,6 +218,7 @@ describe("SettingsAutoReplyPage", () => {
         await screen.findByRole("checkbox", { name: "Automatic replies are on" });
         await user.click(screen.getByRole("button", { name: "Save" }));
 
-        expect(await screen.findByText("Could not save automatic reply settings.")).toBeInTheDocument();
+        expect(await screen.findByText("Couldn't save the automatic reply settings")).toBeInTheDocument();
+        expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 });

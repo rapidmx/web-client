@@ -304,3 +304,83 @@ h6 {
         transform: none;
     }
 }
+
+/* The frame's own background: the page's `surface-alt`, unless the user has chosen a background (`appearance/theme.ts` then sets `--rr-frame-bg`
+ * to `transparent` so the fixed background layer - `html::before`/`html::after` - shows through instead). */
+.rr-frame-bg {
+    background-color: var(--rr-frame-bg, var(--rr-color-surface-alt));
+}
+
+/* With a background set, `--color-surface` and `--color-surface-alt` (what `bg-surface` and `bg-surface-alt` read) are translucent panels
+ * (`appearance/theme.ts`). Anything that must stay readable on its own - menus, dialogs, drawers, list pop-ups and the pop-ups - takes the
+ * opaque colours back for itself and everything inside it, and so does anything that stays put while a page scrolls under it (`.rr-solid`: the
+ * sticky title bar, the branding header, the phone's bottom tab bar), or the text beneath would show through it. Without a background these two declarations change nothing. */
+[role="menu"],
+[role="dialog"],
+[role="listbox"],
+.rr-toast-in,
+.rr-solid,
+[data-branding-header],
+nav[aria-label="Mobile navigation"] {
+    --color-surface: var(--rr-color-surface);
+    --color-surface-alt: var(--rr-color-surface-alt);
+}
+
+/* The slot a branding header or footer's `{USER_MENU}` becomes (`BrandingChrome.tsx`): the account menu's button sits in the line of text
+ * the variable was written in. */
+[data-rr-slot="user-menu"] {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+}
+
+/* The Outbox pill's "something is on its way" dot (`OutboxBadge`). Still when the user asks for less motion. */
+@media (prefers-reduced-motion: no-preference) {
+    .rr-sending-dot {
+        animation: rr-sending-dot 1.1s ease-in-out infinite;
+    }
+}
+@keyframes rr-sending-dot {
+    0%,
+    100% {
+        opacity: 0.35;
+        transform: scale(0.8);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1.15);
+    }
+}
+
+/* The signing-certificate card's progress bar (`SigningCertificateCard`): a soft highlight sweeping across the filled part while a step is active, and
+ * an endless slide for a bar with no number. Both stand still when the user asks for less motion (the indeterminate bar then shows as a faded full bar). */
+.rr-progress-shimmer {
+    position: relative;
+    overflow: hidden;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .rr-progress-shimmer::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.45), transparent);
+        transform: translateX(-100%);
+        animation: rr-progress-shimmer 1.6s ease-in-out infinite;
+    }
+    .rr-progress-indeterminate {
+        animation: rr-progress-slide 1.4s ease-in-out infinite;
+    }
+}
+@keyframes rr-progress-shimmer {
+    to {
+        transform: translateX(100%);
+    }
+}
+@keyframes rr-progress-slide {
+    0% {
+        transform: translateX(-100%);
+    }
+    100% {
+        transform: translateX(300%);
+    }
+}

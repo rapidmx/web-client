@@ -3,10 +3,11 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import CalendarListSidebar from "../../../apps/shared/components/calendar/CalendarListSidebar.js";
+import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import { CALENDAR_COLOR_PALETTE } from "@rapidmx/react-shared/calendar/calendarColors.js";
 import { Folder, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 
@@ -91,7 +92,7 @@ describe("CalendarListSidebar", () => {
         expect(screen.queryByLabelText("New calendar name")).not.toBeInTheDocument();
     });
 
-    it("shows an error message when creating a calendar fails", async () => {
+    it("raises an error pop-up when creating a calendar fails", async () => {
         const onAddCalendar = vi.fn().mockRejectedValue(new Error("boom"));
         const user = userEvent.setup();
         render(<CalendarListSidebar mailboxCalendars={single([])} checkedFolderUids={new Set()} onToggle={vi.fn()} onAddCalendar={onAddCalendar} />);
@@ -100,7 +101,12 @@ describe("CalendarListSidebar", () => {
         await user.type(screen.getByLabelText("New calendar name"), "Oops");
         await user.click(screen.getByRole("button", { name: "Add" }));
 
-        expect(await screen.findByText("Could not create this calendar.")).toBeInTheDocument();
+        // No pop-up host here (that is `AppShell`'s): what was raised is in the notification store.
+        await waitFor(() =>
+            expect(getNotificationsSnapshot().visible).toMatchObject([
+                { kind: "error", title: "Couldn't create the calendar", message: "Something unexpected went wrong." },
+            ]),
+        );
         // The form stays open (with its data) after a failure, matching Contacts'/Tasks' own list-creation forms.
         expect(screen.getByLabelText("New calendar name")).toHaveValue("Oops");
     });

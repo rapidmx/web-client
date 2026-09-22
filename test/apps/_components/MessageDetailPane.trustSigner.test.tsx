@@ -11,7 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { SignerKeyConflictError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { mockFetch } from "../testUtils.js";
+import { mockFetchWithServerBody as mockFetch } from "./paneFetch.js";
 import MessageDetailPane, {
     TRUST_SIGNER_CONFLICT_MESSAGE,
     TRUST_SIGNER_FORBIDDEN_MESSAGE,

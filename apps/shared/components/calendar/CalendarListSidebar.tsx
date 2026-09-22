@@ -6,6 +6,7 @@ import React, { FormEvent, useState } from "react";
 import { CALENDAR_COLOR_PALETTE, accentColorForMailbox, colorForFolder } from "@rapidmx/react-shared/calendar/calendarColors.js";
 import { Folder, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import { notifyApiError } from "../../notifications/apiErrors.js";
 
 export interface CalendarListSidebarMailbox {
     mailbox: Mailbox;
@@ -42,7 +43,6 @@ export default function CalendarListSidebar({
     const [addingFor, setAddingFor] = useState<string | null>(null);
     const [name, setName] = useState("");
     const [color, setColor] = useState(CALENDAR_COLOR_PALETTE[0]);
-    const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const multiple = mailboxCalendars.length > 1;
 
@@ -57,15 +57,15 @@ export default function CalendarListSidebar({
         if (!name.trim() || !addingFor) {
             return;
         }
-        setError(null);
         setSaving(true);
         try {
             await onAddCalendar(addingFor, name.trim(), color);
             setName("");
             setColor(CALENDAR_COLOR_PALETTE[0]);
             setAddingFor(null);
-        } catch {
-            setError("Could not create this calendar.");
+        } catch (err) {
+            // A pop-up; the form stays open, with what was typed, for another try.
+            notifyApiError(err, "Couldn't create the calendar");
         } finally {
             setSaving(false);
         }
@@ -107,7 +107,6 @@ export default function CalendarListSidebar({
 
     return (
         <nav aria-label="My calendars" className="p-3 border-t border-border flex flex-col gap-3">
-            {error && <Alert>{error}</Alert>}
             {mailboxCalendars.map(({ mailbox, calendarFolders, error: mailboxError }) => {
                 const title = multiple ? `${mailbox.displayName}${mailbox.ownerUserUid ? "" : " (shared)"}` : "My calendars";
                 return (

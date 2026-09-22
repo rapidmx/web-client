@@ -6,7 +6,8 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch } from "../testUtils.js";
+import { jsonResponse } from "../testUtils.js";
+import { mockFetchWithServerBody as mockFetch } from "./paneFetch.js";
 import MessageDetailPane from "../../../apps/shared/components/mail/MessageDetailPane.js";
 import { ShortcutProvider } from "../../../apps/shared/keyboard/ShortcutProvider.js";
 

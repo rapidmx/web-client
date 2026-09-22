@@ -31,8 +31,8 @@ describe("MailboxDetailPage", () => {
     it("renders mailbox details, links to quarantine/ingest-queue, and the share panel once loaded", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -53,6 +53,10 @@ describe("MailboxDetailPage", () => {
             "/admin/ingest-queue?mailboxUid=mb1",
         );
         expect(await screen.findByText("Shared access")).toBeInTheDocument();
+        // Administrative details only: to see the mailbox as its owner does, the administrator impersonates them.
+        expect(screen.getByText(/never a mailbox.s mail or settings/)).toBeInTheDocument();
+        expect(screen.getByText(/impersonate them: that is recorded/)).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Impersonate this user" })).toBeInTheDocument();
         expect(screen.queryByText("Resource type")).not.toBeInTheDocument();
         expect(screen.queryByText("Resource settings")).not.toBeInTheDocument();
     });
@@ -60,10 +64,10 @@ describe("MailboxDetailPage", () => {
     it("shows the resource type and the resource settings card for a resource mailbox", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") {
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") {
                 return jsonResponse(200, { ...mailbox, ownerUserUid: undefined, isResource: true, resourceType: "equipment" });
             }
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -78,10 +82,10 @@ describe("MailboxDetailPage", () => {
     it("defaults the displayed resource type to 'room' when unset", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") {
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") {
                 return jsonResponse(200, { ...mailbox, ownerUserUid: undefined, isResource: true, resourceType: undefined });
             }
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -94,10 +98,10 @@ describe("MailboxDetailPage", () => {
     it("formats sub-GB and sub-KB quota sizes correctly", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") {
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") {
                 return jsonResponse(200, { ...mailbox, usedBytes: 500, quotaBytes: 2_500_000 });
             }
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -108,10 +112,10 @@ describe("MailboxDetailPage", () => {
     it("formats a sub-MB, KB-range quota correctly", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") {
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") {
                 return jsonResponse(200, { ...mailbox, usedBytes: 2_000, quotaBytes: 900_000 });
             }
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -122,8 +126,8 @@ describe("MailboxDetailPage", () => {
     it("shows 'None (shared mailbox)' for an ownerless mailbox", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, { ...mailbox, ownerUserUid: undefined });
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, { ...mailbox, ownerUserUid: undefined });
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -134,8 +138,8 @@ describe("MailboxDetailPage", () => {
     it("shows 'None' when the mailbox has no alias addresses", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, { ...mailbox, aliasAddresses: [] });
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, { ...mailbox, aliasAddresses: [] });
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -164,31 +168,32 @@ describe("MailboxDetailPage", () => {
     it("falls back to 'Mailbox not found.' when the load succeeds with no mailbox and no error", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, null);
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, null);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
         expect(await screen.findByText("Mailbox not found.")).toBeInTheDocument();
     });
 
-    it("hides the 'Access this mailbox' button for an ownerless mailbox", async () => {
+    it("hides the 'Impersonate this user' button for an ownerless mailbox", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, { ...mailbox, ownerUserUid: undefined });
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, { ...mailbox, ownerUserUid: undefined });
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
         await screen.findByRole("heading", { name: "u1@example.com" });
-        expect(screen.queryByRole("button", { name: "Access this mailbox" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Impersonate this user" })).not.toBeInTheDocument();
+        expect(screen.getByText(/add yourself under Shared access/)).toBeInTheDocument();
     });
 
     it("shows an error message when impersonation fails", async () => {
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "https://auth.example.com/api/admin/impersonate" && init?.method === "POST") {
                 return jsonResponse(403, { message: "caller lacks the trusted role" });
@@ -198,23 +203,23 @@ describe("MailboxDetailPage", () => {
         const user = userEvent.setup();
         render(<MailboxDetailPage userUid="admin-1" impersonationBaseUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
 
-        await user.click(await screen.findByRole("button", { name: "Access this mailbox" }));
-        await user.click(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Access mailbox" }));
+        await user.click(await screen.findByRole("button", { name: "Impersonate this user" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Impersonate this user" })).getByRole("button", { name: "Impersonate" }));
         expect(await screen.findByText("caller lacks the trusted role")).toBeInTheDocument();
         // The failure stays in the confirmation; the mailbox page itself is still there behind it.
-        expect(within(screen.getByRole("dialog", { name: "Access this mailbox" })).getByText("caller lacks the trusted role")).toBeInTheDocument();
+        expect(within(screen.getByRole("dialog", { name: "Impersonate this user" })).getByText("caller lacks the trusted role")).toBeInTheDocument();
         expect(screen.getByRole("heading", { name: "u1@example.com" })).toBeInTheDocument();
-        await user.click(within(screen.getByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Cancel" }));
-        expect(screen.queryByRole("dialog", { name: "Access this mailbox" })).not.toBeInTheDocument();
-        await user.click(screen.getByRole("button", { name: "Access this mailbox" }));
-        expect(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).queryByText("caller lacks the trusted role")).not.toBeInTheDocument();
+        await user.click(within(screen.getByRole("dialog", { name: "Impersonate this user" })).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog", { name: "Impersonate this user" })).not.toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Impersonate this user" }));
+        expect(within(await screen.findByRole("dialog", { name: "Impersonate this user" })).queryByText("caller lacks the trusted role")).not.toBeInTheDocument();
     });
 
     it("shows a generic error message when impersonation fails with a non-API error", async () => {
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "https://auth.example.com/api/admin/impersonate" && init?.method === "POST") {
                 throw new TypeError("network down");
@@ -224,16 +229,16 @@ describe("MailboxDetailPage", () => {
         const user = userEvent.setup();
         render(<MailboxDetailPage userUid="admin-1" impersonationBaseUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
 
-        await user.click(await screen.findByRole("button", { name: "Access this mailbox" }));
-        await user.click(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Access mailbox" }));
-        expect(await screen.findByText("Could not access this mailbox.")).toBeInTheDocument();
+        await user.click(await screen.findByRole("button", { name: "Impersonate this user" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Impersonate this user" })).getByRole("button", { name: "Impersonate" }));
+        expect(await screen.findByText("Could not impersonate this user.")).toBeInTheDocument();
     });
 
     it("opens the delete-confirmation modal, deletes the mailbox, and redirects to the mailbox list", async () => {
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") return jsonResponse(200, {});
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
@@ -252,8 +257,8 @@ describe("MailboxDetailPage", () => {
     it("closes the delete-confirmation modal via Cancel without deleting", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -269,8 +274,8 @@ describe("MailboxDetailPage", () => {
     it("closes the delete-confirmation modal via its own close button", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             throw new Error(`unexpected ${url}`);
         });
@@ -287,8 +292,8 @@ describe("MailboxDetailPage", () => {
     it("shows the server's own message when deleting the mailbox fails, e.g. an active legal hold", async () => {
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") {
                 return jsonResponse(409, { message: "This action is blocked by an active legal hold: matter-1." });
@@ -307,8 +312,8 @@ describe("MailboxDetailPage", () => {
     it("shows a generic message when deleting the mailbox fails with a non-API error", async () => {
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") throw new TypeError("network down");
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
@@ -327,8 +332,8 @@ describe("MailboxDetailPage", () => {
     it("impersonates via this app's own local endpoint and redirects when impersonationBaseUrl isn't provided", async () => {
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (url === "/api/admin/impersonate" && init?.method === "POST") {
                 expect(JSON.parse(init.body as string)).toEqual({ userUid: "u1" });
@@ -339,10 +344,10 @@ describe("MailboxDetailPage", () => {
         const user = userEvent.setup();
         render(<MailboxDetailPage userUid="admin-1" params={{ uid: "mb1" }} />);
 
-        const button = await screen.findByRole("button", { name: "Access this mailbox" });
+        const button = await screen.findByRole("button", { name: "Impersonate this user" });
         const location = mockLocation();
         await user.click(button);
-        await user.click(within(await screen.findByRole("dialog", { name: "Access this mailbox" })).getByRole("button", { name: "Access mailbox" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Impersonate this user" })).getByRole("button", { name: "Impersonate" }));
         await vi.waitFor(() => expect(location.href).toBe("/"));
     });
 
@@ -350,8 +355,8 @@ describe("MailboxDetailPage", () => {
         const pending: ((response: Response) => void)[] = [];
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/mailboxes/mb1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
-            if (url === "/api/acls/mb1") return jsonResponse(200, { uid: "mb1", version: 0, records: [] });
+            if (url === "/api/mail/mailboxes/mb1?scope=admin" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
             if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
             if (init?.method === "POST" || init?.method === "DELETE") {
                 return new Promise<Response>((resolve) => pending.push(resolve));
@@ -361,12 +366,12 @@ describe("MailboxDetailPage", () => {
         const user = userEvent.setup();
         render(<MailboxDetailPage userUid="admin-1" impersonationBaseUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
 
-        await user.click(await screen.findByRole("button", { name: "Access this mailbox" }));
-        let dialog = await screen.findByRole("dialog", { name: "Access this mailbox" });
-        await user.click(within(dialog).getByRole("button", { name: "Access mailbox" }));
+        await user.click(await screen.findByRole("button", { name: "Impersonate this user" }));
+        let dialog = await screen.findByRole("dialog", { name: "Impersonate this user" });
+        await user.click(within(dialog).getByRole("button", { name: "Impersonate" }));
         await vi.waitFor(() => expect(pending).toHaveLength(1));
         await user.keyboard("{Escape}");
-        expect(screen.getByRole("dialog", { name: "Access this mailbox" })).toBeInTheDocument();
+        expect(screen.getByRole("dialog", { name: "Impersonate this user" })).toBeInTheDocument();
         pending[0](jsonResponse(403, { message: "no trusted role" }));
         expect(await within(dialog).findByText("no trusted role")).toBeInTheDocument();
         await user.keyboard("{Escape}");

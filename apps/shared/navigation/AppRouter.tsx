@@ -71,8 +71,8 @@ export interface AppRouterProps {
 }
 
 function pickChromeProps(props: Record<string, any>): Omit<AppShellProps, "active"> {
-    const { userUid, authServerUrl, impersonating, impersonationBaseUrl, trusted, trustedRoles, pluginNav } = props;
-    return { userUid, authServerUrl, impersonating, impersonationBaseUrl, trusted, trustedRoles, pluginNav };
+    const { userUid, authServerUrl, impersonating, impersonationBaseUrl, trusted, trustedRoles, pluginNav, branding, appearance } = props;
+    return { userUid, authServerUrl, impersonating, impersonationBaseUrl, trusted, trustedRoles, pluginNav, branding, appearance };
 }
 
 /** The anchor a click/pointer event is on or in, if it is a link. */

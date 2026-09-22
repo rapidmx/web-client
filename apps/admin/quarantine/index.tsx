@@ -42,7 +42,8 @@ function QuarantineContent({ userUid }: { userUid?: string }) {
     function reload(uid: string) {
         setLoading(true);
         setError(null);
-        listQuarantine(uid, { page, limit: PAGE_SIZE })
+        // The administration scope: any mailbox's held mail, recorded in the audit log.
+        listQuarantine(uid, { page, limit: PAGE_SIZE, scope: "admin" })
             .then(setEntries)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load quarantine."))
             .finally(() => setLoading(false));
