@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-22
+
+### Added
+- Added calendar reminder pop-ups: a sticky Dismiss/Snooze notification fires app-wide on the existing push connection when a meeting's reminderMinutesBeforeStart comes due, with Snooze re-showing it after five minutes or at the meeting's start, whichever is sooner
+- Added an Add video conferencing checkbox to the event compose form, minting a private meeting for the event's attendees on save through the video conferencing plugin and setting the event's location and linked meeting
+- Added a Join video call button on an event with a linked meeting, using the just-minted link with no refetch or fetching the event's own link once
+- Added an Alias of picker to the New Domain form, listing this server's own non-alias domains
+- Added a Join Meeting button to the calendar reminder pop-up, shown above Dismiss/Snooze when the event's location is a URL, opening it in a new tab without resolving the pop-up
+- Added joinMeetingUrl to calendarReminders.ts, accepting only http/https locations and rejecting room names, addresses and other non-URL text
+
+### Changed
+- Restore or clear the location on unticking, never clobbering a location the user typed themselves, only ever the placeholder video-call text
+- Test every save, cancel and failure path, and the device and push-channel fakes this feature also needed
+- Show and let an existing domain's Alias of value be set or changed on its detail page
+- Show the Alias of value in the DNS setup status panel and as a column on the domains list
+- Document the change in the release notes and NOTES
+- Test the new action's presence, order, click behavior and absence for a non-URL or missing location
+- Document the change in the release notes and NOTES
+- Upgraded react-shared dep
+
+### Fixed
+- Fixed DomainDetailContent crashing when DomainDnsSetup reports no domain loaded
+
 ## [0.12.0] - 2026-09-22
 
 ### Added
@@ -816,7 +839,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/rapidmx/web-client/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rapidmx/web-client/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rapidmx/web-client/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rapidmx/web-client/compare/v0.9.0...v0.10.0

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.13.0
+
 ### Features
 
 - **Domain aliases in the admin console.** "New domain" gains an **Alias of** dropdown listing this server's own non-alias domains - picking one makes the new domain a pure alias, so it receives (and
