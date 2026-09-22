@@ -48,6 +48,7 @@ import NotificationHistoryDialog from "../../notifications/NotificationHistoryDi
 import { notifySessionExpired, setSignInUrl } from "../../notifications/apiErrors.js";
 import { useUnseenErrorCount } from "../../notifications/useNotifications.js";
 import { useSigningEnrollmentWatcher } from "../../signing/useSigningEnrollmentWatcher.js";
+import { useCalendarReminders } from "../../calendar/useCalendarReminders.js";
 
 /** How long sign-out waits for auth-server's logout before navigating anyway. */
 export const LOGOUT_TIMEOUT_MS = 3_000;
@@ -200,6 +201,8 @@ export function AppChrome({
     const mail = useMailConnection({ userUid, enabled: inFrame, open: navigate });
     // A signing certificate the user asked for is announced when it is issued (or fails), on whichever page they are - see the hook.
     useSigningEnrollmentWatcher({ userUid, mailboxes: mail.mailboxes, enabled: inFrame });
+    // A meeting reminder pops up on whichever page they are - see the hook.
+    useCalendarReminders({ userUid, enabled: inFrame });
 
     useRedirectIfUnauthenticated(userUid, authServerUrl);
     // Any request this app makes that the server answers with a 401 - the session ended - raises one "Your session expired" pop-up with a

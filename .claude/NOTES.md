@@ -2988,3 +2988,36 @@ picker problem), retention policy (no user/mailbox targeting), admin impersonati
 Files: new `apps/shared/components/sharing/{PrincipalResolver,PrincipalListField}.tsx`; changed `PrincipalPicker.tsx`, `MailboxCreateForm.tsx`,
 `EscrowScopeKeyAndHoldersFields.tsx`, `apps/admin/mailboxes/new/index.tsx`. Full suite (isolated run): 270/270 files, 4139/4139 tests,
 100/99.91/100/100.
+
+### 2026-09-22 (later) - Calendar reminder pop-ups: the client side of restapi's already-shipped `CalendarReminderJob`
+
+`CalendarEvent.reminderMinutesBeforeStart` was stored, and `restapi`'s `CalendarReminderJob` already fired a `"CalendarEvent"`/`"reminder"`
+push event (`{ eventUid, title, startDate }`, to `[event.folderUid, event.mailboxUid]`) when it came due - but nothing in this client ever
+listened, so it went into the void. `mapi`/`activesync` translate the minutes into Outlook's/EAS's own native reminder properties, so desktop
+Outlook and phone calendar apps already popped up their own reminder; only the web/Electron client lacked one.
+
+- **No new channel subscription needed.** `mailboxFolders` (what `useMailLiveUpdates`'s `pushChannelsFor()` subscribes) is filtered to mail
+  folder types only, so a calendar folder's own `folderUid` channel is never subscribed - but every accessible mailbox's own `mailboxUid`
+  channel already is (Mail needs it to hear about new folders), and the reminder is published there too. So the new hook only has to listen
+  on the shared `getPushClient()` singleton; it manages no channels of its own and needs no `mailboxes`/`mailboxFolders` prop.
+- **`apps/shared/calendar/calendarReminders.ts`** (pure, no React): `calendarReminderOf(event)` narrows a `PushEvent` to the reminder payload;
+  `snoozeDelayMs(startDate, now)` = `SNOOZE_MS` (5 min) or less if the meeting starts first, never negative; `reminderMessage()` the pop-up's
+  "Starting in N minutes - 3:00 PM" line; `reminderNotificationId(eventUid, startDate)` the id a reminder and every snooze of it reuses.
+- **`apps/shared/calendar/useCalendarReminders.ts`**: one `getPushClient().onEvent()` listener, gated on `enabled && userUid` like
+  `useMailConnection`'s own option. A reminder is a sticky `notify()` (new kind `"calendar"`, bell icon) with two actions - **Dismiss** has no
+  `onClick`, so `NotificationCenter`'s default action behaviour (run it, then `dismiss()` since not `keepOpen`) does exactly "close it, nothing
+  else"; **Snooze**'s `onClick` schedules a `setTimeout` (this tab's own, cleared on unmount) that calls the same `notify()` again with the
+  same id - past that point the store no longer holds an entry with that id (Snooze's own click already dismissed it), so it comes back as a
+  fresh, non-deduplicated pop-up rather than being silently merged into a same-id "already showing" no-op.
+- **Mounted once, in `AppShell`**, next to `useSigningEnrollmentWatcher` - so a reminder shows on whichever page the user is on (Mail,
+  Calendar, Contacts, Settings), not only while Calendar is open. No per-event deep link exists yet (the calendar opens an event via local
+  modal state, not a URL), so the pop-up's link just goes to `/calendar`.
+- **`NotificationKind` gained `"calendar"`** (`store.ts`, `NotificationCenter.tsx`'s `KIND_STYLE`, `NotificationHistoryDialog.tsx`'s
+  `KIND_LABEL` - all three are exhaustive `Record`s, so `tsc` catches a fourth spot if one is ever missed).
+
+Files: new `apps/shared/calendar/{calendarReminders,useCalendarReminders}.ts`, `test/apps/_calendar/{calendarReminders,useCalendarReminders}.test.ts(x)`;
+changed `notifications/{store,NotificationCenter,NotificationHistoryDialog}.tsx`, `components/layout/AppShell.tsx`. `RELEASE_NOTES.md` updated
+(Unreleased > Features). Verified: `tsc --noEmit` clean, `eslint` clean on every file of this entry, full suite 4172/4174 tests (271/273 files)
+passing - the two failures (`contacts/index.test.tsx`'s cold compose-window race, already a known flaky one in this file's own 2026-09-22
+entry above; `settings/filters/new/index.test.tsx`'s `resolveFolders is not a function`) are both pre-existing and in files this change never
+touches.

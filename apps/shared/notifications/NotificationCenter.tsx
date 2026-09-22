@@ -5,6 +5,7 @@
 import React, { useEffect } from "react";
 import type { IconType } from "react-icons";
 import {
+    HiOutlineBell,
     HiOutlineCheckCircle,
     HiOutlineEnvelope,
     HiOutlineExclamationCircle,
@@ -19,6 +20,7 @@ import { useSystemErrorNotifications } from "./systemErrors.js";
 
 const KIND_STYLE: Record<NotificationKind, { border: string; icon: string; Icon: IconType; label: string }> = {
     mail: { border: "border-l-primary", icon: "text-primary-dark", Icon: HiOutlineEnvelope, label: "New message" },
+    calendar: { border: "border-l-primary", icon: "text-primary-dark", Icon: HiOutlineBell, label: "Reminder" },
     info: { border: "border-l-primary", icon: "text-primary-dark", Icon: HiOutlineInformationCircle, label: "Information" },
     success: { border: "border-l-success", icon: "text-success", Icon: HiOutlineCheckCircle, label: "Success" },
     warning: { border: "border-l-warning", icon: "text-warning", Icon: HiOutlineExclamationTriangle, label: "Warning" },

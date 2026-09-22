@@ -10,6 +10,7 @@ import { useNotifications } from "./useNotifications.js";
 
 const KIND_LABEL: Record<NotificationKind, string> = {
     mail: "New message",
+    calendar: "Reminder",
     info: "Information",
     success: "Done",
     warning: "Warning",

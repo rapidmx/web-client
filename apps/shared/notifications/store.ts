@@ -26,7 +26,7 @@
  * `notify()` only hands back an id.
  */
 
-export type NotificationKind = "mail" | "info" | "success" | "warning" | "error";
+export type NotificationKind = "mail" | "calendar" | "info" | "success" | "warning" | "error";
 
 export interface NotificationAction {
     label: string;
@@ -119,6 +119,8 @@ export const MAX_DETAIL_LINE_LENGTH = 500;
 /** How long a non-sticky notification stays, by kind. Errors are sticky, so theirs is only for an explicit `sticky: false`. */
 export const DEFAULT_TIMEOUT_MS: Record<NotificationKind, number> = {
     mail: 8_000,
+    // Irrelevant in practice - a reminder always carries actions, which makes it sticky (see `applyInput()`) regardless of this value.
+    calendar: 8_000,
     info: 6_000,
     success: 5_000,
     warning: 10_000,

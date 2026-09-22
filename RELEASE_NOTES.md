@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Features
+
+- **Add video conferencing to a meeting.** A new **Add video conferencing** checkbox under Location on the event form. Ticking it and saving mints a video meeting for the event's attendees (everyone but you) through `@rapidmx/videoconf-plugin`, sets the event's location to "Video call — link in this invitation" and links the meeting to the event; each attendee then gets their own personal join link in their own copy of the invitation, and you get a **Join video call** button on the event itself. Unticking it cancels the meeting, drops the link and clears that location again - unless you have since typed your own, which is kept. Changing attendees afterwards does not reissue links (the meeting's invitee list is fixed when it is created, as the note under the checkbox says): turn it off and back on to reissue them for the current list. If the meeting service fails, the event is still saved - the error appears next to the checkbox and Save retries it. Needs `@rapidmx/react-shared`'s `videoconf/videoMeetingsApi.js` and a server with the video conferencing plugin installed.
+- **Meeting reminder pop-ups.** An event's "Remind me N minutes before" now does something on the web client: when `@rapidmx/restapi`'s reminder job fires, a sticky pop-up appears - wherever you are in the app, not just on the Calendar page - with **Dismiss** (just closes it) and **Snooze** (closes it and shows it again in five minutes, or sooner if the meeting starts first). Uses the same push connection Mail already keeps open, so it needs no extra socket or polling.
+
 ## v0.12.0
 
 ## v0.11.0
