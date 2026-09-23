@@ -17,7 +17,7 @@
     "./shared/styles/app.css": "./apps/shared/styles/app.css"
   },
   "scripts": {
-    "build": "rimraf dist && tsc -p tsconfig.json && shx mkdir -p dist/apps/shared/styles && shx cp apps/shared/styles/app.css dist/apps/shared/styles/app.css && node scripts/checkDistReferences.mjs",
+    "build": "yarn lint && rimraf dist && tsc -p tsconfig.json && shx mkdir -p dist/apps/shared/styles && shx cp apps/shared/styles/app.css dist/apps/shared/styles/app.css && node scripts/checkDistReferences.mjs",
     "lint": "eslint ./apps ./test",
     "test": "vitest run --coverage",
     "test:watch": "vitest --watch --coverage",
