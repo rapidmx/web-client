@@ -628,7 +628,7 @@ export default function EventModal({
                             variant="secondary"
                             className="!w-auto"
                             disabled={!validatedJoinUrl}
-                            onClick={() => window.open(validatedJoinUrl!, "_blank", "noopener,noreferrer")}
+                            onClick={() => window.open(validatedJoinUrl, "_blank", "noopener,noreferrer")}
                         >
                             Join video call
                         </Button>
