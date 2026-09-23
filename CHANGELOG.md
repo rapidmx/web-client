@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-23
+
+### Changed
+- Renaming videoconf-plugin to meet-plugin
+- Recover the local search Worker from a crash and time out a stuck Tier 2 search instead of hanging Mail search forever
+- Refuse a non-http(s) organizerJoinUrl on the Join video call button, reusing calendarReminders.ts's own scheme validation
+- Cap the message and conversation lists at 500 loaded rows with a refine-your-search banner instead of growing without bound
+- Show a clear message instead of a raw 404 when the video-conferencing plugin isn't installed on the server
+- Normalize recipient addresses to a consistent case when caching compose-time encryption lookup status, so auto-encryption isn't spuriously blocked by a same-address casing mismatch across To/Cc/Bcc
+- Only show the row-cap refine-your-search banner when the list actually has more rows behind the cap, not merely when its size happens to land at or past 500
+- Scope the local search Worker's error listener to the Worker instance it was attached to, so a stale error can't affect a healthy replacement
+- Upgraded react-shared dep
+- Stop unchecking video conferencing on a single detached occurrence from cancelling the whole recurring series' shared meeting
+- Update bodyHtml.test.ts for react-shared 0.14.0's sanitizer now forbidding svg/math outright, including previously-surviving harmless SVG content like circle
+- Document that web-client's react-shared dependency bump to 0.14.0 (already committed separately) carries two published security fixes - stricter body-HTML sanitization and non-extractable session keys - into this package's actual dependency tree
+- Update MailShell/AppShell test mocks' impersonate/stop method check from GET to POST, matching @rapidmx/react-shared's upcoming stopImpersonating() fix from a cross-repo CSRF hardening pass
+- Document the change in the release notes and NOTES
+- Upgraded deps
+
 ## [0.13.0] - 2026-09-22
 
 ### Added
@@ -839,7 +858,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/rapidmx/web-client/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rapidmx/web-client/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rapidmx/web-client/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rapidmx/web-client/compare/v0.10.0...v0.11.0

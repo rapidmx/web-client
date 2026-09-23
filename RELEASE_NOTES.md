@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.14.0
+
 ### Security
 
 - **Picks up `@rapidmx/react-shared` 0.14.0's own two security fixes**, which this package's dependency was still pinned below (`^0.13.0` - caret semantics on a pre-1.0 package never resolve across a minor bump on their own): the message-body sanitizer (`sanitizeMessageBodyHtml()`, used by both the reading pane and quoted-reply bodies) now forbids `svg`/`math` tags outright rather than relying only on this package's own second, structural hardening pass to catch what they could carry; and session private keys (unlock, key enrollment) are now imported as non-extractable `CryptoKey`s, closing a path an XSS could otherwise have used to call `exportKey()` on them. No behavior change on web-client's own side - just the dependency bump (`package.json`/`yarn.lock`) needed for the already-published fix to actually reach users.
