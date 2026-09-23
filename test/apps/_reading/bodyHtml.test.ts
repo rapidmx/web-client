@@ -67,10 +67,19 @@ describe("prepareBodyHtml", () => {
                 "<meta http-equiv='refresh' content='0;url=https://x.example'><base href='https://x.example/'><link rel=stylesheet href='https://x.example/s.css'>" +
                 "<noscript><img src=x></noscript><template><p>t</p></template><svg><use href='#a'></use><set attributeName='href' to='x'></set><animate></animate><foreignObject><p>f</p></foreignObject><circle r='4'></circle></svg><math><mi>x</mi></math>",
         );
-        for (const selector of ["script", "iframe", "object", "embed", "video", "audio", "canvas", "input", "select", "textarea", "meta", "base", "link", "noscript", "template", "use", "set", "animate", "foreignObject", "math"]) {
+        // svg/math are forbidden outright by the sanitizer itself (react-shared 0.14.0's
+        // messageBodySanitizer.ts) - nothing under either tag survives at all any more, not even an
+        // otherwise-harmless element like <circle> (this test used to assert it survived, back when only
+        // svg's specific dangerous sub-elements - use/set/animate/foreignObject, still in this file's own
+        // REMOVED_ELEMENTS as defense in depth in case that upstream FORBID_TAGS ever regresses - were
+        // stripped and a whole <svg> was otherwise let through).
+        for (const selector of [
+            "script", "iframe", "object", "embed", "video", "audio", "canvas", "input", "select", "textarea",
+            "meta", "base", "link", "noscript", "template", "svg", "use", "set", "animate", "foreignObject",
+            "circle", "math",
+        ]) {
             expect(container.querySelector(selector), selector).toBeNull();
         }
-        expect(container.querySelector("circle")).not.toBeNull();
         expect(container.textContent).toContain("keep");
     });
 

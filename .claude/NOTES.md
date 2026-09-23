@@ -3098,6 +3098,11 @@ mails - none of that is here. **Written to the agreed contract, not run against 
 - **Known gap, not fixed here:** editing *one occurrence* of a video-conferenced series detaches a copy that
   does not carry `videoMeetingUid` (the series keeps it); nothing mints or moves a meeting for the detached
   copy. Reaching a sensible answer needs a per-occurrence meeting model the plugin doesn't have yet.
+  **Update, 2026-09-23:** this bullet only ever described the *non-destructive* half of that same fact (toggle
+  left checked through a detach → detached copy silently ends up with no meeting - still true, still an open
+  gap). The other half - toggle unchecked through a detach - was not merely a missing feature but a real bug:
+  it cancelled the *series'* shared meeting out from under every other occurrence. Fixed; see the dated entry
+  below.
 
 Files: `apps/shared/components/calendar/EventModal.tsx`, new
 `test/apps/_components/EventModal.videoconf.test.tsx` (16 tests), `RELEASE_NOTES.md` (Unreleased > Features).
@@ -3243,3 +3248,101 @@ Fixes - appended to, not replacing, the entries the first pass already added the
 clean; full suite run twice more (as above, this repo's full-suite run needs `--retry=2` to filter out the
 already-documented `contacts/index.test.tsx` toolbar-Email flake, which showed up again, once, in the first of
 the two runs here) - clean at 273/273 files, 100/99.9-ish/100/100 (comfortably inside the 100/99/100/100 gate).
+
+### 2026-09-23 - Third-round review: HIGH-severity bug, unchecking video conferencing on one occurrence cancelled the whole series' meeting
+
+Confirmed, traced end to end, and fixed in one follow-up commit on top of the round-2 fixes above.
+
+- **The bug.** `react-shared`'s `expandAllOccurrences()` spreads the master event's fields into every occurrence,
+  so every occurrence of a recurring series shares the exact same `videoMeetingUid` - one meeting for the whole
+  series. Opening a single occurrence, leaving the default "This event only" scope, and unchecking **Add video
+  conferencing** ran `handleSubmit()` → `detachOccurrence()` (react-shared's `calendarMutations.ts`), which
+  deliberately never copies `videoMeetingUid` onto the newly detached standalone event (see this file's own
+  earlier "Known gap" note, now updated in place above) - so `saved.videoMeetingUid` came back `undefined`
+  regardless of the toggle. `applyVideoConferencing(saved)` then ran, but its guard compared `videoEnabled`
+  against the component's own **state** variable `videoMeetingUid` - seeded from the series' shared meeting at
+  mount and never touched by the detach - not against `saved.videoMeetingUid`. `false === !!<truthy state>` is
+  `false`, so the guard never short-circuited, execution fell into the "off" branch, and
+  `updateVideoMeeting(videoMeetingUid!, { status: "cancelled" })` cancelled the **series-wide** meeting - every
+  other occurrence kept `videoMeetingUid` set and kept offering "Join video call," now pointed at a dead meeting,
+  with no warning anywhere.
+- **The fix.** A second, narrower guard right after the existing one: `if (!videoEnabled && !saved.videoMeetingUid)
+  return { event: saved, failed: false }`. `saved.videoMeetingUid` is the actual just-persisted record, not stale
+  component state, so this is `true` for every detach (whatever the checkbox is doing) - and `false` for every
+  other save path (plain update, whole-series edit, retry), where the server's response reliably still carries
+  whatever `videoMeetingUid` was already stored, since none of those paths' PATCH bodies ever touch that field
+  either. Deliberately did **not** touch the "on" branch or the top guard: doing the more thorough-looking thing -
+  reading `saved.videoMeetingUid` in the *top* guard too - would have also changed behavior for the still-checked
+  detach case (toggle left on through a detach), turning the already-documented, deliberate "nothing mints a
+  meeting for the detached copy" gap into "silently mints a brand new one," which is a bigger, unreviewed behavior
+  change this bug report never asked for and the plugin's invitee-substitution model hasn't been thought through
+  for. Left that gap exactly as documented, just no longer also destructive.
+- Test added: a recurring occurrence with a shared `videoMeetingUid`, "This event only" (the default scope),
+  toggle unchecked, Save - asserts the detach's own two calls (PUT the exception onto the master, POST the
+  detached copy) happen and, critically, that no `PUT /mail/video-meetings/...` call happens at all.
+- **Test-mock fallout, not a source bug**: three pre-existing tests (`cancels the meeting...`, `keeps a location
+  the user typed...`, `reports a non-API failure of the cancel call...`) started failing once the new guard shipped
+  - not because they were wrong to expect a cancel, but because `mockVideoFetch()`'s generic default `updateEvent`
+  response (`{ ...occurrence(), version: 3 }`) never carried `videoMeetingUid` at all, for *any* PUT, which the new
+  guard (correctly) now reads. Fixed by giving those three tests (all genuinely non-recurring, already-linked
+  occurrences, where a real server's PATCH response would echo the existing `"vm1"` back since none of those PUTs'
+  bodies touch that field) an explicit `updateEvent` override that echoes `videoMeetingUid: "vm1"` - rather than
+  making the shared mock's own default smarter, which would have then had to fake up per-occurrence state to avoid
+  wrongly injecting `"vm1"` into the *other* tests that start with no meeting at all.
+
+Files: `apps/shared/components/calendar/EventModal.tsx`, `test/apps/_components/EventModal.videoconf.test.tsx`,
+`RELEASE_NOTES.md` (Unreleased > Fixes), and this file's own "Add video conferencing" entry above (the "Known gap"
+bullet updated in place, not rewritten). Verified: `tsc --noEmit` clean; `EventModal.test.tsx`/`.round3`/`.round4`/
+`.videoconf` all green (75 + 19 = 94 tests); full suite (combined with the react-shared-bump entry below, verified
+together in one final run) clean at **273/273 files, 4203/4203 tests, 100/99.88/100/100**.
+
+### 2026-09-23 (later) - Bumped `@rapidmx/react-shared` to 0.14.0 - two already-published security fixes weren't actually reaching users
+
+`package.json` still said `^0.13.0`; since react-shared is pre-1.0, caret semantics never resolve across a minor
+bump on their own, and `yarn.lock` had stayed pinned at exactly `0.13.0` - so the sanitizer/key-import fixes
+0.14.0 shipped were live in the *published package* but not in web-client's actual dependency tree, despite this
+repo directly executing both code paths (`apps/shared/components/mail/reading/bodyHtml.ts` and
+`apps/shared/components/mail/compose/quotedBody.ts` call `sanitizeMessageBodyHtml()`; `KeyEnrollmentGate.tsx`/
+`UnlockPromptProvider.tsx` drive the key-session module that imports the private keys).
+
+- **What 0.14.0 actually changed** (confirmed by reading the installed package, not just trusting the version
+  number): `messageBodySanitizer.js`'s `DISPLAY_FORBIDDEN_TAGS`/`QUOTE_FORBIDDEN_TAGS` now list `svg`/`math`
+  outright (DOMPurify's `FORBID_TAGS`), rather than counting on this repo's own second, structural DOM-hardening
+  pass (`bodyHtml.ts`) to catch whatever they could still carry through DOMPurify's defaults; and `keySession.js`
+  now imports the unlocked/enrolled private keys as **non-extractable** `CryptoKey`s (previously extractable, on
+  the reasoning - reverted here - that an XSS able to call `exportKey()` on them already has bigger problems).
+- **Why this was low-risk to pull in**: an earlier round already confirmed web-client has independent
+  defense-in-depth for both - its own structural DOM pass already forbids most dangerous SVG content even without
+  the upstream `FORBID_TAGS` change, and nothing in this repo calls `exportKey()` on a session key, so tightening
+  `extractable` to `false` removes a capability nothing here was using.
+- **The bump itself (`package.json`/`yarn.lock`, `^0.13.0` → `^0.14.0`) had already landed on `main`** as its own
+  commit (`692d515`, "Upgrading react-shared dep") by the time this task reached this session - evidently done in
+  parallel by another agent/session working the same coordinated sibling-repo release. This entry's own work was
+  verification (`yarn install`, `yarn build`, the full test suite) and documentation
+  (`RELEASE_NOTES.md`/this file), not the bump itself.
+- **Not quite a no-op for `apps/**` after all**: no new react-shared *API surface* is used, but the sanitizer
+  change broke a real, still-relevant test. `test/apps/_reading/bodyHtml.test.ts`'s "removes scripts, frames,
+  media..." test fed the sanitizer an `<svg>` containing both dangerous sub-elements (`use`/`set`/`animate`/
+  `foreignObject`) and a harmless one (`<circle>`), and explicitly asserted the harmless one survived - true
+  under 0.13.0, where only svg's specific dangerous children were forbidden (by this file's own
+  `REMOVED_ELEMENTS`, a second structural pass) and DOMPurify's own `FORBID_TAGS` didn't touch `svg` itself. Under
+  0.14.0 the whole `<svg>` (circle included) is now forbidden by DOMPurify before that second pass ever runs, so
+  nothing under it survives any more - a strictly *more* secure outcome, just one the old assertion no longer
+  matched. Updated the test to expect `<svg>`/`<circle>` gone too, with a comment noting `bodyHtml.ts`'s own
+  `REMOVED_ELEMENTS` entries for svg's dangerous children are now unreachable through this exact path but are
+  kept anyway, deliberately, as defense in depth against a future regression in the upstream `FORBID_TAGS` list -
+  **no source change**, only the test's expectation.
+  `quotedBody.test.ts` (the sanitizer's other caller) has no svg/circle assertions of its own and needed nothing.
+
+Files: `test/apps/_reading/bodyHtml.test.ts` (the one test fix above); everything else is dependency-only,
+already committed in `692d515`. This follow-up itself touches only that test file, `RELEASE_NOTES.md`
+(Unreleased > Security) and this file. Verified: `yarn install` clean (pre-existing, unrelated eslint
+peer-dependency warning only), `yarn build` clean (`checkDistReferences` passes), `tsc --noEmit` clean, `eslint`
+clean on the changed test file, full suite clean at **273/273 files, 4203/4203 tests, 100/99.88/100/100**
+(`--retry=2` needed for the same documented `contacts/index.test.tsx` flake - and, this run, for genuine
+`ECONNREFUSED`-style collisions from another agent's own concurrent `vitest run --coverage` in this same working
+directory, which briefly left this repo's coverage lock held by a stale process from an earlier, wrongly-trusted
+"completed" backgrounded run of this session's own - see this repo's own project memory / the harness's own
+background-task notes for why a "completed" notification on a long `pool: "forks"` run isn't always final;
+sidestepped with `--coverage.reportsDirectory=coverage-verify-round4`, a scratch directory deleted again once the
+real run had a clean result in hand).

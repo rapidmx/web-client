@@ -334,6 +334,20 @@ export default function EventModal({
         if (videoEnabled === !!videoMeetingUid) {
             return { event: saved, failed: false };
         }
+        // Detaching a single occurrence (`detachOccurrence()`, react-shared's `calendarMutations.ts`)
+        // deliberately never copies the series' `videoMeetingUid` onto the new standalone event - that
+        // shared meeting belongs to the series, not to the one occurrence being split off, and every other
+        // occurrence still needs it live. But this component's own `videoMeetingUid` *state* was seeded
+        // from the series' occurrence at mount and is untouched by the detach, so unchecking the toggle
+        // while detaching would otherwise still look like "off, but state says linked" above and fall into
+        // the cancel branch below - cancelling the series' shared meeting for every remaining occurrence,
+        // not just this one. `saved.videoMeetingUid` is the actual just-persisted record, so when the
+        // toggle is off and that record already has no meeting reference (true for every detach, checked or
+        // not - see this function's own doc comment on the still-checked case being a separate, documented
+        // gap), there is nothing of *this* record's to cancel.
+        if (!videoEnabled && !saved.videoMeetingUid) {
+            return { event: saved, failed: false };
+        }
         try {
             if (videoEnabled) {
                 const organizerAddressLower = saved.organizer.address.toLowerCase();

@@ -232,8 +232,47 @@ describe("EventModal video conferencing toggle", () => {
         expect(callsTo(fetchMock, "/api/mail/video-meetings", "PUT")).toHaveLength(0);
     });
 
-    it("cancels the meeting and clears the auto-generated location when the toggle is turned off", async () => {
+    it("does not cancel the series' shared meeting when a single occurrence is detached with the toggle unchecked", async () => {
+        // Regression test for a real, high-severity bug: `detachOccurrence()` (react-shared's
+        // calendarMutations.ts) deliberately never carries the series' `videoMeetingUid` onto the new
+        // standalone event it creates - that shared meeting belongs to the whole series, not to the one
+        // occurrence being split off. But this component's own `videoMeetingUid` *state* is seeded from the
+        // occurrence at mount and untouched by the detach itself, so unchecking the toggle while detaching
+        // used to still look like "off, but state says linked" and fell into applyVideoConferencing()'s
+        // cancel branch - cancelling the series' meeting out from under every *other* occurrence still
+        // using it, silently, with no warning anywhere.
+        const recurring = occurrence({
+            recurrenceRule: { freq: "weekly", interval: 1, byDay: ["WE"], exceptions: [] },
+            recurrenceId: "2026-06-03T15:00:00.000Z",
+            isRecurringOccurrence: true,
+            videoMeetingUid: "vm1",
+        });
         const fetchMock = mockVideoFetch();
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(recurring);
+        expect(screen.getByLabelText("Add video conferencing")).toBeChecked();
+        // Default edit scope for a recurring occurrence - see EventModal.test.tsx's own coverage of this radio.
+        expect(screen.getByRole("radio", { name: "This event only" })).toBeChecked();
+
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        // detachOccurrence: adds an exception to the master (PUT /calendar-events/e1), then creates the
+        // detached standalone event (POST /calendar-events) - neither call, nor anything else this save
+        // does, may touch the series' still-live shared meeting.
+        expect(callsTo(fetchMock, "/api/mail/calendar-events/e1", "PUT")).toHaveLength(1);
+        expect(callsTo(fetchMock, "/api/mail/calendar-events", "POST")).toHaveLength(1);
+        expect(callsTo(fetchMock, "/api/mail/video-meetings", "PUT")).toHaveLength(0);
+    });
+
+    it("cancels the meeting and clears the auto-generated location when the toggle is turned off", async () => {
+        // handleSubmit's own PUT (before applyVideoConferencing runs) never touches videoMeetingUid, so a
+        // real server would echo the record's existing "vm1" back - unlike mockVideoFetch's plain default,
+        // which doesn't carry any occurrence-specific state and would otherwise (wrongly) look, from
+        // applyVideoConferencing()'s own perspective, exactly like the "no meeting to cancel" case its
+        // `saved.videoMeetingUid` guard now also has to tell apart from a genuine single-occurrence detach.
+        const fetchMock = mockVideoFetch({ updateEvent: () => jsonResponse(200, { ...occurrence(), version: 3, videoMeetingUid: "vm1" }) });
         const user = userEvent.setup();
         const { onSaved } = renderModal(occurrence({ videoMeetingUid: "vm1", location: PLACEHOLDER }));
         await user.click(screen.getByLabelText("Add video conferencing"));
@@ -252,7 +291,8 @@ describe("EventModal video conferencing toggle", () => {
     });
 
     it("keeps a location the user typed themselves when the toggle is turned off", async () => {
-        const fetchMock = mockVideoFetch();
+        // See the previous test's own comment on why `updateEvent` needs to echo "vm1" here.
+        const fetchMock = mockVideoFetch({ updateEvent: () => jsonResponse(200, { ...occurrence(), version: 3, videoMeetingUid: "vm1" }) });
         const user = userEvent.setup();
         const { onSaved } = renderModal(occurrence({ videoMeetingUid: "vm1", location: PLACEHOLDER }));
         await user.clear(screen.getByLabelText("Location"));
@@ -323,10 +363,12 @@ describe("EventModal video conferencing toggle", () => {
     });
 
     it("reports a non-API failure of the cancel call generically, leaving the link in place", async () => {
+        // See "cancels the meeting..." above's own comment on why `updateEvent` needs to echo "vm1" here.
         const fetchMock = mockVideoFetch({
             updateMeeting: () => {
                 throw new TypeError("Failed to fetch");
             },
+            updateEvent: () => jsonResponse(200, { ...occurrence(), version: 3, videoMeetingUid: "vm1" }),
         });
         const user = userEvent.setup();
         const { onSaved } = renderModal(occurrence({ videoMeetingUid: "vm1", location: PLACEHOLDER }));
