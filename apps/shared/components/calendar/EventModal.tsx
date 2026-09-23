@@ -318,7 +318,7 @@ export default function EventModal({
      * theirs and is preserved.
      *
      * **Known, deliberate limitation:** an event that already has a meeting is left completely alone, even
-     * when its attendee list has just changed. `@rapidmx/videoconf-plugin`'s `PUT /mail/video-meetings/:id`
+     * when its attendee list has just changed. `@rapidmx/meet-plugin`'s `PUT /mail/video-meetings/:id`
      * is deliberately minimal (title and cancellation only) and cannot add or remove invitees, and a private
      * meeting's personal join links are minted once at creation - so there is no way to reconcile an invitee
      * list, and silently pretending otherwise would leave a new attendee with no link and a removed one with

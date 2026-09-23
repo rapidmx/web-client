@@ -11,7 +11,7 @@ import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
 // The "Add video conferencing" toggle, the meeting it mints/cancels through
-// `@rapidmx/videoconf-plugin`'s `/mail/video-meetings` routes, and the organizer's own join affordance.
+// `@rapidmx/meet-plugin`'s `/mail/video-meetings` routes, and the organizer's own join affordance.
 
 const PLACEHOLDER = "Video call — link in this invitation";
 const HELPER_TEXT = /Changing attendees after enabling video conferencing/;

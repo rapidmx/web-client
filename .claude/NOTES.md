@@ -3050,7 +3050,7 @@ peer session's `Domain.aliasOf` TypeScript errors in `apps/admin/domains/*`, non
 ### 2026-09-22 (later) - "Add video conferencing" on the event form (`EventModal.tsx`)
 
 Not committed. The compose/UI half of the video-conferencing integration: react-shared gained the client
-(`videoconf/videoMeetingsApi.ts`, see its NOTES entry of the same date), `@rapidmx/videoconf-plugin` owns the
+(`videoconf/videoMeetingsApi.ts`, see its NOTES entry of the same date), `@rapidmx/meet-plugin` owns the
 routes, and `@rapidmx/restapi`'s `MeetingSchedulingJob` does the per-attendee link substitution in the invite
 mails - none of that is here. **Written to the agreed contract, not run against a real server**; the plugin's
 `organizerJoinUrl` on create/read is being added in parallel by another agent.
