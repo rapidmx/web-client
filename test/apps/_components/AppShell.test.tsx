@@ -218,7 +218,7 @@ describe("AppShell", () => {
 
     it("shows the impersonation banner and returns to admin when 'Return to admin' is clicked", async () => {
         mockFetch((url, init) => {
-            if (url === "https://auth.example.com/api/admin/impersonate/stop" && init?.method === "GET") {
+            if (url === "https://auth.example.com/api/admin/impersonate/stop" && init?.method === "POST") {
                 return jsonResponse(200, { restored: true });
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
@@ -241,7 +241,7 @@ describe("AppShell", () => {
 
     it("still returns to admin even when the stop-impersonating request fails", async () => {
         mockFetch((url, init) => {
-            if (url === "https://auth.example.com/api/admin/impersonate/stop" && init?.method === "GET") {
+            if (url === "https://auth.example.com/api/admin/impersonate/stop" && init?.method === "POST") {
                 return jsonResponse(500, { message: "boom" });
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
@@ -260,7 +260,7 @@ describe("AppShell", () => {
 
     it("calls this app's own local dev-only stop endpoint when impersonationBaseUrl isn't provided (yarn dev)", async () => {
         mockFetch((url, init) => {
-            if (url === "/api/admin/impersonate/stop" && init?.method === "GET") {
+            if (url === "/api/admin/impersonate/stop" && init?.method === "POST") {
                 return jsonResponse(200, { restored: true });
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);

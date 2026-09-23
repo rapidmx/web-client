@@ -3346,3 +3346,18 @@ directory, which briefly left this repo's coverage lock held by a stale process 
 background-task notes for why a "completed" notification on a long `pool: "forks"` run isn't always final;
 sidestepped with `--coverage.reportsDirectory=coverage-verify-round4`, a scratch directory deleted again once the
 real run had a clean result in hand).
+
+### 2026-09-23 (later) - `stopImpersonating()`'s GET became POST in `@rapidmx/react-shared` (ecosystem CSRF fix); two mocked test conditions updated to match
+
+A coordinated cross-repo CSRF hardening pass (`@rapidrest/service-core`/`@rapidrest/auth`/`@rapidrest/auth-server`/
+`@rapidmx/react-shared`, not run from this repo) changed `react-shared`'s `stopImpersonating()` from GET to POST
+(a state-changing GET is exploitable via a bare navigation, bypassing CSRF defenses entirely - see
+`@rapidrest/auth`'s `BaseImpersonationRoute`). This repo doesn't call the endpoint's URL/method directly - both
+`MailShell`/`AppShell` call `stopImpersonating()` through `react-shared`, so no source change was needed here -
+but their tests' mocked `fetch` implementations branched on `init?.method === "GET"` to decide which response to
+return for that URL, and would have silently stopped matching (falling through to whatever the next branch/default
+does) the moment this repo picks up the new `react-shared` version. Updated both to `"POST"` in
+`test/apps/_components/MailShell.test.tsx`/`AppShell.test.tsx` (3 occurrences each) ahead of that dependency bump,
+so the tests don't quietly start passing for the wrong reason. No `react-shared` version bump made in this repo as
+part of this change - that's a separate, deliberate dependency-bump step (see the 0.14.0 entry above for the
+pattern), and this fix is safe to land before or after it either way.

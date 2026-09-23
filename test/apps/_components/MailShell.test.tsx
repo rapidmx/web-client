@@ -529,7 +529,7 @@ describe("MailShell", () => {
         mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
             if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
-            if (url === "https://auth.example.com/api/admin/impersonate/stop" && init?.method === "GET") {
+            if (url === "https://auth.example.com/api/admin/impersonate/stop" && init?.method === "POST") {
                 return jsonResponse(200, { restored: true });
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
@@ -554,7 +554,7 @@ describe("MailShell", () => {
         mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
             if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
-            if (url === "https://auth.example.com/api/admin/impersonate/stop" && init?.method === "GET") {
+            if (url === "https://auth.example.com/api/admin/impersonate/stop" && init?.method === "POST") {
                 return jsonResponse(500, { message: "boom" });
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
@@ -575,7 +575,7 @@ describe("MailShell", () => {
         mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
             if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
-            if (url === "/api/admin/impersonate/stop" && init?.method === "GET") {
+            if (url === "/api/admin/impersonate/stop" && init?.method === "POST") {
                 return jsonResponse(200, { restored: true });
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
