@@ -4149,6 +4149,42 @@ describe("InboxPage", () => {
             expect(screen.queryByText("Page 10 thread 0")).not.toBeInTheDocument();
         });
 
+        it("does not show the row-cap banner when the list is actually exhausted, even if the row count lands at or beyond the cap", async () => {
+            const io = mockIntersectionObserver();
+            const pages: unknown[][] = Array.from({ length: 9 }, (_, p) =>
+                Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `p${p}-m${i}`, subject: `Page ${p} message ${i}` })),
+            );
+            // The final page is deliberately not a full page of 50 - a real mailbox whose true size lands
+            // at/near the cap ends this way (its last page is partial), which is exactly what turns `hasMore`
+            // false. Any length other than 50 proves the point equally well; 60 also conveniently pushes the
+            // accumulated total across the 500 cap within this same page, which is the edge case under test.
+            pages.push(Array.from({ length: 60 }, (_, i) => messageFixture({ uid: `p9-m${i}`, subject: `Page 9 message ${i}` })));
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    const pageParam = new URL(url, "http://localhost").searchParams.get("page");
+                    return jsonResponse(200, pages[pageParam ? Number(pageParam) : 0]);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const { container } = render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 message 0");
+
+            for (let p = 1; p <= 9; p++) {
+                io.trigger();
+                await screen.findByText(`Page ${p} message 0`);
+            }
+
+            // Capped at exactly 500 (450 from the first nine full pages plus 60 more, truncated down from
+            // 510) - but since the last page fetched wasn't a full page, `hasMore` correctly went false:
+            // every row that actually exists is already shown, so there is nothing to "refine your search"
+            // for, and no sentinel to keep loading from either.
+            expect(container.querySelectorAll("li[data-message-uid]")).toHaveLength(500);
+            expect(screen.queryByText(/Showing the most recent 500 messages/)).not.toBeInTheDocument();
+            expect(screen.queryByTestId("load-more-sentinel")).not.toBeInTheDocument();
+        });
+
         it("shows an error message when loading more fails", async () => {
             const firstPage = Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `m${i}`, subject: `Message ${i}` }));
             const io = mockIntersectionObserver();

@@ -3192,3 +3192,54 @@ EventModal.videoconf.test.tsx`, `test/apps/index.test.tsx`), `RELEASE_NOTES.md` 
 repo's every API call goes through) has an **open, already-documented CSRF finding** that needs a coordinated
 backend fix - out of scope for this pass and not something to act on from `web-client` alone. See that repo's
 own NOTES.md for the finding itself.
+
+### 2026-09-22 (yet later) - Second-round adversarial review, follow-up on commit d5766f8
+
+Four more findings from a second review pass of the fixes just above, all addressed in one follow-up commit.
+
+- **"Add video conferencing" gave a raw, confusing 404 on a server without `@rapidmx/meet-plugin` installed.**
+  `videoMeetingsApi.ts`'s own doc comment already says a caller offering video conferencing optionally must treat
+  a 404 (the plugin's routes simply aren't mounted) as "not available here," not an alarming error - but
+  `EventModal.tsx#applyVideoConferencing()`'s catch block surfaced `err.message` verbatim regardless of status.
+  Picked the cheaper of the two options the review offered (catching the 404 specifically) over an
+  availability-check-on-mount, since the checkbox unconditionally rendering is otherwise harmless (the event
+  still saves fine either way) and an extra fetch just to decide whether to show a checkbox felt like the wrong
+  trade for this. Now checks `err instanceof ApiRequestError && err.status === 404` and shows "Video conferencing
+  is not available on this server." instead.
+- **Recipient addresses were case-sensitive cache keys for compose-time encryption lookups.** `ComposeWindow.tsx`'s
+  `recipientStatuses`/`lookupsInFlightRef`/`lookupFailuresRef` were all keyed by `recipient.address` verbatim from
+  `recipients.ts#parseRecipient()`, which doesn't lowercase - while `@rapidmx/react-shared`'s
+  `classifyRecipientTier()` already lowercases domains for its own comparison. The same mailbox typed with
+  different casing across To/Cc/Bcc (autocomplete in one field, a pasted address in another) was tracked as two
+  independent recipients; if one lookup lagged or failed while the other succeeded, `decideMessageEncryption()`'s
+  all-or-nothing check saw a spurious unresolved recipient and denied auto-encryption for a message every *real*
+  recipient could actually receive encrypted. Fixed with a new `addressCacheKey()` (`address.trim().toLowerCase()`)
+  used everywhere `recipientStatuses` is built or read - **only as an internal cache key**, deliberately: the
+  actual `ComposeRecipientInput.address` sent to the server, and shown in the compose fields themselves, is
+  untouched, so this doesn't relitigate whether local-parts are "really" case-insensitive (they're not, per RFC,
+  even though every real provider treats them that way) for anything that leaves this cache. Also had to
+  de-duplicate the "supports encryption" / "no encryption key found" pill list by the same key - it already had a
+  latent duplicate-`key` React warning for the same address typed twice (pre-existing, just literal-duplicate
+  only), and normalizing made the different-casing case just as common a trigger.
+- **The row-cap banner ("Showing the most recent 500...") could show even when the list was already complete.**
+  `rowCapReached` (`apps/www/index.tsx`) checked only the row count (`>= MAX_LOADED_ROWS`), not `hasMore` - a
+  folder/search whose true size lands at/near 500 with a partial (or otherwise not-page-sized) final page
+  correctly turns `hasMore` false, but the banner didn't know that and would still claim rows were being hidden
+  behind the cap. Fixed by folding `hasMore` into `rowCapReached`'s own definition (`loadMore()`'s separate
+  `atRowCap` guard was left alone - it doesn't need this, since the composite guard it's part of already checks
+  `!hasMore` on its own).
+- **[Cheap, optional, done anyway] The Worker `error` listener in `localIndexRpcClient.ts` wasn't scoped to its own
+  Worker instance.** It only ever read/wrote the module-level `worker`/`pending`, so an already-superseded Worker
+  (crashed once, replaced, then - implausibly - firing a second, late `error` event) could reject a healthy
+  replacement's in-flight requests and terminate it for no reason of its own. Fixed by capturing the Worker each
+  `getWorker()` call creates in its own `created` const and guarding the listener with `if (worker !== created)
+  return`, so a stale instance's event can never touch whatever Worker is actually live.
+
+Files: `apps/shared/components/calendar/EventModal.tsx`, `apps/shared/components/mail/compose/ComposeWindow.tsx`,
+`apps/www/index.tsx`, `apps/shared/search/localIndexRpcClient.ts`, and their test files
+(`test/apps/_components/EventModal.videoconf.test.tsx`, `test/apps/_components/ComposeWindow.test.tsx`,
+`test/apps/index.test.tsx`, `test/apps/_search/localIndexRpcClient.test.ts`), `RELEASE_NOTES.md` (Unreleased >
+Fixes - appended to, not replacing, the entries the first pass already added there). Verified: `tsc --noEmit`
+clean; full suite run twice more (as above, this repo's full-suite run needs `--retry=2` to filter out the
+already-documented `contacts/index.test.tsx` toolbar-Email flake, which showed up again, once, in the first of
+the two runs here) - clean at 273/273 files, 100/99.9-ish/100/100 (comfortably inside the 100/99/100/100 gate).

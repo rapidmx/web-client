@@ -126,6 +126,20 @@ function parseAddresses(value: string): ComposeRecipientInput[] {
     return parseRecipientList(value);
 }
 
+/**
+ * Normalizes an address into the key `recipientStatuses`/the in-flight and failure trackers below use -
+ * matching `classifyRecipientTier()`'s own lowercase-domain comparison (`@rapidmx/react-shared`'s
+ * `composeSecurity.ts`), but applied to the whole address rather than just the domain. Without this, the
+ * same mailbox typed with different casing across To/Cc/Bcc (plausible via autocomplete vs. a pasted
+ * signature block) is tracked as two independent recipients: if one lookup lags or fails while the other
+ * succeeds, `decideMessageEncryption()`'s all-or-nothing check sees a spurious unresolved recipient and
+ * denies auto-encryption even though every *real* recipient resolved fine. Only ever used as an internal
+ * cache key - `ComposeRecipientInput.address` itself (what is actually sent as the recipient) is untouched.
+ */
+function addressCacheKey(address: string): string {
+    return address.trim().toLowerCase();
+}
+
 function HeaderButton({
     label,
     onClick,
@@ -411,26 +425,27 @@ export default function ComposeWindow({
         const ownPrefersMutual = mailbox.encryptPreference?.preferEncrypt === "mutual";
         const generation = discoveryGenerationRef.current;
         const inFlight = lookupsInFlightRef.current;
-        const unchecked = addresses.filter((r) => !(r.address in recipientStatuses) && !inFlight.has(r.address));
+        const unchecked = addresses.filter((r) => !(addressCacheKey(r.address) in recipientStatuses) && !inFlight.has(addressCacheKey(r.address)));
         for (const recipient of unchecked) {
-            inFlight.add(recipient.address);
+            const key = addressCacheKey(recipient.address);
+            inFlight.add(key);
             void lookupKeys(mailbox.uid, recipient.address)
                 .then(
                     (lookup) => ({ lookup }),
                     () => null,
                 )
                 .then((result) => {
-                    inFlight.delete(recipient.address);
+                    inFlight.delete(key);
                     if (generation !== discoveryGenerationRef.current) {
                         return;
                     }
                     if (!result) {
-                        noteLookupFailed(recipient.address);
+                        noteLookupFailed(key);
                         return;
                     }
-                    lookupFailuresRef.current.delete(recipient.address);
+                    lookupFailuresRef.current.delete(key);
                     const status = resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, recipient.address, result.lookup);
-                    setRecipientStatuses((prev) => ({ ...prev, [recipient.address]: status }));
+                    setRecipientStatuses((prev) => ({ ...prev, [key]: status }));
                 });
         }
     }
@@ -1070,7 +1085,7 @@ export default function ComposeWindow({
     // (4) Send encrypts (or is refused, with the override, when it can't) - never silently plaintext. And back: when it stops being encrypted
     // (a recipient removed) autosave simply resumes.
     const currentAddresses = [...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)].map((r) => r.address);
-    const currentStatuses = currentAddresses.map((address) => recipientStatuses[address]);
+    const currentStatuses = currentAddresses.map((address) => recipientStatuses[addressCacheKey(address)]);
     const hasEncryptionKey = !!unlockedKeys?.encryptionPrivateKey || hasEnrolledEncryptionKey || offeredCryptoRef.current.encrypt;
     const requirement = evaluateEncryptionRequirement({
         encryptRequested,
@@ -1480,8 +1495,22 @@ export default function ComposeWindow({
                 )}
 
                 {(() => {
+                    // De-duplicated by the same normalized key `recipientStatuses` itself is keyed by - two
+                    // fields (or one field twice) naming the same mailbox in different casing now resolve to
+                    // one shared status object (see `addressCacheKey()`'s own doc comment), so without this
+                    // the list below would render - and React would warn about - two `<li key=...>`s sharing
+                    // the exact same key.
+                    const seenKeys = new Set<string>();
                     const knownRecipients = [...parseAddresses(to), ...parseAddresses(cc), ...parseAddresses(bcc)]
-                        .map((r) => recipientStatuses[r.address])
+                        .filter((r) => {
+                            const key = addressCacheKey(r.address);
+                            if (seenKeys.has(key)) {
+                                return false;
+                            }
+                            seenKeys.add(key);
+                            return true;
+                        })
+                        .map((r) => recipientStatuses[addressCacheKey(r.address)])
                         .filter((status): status is RecipientEncryptionStatus => !!status);
                     if (knownRecipients.length === 0) {
                         return null;

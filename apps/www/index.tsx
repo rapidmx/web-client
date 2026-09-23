@@ -1483,11 +1483,14 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * arrived, so paging keeps appending to the same accumulated set. */
     const listedConversations = sortConversations(conversations, preferences.sortBy, preferences.sortOrder);
 
-    /** `true` once whichever list is on screen has hit `MAX_LOADED_ROWS` - `appendUnseenRows()` itself
-     * already stopped growing the array at that point, and `loadMore()` refuses to fetch further pages
-     * (see its own `atRowCap` check); this just drives the "refine your search" banner replacing the
-     * load-more sentinel below. */
-    const rowCapReached = (preferences.showAsConversations ? conversations.length : messages.length) >= MAX_LOADED_ROWS;
+    /** `true` once whichever list is on screen has hit `MAX_LOADED_ROWS` *and* the server still has more to
+     * give - `appendUnseenRows()` itself already stopped growing the array at that point, and `loadMore()`
+     * refuses to fetch further pages (see its own `atRowCap` check); this just drives the "refine your
+     * search" banner replacing the load-more sentinel below. The `hasMore` half matters at the edge: a
+     * mailbox/search whose true size lands at or near the cap can have its very last page be a partial one,
+     * which correctly turns `hasMore` false - without checking it here, the banner would still claim rows
+     * are being hidden even though every one of them is already on screen. */
+    const rowCapReached = hasMore && (preferences.showAsConversations ? conversations.length : messages.length) >= MAX_LOADED_ROWS;
 
     function leaveSelectMode() {
         setSelectMode(false);

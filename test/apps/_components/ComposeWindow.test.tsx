@@ -2834,6 +2834,38 @@ describe("ComposeWindow (round-4 fixes)", () => {
             expect(onClose).not.toHaveBeenCalled();
         });
 
+        it("treats the same address typed with different casing across To/Cc as one recipient, so an asymmetric lookup outcome can't spuriously block auto-encryption", async () => {
+            // Regression test: recipientStatuses used to be keyed by the raw, non-normalized address.
+            // "Bob@Example.com" (To) and "bob@example.com" (Cc) named the same real mailbox but were
+            // tracked as two independent cache entries; if the second's lookup failed or lagged while the
+            // first succeeded, decideMessageEncryption()'s all-or-nothing check saw a spurious unresolved
+            // recipient and denied auto-encryption even though the one real recipient's key was found. The
+            // mocked lowercase lookup below answers with a failure specifically to prove the fixed code
+            // never even calls it - the already-resolved, normalized cache entry is reused instead.
+            getUnlockedKeys.mockReturnValue(undefined);
+            const fetchMock = mockRound4((url) => {
+                if (isLookup(url) && url.includes("Bob%40Example.com")) return jsonResponse(200, mutualLookup);
+                if (isLookup(url) && url.includes("bob%40example.com")) return jsonResponse(500, { message: "boom" });
+                return undefined;
+            }, { ...mailboxFixture, keys: [encryptKey] });
+            const { onClose } = await renderReady();
+
+            fireEvent.change(screen.getByLabelText("To"), { target: { value: "Bob@Example.com" } });
+            fireEvent.blur(screen.getByLabelText("To"));
+            expect(await screen.findByText(/Bob@Example\.com supports encryption/)).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole("button", { name: "Cc Bcc" }));
+            fireEvent.change(screen.getByLabelText("Cc"), { target: { value: "bob@example.com" } });
+            fireEvent.blur(screen.getByLabelText("Cc"));
+            // Long enough for a (wrongly) re-triggered lookup to have landed if the fix regressed.
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            expect(callsTo(fetchMock, isLookup)).toHaveLength(1);
+            fireEvent.click(screen.getByRole("button", { name: "Close" }));
+            expect(await screen.findByText(/Encrypted messages aren't saved as drafts/)).toBeInTheDocument();
+            expect(onClose).not.toHaveBeenCalled();
+        });
+
         it("saves the draft while a recipient's lookup is still pending (fail open), and keeps saving once it shows the message stays plaintext", async () => {
             getUnlockedKeys.mockReturnValue(undefined);
             const lookup = deferred<Response>();

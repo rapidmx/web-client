@@ -76,8 +76,12 @@ function getWorker(): Worker {
     if (!worker) {
         // Named by its compiled `.js` file, like every other relative import: tsc copies the literal into
         // `dist` unchanged, where only the `.js` file exists, and Vite maps it back to the `.ts` source.
-        worker = new Worker(new URL("./localIndexWorker.js", import.meta.url), { type: "module" });
-        worker.addEventListener("message", (event: MessageEvent<LocalIndexResponse>) => {
+        // Captured in its own `created` const (not just read back from the module-level `worker` variable)
+        // so the `error` listener below can tell whether it still refers to *this* Worker - see that
+        // listener's own comment for why that guard matters.
+        const created = new Worker(new URL("./localIndexWorker.js", import.meta.url), { type: "module" });
+        worker = created;
+        created.addEventListener("message", (event: MessageEvent<LocalIndexResponse>) => {
             const entry = pending.get(event.data.id);
             if (!entry) {
                 return;
@@ -94,13 +98,21 @@ function getWorker(): Worker {
         // and searchTier2.ts's try/catch (which can only catch a *rejection*) couldn't rescue it. Reject
         // everything outstanding and drop the reference so the next call() spawns a fresh Worker instead of
         // continuing to postMessage into a dead one.
-        worker.addEventListener("error", (event: ErrorEvent) => {
+        //
+        // Scoped to `created`, this listener's own Worker, via the `worker !== created` check below - not
+        // scoped, a very unlikely double-error (this same Worker firing a second `error` event after the
+        // first already replaced `worker` with a healthy new instance) would reject that new instance's own
+        // in-flight requests and terminate it too, for no reason of its own.
+        created.addEventListener("error", (event: ErrorEvent) => {
+            if (worker !== created) {
+                return;
+            }
             const err = new Error(`Local search Worker crashed: ${event.message || "unknown error"}`);
             for (const entry of pending.values()) {
                 entry.reject(err);
             }
             pending.clear();
-            worker?.terminate();
+            created.terminate();
             worker = undefined;
         });
         // Only a tab with a Worker has connections to close when another tab signs out.

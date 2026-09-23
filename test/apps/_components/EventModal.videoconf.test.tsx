@@ -304,6 +304,24 @@ describe("EventModal video conferencing toggle", () => {
         });
     });
 
+    it("shows a clear message, not the raw 404, when the video-conferencing plugin isn't installed on this server", async () => {
+        // videoMeetingsApi.ts's own doc comment: a plugin that isn't mounted at all fails every one of its
+        // routes with a plain 404 - a caller offering video conferencing optionally must treat that as
+        // "not available here," not alarm the reader with the server's raw (often unhelpful) 404 body.
+        const fetchMock = mockVideoFetch({ createMeeting: () => jsonResponse(404, { message: "Not Found" }) });
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(occurrence());
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Video conferencing is not available on this server.")).toBeInTheDocument();
+        expect(screen.queryByText("Not Found")).not.toBeInTheDocument();
+        expect(onSaved).not.toHaveBeenCalled();
+        // The event itself was still saved even though the video step failed.
+        expect(callsTo(fetchMock, "/api/mail/calendar-events", "PUT")).toHaveLength(1);
+        expect(screen.getByLabelText("Add video conferencing")).toBeChecked();
+    });
+
     it("reports a non-API failure of the cancel call generically, leaving the link in place", async () => {
         const fetchMock = mockVideoFetch({
             updateMeeting: () => {

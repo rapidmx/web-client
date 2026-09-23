@@ -375,7 +375,17 @@ export default function EventModal({
             setLocation(restoredLocation);
             return { event: patched, failed: false };
         } catch (err) {
-            setVideoError(err instanceof ApiRequestError ? err.message : "Could not update this event's video conferencing.");
+            // `videoMeetingsApi.ts`'s own doc comment: when the plugin isn't installed at all, its routes
+            // simply aren't mounted and every call here fails with a plain 404 - a caller offering video
+            // conferencing optionally must treat that as "not available here," not alarm the reader with
+            // the raw (often server-generated, unhelpful) 404 body text.
+            setVideoError(
+                err instanceof ApiRequestError
+                    ? err.status === 404
+                        ? "Video conferencing is not available on this server."
+                        : err.message
+                    : "Could not update this event's video conferencing.",
+            );
             return { event: saved, failed: true };
         }
     }

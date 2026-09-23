@@ -269,6 +269,36 @@ describe("localIndexRpcClient", () => {
             expect(FakeWorker.instances).toBe(2);
         });
 
+        it("ignores a stale error event from an already-replaced Worker instead of tearing down its healthy successor", async () => {
+            respond = () => undefined; // never answers - keeps this call pending, as if the Worker died mid-flight
+            const first = rpc.getLocalCoverage("mb1");
+            const workerA = FakeWorker.latest!;
+            workerA.crash("first crash");
+            await expect(first).rejects.toThrow("first crash");
+
+            // A fresh Worker (B) replaces A.
+            respond = () => ({ ok: true, result: undefined });
+            await rpc.getLocalCoverage("mb1");
+            const workerB = FakeWorker.latest!;
+            expect(workerB).not.toBe(workerA);
+
+            // A's own error listener is scoped to the instance it was attached to - a late, second `error`
+            // event from the now-discarded A must not touch B's pending work or terminate a Worker that is
+            // healthy and has nothing to do with A's crash.
+            respond = () => undefined;
+            const pendingOnB = rpc.getLocalCoverage("mb1");
+            workerA.crash("stale second crash");
+
+            expect(workerB.terminated).toBe(false);
+            let settled = false;
+            pendingOnB.then(
+                () => (settled = true),
+                () => (settled = true),
+            );
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(settled).toBe(false);
+        });
+
         it("falls back to a generic message when the ErrorEvent itself carries none", async () => {
             respond = () => undefined; // never answers - keeps this call pending, as if the Worker died mid-flight
             const pending = rpc.getLocalCoverage("mb1");
