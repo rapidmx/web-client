@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Security
+
+- **"Join video call" now refuses a non-http(s) link.** The button opened whatever `organizerJoinUrl` the server (or an installed video-conferencing plugin) returned with no scheme check at all; it now reuses the same `http(s)://`-only validation the meeting-reminder pop-up's own join link already applies, and stays disabled ("This meeting's join link isn't available.") rather than open a `javascript:`/other non-http(s) URL.
+
+### Fixes
+
+- **A crashed or stuck Tier 2 (local search) Worker can no longer freeze Mail search forever.** A local-index Worker that crashed left every pending and future search waiting on a promise that would never resolve, blocking Tier 1's already-arrived server results behind it indefinitely; the Worker's failures are now recovered from (every pending call rejects and a fresh Worker is spawned next time), and a local search that doesn't come back within 5 seconds gives up on its own, showing Tier 1's results rather than a permanent spinner.
+- **A fully-scrolled large mailbox no longer keeps loading every message into memory forever.** Infinite scroll had no ceiling on total rows, only on a streak of empty pages - scrolling to the end of a big folder or search accumulated every page ever fetched as live state. The message and conversation lists now stop growing at 500 rows and show "Showing the most recent 500 ... - refine your search or filters to see more" instead of continuing to fetch further pages.
+
 ## v0.13.0
 
 ### Features

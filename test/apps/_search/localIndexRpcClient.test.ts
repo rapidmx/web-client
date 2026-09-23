@@ -24,6 +24,8 @@ class FakeWorker {
     static instances = 0;
     static latest: FakeWorker | undefined;
     #listener: ((event: { data: unknown }) => void) | undefined;
+    #errorListener: ((event: { message?: string }) => void) | undefined;
+    terminated = false;
     constructor() {
         FakeWorker.instances += 1;
         FakeWorker.latest = this;
@@ -32,8 +34,20 @@ class FakeWorker {
     emit(data: unknown) {
         this.#listener?.({ data });
     }
-    addEventListener(_type: string, listener: (event: { data: unknown }) => void) {
-        this.#listener = listener;
+    /** Simulates the Worker crashing - an uncaught exception on its side, delivered as an `error` event
+     * rather than a `message` reply. */
+    crash(message = "boom") {
+        this.#errorListener?.({ message });
+    }
+    addEventListener(type: string, listener: (event: never) => void) {
+        if (type === "error") {
+            this.#errorListener = listener;
+        } else {
+            this.#listener = listener;
+        }
+    }
+    terminate() {
+        this.terminated = true;
     }
     postMessage(message: Posted) {
         posted.push(message);
@@ -233,6 +247,41 @@ describe("localIndexRpcClient", () => {
         });
         await expect(rpc.destroyAllLocalIndexes()).resolves.toBe(false);
         await expect(rpc.pruneInaccessibleLocalIndexes(["mine"])).resolves.toBeUndefined();
+    });
+
+    describe("Worker crash recovery", () => {
+        it("rejects every pending call when the Worker fires an error event, and lets the next call spawn a replacement", async () => {
+            respond = () => undefined; // never answers - keeps these calls pending, as if the Worker died mid-flight
+            const first = rpc.getLocalCoverage("mb1");
+            const second = rpc.searchLocal("mb1", { text: "x" }, 5);
+            expect(FakeWorker.instances).toBe(1);
+
+            FakeWorker.latest!.crash("out of memory");
+
+            await expect(first).rejects.toThrow("out of memory");
+            await expect(second).rejects.toThrow("out of memory");
+            expect(FakeWorker.latest!.terminated).toBe(true);
+
+            // The dead Worker's reference was dropped - the next call spawns a fresh one rather than
+            // postMessage-ing into a corpse.
+            respond = () => ({ ok: true, result: undefined });
+            await rpc.getLocalCoverage("mb1");
+            expect(FakeWorker.instances).toBe(2);
+        });
+
+        it("falls back to a generic message when the ErrorEvent itself carries none", async () => {
+            respond = () => undefined; // never answers - keeps this call pending, as if the Worker died mid-flight
+            const pending = rpc.getLocalCoverage("mb1");
+            FakeWorker.latest!.crash("");
+            await expect(pending).rejects.toThrow("unknown error");
+        });
+
+        it("tolerates an error event with no pending calls at all", async () => {
+            await rpc.getLocalCoverage("mb1").catch(() => undefined);
+            respond = () => ({ ok: true, result: undefined });
+            await rpc.getLocalCoverage("mb1");
+            expect(() => FakeWorker.latest!.crash()).not.toThrow();
+        });
     });
 
     describe("generations", () => {

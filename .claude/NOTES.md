@@ -3147,3 +3147,48 @@ Files: `apps/admin/domains/{new/index,[uid],index}.tsx`, `apps/shared/components
 concurrent agent this time); `tsc --noEmit` fails only on the still-unpublished `aliasOf` field (9 errors, every one exactly "Property
 'aliasOf' does not exist on type 'Domain'"/"'aliasOf' does not exist in type '...Input'" - confirms nothing else is broken, this is purely the
 package-boundary gap the intro paragraph describes).
+
+### 2026-09-22 (even later) - Adversarial-review fixes: dead search Worker, unvalidated join-link scheme, unbounded list growth
+
+Three independent findings from an outside review, fixed and committed together.
+
+- **A crashed Tier 2 (local search) Worker used to hang every search forever.** `localIndexRpcClient.ts`'s
+  `getWorker()` only ever registered a `message` listener; if the Worker died (an uncaught exception, the WASM
+  module aborting), nothing ever resolved or rejected the `pending` map's outstanding promises, and
+  `searchTier2.ts`'s try/catch is powerless against a promise that never settles, not just throws. Fixed with
+  a companion `error` listener that rejects everything in `pending` and drops the module-level `worker`
+  reference (plus `terminate()`) so the next `call()` spawns a replacement instead of `postMessage`-ing into a
+  corpse. That alone doesn't cover a Worker that's merely **wedged** rather than crashed (an infinite loop, a
+  stuck OPFS lock) - no `error` event fires for that at all - so `searchTier2.ts#searchLocalIndex()` now also
+  races its own work against a 5 s timeout (`TIER2_SEARCH_TIMEOUT_MS`) and degrades to `{ results: [], hasMore:
+  false }` exactly like every other failure mode this function already tolerated. Together these mean
+  `apps/www/index.tsx`'s `Promise.all([searchMailbox(...), searchLocalIndex(...)])` call sites can no longer
+  block Tier 1's already-arrived results behind a dead/stuck Tier 2 indefinitely - deliberately fixed inside
+  `searchTier2.ts` itself rather than by adding a second timeout at each `index.tsx` call site, since this
+  function already owns "never throws, never rejects, degrades silently" as its contract.
+- **"Join video call" (`EventModal.tsx`) opened `organizerJoinUrl` via `window.open()` with no scheme check** -
+  inconsistent with `calendarReminders.ts#joinMeetingUrl()`, which already restricts a reminder's own location-as-link
+  to `http:`/`https:`. Reused that same helper rather than duplicating it: a `validatedJoinUrl` derived value now
+  gates both the button's `disabled` state and what gets passed to `window.open()`. `undefined` (still loading)
+  and `null`/an invalid scheme (nothing safe to open) are told apart the same way the original code told `null`
+  apart from `undefined`, purely by reading `organizerJoinUrl` itself alongside the validated value.
+- **Unvirtualized message/conversation lists had no ceiling on total accumulated rows.** `MAX_EMPTY_PAGE_CONTINUATIONS`
+  only bounds a streak of *empty* pages, not total row count - a fully-scrolled large mailbox kept growing
+  `messages`/`conversations` state (and the DOM) without limit. Rather than introduce virtualization (a bigger,
+  riskier change - new dependency, layout/measurement implications, this file's existing structure doesn't make
+  it a drop-in), capped `appendUnseenRows()` (the one function every "load more" continuation goes through - the
+  fresh-search and aggregate-mailbox paths don't accumulate the same way and were left alone) at a new
+  `MAX_LOADED_ROWS = 500`, added a matching `atRowCap` early-return inside `loadMore()` (reading `messagesRef`/
+  `conversationsRef`, the same refs the rest of that callback already reads instead of closing over state) so a
+  capped list stops fetching further pages entirely, and swapped the "Load more" sentinel for a "Showing the most
+  recent 500 ... - refine your search or filters to see more" banner once the cap is hit.
+
+Files: `apps/shared/search/localIndexRpcClient.ts`, `apps/shared/search/searchTier2.ts`,
+`apps/shared/components/calendar/EventModal.tsx`, `apps/www/index.tsx`, their test files (`test/apps/_search/
+localIndexRpcClient.test.ts`, `test/apps/_search/searchTier2.test.ts`, `test/apps/_components/
+EventModal.videoconf.test.tsx`, `test/apps/index.test.tsx`), `RELEASE_NOTES.md` (Unreleased > Security, Fixes).
+
+**Cross-reference, not acted on here**: `@rapidmx/react-shared`'s shared `apiFetch`/`authApiFetch` (which this
+repo's every API call goes through) has an **open, already-documented CSRF finding** that needs a coordinated
+backend fix - out of scope for this pass and not something to act on from `web-client` alone. See that repo's
+own NOTES.md for the finding itself.

@@ -3477,6 +3477,37 @@ describe("InboxPage", () => {
                 expect(screen.getByText("…the budget…")).toBeInTheDocument();
             });
 
+            it("still shows Tier 1's already-available results once a slow Tier 2 settles - even to its own degraded, timed-out shape", async () => {
+                // Regression test for a real deadlock: index.tsx awaits Tier 1 and Tier 2 with a single
+                // Promise.all(), so a Tier 2 that never settles would block Tier 1's results forever. The
+                // fix lives inside searchTier2.ts itself (a timeout race - see its own dedicated tests in
+                // searchTier2.test.ts), which guarantees searchLocalIndex() always resolves - here to
+                // exactly the degraded `{ results: [], hasMore: false }` shape a timed-out Tier 2 produces
+                // - never hangs. This confirms InboxContent's own side of the contract: once that resolves,
+                // Tier 1's results render, they are not lost or blocked by Tier 2 being slow.
+                const hit = messageFixture({ uid: "m-tier1", subject: "Tier 1 only match", folderUid: "f2" });
+                mockSearch([hit], (url) =>
+                    url.includes("q=budget") ? jsonResponse(200, { results: [{ entityType: "message", entityUid: "m-tier1", score: 1 }] }) : undefined,
+                );
+                let resolveTier2!: (value: { results: never[]; hasMore: boolean }) => void;
+                searchLocalIndex.mockReturnValue(
+                    new Promise((resolve) => {
+                        resolveTier2 = resolve;
+                    }),
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByPlaceholderText("Search all mail…");
+
+                await user.type(screen.getByPlaceholderText("Search all mail…"), "budget");
+                // Tier 2 hasn't settled yet - nothing to find while it's still pending.
+                expect(screen.queryByText("Tier 1 only match")).not.toBeInTheDocument();
+
+                resolveTier2({ results: [], hasMore: false });
+
+                expect(await screen.findByText("Tier 1 only match")).toBeInTheDocument();
+            });
+
             it("shows a coverage line naming how far back the local index reaches, and notes when it's still building", async () => {
                 mockSearch([], (url) => (url.includes("q=budget") ? jsonResponse(200, { results: [] }) : undefined));
                 searchLocalIndex.mockResolvedValue({
@@ -4033,6 +4064,89 @@ describe("InboxPage", () => {
 
             expect(await screen.findByText("Message 99")).toBeInTheDocument();
             expect(pageOneRequests).toBe(1);
+        });
+
+        it("caps the message list at MAX_LOADED_ROWS (500), stops fetching further pages once it's hit, and shows a refine-your-search banner instead of the load-more sentinel", async () => {
+            const io = mockIntersectionObserver();
+            const pages = Array.from({ length: 12 }, (_, p) =>
+                Array.from({ length: 50 }, (_, i) => messageFixture({ uid: `p${p}-m${i}`, subject: `Page ${p} message ${i}` })),
+            );
+            let messageFetches = 0;
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/messages")) {
+                    messageFetches += 1;
+                    const pageParam = new URL(url, "http://localhost").searchParams.get("page");
+                    return jsonResponse(200, pages[pageParam ? Number(pageParam) : 0]);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 message 0");
+
+            // Page 0 (50 rows) is already loaded from the initial fetch - nine more full pages of 50 reach
+            // exactly the 500-row cap.
+            for (let p = 1; p <= 9; p++) {
+                io.trigger();
+                await screen.findByText(`Page ${p} message 0`);
+            }
+
+            expect(screen.getByText("Page 9 message 49")).toBeInTheDocument();
+            expect(screen.getByText(/Showing the most recent 500 messages/)).toBeInTheDocument();
+            expect(screen.queryByTestId("load-more-sentinel")).not.toBeInTheDocument();
+
+            // The sentinel is gone, but even a stray trigger (or one that raced its own removal) must not
+            // fetch an 11th page - loadMore()'s own atRowCap guard refuses once the cap is reached.
+            const fetchesAtCap = messageFetches;
+            io.trigger();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(messageFetches).toBe(fetchesAtCap);
+            expect(screen.queryByText("Page 10 message 0")).not.toBeInTheDocument();
+        });
+
+        it("caps the conversation list at MAX_LOADED_ROWS (500) too, stopping further pages and showing its own refine-your-search banner", async () => {
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: true }),
+            );
+            const io = mockIntersectionObserver();
+            const pages = Array.from({ length: 12 }, (_, p) =>
+                Array.from({ length: 50 }, (_, i) =>
+                    conversationFixture({ conversationId: `p${p}-c${i}`, subject: `Page ${p} thread ${i}`, latestMessageUid: `p${p}-m${i}` }),
+                ),
+            );
+            let conversationFetches = 0;
+            mockShellAndInbox([], (url) => {
+                // Excludes the per-conversation `/conversations/{id}` messages endpoint - only the paged
+                // listing itself is overridden here, so an accidental thread-expand still falls through to
+                // mockShellAndInbox's own default (empty) handling.
+                if (url.startsWith("/api/mail/messages/conversations") && !url.includes("/conversations/")) {
+                    conversationFetches += 1;
+                    const pageParam = new URL(url, "http://localhost").searchParams.get("page");
+                    return jsonResponse(200, pages[pageParam ? Number(pageParam) : 0]);
+                }
+                return undefined;
+            });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Page 0 thread 0");
+
+            // Page 0 (50 rows) is already loaded from the initial fetch - nine more full pages of 50 reach
+            // exactly the 500-row cap.
+            for (let p = 1; p <= 9; p++) {
+                io.trigger();
+                await screen.findByText(`Page ${p} thread 0`);
+            }
+
+            expect(screen.getByText("Page 9 thread 49")).toBeInTheDocument();
+            expect(screen.getByText(/Showing the most recent 500 conversations/)).toBeInTheDocument();
+            expect(screen.queryByTestId("load-more-sentinel")).not.toBeInTheDocument();
+
+            const fetchesAtCap = conversationFetches;
+            io.trigger();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(conversationFetches).toBe(fetchesAtCap);
+            expect(screen.queryByText("Page 10 thread 0")).not.toBeInTheDocument();
         });
 
         it("shows an error message when loading more fails", async () => {

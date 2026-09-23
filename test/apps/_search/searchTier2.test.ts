@@ -8,7 +8,7 @@
 // environment here implements OPFS - so it's covered instead by localIndexBlockCipher.test.ts (the
 // crypto, with real WebCrypto) and by manual browser verification, per this feature's own
 // implementation plan.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { searchLocalIndex } from "../../../apps/shared/search/searchTier2.js";
@@ -61,5 +61,37 @@ describe("searchTier2 (local index)", () => {
         initLocalIndex.mockRejectedValue(new Error("Worker is not defined"));
 
         await expect(searchLocalIndex("mb1", parsedQuery(), unlocked)).resolves.toEqual({ results: [], hasMore: false });
+    });
+
+    describe("timeout (a wedged Worker that never crashes and never answers)", () => {
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it("degrades to no results once the timeout elapses, instead of hanging forever", async () => {
+            vi.useFakeTimers();
+            deriveLocalIndexKey.mockResolvedValue(new Uint8Array(32));
+            initLocalIndex.mockResolvedValue(undefined);
+            // Never resolve - the stand-in for a wedged Worker that posts no response at all.
+            searchLocal.mockReturnValue(new Promise(() => undefined));
+            getLocalCoverage.mockReturnValue(new Promise(() => undefined));
+
+            const outcome = searchLocalIndex("mb1", parsedQuery(), unlocked, 25, 0, 1_000);
+            await vi.advanceTimersByTimeAsync(1_000);
+
+            await expect(outcome).resolves.toEqual({ results: [], hasMore: false });
+        });
+
+        it("still returns the real results when they arrive comfortably inside the timeout", async () => {
+            vi.useFakeTimers();
+            deriveLocalIndexKey.mockResolvedValue(new Uint8Array(32));
+            initLocalIndex.mockResolvedValue(undefined);
+            searchLocal.mockResolvedValue({ hits: [{ entityUid: "m1", score: -1, snippet: "hi" }], hasMore: false });
+            getLocalCoverage.mockResolvedValue({ indexedFrom: "2025-06-01T00:00:00.000Z", indexedCount: 1, building: false });
+
+            const outcome = await searchLocalIndex("mb1", parsedQuery(), unlocked, 25, 0, 1_000);
+
+            expect(outcome.results).toHaveLength(1);
+        });
     });
 });

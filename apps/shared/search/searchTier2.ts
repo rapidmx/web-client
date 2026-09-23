@@ -44,36 +44,54 @@ async function ensureInitialized(mailboxUid: string, unlocked: UnlockedKeys): Pr
     await initLocalIndex({ mailboxUid, indexKey });
 }
 
+/** How long a Tier 2 search may run before this function gives up on it and degrades to "no local results" -
+ * `localIndexRpcClient.ts`'s own `error` listener rescues a Worker that *crashes*, but a Worker that's merely
+ * wedged (an infinite loop in the WASM module, a stuck OPFS lock) posts no `error` event and no response
+ * either; without this, the caller's `Promise.all()` (`apps/www/index.tsx`) would wait on this tier forever
+ * even though Tier 1's results already arrived. */
+export const TIER2_SEARCH_TIMEOUT_MS = 5_000;
+
 export async function searchLocalIndex(
     mailboxUid: string,
     parsed: ParsedSearchQuery,
     unlocked: UnlockedKeys | undefined,
     limit = 50,
     offset = 0,
+    timeoutMs = TIER2_SEARCH_TIMEOUT_MS,
 ): Promise<Tier2SearchOutcome> {
     if (!unlocked) {
         return { results: [], hasMore: false };
     }
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-        await ensureInitialized(mailboxUid, unlocked);
-        const [page, coverage] = await Promise.all([searchLocal(mailboxUid, parsed, limit, offset), getLocalCoverage(mailboxUid)]);
-        const results: SearchResult[] = page.hits.map((hit) => ({
-            entityType: "message",
-            entityUid: hit.entityUid,
-            // Negated: bm25()'s own convention is "more negative is a better match" (SQLite), the
-            // opposite of every other score this codebase merges (Postgres ts_rank, OpenSearch _score,
-            // and normalizeServerScores() itself all treat "higher is better"). Negating here, once,
-            // keeps that convention uniform for the caller (apps/www/index.tsx's merge layer) - it never
-            // needs to know this tier's underlying scoring function works backwards from the others.
-            score: -hit.score,
-            snippet: hit.snippet,
-            source: "local",
-            metadataOnly: false,
-        }));
-        return { results, coverage, hasMore: page.hasMore };
+        return await Promise.race([
+            (async (): Promise<Tier2SearchOutcome> => {
+                await ensureInitialized(mailboxUid, unlocked);
+                const [page, coverage] = await Promise.all([searchLocal(mailboxUid, parsed, limit, offset), getLocalCoverage(mailboxUid)]);
+                const results: SearchResult[] = page.hits.map((hit) => ({
+                    entityType: "message",
+                    entityUid: hit.entityUid,
+                    // Negated: bm25()'s own convention is "more negative is a better match" (SQLite), the
+                    // opposite of every other score this codebase merges (Postgres ts_rank, OpenSearch _score,
+                    // and normalizeServerScores() itself all treat "higher is better"). Negating here, once,
+                    // keeps that convention uniform for the caller (apps/www/index.tsx's merge layer) - it never
+                    // needs to know this tier's underlying scoring function works backwards from the others.
+                    score: -hit.score,
+                    snippet: hit.snippet,
+                    source: "local",
+                    metadataOnly: false,
+                }));
+                return { results, coverage, hasMore: page.hasMore };
+            })(),
+            new Promise<Tier2SearchOutcome>((resolve) => {
+                timer = setTimeout(() => resolve({ results: [], hasMore: false }), timeoutMs);
+            }),
+        ]);
     } catch {
         // See this function's own doc comment - a broken local index degrades to "nothing to contribute
         // this time," never a rejected search.
         return { results: [], hasMore: false };
+    } finally {
+        clearTimeout(timer);
     }
 }

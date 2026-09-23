@@ -35,6 +35,7 @@ import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
 import { addDaysToKey, allDayDateKey, allDayInstant, recurrenceUntilDateKey, recurrenceUntilInstant, startWeekdayCode } from "./allDay.js";
 import ResourcePicker from "./ResourcePicker.js";
+import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -536,6 +537,14 @@ export default function EventModal({
         );
     }
 
+    // Same scheme allow-list `calendarReminders.ts#joinMeetingUrl()` already applies to a reminder's own
+    // `location` field - reused here rather than duplicated so a video-conferencing plugin (or a stray
+    // manual edit of `videoMeetingUid`'s otherwise-plugin-owned join link) can't smuggle a `javascript:`/
+    // `file:`/other non-http(s) URL into `window.open()`. `undefined` (still loading) and `null` (fetch
+    // came back with nothing to join) both fail validation the same way as a bad scheme would - the button
+    // stays disabled either way, and the two are told apart below purely from `organizerJoinUrl` itself.
+    const validatedJoinUrl = joinMeetingUrl(organizerJoinUrl);
+
     return (
         <Modal open={open} onClose={onClose} title={occurrence ? "Edit event" : "New event"}>
             <form onSubmit={handleSubmit} className="flex flex-col gap-1">
@@ -594,14 +603,14 @@ export default function EventModal({
                             type="button"
                             variant="secondary"
                             className="!w-auto"
-                            disabled={!organizerJoinUrl}
-                            onClick={() => window.open(organizerJoinUrl!, "_blank", "noopener,noreferrer")}
+                            disabled={!validatedJoinUrl}
+                            onClick={() => window.open(validatedJoinUrl!, "_blank", "noopener,noreferrer")}
                         >
                             Join video call
                         </Button>
-                        {!organizerJoinUrl && (
+                        {!validatedJoinUrl && (
                             <span className="text-xs text-text-muted">
-                                {organizerJoinUrl === null ? "This meeting’s join link isn’t available." : "Loading the join link…"}
+                                {organizerJoinUrl === undefined ? "Loading the join link…" : "This meeting’s join link isn’t available."}
                             </span>
                         )}
                     </div>

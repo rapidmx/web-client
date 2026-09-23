@@ -353,6 +353,20 @@ describe("EventModal join video call affordance", () => {
         expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
     });
 
+    it("refuses a non-http(s) organizerJoinUrl - keeps the join button disabled rather than opening it", async () => {
+        // The same scheme allow-list calendarReminders.ts#joinMeetingUrl() applies to a reminder's own
+        // location field, reused here so a malformed or hostile join link (a javascript:/file: URL) can
+        // never reach window.open().
+        const openSpy = vi.fn();
+        vi.stubGlobal("open", openSpy);
+        mockVideoFetch({ getMeeting: () => jsonResponse(200, { ...meetingFixture, organizerJoinUrl: "javascript:alert(1)" }) });
+        renderModal(occurrence({ videoMeetingUid: "vm1" }));
+
+        expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Join video call" })).toBeDisabled();
+        expect(openSpy).not.toHaveBeenCalled();
+    });
+
     it("is not offered at all for an event with no meeting, and fetches nothing", () => {
         const fetchMock = mockVideoFetch();
         renderModal(occurrence());

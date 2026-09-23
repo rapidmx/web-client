@@ -378,6 +378,16 @@ const LOAD_MORE_ROOT_MARGIN_PX = 200;
  * "Load more" button instead. */
 const MAX_EMPTY_PAGE_CONTINUATIONS = 3;
 
+/** Hard ceiling on how many rows one list (the plain message list or the conversation list) keeps as live
+ * React state/DOM at once. `MAX_EMPTY_PAGE_CONTINUATIONS` above only bounds a streak of *empty* pages, not
+ * the total accumulated row count - infinite scroll on its own has no natural stopping point, so a reader
+ * who fully scrolls a large mailbox would otherwise keep every row ever fetched mounted forever. Past this
+ * cap, `loadMore()` stops fetching further pages and the list shows a "refine your search" banner instead of
+ * the load-more sentinel - deliberately not virtualization (a larger, riskier change this bug's own writeup
+ * called for only if trivial, which it isn't given this file's existing structure): capping the row count is
+ * the same fix's low-risk cousin, since the unbounded-memory failure mode is identical either way. */
+const MAX_LOADED_ROWS = 500;
+
 /** `true` when `more` has at least one row `shown` doesn't - i.e. appending it actually adds rows. Generic
  * over the row's own identity so both the message list (`uid`) and the conversation list
  * (`conversationId`) page the same way. */
@@ -397,8 +407,11 @@ function isWithinLoadMoreRange(sentinel: HTMLElement, root: HTMLElement): boolea
 /** Appends `more` to `shown`, skipping any row already shown - a later page can repeat rows (Tier 1 and
  * Tier 2/3 cursors advance independently, so the same message can come back from a different tier on a
  * later page; a plain folder listing's pages shift when new mail arrives between fetches). Generic for the
- * same reason `hasUnseenRows()` is. */
-function appendUnseenRows<T>(shown: T[], more: T[], idOf: (row: T) => string): T[] {
+ * same reason `hasUnseenRows()` is.
+ *
+ * `cap`, when given, truncates the result to its first `cap` rows (dropping the tail) rather than letting
+ * accumulated pages grow without bound - see `MAX_LOADED_ROWS`'s own doc comment for why this exists. */
+function appendUnseenRows<T>(shown: T[], more: T[], idOf: (row: T) => string, cap?: number): T[] {
     const seen = new Set(shown.map(idOf));
     const unseen: T[] = [];
     for (const row of more) {
@@ -407,7 +420,11 @@ function appendUnseenRows<T>(shown: T[], more: T[], idOf: (row: T) => string): T
             unseen.push(row);
         }
     }
-    return unseen.length === 0 ? shown : [...shown, ...unseen];
+    if (unseen.length === 0) {
+        return shown;
+    }
+    const combined = [...shown, ...unseen];
+    return cap !== undefined && combined.length > cap ? combined.slice(0, cap) : combined;
 }
 
 const messageUid = (message: Message) => message.uid;
@@ -1209,10 +1226,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
         // has fully finished (the ref may still hold an earlier query's), in which case there's nowhere to
         // continue from yet.
         const searchCursor = decodeCursor(compositeCursorRef.current, fingerprint);
+        // Reads the ref, not `conversations`/`messages` state, so this callback (and the observer effect
+        // watching it) don't need to be recreated every time a page lands - the same reason every other
+        // check below reads a ref rather than closing over state.
+        const atRowCap = (preferences.showAsConversations ? conversationsRef.current.length : messagesRef.current.length) >= MAX_LOADED_ROWS;
         if (
             loadMoreInFlightRef.current ||
             !hasMore ||
             loading ||
+            atRowCap ||
             (!preferences.showAsConversations && !folderUid) ||
             (isSearching && !searchCursor)
         ) {
@@ -1251,7 +1273,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     return;
                 }
                 const addedRows = hasUnseenRows(conversationsRef.current, more, conversationKey);
-                setConversations((prev) => appendUnseenRows(prev, more, conversationKey));
+                setConversations((prev) => appendUnseenRows(prev, more, conversationKey, MAX_LOADED_ROWS));
                 setHasMore(more.length === MESSAGE_PAGE_SIZE);
                 listedOffsetRef.current = page * MESSAGE_PAGE_SIZE + more.length;
                 notePageLanded(addedRows, more.length === MESSAGE_PAGE_SIZE);
@@ -1280,7 +1302,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     return;
                 }
                 const addedRows = hasUnseenRows(messagesRef.current, more, messageUid);
-                setMessages((prev) => appendUnseenRows(prev, more, messageUid));
+                setMessages((prev) => appendUnseenRows(prev, more, messageUid, MAX_LOADED_ROWS));
                 setSnippets((prev) => ({ ...prev, ...moreSnippets }));
 
                 const nextTier3Offset = tier3Offset + tier3Page.length;
@@ -1304,7 +1326,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     return;
                 }
                 const addedRows = hasUnseenRows(messagesRef.current, more, messageUid);
-                setMessages((prev) => appendUnseenRows(prev, more, messageUid));
+                setMessages((prev) => appendUnseenRows(prev, more, messageUid, MAX_LOADED_ROWS));
                 setHasMore(more.length === MESSAGE_PAGE_SIZE);
                 listedOffsetRef.current = page * MESSAGE_PAGE_SIZE + more.length;
                 notePageLanded(addedRows, more.length === MESSAGE_PAGE_SIZE);
@@ -1460,6 +1482,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * far - which the Sort menu says on screen. `conversations` itself stays in the order the pages
      * arrived, so paging keeps appending to the same accumulated set. */
     const listedConversations = sortConversations(conversations, preferences.sortBy, preferences.sortOrder);
+
+    /** `true` once whichever list is on screen has hit `MAX_LOADED_ROWS` - `appendUnseenRows()` itself
+     * already stopped growing the array at that point, and `loadMore()` refuses to fetch further pages
+     * (see its own `atRowCap` check); this just drives the "refine your search" banner replacing the
+     * load-more sentinel below. */
+    const rowCapReached = (preferences.showAsConversations ? conversations.length : messages.length) >= MAX_LOADED_ROWS;
 
     function leaveSelectMode() {
         setSelectMode(false);
@@ -2112,10 +2140,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             selectedConversationIds={selectedConversationIds}
                             onToggleSelected={toggleConversationSelected}
                         />
-                        {hasMore && (
+                        {hasMore && !rowCapReached && (
                             <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
                                 {loadMoreStatus}
                             </div>
+                        )}
+                        {rowCapReached && (
+                            <p className="p-4 text-center text-xs text-text-muted">
+                                Showing the most recent {MAX_LOADED_ROWS} conversations &mdash; refine your search or filters to see more.
+                            </p>
                         )}
                     </>
                 ) : messages.length === 0 ? (
@@ -2213,10 +2246,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                 </li>
                             ))}
                         </ul>
-                        {hasMore && (
+                        {hasMore && !rowCapReached && (
                             <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
                                 {loadMoreStatus}
                             </div>
+                        )}
+                        {rowCapReached && (
+                            <p className="p-4 text-center text-xs text-text-muted">
+                                Showing the most recent {MAX_LOADED_ROWS} messages &mdash; refine your search or filters to see more.
+                            </p>
                         )}
                         {aggregateFolderType && (
                             <p className="p-4 text-center text-xs text-text-muted">

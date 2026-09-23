@@ -20,6 +20,11 @@
  *
  * **Failed deletions are retried**: a destroy that couldn't remove a directory (another tab held it, the page
  * navigated away first) is recorded in `localStorage` and retried before this tab's first `init`.
+ *
+ * **A crashed Worker never leaves a caller hanging**: the `error` listener registered in `getWorker()` rejects
+ * every pending request and drops the module-level `worker` reference so the next `call()` spawns a
+ * replacement. `searchTier2.ts` additionally races its own calls against a timeout, since a Worker that's
+ * merely stuck (not crashed) posts no `error` event at all.
  */
 import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import type {
@@ -83,6 +88,20 @@ function getWorker(): Worker {
             } else {
                 entry.reject(new Error(event.data.error));
             }
+        });
+        // A Worker that crashes (an uncaught exception, the WASM module aborting) never posts a response to
+        // its in-flight requests - without this, every pending call() promise would sit unresolved forever,
+        // and searchTier2.ts's try/catch (which can only catch a *rejection*) couldn't rescue it. Reject
+        // everything outstanding and drop the reference so the next call() spawns a fresh Worker instead of
+        // continuing to postMessage into a dead one.
+        worker.addEventListener("error", (event: ErrorEvent) => {
+            const err = new Error(`Local search Worker crashed: ${event.message || "unknown error"}`);
+            for (const entry of pending.values()) {
+                entry.reject(err);
+            }
+            pending.clear();
+            worker?.terminate();
+            worker = undefined;
         });
         // Only a tab with a Worker has connections to close when another tab signs out.
         listenForSignOut();
