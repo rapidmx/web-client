@@ -21,6 +21,7 @@ import {
     HiOutlineShieldExclamation,
     HiOutlineUserGroup,
     HiOutlineWrenchScrewdriver,
+    HiOutlineBars3,
 } from "react-icons/hi2";
 import { apiFetch, ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
@@ -28,7 +29,8 @@ import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
+import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
+import type { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
 import { FrameBrandingFooter, useBrandingHtml } from "../../layout/BrandingChrome.js";
 import RailIcon from "../../layout/RailIcon.js";
 import AppearanceProvider from "../../../appearance/AppearanceProvider.js";
@@ -184,6 +186,7 @@ export function adminNavItems(pluginNav?: PluginNav): NavItem[] {
 export default function AdminShell({ active, userUid, authServerUrl, pluginNav, children }: PropsWithChildren<AdminShellProps>) {
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
+    const [menuOpen, setMenuOpen] = useState(false);
     // `branding` only feeds the footer below: the admin-configured header is for the webmail and public pages, not the
     // console. `useBranding()` is still what injects the custom stylesheet and supplies the rail's icon.
     const { branding, iconSrc } = useBranding();
@@ -321,13 +324,42 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                             </a>
                         ))}
                     </nav>
-                    <BottomTabBar apps={navItems} active={active} />
+                    {/* Below `md` the sections are a menu that slides in from the left: ten or so of them don't fit a bar along the bottom. */}
+                    <Drawer open={menuOpen} onClose={() => setMenuOpen(false)} title="Admin">
+                        <nav aria-label="Admin menu" className="flex flex-col gap-1 -mx-2">
+                            {navItems.map(({ id, href, label, icon: Icon }) => (
+                                <a
+                                    key={id}
+                                    href={href}
+                                    aria-current={id === active ? "page" : undefined}
+                                    onClick={() => setMenuOpen(false)}
+                                    className={[
+                                        "flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm font-medium",
+                                        id === active ? "bg-primary/10 text-primary-dark" : "text-text hover:bg-surface-alt",
+                                    ].join(" ")}
+                                >
+                                    <Icon size={20} aria-hidden="true" />
+                                    {label}
+                                </a>
+                            ))}
+                        </nav>
+                    </Drawer>
                     <div className="flex-1 flex flex-col min-w-0">
-                        <header className="rr-solid sticky top-0 z-30 h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-6">
-                            <span className="font-display font-bold text-lg uppercase tracking-wide">{activeItem?.label}</span>
+                        <header className="rr-solid sticky top-0 z-30 h-16 shrink-0 bg-surface border-b border-border flex items-center justify-between gap-4 px-4 md:px-6">
+                            <div className="flex items-center gap-2 min-w-0">
+                                <button
+                                    type="button"
+                                    className="md:hidden shrink-0 w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text"
+                                    aria-label="Open menu"
+                                    onClick={() => setMenuOpen(true)}
+                                >
+                                    <HiOutlineBars3 size={20} aria-hidden="true" />
+                                </button>
+                                <span className="font-display font-bold text-lg uppercase tracking-wide truncate">{activeItem?.label}</span>
+                            </div>
                             <UserMenu userUid={userUid} authServerUrl={authServerUrl} onSignOut={handleSignOut} />
                         </header>
-                        <div id="app-content" className="flex-1 pb-14 md:pb-0">
+                        <div id="app-content" className="flex-1">
                             <main className="max-w-6xl mx-auto px-6 py-8">{children}</main>
                         </div>
                     </div>

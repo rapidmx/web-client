@@ -1333,7 +1333,7 @@ describe("InboxPage", () => {
             await waitFor(() => expect(screen.getByText("The opening message").closest("li")).not.toHaveAttribute("data-unread"));
         });
 
-        it("navigates to the latest message's detail route instead of opening it in place on mobile", async () => {
+        it("navigates to the message's page with its conversation, which shows the whole thread, instead of opening it in place on mobile", async () => {
             mockMatchMedia(true);
             mockShellAndInbox([], undefined, [thread()]);
             const location = mockLocation();
@@ -1343,7 +1343,70 @@ describe("InboxPage", () => {
 
             await user.click(await screen.findByText("Thread subject"));
 
-            expect(location.href).toBe("/messages/m2");
+            expect(location.href).toBe("/messages/m2?conversation=c1");
+        });
+
+        describe("swiping a conversation row on a phone", () => {
+            const archiveFolder = { ...inboxFolder, uid: "f8", name: "Archive", type: "archive" as const };
+            const swipeRow = (row: HTMLElement, fromX: number, toX: number) => {
+                fireEvent.touchStart(row, { touches: [{ clientX: fromX, clientY: 100 }] });
+                fireEvent.touchMove(row, { touches: [{ clientX: (fromX + toX) / 2, clientY: 102 }] });
+                fireEvent.touchMove(row, { touches: [{ clientX: toX, clientY: 104 }] });
+                fireEvent.touchEnd(row);
+            };
+            function mockThread(messages: any[]) {
+                return mockShellAndInbox(
+                    messages,
+                    (url, init) => {
+                        if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder, archiveFolder]);
+                        if (url === "/api/mail/messages" && init?.method === "PUT") {
+                            return jsonResponse(
+                                200,
+                                (JSON.parse(init.body as string) as any[]).map((update) => ({ ...messages.find((m) => m.uid === update.uid), ...update })),
+                            );
+                        }
+                        return undefined;
+                    },
+                    [thread()],
+                    { c1: messages },
+                );
+            }
+            const bulkPut = (fetchMock: ReturnType<typeof mockThread>) =>
+                fetchMock.mock.calls.find(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT");
+
+            it("archives every message of the conversation in this folder when swiped from right to left", async () => {
+                mockMatchMedia(true);
+                const messages = threadMessages();
+                const fetchMock = mockThread(messages);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+
+                swipeRow((await screen.findByText("Thread subject")).closest("[data-message-uid]") as HTMLElement, 300, 60);
+
+                await waitFor(() => expect(bulkPut(fetchMock)).toBeDefined());
+                expect(JSON.parse(bulkPut(fetchMock)![1].body as string)).toEqual([
+                    { uid: "m1", version: 0, folderUid: "f8" },
+                    { uid: "m2", version: 0, folderUid: "f8" },
+                ]);
+            });
+
+            it("asks for a folder for the whole conversation when swiped from left to right", async () => {
+                mockMatchMedia(true);
+                const messages = threadMessages();
+                const fetchMock = mockThread(messages);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+
+                swipeRow((await screen.findByText("Thread subject")).closest("[data-message-uid]") as HTMLElement, 40, 300);
+
+                const dialog = await screen.findByRole("dialog", { name: "Move 2 messages to" });
+                expect(bulkPut(fetchMock)).toBeUndefined();
+                await user.click(within(dialog).getByRole("button", { name: /^Archive/ }));
+                await waitFor(() => expect(bulkPut(fetchMock)).toBeDefined());
+                expect(JSON.parse(bulkPut(fetchMock)![1].body as string).map((update: { uid: string }) => update.uid)).toEqual(["m1", "m2"]);
+            });
         });
 
         it("pages through conversations when the sentinel intersects", async () => {
@@ -1438,7 +1501,7 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Could not load conversations.")).toBeInTheDocument();
         });
 
-        it("hides the search box, but keeps Select, while conversations are shown", async () => {
+        it("keeps the search box, and Select, while conversations are shown", async () => {
             mockShellAndInbox([messageFixture()], undefined, [thread()]);
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
@@ -1448,10 +1511,155 @@ describe("InboxPage", () => {
             await toggleConversations(user);
 
             await screen.findByText("Thread subject");
-            expect(screen.queryByLabelText("Search all mail")).not.toBeInTheDocument();
+            expect(screen.getByLabelText("Search all mail")).toBeInTheDocument();
             // Select mode over conversations ticks whole conversations - see the "select mode over
             // conversations" tests below.
             expect(screen.getByRole("button", { name: "Select" })).toBeEnabled();
+        });
+
+        describe("searching while the list is arranged by conversation", () => {
+            const inConversation = (overrides: Record<string, unknown>) => messageFixture({ conversationId: "c1", ...overrides });
+            const budget1 = () => inConversation({ uid: "m1", subject: "Budget draft", bodyPreview: "First budget note" });
+            const budget2 = () => inConversation({ uid: "m3", subject: "Re: Budget draft", bodyPreview: "Second budget note" });
+            const other = () => messageFixture({ uid: "m4", conversationId: "c2", subject: "Budget review", bodyPreview: "Different thread" });
+            // Not a hit, but in c1 - it must not be listed among the results.
+            const unrelated = () => inConversation({ uid: "m2", subject: "Re: Budget draft", bodyPreview: "Lunch on Friday" });
+
+            function mockSearching() {
+                const everything = [budget1(), unrelated(), budget2(), other()];
+                return mockShellAndInbox(
+                    everything,
+                    (url) =>
+                        url.startsWith("/api/mail/search")
+                            ? jsonResponse(200, {
+                                  results: ["m1", "m3", "m4"].map((uid, index) => ({ entityType: "message", entityUid: uid, score: 3 - index })),
+                              })
+                            : undefined,
+                    [
+                        conversationFixture({ conversationId: "c1", subject: "Budget draft", messageUids: ["m1", "m2", "m3"], messageCount: 3, latestMessageUid: "m3" }),
+                        conversationFixture({ conversationId: "c2", subject: "Budget review", messageUids: ["m4"], latestMessageUid: "m4" }),
+                    ],
+                    { c1: [budget1(), unrelated(), budget2()], c2: [other()] },
+                );
+            }
+
+            it("groups the matches under their conversation, listing only the messages that match", async () => {
+                mockSearching();
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Budget draft");
+
+                await user.type(screen.getByLabelText("Search all mail"), "budget");
+
+                const first = await screen.findByText("2 matching messages");
+                expect(first.closest("[data-search-group]")).toHaveAttribute("data-search-group", "c1");
+                expect(screen.getByText("1 matching message").closest("[data-search-group]")).toHaveAttribute("data-search-group", "c2");
+                const group = first.closest("[data-search-group]") as HTMLElement;
+                expect(within(group).getByText("First budget note")).toBeInTheDocument();
+                expect(within(group).getByText("Second budget note")).toBeInTheDocument();
+                expect(screen.queryByText("Lunch on Friday")).not.toBeInTheDocument();
+                expect(screen.getByText("Different thread")).toBeInTheDocument();
+                // Results, not conversation rows: no expand chevrons.
+                expect(screen.queryByRole("button", { name: /Expand conversation/ })).not.toBeInTheDocument();
+            });
+
+            it("opens the whole thread in the reading pane, positioned at the message that was picked", async () => {
+                const fetchMock = mockSearching();
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Budget draft");
+                await user.type(screen.getByLabelText("Search all mail"), "budget");
+
+                await user.click(await screen.findByText("Second budget note"));
+
+                await waitFor(() =>
+                    expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/messages/conversations/c1?"))).toBe(true),
+                );
+                // The pane holds the thread, not just the one message: all three of c1's, the unrelated one included.
+                expect(await screen.findByText("3 messages")).toBeInTheDocument();
+                expect(screen.queryByText("Select a conversation to read it.")).not.toBeInTheDocument();
+                expect(screen.getByText("Second budget note").closest("li")).toHaveAttribute("data-message-uid", "m3");
+            });
+
+            it("brings the conversations back when the search is cleared", async () => {
+                mockSearching();
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Budget draft");
+                await user.type(screen.getByLabelText("Search all mail"), "budget");
+                await screen.findByText("2 matching messages");
+
+                await user.clear(screen.getByLabelText("Search all mail"));
+
+                expect(await screen.findByRole("button", { name: /Expand conversation: Budget draft/ })).toBeInTheDocument();
+                expect(screen.queryByText("2 matching messages")).not.toBeInTheDocument();
+            });
+
+            it("opens the thread on the phone's message page, with the conversation", async () => {
+                mockMatchMedia(true);
+                mockSearching();
+                const location = mockLocation();
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Budget draft");
+                await user.type(screen.getByLabelText("Search all mail"), "budget");
+
+                await user.click(await screen.findByText("Second budget note"));
+
+                expect(location.href).toBe("/messages/m3?conversation=c1");
+            });
+        });
+
+        describe("the search box on a phone", () => {
+            it("is in the shell's header row, beside the folders button, in either arrangement", async () => {
+                mockMatchMedia(true);
+                mockShellAndInbox([messageFixture()], undefined, [thread()]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                const search = await screen.findByLabelText("Search all mail");
+                expect(screen.getByRole("button", { name: "Open folders" }).parentElement).toContainElement(search);
+                // Only the one, and not in the list as it is on a desktop.
+                expect(screen.getAllByLabelText("Search all mail")).toHaveLength(1);
+
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+                expect(screen.getByLabelText("Search all mail")).toBeInTheDocument();
+            });
+
+            it("lists messages while it holds a query, and brings the conversations back when it is cleared", async () => {
+                mockMatchMedia(true);
+                mockShellAndInbox(
+                    [messageFixture({ uid: "m9", subject: "Hit subject" })],
+                    (url) => (url.startsWith("/api/mail/search") ? jsonResponse(200, { results: [] }) : undefined),
+                    [thread()],
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+
+                await user.type(screen.getByLabelText("Search all mail"), "hit");
+                await screen.findByText(/No messages match/);
+                expect(screen.queryByText("Thread subject")).not.toBeInTheDocument();
+
+                await user.clear(screen.getByLabelText("Search all mail"));
+                expect(await screen.findByText("Thread subject")).toBeInTheDocument();
+            });
+
+            it("is in the list, not the header row, on a desktop - conversations included", async () => {
+                mockShellAndInbox([messageFixture()], undefined, [thread()]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("Hello there");
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
+                expect(screen.getByLabelText("Search all mail")).toBeInTheDocument();
+                expect(screen.queryByRole("button", { name: "Open folders" })?.parentElement).not.toContainElement(screen.getByLabelText("Search all mail"));
+            });
         });
 
         it("keeps the sort keys a thread has a value for, and says why the other two are unavailable", async () => {
@@ -2539,6 +2747,89 @@ describe("InboxPage", () => {
             ]);
         });
 
+        describe("swiping a row on a phone", () => {
+            const rowOf = (subject: string) => screen.getByText(subject).closest("[data-message-uid]") as HTMLElement;
+            /** One finger from `from` to `to` (x, y), as a phone reports it. */
+            function swipe(row: HTMLElement, from: [number, number], to: [number, number]) {
+                fireEvent.touchStart(row, { touches: [{ clientX: from[0], clientY: from[1] }] });
+                fireEvent.touchMove(row, { touches: [{ clientX: (from[0] + to[0]) / 2, clientY: (from[1] + to[1]) / 2 }] });
+                fireEvent.touchMove(row, { touches: [{ clientX: to[0], clientY: to[1] }] });
+                fireEvent.touchEnd(row);
+            }
+            const bulkPut = (fetchMock: ReturnType<typeof mockSelectable>) =>
+                fetchMock.mock.calls.find(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT");
+
+            it("archives the message when it is swiped from right to left", async () => {
+                mockMatchMedia(true);
+                const fetchMock = mockSelectable(twoMessages(), [inboxFolder, junkFolder, deletedFolder, archiveFolder]);
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+
+                swipe(rowOf("First"), [300, 100], [60, 104]);
+
+                await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+                expect(JSON.parse(bulkPut(fetchMock)![1].body as string)).toEqual([{ uid: "m1", version: 0, folderUid: "f8" }]);
+                expect(screen.getByText("Second")).toBeInTheDocument();
+            });
+
+            it("asks which folder to move the message to when it is swiped from left to right, and moves it there", async () => {
+                mockMatchMedia(true);
+                const fetchMock = mockSelectable(twoMessages());
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+
+                swipe(rowOf("First"), [40, 100], [300, 96]);
+
+                const dialog = await screen.findByRole("dialog", { name: "Move message to" });
+                // Nothing moved yet, and the row is back where it was.
+                expect(bulkPut(fetchMock)).toBeUndefined();
+                expect(rowOf("First")).not.toHaveAttribute("data-swiping");
+                await user.click(within(dialog).getByRole("button", { name: /^Project X/ }));
+
+                await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+                expect(JSON.parse(bulkPut(fetchMock)![1].body as string)).toEqual([{ uid: "m1", version: 0, folderUid: "f7" }]);
+            });
+
+            it("puts the row back, and says so, when the archive fails", async () => {
+                mockMatchMedia(true);
+                mockSelectable(twoMessages(), [inboxFolder, archiveFolder], (url, init) =>
+                    url === "/api/mail/messages" && init?.method === "PUT" ? jsonResponse(500, { message: "The server is unavailable." }) : undefined,
+                );
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+
+                swipe(rowOf("First"), [300, 100], [60, 100]);
+
+                await waitFor(() => expect(getNotificationsSnapshot().visible.some((item) => item.kind === "error")).toBe(true));
+                await waitFor(() => expect(rowOf("First")).not.toHaveAttribute("data-swiping"));
+                expect(screen.getByText("First")).toBeInTheDocument();
+            });
+
+            it("does nothing for a short swipe, a mostly vertical one, or a swipe on a desktop", async () => {
+                mockMatchMedia(true);
+                const fetchMock = mockSelectable(twoMessages(), [inboxFolder, archiveFolder]);
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+
+                swipe(rowOf("First"), [300, 100], [270, 100]);
+                swipe(rowOf("First"), [300, 100], [100, 500]);
+                expect(bulkPut(fetchMock)).toBeUndefined();
+                expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+                expect(screen.getByText("First")).toBeInTheDocument();
+            });
+
+            it("is left alone on a desktop", async () => {
+                const fetchMock = mockSelectable(twoMessages(), [inboxFolder, archiveFolder]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+                swipe(rowOf("First"), [300, 100], [60, 100]);
+                expect(bulkPut(fetchMock)).toBeUndefined();
+                expect(rowOf("First").style.touchAction).toBe("");
+            });
+        });
+
         it("creates the Archive folder with the first message, then moves the rest there", async () => {
             const fetchMock = mockSelectable(twoMessages());
             const user = userEvent.setup();
@@ -3176,15 +3467,15 @@ describe("InboxPage", () => {
                 expect(search).toHaveFocus();
             });
 
-            it("has no search key where there is no search box (the conversation list)", async () => {
+            it("focuses the search box with / and Ctrl+E over conversations too", async () => {
                 mockSelectable(threeMessages());
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
                 await toggleConversations(user);
                 await screen.findByText("No conversations in this folder.");
-                expect(press("/")).toBe(true);
-                expect(press("e", CTRL)).toBe(true);
+                expect(press("/")).toBe(false);
+                expect(screen.getByLabelText("Search all mail")).toHaveFocus();
             });
         });
     });

@@ -7,6 +7,7 @@ import { useNavigate } from "../shared/navigation/AppRouter.js";
 import { whenIdle } from "../shared/navigation/idle.js";
 import { prefetchComposeWindow } from "../shared/components/mail/compose/ComposeContext.js";
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { HiOutlineFlag, HiOutlineLockClosed, HiOutlinePaperClip } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -55,6 +56,9 @@ import { useMarkMessageRead } from "../shared/mail/useMarkMessageRead.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "../shared/components/mail/unreadStyle.js";
 import { LazyConversationThreadPane, LazyMessageDetailPane, prefetchReadingPane } from "../shared/components/mail/LazyReadingPane.js";
 import ConversationList from "../shared/components/mail/ConversationList.js";
+import type { ConversationThreadHead } from "../shared/components/mail/ConversationThreadPane.js";
+import SwipeRow from "../shared/components/mail/SwipeRow.js";
+import MoveToFolderDialog from "../shared/components/mail/MoveToFolderDialog.js";
 import { EncryptedPreview } from "../shared/components/mail/reading/EncryptedPreview.js";
 import MailListToolbar from "../shared/components/mail/MailListToolbar.js";
 import MailSelectionBar from "../shared/components/mail/MailSelectionBar.js";
@@ -473,6 +477,29 @@ async function fetchAggregateMessages(
     return mergeInboxMessages(perMailbox);
 }
 
+/** One conversation's part of a set of search results. */
+interface ResultGroup {
+    /** The conversation's id - a message that belongs to no thread is its own conversation. */
+    id: string;
+    /** Only the messages of the conversation that are among the results, in the order they were ranked. */
+    messages: Message[];
+}
+
+/** Groups search results by the conversation each message belongs to, the groups in the order of their first result. */
+function groupByConversation(results: Message[]): ResultGroup[] {
+    const groups = new Map<string, ResultGroup>();
+    for (const message of results) {
+        const id = message.conversationId ?? message.uid;
+        const group = groups.get(id);
+        if (group) {
+            group.messages.push(message);
+        } else {
+            groups.set(id, { id, messages: [message] });
+        }
+    }
+    return [...groups.values()];
+}
+
 function InboxPage(props: MailShellProps) {
     return (
         <MailShell {...props}>
@@ -482,7 +509,7 @@ function InboxPage(props: MailShellProps) {
 }
 
 function InboxContent({ userUid }: { userUid?: string }) {
-    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, noteFolderUids, live, trackMessageChange } = useMailShell();
+    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, noteFolderUids, live, trackMessageChange, mobileSearchSlot } = useMailShell();
     const isMobile = useIsMobile();
     const navigate = useNavigate();
     const { requestUnlock } = useUnlockPrompt();
@@ -506,7 +533,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const [selectedUid, setSelectedUid] = useState<string | null>(null);
     // The thread the conversation list opened, and which of its messages was picked - the reading pane
     // shows the whole conversation, positioned at that message (see `ConversationThreadPane`).
-    const [openThread, setOpenThread] = useState<{ conversation: ConversationSummary; uid: string } | null>(null);
+    const [openThread, setOpenThread] = useState<{ conversation: ConversationThreadHead; uid: string } | null>(null);
     // Messages the page has a newer copy of than `ConversationList` fetched (so far only the one the reading
     // pane just marked read), applied over its own child rows so they don't stay bold after being read.
     const [conversationPatches, setConversationPatches] = useState<Record<string, Message>>({});
@@ -592,7 +619,14 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // Search stays real-folder-only - Tier 1/2/3 are all deeply mailbox/folder-scoped, and extending them
     // to span an arbitrary number of mailboxes is out of scope for this pass (see the aggregate-fetch
     // branch below, which the search effect never reaches while `folderUid` is unset).
-    const isSearching = !preferences.showAsConversations && searchQuery.length > 0 && !aggregateFolderType;
+    // Search works whichever way the list is arranged. Its results are messages, so while a query is held the list is fetched as
+    // messages (`asConversations` is about the list's data and is false then), and when the reader arranges by conversation they are
+    // shown grouped under their conversation - only the messages that match - with the whole thread in the reading pane
+    // (`threadPane`, which follows the arrangement the reader chose and not the query).
+    const isSearching = searchQuery.length > 0 && !aggregateFolderType;
+    const asConversations = preferences.showAsConversations && !isSearching;
+    const threadPane = preferences.showAsConversations;
+    const groupedResults = isSearching && preferences.showAsConversations;
     // Focused/Other is an Inbox-only concept (`FocusedInboxUtils.classifyMessage()` short-circuits to
     // Focused for every other folder), and
     // search results are ranked across folders rather than listed from one, so neither tab is offered
@@ -626,7 +660,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * shown: `GET /mail/messages/conversations` takes no sort parameters at all, so those rows are ordered
      * in the browser (`sortConversations()`) and rearranging them must not refetch the identical page -
      * which would also collapse whichever conversations the reader had expanded. */
-    const serverSortKey = preferences.showAsConversations ? "" : `${preferences.sortBy}:${preferences.sortOrder}`;
+    const serverSortKey = asConversations ? "" : `${preferences.sortBy}:${preferences.sortOrder}`;
     /** The conversation list's own equivalent of `listParams` - a function because the page differs. */
     function conversationParams(page: number): ConversationListParams {
         return { folderUid, filter: effectiveFilter, ...labelFilter, page, limit: MESSAGE_PAGE_SIZE };
@@ -779,7 +813,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // `activeMailboxUid`, and offering that mailbox's labels would let a label from the wrong mailbox be
     // applied. The conversation view stays scoped to `activeMailboxUid`, the mailbox its threads come from.
     const selectedMessageMailboxUid = messages.find((m) => m.uid === selectedUid)?.mailboxUid;
-    const labelsMailboxUid = preferences.showAsConversations ? activeMailboxUid : (selectedMessageMailboxUid ?? activeMailboxUid);
+    const labelsMailboxUid = threadPane ? activeMailboxUid : (selectedMessageMailboxUid ?? activeMailboxUid);
     // Almost always the open mailbox's own labels, already fetched below - so `labels` reuses that list
     // rather than asking for the identical one a second time (which is what this page did on every single
     // view). Only a selected message from *another* mailbox - a search hit or an aggregate-view row - needs
@@ -849,7 +883,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const listKey = listSnapshotKey({
         mailboxUid: activeMailboxUid,
         folderUid,
-        conversations: preferences.showAsConversations,
+        conversations: asConversations,
         filter: effectiveFilter,
         labels: labelFilterKey,
         sort: serverSortKey,
@@ -920,7 +954,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return;
         }
 
-        if (preferences.showAsConversations) {
+        if (asConversations) {
             // Conversations stay single-mailbox (not aggregated across mailboxes in this pass) - in
             // aggregate mode this falls back to `activeMailboxUid`, the same mailbox unlock/labels use
             // (always set - `MailShell` only renders this component once at least one mailbox exists).
@@ -1128,7 +1162,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         // `refreshKey` is a dependency for the same reason: a failed bulk action bumps it to refetch,
         // since a bulk update applies until its first rejection rather than all-or-nothing.
     }, [
-        preferences.showAsConversations,
+        asConversations,
         serverSortKey,
         effectiveFilter,
         labelFilterKey,
@@ -1163,7 +1197,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         if (live.tick === 0 || isSearching || loading || loadMoreInFlightRef.current || (!folderUid && !aggregateFolderType)) {
             return;
         }
-        if (!preferences.showAsConversations && live.folderUids) {
+        if (!asConversations && live.folderUids) {
             const shown = new Set(
                 aggregateFolderType
                     ? mailboxFolders.flatMap((entry) => entry.folders.filter((f) => f.type === aggregateFolderType).map((f) => f.uid))
@@ -1179,7 +1213,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         const isCurrent = () => searchRunIdRef.current === listRun && liveRunRef.current === myRun;
         void (async () => {
             try {
-                if (preferences.showAsConversations) {
+                if (asConversations) {
                     const fresh = await listConversations(activeMailboxUid, conversationParams(0));
                     if (!isCurrent()) {
                         return;
@@ -1229,13 +1263,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
         // Reads the ref, not `conversations`/`messages` state, so this callback (and the observer effect
         // watching it) don't need to be recreated every time a page lands - the same reason every other
         // check below reads a ref rather than closing over state.
-        const atRowCap = (preferences.showAsConversations ? conversationsRef.current.length : messagesRef.current.length) >= MAX_LOADED_ROWS;
+        const atRowCap = (asConversations ? conversationsRef.current.length : messagesRef.current.length) >= MAX_LOADED_ROWS;
         if (
             loadMoreInFlightRef.current ||
             !hasMore ||
             loading ||
             atRowCap ||
-            (!preferences.showAsConversations && !folderUid) ||
+            (!asConversations && !folderUid) ||
             (isSearching && !searchCursor)
         ) {
             return;
@@ -1266,7 +1300,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         const myRunId = searchRunIdRef.current;
         const isCurrentRun = () => searchRunIdRef.current === myRunId;
         try {
-            if (preferences.showAsConversations) {
+            if (asConversations) {
                 const page = Math.floor(listedOffsetRef.current / MESSAGE_PAGE_SIZE);
                 const more = await listConversations(activeMailboxUid, conversationParams(page));
                 if (!isCurrentRun()) {
@@ -1344,7 +1378,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }, [
         hasMore,
         loading,
-        preferences.showAsConversations,
+        asConversations,
         serverSortKey,
         effectiveFilter,
         labelFilterKey,
@@ -1437,7 +1471,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     // The conversation list opens a whole thread in `ConversationThreadPane`, which loads and marks read
     // its own messages; only the flat list feeds the single-message pane below.
-    const selected = preferences.showAsConversations ? null : (messages.find((m) => m.uid === selectedUid) ?? null);
+    const selected = threadPane ? null : (messages.find((m) => m.uid === selectedUid) ?? null);
     const attachments = useMessageAttachments(selected);
     useMarkMessageRead(selected, patchListedMessage);
     // Search results can span every folder in the mailbox, not just the one selected in the sidebar - a
@@ -1446,7 +1480,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // this falls back to the sidebar selection unchanged). Aggregate views span every *mailbox* too, so
     // the folder list consulted is the selected message's own mailbox's, not the shell's ambient one. A
     // conversation spans folders for the same reason (an Inbox message and the Sent Items copy of its reply).
-    const spansFolders = isSearching || !!aggregateFolderType || preferences.showAsConversations;
+    const spansFolders = isSearching || !!aggregateFolderType || threadPane;
     const selectedFolderUid = spansFolders ? (selected?.folderUid ?? folderUid) : folderUid;
     const selectedMailboxUid = spansFolders ? (selected?.mailboxUid ?? activeMailboxUid) : mailboxUid;
     const folders = mailboxFolders.find((mf) => mf.mailbox.uid === selectedMailboxUid)?.folders ?? [];
@@ -1471,12 +1505,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const selectedConversationMessages = [...selectedConversationIds].flatMap((id) =>
         (conversationMessagesById[id] ?? []).filter((m) => !folderUid || m.folderUid === folderUid),
     );
-    const selectedMessages = preferences.showAsConversations
+    const selectedMessages = asConversations
         ? selectedConversationMessages
         : messages.filter((m) => selectedUids.has(m.uid));
     /** How many rows the list is actually showing - conversations or messages, whichever it lists. What the
      * Select toggle is enabled by: there is nothing to select in a list with no rows. */
-    const listedRowCount = preferences.showAsConversations ? conversations.length : messages.length;
+    const listedRowCount = asConversations ? conversations.length : messages.length;
     /** The conversation rows in the order the reader arranged them. The endpoint takes no sort parameters
      * of its own (it pages by latest activity), so the arrangement is applied here, to the rows fetched so
      * far - which the Sort menu says on screen. `conversations` itself stays in the order the pages
@@ -1490,7 +1524,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * mailbox/search whose true size lands at or near the cap can have its very last page be a partial one,
      * which correctly turns `hasMore` false - without checking it here, the banner would still claim rows
      * are being hidden even though every one of them is already on screen. */
-    const rowCapReached = hasMore && (preferences.showAsConversations ? conversations.length : messages.length) >= MAX_LOADED_ROWS;
+    const rowCapReached = hasMore && (asConversations ? conversations.length : messages.length) >= MAX_LOADED_ROWS;
 
     function leaveSelectMode() {
         setSelectMode(false);
@@ -1592,7 +1626,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     }
                 }
             }
-            if (preferences.showAsConversations) {
+            if (asConversations) {
                 // A conversation row is a summary of its messages - its count, unread count, participants
                 // and preview all move when a bulk action changes or empties part of it - so the list is
                 // reloaded rather than patched row by row.
@@ -1685,6 +1719,49 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return runBulkAction(async (moving) => moveMessages(moving, await resolveFolderOfType(type, name)), true, chosen);
     }
 
+    // ---- Swiping a row on a phone (see `SwipeRow`): right to left archives, left to right asks for a folder. Both go through the same
+    // ---- bulk path as the selection bar's Archive and Move to, so the badges, the optimistic bookkeeping and the failure pop-up are one
+    // ---- implementation. Not offered where the actions aren't (an aggregate view spans mailboxes, search results are a mixed bag, the
+    // ---- Outbox is the server's send queue) or while rows are being ticked.
+    const listingOutbox = currentFolders.find((f) => f.uid === folderUid)?.type === "outbox";
+    const swipeEnabled = isMobile && !selectMode && !aggregateFolderType && !isSearching && !listingOutbox;
+    /** What a swipe's Move to is about, while its folder prompt is open: one message, or every message of a conversation in this folder. */
+    const [moveDialog, setMoveDialog] = useState<{ messages: Message[] } | { conversation: ConversationSummary } | null>(null);
+
+    /** The messages a swiped conversation stands for (the ones in the folder being listed), or `null` after saying why they couldn't be loaded. */
+    async function swipedConversationMessages(conversation: ConversationThreadHead): Promise<Message[] | null> {
+        try {
+            return await loadOpenConversation(conversation);
+        } catch (err) {
+            notifyApiError(err, "Couldn't load the messages in that conversation");
+            return null;
+        }
+    }
+
+    /** Archives what a swipe took away. Resolves whether it went through, so the row comes back when it didn't. */
+    async function swipeArchive(target: Message[] | ConversationSummary): Promise<boolean> {
+        if (bulkBusy || resolvingSelection > 0) {
+            return false;
+        }
+        const chosen = Array.isArray(target) ? target : await swipedConversationMessages(target);
+        if (!chosen || chosen.length === 0) {
+            return false;
+        }
+        return runBulkAction(bulkArchive, true, chosen);
+    }
+
+    async function swipeMove(folderUidToMoveTo: string): Promise<void> {
+        const target = moveDialog;
+        if (!target) {
+            return;
+        }
+        const chosen = "messages" in target ? target.messages : await swipedConversationMessages(target.conversation);
+        if (chosen && chosen.length > 0) {
+            await runBulkAction((moving) => moveMessages(moving, folderUidToMoveTo), true, chosen);
+        }
+        setMoveDialog(null);
+    }
+
     const loadMoreStatus = loadingMore ? (
         "Loading more\u2026"
     ) : loadMoreError ? (
@@ -1702,9 +1779,114 @@ function InboxContent({ userUid }: { userUid?: string }) {
         </button>
     ) : null;
 
+    /** One message's row of the flat list - and, in search results grouped by conversation, of a group. */
+    function renderMessageRow(message: Message) {
+        return (
+            <SwipeRow
+                as="li"
+                enabled={swipeEnabled}
+                onArchive={() => swipeArchive([message])}
+                onMove={() => setMoveDialog({ messages: [message] })}
+                key={message.uid}
+                data-message-uid={message.uid}
+                data-unread={isUnread(message) ? "true" : undefined}
+                className={rowClass(
+                    { unread: isUnread(message), selected: message.uid === selectedUid || selectedUids.has(message.uid) },
+                    "flex items-stretch",
+                )}
+            >
+                <UnreadBar unread={isUnread(message)} />
+                {selectMode && (
+                    <span className="shrink-0 flex items-center pl-3">
+                        <input
+                            type="checkbox"
+                            checked={selectedUids.has(message.uid)}
+                            onChange={() => toggleSelected(message.uid)}
+                            aria-label={`Select ${rowSubject(message)}`}
+                            className="w-4 h-4 accent-primary"
+                        />
+                    </span>
+                )}
+                <button
+                    type="button"
+                    data-row-open
+                    onClick={() => handleSelect(message)}
+                    className={["flex-1 min-w-0 text-left px-4 py-3", ROW_FOCUS_CLASS].join(" ")}
+                >
+                    <UnreadLabel unread={isUnread(message)} />
+                    <div className="flex items-center justify-between gap-2 text-sm">
+                        <MailAddress recipient={message.from} className={senderClass(isUnread(message))} />
+                        <span className={["text-xs shrink-0", dateClass(isUnread(message))].join(" ")}>
+                            {new Date(message.receivedDate).toLocaleDateString()}
+                        </span>
+                    </div>
+                    {aggregateFolderType && (
+                        // The one view where a row needs to say which mailbox it came from.
+                        <div className="text-xs text-text-muted truncate font-normal">
+                            {mailboxes.find((mb) => mb.uid === message.mailboxUid)?.displayName}
+                        </div>
+                    )}
+                    {isSearching && pendingUids.has(message.uid) ? (
+                        // §_Progressive Results_: "Unresolved encrypted results MUST
+                        // be rendered as skeleton entries in place, not appended on
+                        // arrival." This uid is a Tier 1 metadataOnly guess Tier 2/3
+                        // haven't confirmed (or ruled out) yet.
+                        <div className="flex flex-col gap-1.5 py-0.5">
+                            <Skeleton height="h-3.5" className="w-2/3 rounded-sm" />
+                            <Skeleton height="h-3" className="w-full rounded-sm" />
+                        </div>
+                    ) : (
+                        <>
+                            <div className={["text-sm truncate", subjectClass(isUnread(message))].join(" ")}>
+                                {rowSubject(message)}
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-text-muted font-normal">
+                                <span className="truncate">
+                                    {snippets[message.uid] ||
+                                        decryptedRows[message.uid]?.preview ||
+                                        message.bodyPreview ||
+                                        (message.encrypted ? <EncryptedPreview /> : null)}
+                                </span>
+                                {message.hasAttachments && <HiOutlinePaperClip size={12} aria-label="Has attachments" />}
+                                {message.flags.flagged && (
+                                    <HiOutlineFlag size={12} aria-label="Flagged" className="text-danger" />
+                                )}
+                            </div>
+                            {/* What the server is doing with a message in Outbox: sending, retrying, or why it wasn't sent. */}
+                            {isOutbox && <OutboxRowStatus message={message} />}
+                        </>
+                    )}
+                </button>
+            </SwipeRow>
+        );
+    }
+
+    /** Search results arranged by conversation: the messages that matched, grouped under the conversation each belongs to, in the order of the
+     * first match of each - the order the results are ranked in. `null` when the list is not showing grouped results. */
+    const resultGroups = groupedResults ? groupByConversation(messages) : null;
+
+    /** The search box: in the list on a desktop (flat lists only), in the shell's header beside the folders button on a phone. */
+    const searchField = (
+        <input
+            ref={searchInputRef}
+            type="search"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder={aggregateFolderType ? "Open a mailbox's own folder to search" : "Search all mail…"}
+            aria-label="Search all mail"
+            disabled={!!aggregateFolderType}
+            className={["w-full text-sm px-3 rounded-md border border-border bg-surface disabled:opacity-55", isMobile ? "py-2" : "py-1.5"].join(" ")}
+        />
+    );
+
     function handleSelect(message: Message) {
         if (selectMode) {
             toggleSelected(message.uid);
+            return;
+        }
+        if (preferences.showAsConversations) {
+            // A search result of a list arranged by conversation: the reading pane is the whole thread, opened at this message.
+            openThreadOf(message);
             return;
         }
         if (isMobile) {
@@ -1713,6 +1895,24 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
         removedAnchorRef.current = null;
         setSelectedUid(message.uid);
+    }
+
+    /** A message of a conversation, as the thread pane names it: the conversation's id (a message with no thread is its own) and the
+     * subject to head it with while the thread loads. */
+    function threadHeadOf(message: Message): ConversationThreadHead {
+        return { conversationId: message.conversationId ?? message.uid, subject: message.subject ?? "", messageCount: 1 };
+    }
+
+    /** Opens the whole thread a message belongs to, positioned at it - the phone's message page, or the reading pane. */
+    function openThreadOf(message: Message) {
+        const conversation = threadHeadOf(message);
+        if (isMobile) {
+            navigate(`/messages/${encodeURIComponent(message.uid)}?conversation=${encodeURIComponent(conversation.conversationId)}`);
+            return;
+        }
+        removedAnchorRef.current = null;
+        setSelectedUid(message.uid);
+        setOpenThread({ conversation, uid: message.uid });
     }
 
     /** Opens a conversation in the reading pane, positioned at one of its messages: the one a child row
@@ -1725,9 +1925,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return;
         }
         if (isMobile) {
-            // No dedicated mobile thread route yet - the existing single-message detail route already
-            // handles any message uid regardless of conversation grouping.
-            navigate(`/messages/${encodeURIComponent(uid)}`);
+            // The message page shows the whole conversation, positioned at this message, when it is given the conversation.
+            navigate(`/messages/${encodeURIComponent(uid)}?conversation=${encodeURIComponent(conversation.conversationId)}`);
             return;
         }
         removedAnchorRef.current = null;
@@ -1739,11 +1938,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // ---- the selection bar call: the same bulk-action path (`runBulkAction()` - so the same optimistic badge tracking, the same rollback,
     // ---- the same lazily created Deleted Items folder), never a second implementation. Reply, Reply all, Forward, Archive and Move to are
     // ---- registered by the reading pane itself (`MessageDetailPane`'s `shortcuts`), which owns those handlers.
-    const inConversations = preferences.showAsConversations;
+    const inConversations = asConversations;
     /** The selection bar isn't offered in the aggregate view (its rows belong to several mailboxes), and neither are these. */
     const keyboardActions = !aggregateFolderType;
     /** What the keyboard acts on exists: the ticked rows in select mode, else the message (or conversation) open in the reading pane. */
-    const keyboardTargetExists = selectMode ? selectedMessages.length > 0 : inConversations ? openThread !== null : selected !== null;
+    const keyboardTargetExists = selectMode ? selectedMessages.length > 0 : threadPane ? openThread !== null : selected !== null;
     const rowCount = inConversations ? listedConversations.length : messages.length;
     const canMoveSelection = !selectMode && !isMobile && !loading && rowCount > 0;
 
@@ -1800,7 +1999,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     /** The messages of the open conversation that are in the folder being listed - fetched (once) like a ticked conversation's. */
-    async function loadOpenConversation(conversation: ConversationSummary): Promise<Message[]> {
+    async function loadOpenConversation(conversation: ConversationThreadHead): Promise<Message[]> {
         const id = conversation.conversationId;
         let all = conversationMessagesById[id];
         if (!all) {
@@ -1826,7 +2025,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
         let chosen: Message[];
         try {
-            chosen = selectMode ? selectedMessages : inConversations ? await loadOpenConversation(openThread!.conversation) : [selected!];
+            chosen = selectMode ? selectedMessages : threadPane ? await loadOpenConversation(openThread!.conversation) : [selected!];
         } catch (err) {
             notifyApiError(err, "Couldn't load the messages in that conversation");
             return;
@@ -1836,7 +2035,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return;
         }
         const succeeded = await runBulkAction(action, removesRows, chosen);
-        if (succeeded && removesRows && inConversations && !selectMode) {
+        if (succeeded && removesRows && threadPane && !selectMode) {
             setOpenThread(null);
             setSelectedUid(null);
         }
@@ -1916,7 +2115,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             searchInputRef.current?.focus();
             searchInputRef.current?.select();
         },
-        { enabled: !inConversations && !aggregateFolderType },
+        { enabled: !aggregateFolderType },
     );
 
     if (!folderUid && !aggregateFolderType) {
@@ -1942,17 +2141,17 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         selected={selectedMessages}
                         listed={messages}
                         totals={
-                            preferences.showAsConversations
+                            asConversations
                                 ? { selected: selectedConversationIds.size, listed: conversations.length, noun: "conversation" }
                                 : undefined
                         }
                         onSelectAll={() =>
-                            preferences.showAsConversations
+                            asConversations
                                 ? selectAllConversations()
                                 : setSelectedUids(new Set(messages.map((m) => m.uid)))
                         }
                         onClearSelection={() =>
-                            preferences.showAsConversations ? setSelectedConversationIds(new Set()) : setSelectedUids(new Set())
+                            asConversations ? setSelectedConversationIds(new Set()) : setSelectedUids(new Set())
                         }
                         onCancel={leaveSelectMode}
                         folders={currentFolders}
@@ -2001,13 +2200,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         sortKeysDisabled={isSearching || !!aggregateFolderType}
                         // A conversation row is a thread summary, so only some of the keys have anything to
                         // order by - the rest stay pickable and are applied to the rows already fetched.
-                        unavailableSortKeys={preferences.showAsConversations ? CONVERSATION_SORT_UNAVAILABLE : undefined}
+                        unavailableSortKeys={asConversations ? CONVERSATION_SORT_UNAVAILABLE : undefined}
                         sortKeysNote={
                             isSearching
                                 ? "Search results are ranked by relevance rather than sorted."
                                 : aggregateFolderType
                                   ? "This view merges the newest mail from every mailbox and is always listed by date."
-                                  : preferences.showAsConversations
+                                  : asConversations
                                     ? CONVERSATION_SORT_NOTE
                                     : undefined
                         }
@@ -2021,20 +2220,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         }
                     />
                 )}
-                {!preferences.showAsConversations && (
-                    <div className="p-2 border-b border-border">
-                        <input
-                            ref={searchInputRef}
-                            type="search"
-                            value={searchInput}
-                            onChange={(e) => setSearchInput(e.target.value)}
-                            placeholder={aggregateFolderType ? "Open a mailbox's own folder to search" : "Search all mail…"}
-                            aria-label="Search all mail"
-                            disabled={!!aggregateFolderType}
-                            className="w-full text-sm px-3 py-1.5 rounded-md border border-border bg-surface disabled:opacity-55"
-                        />
-                    </div>
-                )}
+                {!isMobile && <div className="p-2 border-b border-border">{searchField}</div>}
+                {isMobile && mobileSearchSlot && createPortal(searchField, mobileSearchSlot)}
                 {/* Two tabs, as Outlook has: Focused and Other. There is no "All" tab - the whole Inbox is
                     still one pick away, in the Filter menu, which is where every other named filter lives
                     and the only place that can show which of them is really in force. A stored `all` (or
@@ -2104,7 +2291,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         </button>
                     </div>
                 )}
-                {!isSearching && !preferences.showAsConversations && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(activeMailboxUid) && (
+                {!isSearching && !asConversations && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(activeMailboxUid) && (
                     <div className="px-4 py-2 border-b border-border bg-surface-alt">
                         <button
                             type="button"
@@ -2130,7 +2317,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         <span className="sr-only">Loading&hellip;</span>
                         <SkeletonList count={8} />
                     </div>
-                ) : preferences.showAsConversations ? (
+                ) : asConversations ? (
                     <>
                         <ConversationList
                             conversations={listedConversations}
@@ -2142,6 +2329,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             selectMode={selectMode}
                             selectedConversationIds={selectedConversationIds}
                             onToggleSelected={toggleConversationSelected}
+                            swipe={{
+                                enabled: swipeEnabled,
+                                onArchive: swipeArchive,
+                                onMove: (conversation) => setMoveDialog({ conversation }),
+                            }}
                         />
                         {hasMore && !rowCapReached && (
                             <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
@@ -2173,81 +2365,20 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     </>
                 ) : (
                     <>
-                        <ul>
-                            {messages.map((message) => (
-                                <li
-                                    key={message.uid}
-                                    data-message-uid={message.uid}
-                                    data-unread={isUnread(message) ? "true" : undefined}
-                                    className={rowClass(
-                                        { unread: isUnread(message), selected: message.uid === selectedUid || selectedUids.has(message.uid) },
-                                        "flex items-stretch",
-                                    )}
-                                >
-                                    <UnreadBar unread={isUnread(message)} />
-                                    {selectMode && (
-                                        <span className="shrink-0 flex items-center pl-3">
-                                            <input
-                                                type="checkbox"
-                                                checked={selectedUids.has(message.uid)}
-                                                onChange={() => toggleSelected(message.uid)}
-                                                aria-label={`Select ${rowSubject(message)}`}
-                                                className="w-4 h-4 accent-primary"
-                                            />
-                                        </span>
-                                    )}
-                                    <button
-                                        type="button"
-                                        data-row-open
-                                        onClick={() => handleSelect(message)}
-                                        className={["flex-1 min-w-0 text-left px-4 py-3", ROW_FOCUS_CLASS].join(" ")}
-                                    >
-                                        <UnreadLabel unread={isUnread(message)} />
-                                        <div className="flex items-center justify-between gap-2 text-sm">
-                                            <MailAddress recipient={message.from} className={senderClass(isUnread(message))} />
-                                            <span className={["text-xs shrink-0", dateClass(isUnread(message))].join(" ")}>
-                                                {new Date(message.receivedDate).toLocaleDateString()}
-                                            </span>
-                                        </div>
-                                        {aggregateFolderType && (
-                                            // The one view where a row needs to say which mailbox it came from.
-                                            <div className="text-xs text-text-muted truncate font-normal">
-                                                {mailboxes.find((mb) => mb.uid === message.mailboxUid)?.displayName}
-                                            </div>
-                                        )}
-                                        {isSearching && pendingUids.has(message.uid) ? (
-                                            // §_Progressive Results_: "Unresolved encrypted results MUST
-                                            // be rendered as skeleton entries in place, not appended on
-                                            // arrival." This uid is a Tier 1 metadataOnly guess Tier 2/3
-                                            // haven't confirmed (or ruled out) yet.
-                                            <div className="flex flex-col gap-1.5 py-0.5">
-                                                <Skeleton height="h-3.5" className="w-2/3 rounded-sm" />
-                                                <Skeleton height="h-3" className="w-full rounded-sm" />
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <div className={["text-sm truncate", subjectClass(isUnread(message))].join(" ")}>
-                                                    {rowSubject(message)}
-                                                </div>
-                                                <div className="flex items-center gap-2 text-xs text-text-muted font-normal">
-                                                    <span className="truncate">
-                                                        {snippets[message.uid] ||
-                                                            decryptedRows[message.uid]?.preview ||
-                                                            message.bodyPreview ||
-                                                            (message.encrypted ? <EncryptedPreview /> : null)}
-                                                    </span>
-                                                    {message.hasAttachments && <HiOutlinePaperClip size={12} aria-label="Has attachments" />}
-                                                    {message.flags.flagged && (
-                                                        <HiOutlineFlag size={12} aria-label="Flagged" className="text-danger" />
-                                                    )}
-                                                </div>
-                                                {/* What the server is doing with a message in Outbox: sending, retrying, or why it wasn't sent. */}
-                                                {isOutbox && <OutboxRowStatus message={message} />}
-                                            </>
-                                        )}
-                                    </button>
-                                </li>
-                            ))}
+                        <ul className={swipeEnabled ? "overflow-x-clip" : undefined}>
+                            {resultGroups
+                                ? resultGroups.map((group) => (
+                                      <li key={group.id} data-search-group={group.id}>
+                                          <div className="px-4 py-1.5 bg-surface-alt border-b border-border text-xs text-text-muted flex items-center justify-between gap-2">
+                                              <span className="truncate font-semibold">{rowSubject(group.messages[0]) || "(no subject)"}</span>
+                                              <span className="shrink-0">
+                                                  {group.messages.length} matching message{group.messages.length === 1 ? "" : "s"}
+                                              </span>
+                                          </div>
+                                          <ul>{group.messages.map(renderMessageRow)}</ul>
+                                      </li>
+                                  ))
+                                : messages.map(renderMessageRow)}
                         </ul>
                         {hasMore && !rowCapReached && (
                             <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
@@ -2275,7 +2406,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 body iframe that cannot measure itself - takes its height from here, never from a `vh`
                 number of its own. */}
             <div className="hidden md:flex flex-1 min-w-0 min-h-0">
-                {preferences.showAsConversations ? (
+                {threadPane ? (
                     <LazyConversationThreadPane
                         conversation={openThread?.conversation ?? null}
                         selectedUid={openThread?.uid ?? null}
@@ -2325,6 +2456,16 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 />
                 )}
             </div>
+            <MoveToFolderDialog
+                open={moveDialog !== null}
+                onClose={() => setMoveDialog(null)}
+                mailboxUid={activeMailboxUid}
+                folders={currentFolders}
+                currentFolderUid={folderUid}
+                count={moveDialog === null ? 1 : "messages" in moveDialog ? moveDialog.messages.length : moveDialog.conversation.messageCount}
+                onMove={swipeMove}
+                onFolderCreated={onFolderCreated}
+            />
         </div>
     );
 }

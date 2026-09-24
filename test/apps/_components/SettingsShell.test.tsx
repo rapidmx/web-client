@@ -138,6 +138,21 @@ describe("SettingsShell", () => {
         expect(link).toHaveAttribute("href", "/settings/auto-reply?mailboxUid=mb-a");
     });
 
+    it("lists Profile first, and links it to /settings/profile", async () => {
+        mockMailboxes([mailboxA]);
+        render(
+            <SettingsShell active="profile" userUid="u1">
+                content
+            </SettingsShell>,
+        );
+
+        await screen.findByText("content");
+        const links = within(screen.getByRole("navigation", { name: "Settings sections" })).getAllByRole("link");
+        expect(links[0]).toHaveTextContent("Profile");
+        expect(links[0]).toHaveAttribute("href", "/settings/profile?mailboxUid=mb-a");
+        expect(links[0]).toHaveAttribute("aria-current", "page");
+    });
+
     it("highlights only the active section, not the other one", async () => {
         mockMailboxes([mailboxA]);
         render(

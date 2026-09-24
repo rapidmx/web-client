@@ -10,7 +10,6 @@ import {
     NewMailNotice,
     desktopPermission,
     getDesktopOfferDismissed,
-    getNewMailPopupsEnabled,
     noticeFor,
     noticeSender,
     ownAddressesOf,
@@ -18,6 +17,7 @@ import {
     setDesktopOfferDismissed,
     shouldAnnounce,
 } from "./newMailNotifications.js";
+import { getNotificationsEnabled } from "../notifications/preferences.js";
 import { getNotificationsSnapshot, notify } from "../notifications/store.js";
 
 /** How long a new-mail pop-up stays before it goes by itself (while it is neither hovered nor focused, and the tab is in view). */
@@ -127,7 +127,7 @@ export function useNewMailNotifications({ mailboxes, mailboxFolders, open = defa
 
     const announce = useCallback(
         (message: Message) => {
-            if (!getNewMailPopupsEnabled() || announcedRef.current.has(message.uid)) {
+            if (!getNotificationsEnabled() || announcedRef.current.has(message.uid)) {
                 return;
             }
             const { folders: knownFolders, ownAddresses: own } = latestRef.current;

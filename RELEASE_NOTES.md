@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Fixes
+
+- **The compose window is full screen on a phone.** The sheet's classes had both `relative` and `fixed`, and Tailwind emits `relative` last, so it sat in the flow of the small container the windows stack in - a partial window at the bottom right - instead of covering the screen.
+
+- **An uninstalled plugin can be installed again.** Its row in the admin console's Plugins page (whatever the state of its data deletion) now has an **Install** button that installs its latest version, cancelling a deletion that hasn't started; while the deletion is running the button waits. Adding it by name failed too - see `@rapidmx/react-shared` and `@rapidmx/restapi` (the lookup now sends the name in the query string, which a proxy in front of the server no longer breaks).
+- **The account menu's "New mail pop-ups" switch is now "Notifications", a switch for every pop-up** - errors, sent-message and other status pop-ups and reminders as well as new mail. Turning it off clears what is on screen; nothing is lost, since every pop-up is still listed under "Recent notifications". It keeps its stored setting, so a browser where new-mail pop-ups were off stays off. It is shown in every app, not only Mail.
+
+### Added
+
+- **Opening a conversation on a phone shows the whole thread.** The conversation list opened only the one message on its own page on a narrow screen; it now opens that page with the conversation (`/messages/:uid?conversation=<id>`), which shows the same thread as the desktop reading pane - the opened message and the newer ones expanded, older ones folded to a summary - under a "Back to messages" link. A message opened without a conversation (a flat list, a link) is still just that message.
+- **Reply All at the foot of a message card**, between Reply and Forward.
+- **Swipe a mail row on a phone.** Right to left archives the message (or every message of the conversation in the folder being listed) with a green archive panel following the row; left to right asks which folder to move it to, in the same Move to prompt the selection bar uses. A failed archive puts the row back and says so. Only a swipe that starts out sideways counts, so scrolling is untouched, and it isn't offered in the aggregate views, search results, the Outbox or select mode.
+- **Swipe the calendar on a phone.** Swiping left shows the previous month, week or day and swiping right shows the next, using the same navigation as the Previous and Next buttons; it leaves vertical scrolling and taps alone and is off while an event is being dragged or edited.
+- **Search works on every device and with the list arranged by conversation.** It used to exist only for the flat list; it is now always there - in the list on a desktop, and in the header row beside the folders button on a phone. With conversations on, the results are grouped under their conversation ("2 matching messages") and list only the messages that match; picking one opens the whole thread in the reading pane (on a phone, on the message page), positioned at that message. Clearing the search brings the conversation list back.
+- **A floating New message button on a phone**, a small round button just above the bottom tab bar.
+- **The admin console's sections are a menu on a phone.** The bottom tab bar, whose ten or so tabs ran into one another, is replaced by a hamburger in the header that slides a menu of the sections in from the left (the current one highlighted; picking one closes it). The bar itself now also copes with many items - each keeps a readable width, labels wrap and it scrolls sideways - for the consoles that still have one (see `@rapidmx/react-shared`).
+- **The account menu shows your mailbox's display name when your profile has no name**, before falling back to your username, and its initials badge follows the same name.
+- **A Profile page in Settings** (first in the list) changes your mailbox's display name - the sender name on mail you send - and its time zone. A mailbox still on the server's placeholder UTC opens with this device's time zone preselected (saved with Save), and a button offers the device's zone when another is chosen. A mailbox you create for yourself now starts in your device's time zone, as does one created from the admin console's New mailbox form (the former needs `@rapidmx/restapi` with `timezone` on auto-provision).
+- **The account menu has no "Keyboard shortcuts" on a phone.**
+
+- **A plugin setting whose default names the host is pre-filled** for a plugin installed before the server saved it itself (see `@rapidmx/restapi`). A string setting whose `default` contains `<host>` (`https://<host>/meet`, `https://<host>`) and that holds nothing opens showing the default with the address the console was reached at, and saving the form stores it. A setting already holding a real value is left alone.
+
 ## v0.14.1
 
 ### Fixes

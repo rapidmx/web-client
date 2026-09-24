@@ -6,18 +6,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     DESKTOP_OFFER_KEY,
     MAX_NEW_AGE_MS,
-    NEW_MAIL_POPUPS_KEY,
     PREVIEW_MAX_LENGTH,
     cleanPreview,
     desktopPermission,
     getDesktopOfferDismissed,
-    getNewMailPopupsEnabled,
     noticeFor,
     noticeSender,
     ownAddressesOf,
     requestDesktopPermission,
     setDesktopOfferDismissed,
-    setNewMailPopupsEnabled,
     shouldAnnounce,
 } from "../../../apps/shared/mail/newMailNotifications.js";
 
@@ -171,18 +168,8 @@ describe("shouldAnnounce", () => {
     });
 });
 
-describe("the pop-ups switch", () => {
-    it("is on unless turned off, and remembers", () => {
-        expect(getNewMailPopupsEnabled()).toBe(true);
-        setNewMailPopupsEnabled(false);
-        expect(localStorage.getItem(NEW_MAIL_POPUPS_KEY)).toBe("off");
-        expect(getNewMailPopupsEnabled()).toBe(false);
-        setNewMailPopupsEnabled(true);
-        expect(localStorage.getItem(NEW_MAIL_POPUPS_KEY)).toBeNull();
-        expect(getNewMailPopupsEnabled()).toBe(true);
-    });
-
-    it("is on, and changes nothing, when storage is blocked", () => {
+describe("with storage blocked", () => {
+    it("the desktop-notifications offer is open, and changing it throws nothing", () => {
         vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
             throw new Error("blocked");
         });
@@ -192,9 +179,8 @@ describe("the pop-ups switch", () => {
         vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
             throw new Error("blocked");
         });
-        expect(getNewMailPopupsEnabled()).toBe(true);
-        expect(() => setNewMailPopupsEnabled(false)).not.toThrow();
-        expect(() => setNewMailPopupsEnabled(true)).not.toThrow();
+        expect(() => setDesktopOfferDismissed(true)).not.toThrow();
+        expect(() => setDesktopOfferDismissed(false)).not.toThrow();
         expect(getDesktopOfferDismissed()).toBe(false);
     });
 });

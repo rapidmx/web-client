@@ -6,6 +6,7 @@ import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { getMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
 import { createMailbox, listMailboxDomains, Mailbox, resolveMailboxOwner, ResolvedPrincipal } from "@rapidmx/react-shared/mail/mailApi.js";
+import { deviceTimeZone } from "@rapidmx/react-shared/util/timeZone.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
@@ -36,7 +37,8 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
     const [displayName, setDisplayName] = useState(defaults?.displayName ?? "");
     const [ownerMode, setOwnerMode] = useState<"shared" | "owned">(defaults?.ownerUserUid ? "owned" : "shared");
     const [resolvedOwner, setResolvedOwner] = useState<ResolvedPrincipal | null>(null);
-    const [timezone, setTimezone] = useState("UTC");
+    // The admin's own device zone, not "UTC": the server's "UTC" is only a placeholder for a mailbox nobody chose a zone for.
+    const [timezone, setTimezone] = useState(deviceTimeZone);
     const [quotaGb, setQuotaGb] = useState(5);
     // Only replaced by the mailbox policy's default if the admin hasn't typed a quota of their own yet.
     const quotaTouched = useRef(false);

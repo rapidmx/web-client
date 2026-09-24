@@ -1425,6 +1425,16 @@ function MessageDetailContent({
                         type="button"
                         variant="secondary"
                         className="!w-auto"
+                        aria-label="Reply all to this message"
+                        disabled={preparingCompose}
+                        onClick={() => void handleReplyOrForward("replyAll")}
+                    >
+                        Reply All
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto"
                         aria-label="Forward this message"
                         disabled={preparingCompose}
                         onClick={() => void handleReplyOrForward("forward")}

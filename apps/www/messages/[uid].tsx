@@ -10,13 +10,16 @@ import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
 import { useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
 import { useMarkMessageRead } from "../../shared/mail/useMarkMessageRead.js";
 import MailShell, { MailShellProps, useMailShell } from "../../shared/components/mail/layout/MailShell.js";
-import { LazyMessageDetailPane } from "../../shared/components/mail/LazyReadingPane.js";
+import { LazyConversationThreadPane, LazyMessageDetailPane } from "../../shared/components/mail/LazyReadingPane.js";
+import { useLocationSearch } from "../../shared/navigation/AppRouter.js";
 import { ReadingPaneSkeleton } from "../../shared/components/mail/reading/MessageCard.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
 /**
  * Only reached on mobile (below the `md` breakpoint) — desktop's `apps/www/index.tsx` keeps its existing
- * inline reading pane and never navigates here; see that file's `handleSelect`.
+ * inline reading pane and never navigates here; see that file's `handleSelect`. A row of the conversation list
+ * comes with `?conversation=<id>` (`handleOpenConversation`), and then this page is the whole thread, opened at this
+ * message, as the desktop's reading pane is; without it (a flat list, a link to a message) it is that one message.
  */
 function MessageDetailPage(props: MailShellProps & { params: { uid: string } }) {
     return (
@@ -32,6 +35,7 @@ function MessageDetailContent({ uid }: { uid: string }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [labels, setLabels] = useState<Label[]>([]);
+    const conversationId: string | null = new URLSearchParams(useLocationSearch()).get("conversation");
 
     useEffect(() => {
         setLoading(true);
@@ -63,8 +67,9 @@ function MessageDetailContent({ uid }: { uid: string }) {
         };
     }, [messageMailboxUid]);
 
-    const attachments = useMessageAttachments(message);
-    useMarkMessageRead(message, setMessage);
+    // A thread loads, marks read and fetches the attachments of each message it opens itself.
+    const attachments = useMessageAttachments(conversationId ? null : message);
+    useMarkMessageRead(conversationId ? null : message, setMessage);
 
     if (loading) {
         // The pane's own frame - a header card and a message card - rather than a line of text: what is coming is known, only not yet its contents.
@@ -82,6 +87,28 @@ function MessageDetailContent({ uid }: { uid: string }) {
     const isSentItems = folders.find((f) => f.uid === message.folderUid)?.type === "sent_items";
     const isOutbox = folders.find((f) => f.uid === message.folderUid)?.type === "outbox";
     const draftsFolderUid = folders.find((f) => f.type === "drafts")?.uid;
+    if (conversationId) {
+        return (
+            // The thread's own height, as the single message's: it scrolls inside the page rather than growing it.
+            <div className="flex flex-col h-full min-h-0">
+                <a href={backHref} className="text-sm text-primary-dark hover:underline block px-4 pt-3">
+                    &larr; Back to messages
+                </a>
+                <LazyConversationThreadPane
+                    conversation={{ conversationId, subject: message.subject, messageCount: 1 }}
+                    selectedUid={message.uid}
+                    mailboxUid={message.mailboxUid}
+                    folders={folders}
+                    labels={labels}
+                    shortcuts
+                    onMessagePatched={() => undefined}
+                    onMessageRemoved={() => undefined}
+                    onLabelCreated={(label) => setLabels((prev) => [...prev, label])}
+                    onFolderCreated={onFolderCreated}
+                />
+            </div>
+        );
+    }
     return (
         <LazyMessageDetailPane
             shortcuts

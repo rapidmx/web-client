@@ -332,8 +332,8 @@ describe("PluginsPage", () => {
         const autodiscover = { ...mapi, uid: "p-ad", name: "@rapidmx/autodiscover", enabled: true, manifest: { apiVersion: 1, displayName: "Autodiscover", settings: [] } };
         const fetchMock = mockPlugins({
             extra: (url, init) => {
-                if (url.startsWith("/api/system/plugins/registry/%40rapidmx%2Fautodiscover")) {
-                    const version = url.endsWith("?packageVersion=1.0.0") ? "1.0.0" : "2.0.0";
+                if (url.startsWith("/api/system/plugins/registry?name=%40rapidmx%2Fautodiscover")) {
+                    const version = url.endsWith("&packageVersion=1.0.0") ? "1.0.0" : "2.0.0";
                     return jsonResponse(200, {
                         package: { name: "@rapidmx/autodiscover", latest: "2.0.0", versions: ["2.0.0", "1.0.0"] },
                         selected: {
@@ -364,7 +364,7 @@ describe("PluginsPage", () => {
         await user.selectOptions(within(dialog).getByLabelText("Version"), "1.0.0");
         // The chosen version's manifest is looked up, not the latest one's.
         expect(await within(dialog).findByText("Finds old servers")).toBeInTheDocument();
-        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/registry/%40rapidmx%2Fautodiscover?packageVersion=1.0.0", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/registry?name=%40rapidmx%2Fautodiscover&packageVersion=1.0.0", expect.anything());
         await user.click(within(dialog).getByRole("button", { name: "Add plugin" }));
 
         await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -382,11 +382,11 @@ describe("PluginsPage", () => {
             });
         mockPlugins({
             extra: ((url: string) => {
-                if (url === "/api/system/plugins/registry/%40acme%2Fslow-plugin") {
+                if (url === "/api/system/plugins/registry?name=%40acme%2Fslow-plugin") {
                     return new Promise<Response>((resolve) => (releaseSlow = () => resolve(lookupOf("@acme/slow-plugin", "Slow"))));
                 }
-                if (url === "/api/system/plugins/registry/%40acme%2Ffast-plugin") return lookupOf("@acme/fast-plugin", "Fast");
-                if (url === "/api/system/plugins/registry/%40acme%2Ffast-plugin?packageVersion=0.9.0") {
+                if (url === "/api/system/plugins/registry?name=%40acme%2Ffast-plugin") return lookupOf("@acme/fast-plugin", "Fast");
+                if (url === "/api/system/plugins/registry?name=%40acme%2Ffast-plugin&packageVersion=0.9.0") {
                     return new Promise<Response>((resolve) => (releaseVersion = () => resolve(lookupOf("@acme/fast-plugin", "Fast old", "0.9.0"))));
                 }
                 return undefined;
@@ -425,11 +425,11 @@ describe("PluginsPage", () => {
             });
         mockPlugins({
             extra: ((url: string) => {
-                if (url === "/api/system/plugins/registry/%40acme%2Fslow-plugin") {
+                if (url === "/api/system/plugins/registry?name=%40acme%2Fslow-plugin") {
                     return new Promise<Response>((_resolve, reject) => (failSlow = () => reject(new TypeError("offline"))));
                 }
-                if (url === "/api/system/plugins/registry/%40acme%2Ffast-plugin") return lookupOf("@acme/fast-plugin", "Fast");
-                if (url === "/api/system/plugins/registry/%40acme%2Ffast-plugin?packageVersion=0.9.0") return jsonResponse(503, { message: "Version unavailable" });
+                if (url === "/api/system/plugins/registry?name=%40acme%2Ffast-plugin") return lookupOf("@acme/fast-plugin", "Fast");
+                if (url === "/api/system/plugins/registry?name=%40acme%2Ffast-plugin&packageVersion=0.9.0") return jsonResponse(503, { message: "Version unavailable" });
                 return undefined;
             }) as Handler,
         });
@@ -461,7 +461,7 @@ describe("PluginsPage", () => {
         let failAdd: () => void = () => undefined;
         mockPlugins({
             extra: ((url: string, init?: RequestInit) => {
-                if (url === "/api/system/plugins/registry/%40acme%2Fx-plugin") {
+                if (url === "/api/system/plugins/registry?name=%40acme%2Fx-plugin") {
                     return jsonResponse(200, {
                         package: { name: "@acme/x-plugin", latest: "1.0.0", versions: ["1.0.0"] },
                         selected: { name: "@acme/x-plugin", version: "1.0.0", peerDependencies: {}, manifest: { apiVersion: 1, displayName: "X" } },
@@ -495,7 +495,7 @@ describe("PluginsPage", () => {
     it("adds a package whose manifest isn't shown under its package name, and explains a non-API failure", async () => {
         mockPlugins({
             extra: (url, init) => {
-                if (url === "/api/system/plugins/registry/%40acme%2Fbare") {
+                if (url === "/api/system/plugins/registry?name=%40acme%2Fbare") {
                     return jsonResponse(200, { package: { name: "@acme/bare", versions: ["1.0.0"] }, selected: { name: "@acme/bare", version: "1.0.0", peerDependencies: {} } });
                 }
                 if (url === "/api/system/plugins" && init?.method === "POST") throw new TypeError("network down");
@@ -515,8 +515,8 @@ describe("PluginsPage", () => {
     it("explains why a package can't be added", async () => {
         mockPlugins({
             extra: (url, init) => {
-                if (url === "/api/system/plugins/registry/left-pad") return jsonResponse(400, { message: "'left-pad' is not an allowed plugin package." });
-                if (url === "/api/system/plugins/registry/%40rapidmx%2Fnot-plugin") {
+                if (url === "/api/system/plugins/registry?name=left-pad") return jsonResponse(400, { message: "'left-pad' is not an allowed plugin package." });
+                if (url === "/api/system/plugins/registry?name=%40rapidmx%2Fnot-plugin") {
                     return jsonResponse(200, {
                         package: { name: "@rapidmx/not-plugin", versions: ["1.0.0"] },
                         selected: { name: "@rapidmx/not-plugin", version: "1.0.0", peerDependencies: {}, manifest: "This package is not a RapidMX plugin." },
@@ -544,7 +544,7 @@ describe("PluginsPage", () => {
     it("changes a plugin's version", async () => {
         const fetchMock = mockPlugins({
             extra: (url, init) => {
-                if (url === "/api/system/plugins/registry/%40rapidmx%2Factivesync") {
+                if (url === "/api/system/plugins/registry?name=%40rapidmx%2Factivesync") {
                     return jsonResponse(200, { package: { name: "@rapidmx/activesync", latest: "1.1.0", versions: ["1.1.0", "1.0.0"] }, selected: {} });
                 }
                 if (url === "/api/system/plugins/p-eas" && init?.method === "PUT") return jsonResponse(200, { ...eas, packageVersion: "1.1.0" });
@@ -681,6 +681,73 @@ describe("PluginsPage", () => {
         expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "PUT")).toBe(false);
     });
 
+    describe("a setting whose default names the host", () => {
+        const hostPlugin = (settings: Record<string, unknown>) => ({
+            ...mapi,
+            settings,
+            manifest: {
+                apiVersion: 1,
+                displayName: "MAPI over HTTP",
+                settings: [{ key: "x:url", label: "Public URL", type: "string", default: "https://<host>/meet" }],
+            },
+        });
+
+        const openSettings = async (user: ReturnType<typeof userEvent.setup>) => {
+            const row = (await screen.findByText("MAPI over HTTP")).closest("tr") as HTMLElement;
+            await user.click(within(row).getByRole("button", { name: "Settings" }));
+            return screen.findByRole("dialog");
+        };
+
+        it.each([
+            ["nothing saved", {}],
+            ["an empty value saved by an older manifest", { "x:url": "" }],
+            ["the placeholder itself, saved by an older server", { "x:url": "https://<host>/meet" }],
+        ])("pre-fills it with the address the console was reached at when %s, and saves it as shown", async (_name, saved) => {
+            const plugin = hostPlugin(saved);
+            const fetchMock = mockPlugins({
+                plugins: [plugin],
+                extra: (url, init) => (url === "/api/system/plugins/p-mapi" && init?.method === "PUT" ? jsonResponse(200, plugin) : undefined),
+            });
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            expect(within(dialog).getByLabelText("Public URL")).toHaveValue(`https://${window.location.host}/meet`);
+
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({
+                version: 3,
+                settings: { "x:url": `https://${window.location.host}/meet` },
+            });
+        });
+
+        it("keeps what was saved, and saves nothing when it's left alone", async () => {
+            const fetchMock = mockPlugins({ plugins: [hostPlugin({ "x:url": "https://mail.example.com/join" })] });
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            expect(within(dialog).getByLabelText("Public URL")).toHaveValue("https://mail.example.com/join");
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "PUT")).toBe(false);
+        });
+
+        it("clears the setting when the pre-filled value is emptied", async () => {
+            const plugin = hostPlugin({});
+            const fetchMock = mockPlugins({
+                plugins: [plugin],
+                extra: (url, init) => (url === "/api/system/plugins/p-mapi" && init?.method === "PUT" ? jsonResponse(200, plugin) : undefined),
+            });
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            await user.clear(within(dialog).getByLabelText("Public URL"));
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT")).toEqual({ version: 3, settings: { "x:url": null } });
+        });
+    });
+
     it("clears an emptied setting back to its default, and shows a save error", async () => {
         const fetchMock = mockPlugins({
             extra: (url, init) => (url === "/api/system/plugins/p-eas" && init?.method === "PUT" ? jsonResponse(400, { message: "'Mode' is required." }) : undefined),
@@ -704,7 +771,7 @@ describe("PluginsPage", () => {
     it("closes each dialog on Cancel", async () => {
         mockPlugins({
             extra: (url) =>
-                url === "/api/system/plugins/registry/%40rapidmx%2Factivesync"
+                url === "/api/system/plugins/registry?name=%40rapidmx%2Factivesync"
                     ? jsonResponse(200, { package: { name: "@rapidmx/activesync", versions: ["1.0.0"] }, selected: {} })
                     : undefined,
         });
@@ -767,7 +834,7 @@ describe("PluginsPage", () => {
         let versionsFail = true;
         mockPlugins({
             extra: (url, init) => {
-                if (url.startsWith("/api/system/plugins/registry/")) {
+                if (url.startsWith("/api/system/plugins/registry?")) {
                     if (url.includes("activesync") && versionsFail) return jsonResponse(503, { message: "Registry offline" });
                     return jsonResponse(200, {
                         package: { name: "@rapidmx/x", latest: "2.0.0", versions: ["2.0.0", "1.0.0"] },
@@ -940,7 +1007,7 @@ describe("PluginsPage", () => {
         it("doesn't install when cancelled, and keeps the confirmation open when the install fails", async () => {
             const fetchMock = mockPlugins({
                 extra: (url, init) => {
-                    if (url.startsWith("/api/system/plugins/registry/")) {
+                    if (url.startsWith("/api/system/plugins/registry?")) {
                         return jsonResponse(200, {
                             package: { name: autodiscover.name, latest: "1.0.0", versions: ["1.0.0"] },
                             selected: { name: autodiscover.name, version: "1.0.0", peerDependencies: {}, manifest: autodiscover.manifest },
@@ -1011,7 +1078,7 @@ describe("PluginsPage", () => {
             const fetchMock = mockPlugins({
                 extra: (url, init) => {
                     if (url === "/api/system/plugins" && (init?.method ?? "GET") === "GET") return jsonResponse(200, listed);
-                    if (url === "/api/system/plugins/registry/%40rapidmx%2Factivesync") {
+                    if (url === "/api/system/plugins/registry?name=%40rapidmx%2Factivesync") {
                         return jsonResponse(200, { package: { name: "@rapidmx/activesync", versions: ["2.0.0", "1.0.0"] }, selected: {} });
                     }
                     if (url.startsWith("/api/system/plugins/plan?name=%40rapidmx%2Factivesync&")) {
@@ -1159,7 +1226,7 @@ describe("PluginsPage", () => {
                     if (url === "/api/system/plugins/updates") {
                         return jsonResponse(200, [{ uid: "p-mapi", name: "@rapidmx/mapi", installedVersion: "1.0.0", latestVersion: "3.0.0", updateAvailable: true }]);
                     }
-                    if (url === "/api/system/plugins/registry/%40rapidmx%2Fmapi") {
+                    if (url === "/api/system/plugins/registry?name=%40rapidmx%2Fmapi") {
                         return jsonResponse(200, { package: { name: "@rapidmx/mapi", versions: ["3.0.0", "2.0.0", "1.0.0"] }, selected: {} });
                     }
                     if (url === "/api/system/plugins/p-mapi" && init?.method === "PUT") {

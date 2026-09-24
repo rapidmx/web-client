@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
-import { HiOutlineBars3 } from "react-icons/hi2";
+import { HiOutlineBars3, HiOutlinePencilSquare } from "react-icons/hi2";
 import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
 import { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
@@ -96,6 +96,11 @@ export interface MailShellContextValue {
      * context value, which is only ever read outside a real shell.
      */
     trackMessageChange: (previous: Message, next: Message | null) => CountTracker;
+    /**
+     * The phone layout's header row beside the folders button, for the page to put its search box in (`createPortal()`): the shell
+     * owns the row, the page owns the search state. `null` until the row has rendered, and on the default context value.
+     */
+    mobileSearchSlot: HTMLElement | null;
 }
 
 const NO_TRACKER: CountTracker = { settle: () => undefined, revert: () => undefined };
@@ -107,6 +112,7 @@ const MailShellContext = createContext<MailShellContextValue>({
     noteFolderUids: () => undefined,
     live: NO_LIVE_UPDATES,
     trackMessageChange: () => NO_TRACKER,
+    mobileSearchSlot: null,
 });
 
 /** Reads the mailbox/folder a page is currently showing, as resolved by the enclosing `MailShell`. */
@@ -183,6 +189,26 @@ function ComposeButton({ mailboxUid }: { mailboxUid?: string }) {
             className="block text-center w-full py-2.5 px-4 rounded-sm font-semibold text-sm bg-primary text-white hover:bg-primary-dark"
         >
             Compose
+        </button>
+    );
+}
+
+/**
+ * A small round Compose button floating at the bottom right on a phone, just above the bottom tab bar (which is `h-14`, fixed), for the
+ * layout where the sidebar's Compose button is behind the folders drawer. Opens the same window, for the same mailbox, as that button.
+ */
+function MobileComposeButton({ mailboxUid }: { mailboxUid?: string }) {
+    const { openCompose } = useCompose();
+    return (
+        <button
+            type="button"
+            aria-label="New message"
+            onClick={() => openCompose({ mailboxUid })}
+            onPointerEnter={prefetchComposeWindow}
+            onFocus={prefetchComposeWindow}
+            className="md:hidden fixed right-4 bottom-[4.5rem] z-30 w-12 h-12 flex items-center justify-center rounded-full bg-primary text-white shadow-lg hover:bg-primary-dark"
+        >
+            <HiOutlinePencilSquare size={22} aria-hidden="true" />
         </button>
     );
 }
@@ -282,9 +308,11 @@ export default function MailShell({
     // `(3) Acme: Mail` in the tab strip while there is unread mail in an Inbox - kept by the frame when there is one.
     useUnreadTitle(inboxUnreadTotal(mailboxFolders, counts), { enabled: !hosted });
 
+    // A state rather than a ref: the page reads it during its render, so it has to re-render once the row it names is in the document.
+    const [mobileSearchSlot, setMobileSearchSlot] = useState<HTMLElement | null>(null);
     const contextValue = useMemo<MailShellContextValue>(
-        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange }),
-        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange],
+        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange, mobileSearchSlot }),
+        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange, mobileSearchSlot],
     );
 
     // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else for a
@@ -428,14 +456,18 @@ export default function MailShell({
                     <div className="flex flex-col">{sidebarContent()}</div>
                 </Drawer>
                 <main className="flex-1 min-w-0 overflow-y-auto">
-                    <button
-                        type="button"
-                        className="md:hidden m-3 w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text"
-                        aria-label="Open folders"
-                        onClick={() => setDrawerOpen(true)}
-                    >
-                        <HiOutlineBars3 size={20} aria-hidden="true" />
-                    </button>
+                    <div className="md:hidden flex items-center gap-2 p-3">
+                        <button
+                            type="button"
+                            className="shrink-0 w-9 h-9 flex items-center justify-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text"
+                            aria-label="Open folders"
+                            onClick={() => setDrawerOpen(true)}
+                        >
+                            <HiOutlineBars3 size={20} aria-hidden="true" />
+                        </button>
+                        <div ref={setMobileSearchSlot} className="flex-1 min-w-0" />
+                    </div>
+                    <MobileComposeButton mailboxUid={defaultMailboxUid} />
                     <MailShellContext.Provider value={contextValue}>{children}</MailShellContext.Provider>
                 </main>
             </>

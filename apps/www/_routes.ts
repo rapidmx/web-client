@@ -28,6 +28,7 @@ export const wwwRoutes: readonly RouteDefinition[] = [
     { path: "/settings/filters/:uid", active: "settings", load: () => import("./settings/filters/[uid].js") },
     { path: "/settings/labels", active: "settings", load: () => import("./settings/labels/index.js") },
     { path: "/settings/privacy", active: "settings", load: () => import("./settings/privacy/index.js") },
+    { path: "/settings/profile", active: "settings", load: () => import("./settings/profile/index.js") },
     { path: "/settings/read-receipts", active: "settings", load: () => import("./settings/read-receipts/index.js") },
     { path: "/settings/sharing", active: "settings", load: () => import("./settings/sharing/index.js") },
     { path: "/settings/signatures", active: "settings", load: () => import("./settings/signatures/index.js") },

@@ -15,7 +15,8 @@ import { MAX_VISIBLE, dismiss, dismissAll, getNotificationsSnapshot } from "../.
 /** The mail pop-ups on screen (they are `mail` notifications - the store owns the stack), by message uid. */
 const popups = () => getNotificationsSnapshot().visible.filter((item) => item.kind === "mail");
 const popupUids = () => popups().map((item) => item.id.replace(/^mail:/, ""));
-import { DESKTOP_OFFER_KEY, NEW_MAIL_POPUPS_KEY } from "../../../apps/shared/mail/newMailNotifications.js";
+import { DESKTOP_OFFER_KEY } from "../../../apps/shared/mail/newMailNotifications.js";
+import { NOTIFICATIONS_ENABLED_KEY } from "../../../apps/shared/notifications/preferences.js";
 
 /** A stand-in for the browser's `Notification` that records what was shown. */
 class FakeNotification {
@@ -150,12 +151,12 @@ describe("useNewMailNotifications", () => {
 
         it("shows nothing while the user has turned pop-ups off, and again once they turn them back on", () => {
             const { result } = setup();
-            localStorage.setItem(NEW_MAIL_POPUPS_KEY, "off");
+            localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, "off");
             act(() => result.current.announce(mail("m1")));
             expect(popups()).toEqual([]);
             expect(FakeNotification.instances).toEqual([]);
 
-            localStorage.removeItem(NEW_MAIL_POPUPS_KEY);
+            localStorage.removeItem(NOTIFICATIONS_ENABLED_KEY);
             act(() => result.current.announce(mail("m2")));
             expect(popups()).toHaveLength(1);
         });

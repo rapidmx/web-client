@@ -11,6 +11,7 @@ import MailAddress from "./MailAddress.js";
 import { EncryptedPreview, conversationLooksEncrypted } from "./reading/EncryptedPreview.js";
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "./unreadStyle.js";
+import SwipeRow from "./SwipeRow.js";
 
 export interface ConversationListProps {
     conversations: ConversationSummary[];
@@ -35,6 +36,15 @@ export interface ConversationListProps {
     /** The `conversationId`s currently ticked. */
     selectedConversationIds?: Set<string>;
     onToggleSelected?: (conversation: ConversationSummary) => void;
+    /**
+     * What swiping a parent row does on a phone: right to left archives the conversation (resolving whether it went through), left
+     * to right asks where to move it. Absent, or `enabled: false` (a desktop), rows don't follow a finger.
+     */
+    swipe?: {
+        enabled: boolean;
+        onArchive: (conversation: ConversationSummary) => Promise<boolean>;
+        onMove: (conversation: ConversationSummary) => void;
+    };
     /**
      * Whether a conversation's own messages read newest first, matching the order sense the rows themselves
      * are in ("Newest on top"). `listConversationMessages()` always answers oldest first - the order a
@@ -70,6 +80,7 @@ export default function ConversationList({
     selectMode,
     selectedConversationIds,
     onToggleSelected,
+    swipe,
     newestFirst,
 }: ConversationListProps) {
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -119,7 +130,8 @@ export default function ConversationList({
     }
 
     return (
-        <ul>
+        // `overflow-x-clip`: the panels a swiped row drags along stand outside its edges (see `SwipeRow`).
+        <ul className={swipe?.enabled ? "overflow-x-clip" : undefined}>
             {conversations.map((conversation) => {
                 const id = conversation.conversationId;
                 const isExpanded = expanded.has(id);
@@ -132,7 +144,11 @@ export default function ConversationList({
                 const ticked = selectedConversationIds?.has(id) ?? false;
                 return (
                     <li key={id}>
-                        <div
+                        <SwipeRow
+                            as="div"
+                            enabled={!!swipe?.enabled && !selectMode}
+                            onArchive={() => swipe!.onArchive(conversation)}
+                            onMove={() => swipe!.onMove(conversation)}
                             data-message-uid={conversation.latestMessageUid}
                             data-unread={unread ? "true" : undefined}
                             className={rowClass({ unread, selected: conversation.latestMessageUid === selectedUid || ticked }, "flex items-stretch")}
@@ -209,7 +225,7 @@ export default function ConversationList({
                                     )}
                                 </div>
                             </button>
-                        </div>
+                        </SwipeRow>
                         <ul id={panelId} hidden={!isExpanded}>
                             {errorsById[id] && (
                                 <li role="alert" className="pl-8 pr-4 py-2 text-xs text-danger border-b border-border">

@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import MailboxProvisioning from "../../../apps/shared/components/layout/MailboxProvisioning.js";
+import { deviceTimeZone } from "@rapidmx/react-shared/util/timeZone.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -193,7 +194,7 @@ describe("MailboxProvisioning", () => {
         await waitFor(() =>
             expect(fetchMock).toHaveBeenCalledWith(
                 "/api/mail/mailboxes/auto-provision",
-                expect.objectContaining({ method: "POST", body: JSON.stringify({ alias: "jp", domain: "example.org" }) }),
+                expect.objectContaining({ method: "POST", body: JSON.stringify({ alias: "jp", domain: "example.org", timezone: deviceTimeZone() }) }),
             ),
         );
         await waitFor(() => expect(location.reload).toHaveBeenCalled());

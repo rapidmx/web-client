@@ -17,7 +17,8 @@ import { notify } from "../../../apps/shared/notifications/store.js";
 import UserMenu from "../../../apps/shared/components/layout/UserMenu.js";
 import { useNewMailNotifications } from "../../../apps/shared/mail/useNewMailNotifications.js";
 import { useUnreadTitle } from "../../../apps/shared/mail/useUnreadTitle.js";
-import { desktopPermission, getNewMailPopupsEnabled } from "../../../apps/shared/mail/newMailNotifications.js";
+import { desktopPermission } from "../../../apps/shared/mail/newMailNotifications.js";
+import { getNotificationsEnabled } from "../../../apps/shared/notifications/preferences.js";
 
 function Probe() {
     const { live, folderCounts } = useMailLiveUpdates({ userUid: "u1", mailboxes: [], mailboxFolders: [], onFolderCreated: () => undefined });
@@ -60,7 +61,7 @@ describe("live updates SSR guard (no window)", () => {
             "Account menu",
         );
         // The storage-backed settings read as their defaults where there is no storage or Notifications API.
-        expect(getNewMailPopupsEnabled()).toBe(true);
+        expect(getNotificationsEnabled()).toBe(true);
         expect(desktopPermission()).toBe("unsupported");
     });
 

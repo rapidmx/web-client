@@ -1342,10 +1342,12 @@ export default function ComposeWindow({
             aria-labelledby={titleId}
             style={!isMobile && manualSize ? { width: manualSize.width, height: manualSize.height } : undefined}
             className={[
-                "relative shrink-0 flex flex-col bg-surface border border-border shadow-modal overflow-hidden",
+                "shrink-0 flex flex-col bg-surface border border-border shadow-modal overflow-hidden",
+                // `fixed` and `relative` may not both be on the element: Tailwind emits `.relative` after `.fixed`, so it wins and the
+                // sheet sat in the flow of the little fixed container the windows are stacked in instead of covering the screen.
                 isMobile
                     ? "fixed inset-0 w-full h-full rounded-none border-0"
-                    : ["border-b-0 rounded-t-md", manualSize ? "" : expanded ? "w-[720px] h-[85vh]" : "w-[480px] h-[520px]"].join(" "),
+                    : ["relative border-b-0 rounded-t-md", manualSize ? "" : expanded ? "w-[720px] h-[85vh]" : "w-[480px] h-[520px]"].join(" "),
             ].join(" ")}
         >
             {!isMobile && (

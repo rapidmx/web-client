@@ -6,16 +6,13 @@ import type { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailAp
 import { formatMailAddress, splitMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
 
 /**
- * What decides whether a new message is announced, what the announcement says, and the two settings behind it (both per
- * browser, in `localStorage`): whether new-mail pop-ups are on at all, and what the user told the "turn on desktop
- * notifications" offer.
+ * What decides whether a new message is announced, what the announcement says, and the setting behind it (per browser, in
+ * `localStorage`): what the user told the "turn on desktop notifications" offer. Whether pop-ups are on at all is the
+ * notifications switch (`notifications/preferences.ts`).
  *
  * The announcement is built only from what the push event carries - the whole `Message`, including `bodyPreview` - and only
  * ever as text: React escapes it on screen and the Notifications API takes plain strings, so nothing here is HTML.
  */
-
-/** `localStorage` key of the pop-ups switch. Absent means on; `"off"` means the user turned them off. */
-export const NEW_MAIL_POPUPS_KEY = "rapidmx-new-mail-popups";
 
 /** `localStorage` key of the answer to the desktop-notifications offer: `"later"` (not now) or `"asked"` (they were asked). */
 export const DESKTOP_OFFER_KEY = "rapidmx-desktop-notifications-offer";
@@ -47,15 +44,6 @@ function writeStorage(key: string, value: string | null): void {
     } catch {
         // Storage blocked or full: the choice lasts until the page is reloaded, no longer.
     }
-}
-
-/** Whether new-mail pop-ups are on (the default). */
-export function getNewMailPopupsEnabled(): boolean {
-    return readStorage(NEW_MAIL_POPUPS_KEY) !== "off";
-}
-
-export function setNewMailPopupsEnabled(enabled: boolean): void {
-    writeStorage(NEW_MAIL_POPUPS_KEY, enabled ? null : "off");
 }
 
 /** Whether the "turn on desktop notifications" offer has been put away with "Not now" (or answered). */

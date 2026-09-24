@@ -99,14 +99,15 @@ function seed(prefs: Record<string, unknown>) {
 }
 
 describe("SettingsAppearancePage", () => {
-    it("is listed first in Settings' own sidebar, and marks itself as the current page", async () => {
+    it("is listed right after Profile in Settings' own sidebar, and marks itself as the current page", async () => {
         mockServer();
         await open();
         const nav = screen.getByRole("navigation", { name: "Settings sections" });
         const links = within(nav).getAllByRole("link");
-        expect(links[0]).toHaveTextContent("Appearance");
-        expect(links[0]).toHaveAttribute("aria-current", "page");
-        expect(links[0]).toHaveAttribute("href", "/settings/appearance?mailboxUid=mb1");
+        expect(links[0]).toHaveTextContent("Profile");
+        expect(links[1]).toHaveTextContent("Appearance");
+        expect(links[1]).toHaveAttribute("aria-current", "page");
+        expect(links[1]).toHaveAttribute("href", "/settings/appearance?mailboxUid=mb1");
     });
 
     it("starts with the system scheme, the app's own colours and no background - and nothing to reset", async () => {

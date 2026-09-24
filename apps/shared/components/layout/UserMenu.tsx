@@ -2,25 +2,28 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import { HiOutlineShieldCheck } from "react-icons/hi2";
 import { formatProfileName, getMyProfile, getMyUsername, Profile, profileInitials } from "@rapidmx/react-shared/auth/profileApi.js";
+import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import { accountUrlOf } from "../../auth/accountUrl.js";
 import { DEFAULT_TRUSTED_ROLES, lookUpAdminAccess } from "../../auth/adminAccess.js";
 import { ariaKeyShortcuts } from "../../keyboard/format.js";
 import { SHORTCUTS } from "../../keyboard/keymap.js";
 import { useKeyEnvironment } from "../../keyboard/ShortcutProvider.js";
 import { SETTINGS_HREF } from "../../navigation/appHrefs.js";
+import { MailConnectionContext } from "../../mail/useMailConnection.js";
 import ThemeSwitch from "./ThemeSwitch.js";
 import {
     DesktopPermission,
     desktopPermission,
-    getNewMailPopupsEnabled,
     requestDesktopPermission,
     setDesktopOfferDismissed,
-    setNewMailPopupsEnabled,
 } from "../../mail/newMailNotifications.js";
+import { getNotificationsEnabled, setNotificationsEnabled } from "../../notifications/preferences.js";
+import { dismissAll } from "../../notifications/store.js";
 
 export interface UserMenuProps {
     userUid: string;
@@ -44,11 +47,11 @@ export interface UserMenuProps {
      * `/settings/auto-reply`, the only settings section that exists today; repoint this at a real
      * `/settings` landing page once a second section (Mail Filters, Signatures) makes one worth building. */
     showSettingsLink?: boolean;
-    /** Shows the new-mail notification controls, above "Admin Console"/"Sign Out": a "New mail pop-ups" on/off switch and, while
-     * the browser hasn't been asked, "Turn on desktop notifications". Both are per browser (see `newMailNotifications.ts`).
-     * For the shells that announce new mail (Mail); the consoles have nothing to announce. */
+    /** Shows the notification controls, above "Admin Console"/"Sign Out": a "Notifications" on/off switch for every pop-up and,
+     * while the browser hasn't been asked, "Turn on desktop notifications". Both are per browser (see `notifications/preferences.ts`
+     * and `newMailNotifications.ts`). For the shells that draw pop-ups (`AppShell`). */
     showNotificationSettings?: boolean;
-    /** Shows a "Keyboard shortcuts" item that calls this - opening the help dialog (`?` and Ctrl+/ do too). For the shells that have the
+    /** Shows a "Keyboard shortcuts" item that calls this - opening the help dialog (`?` and Ctrl+/ do too); not on the phone layout. For the shells that have the
      * keyboard layer (`AppChrome`); the consoles don't offer it. */
     onShowShortcuts?: () => void;
     /** Which way the menu opens from its button: `"down"` (the default; in a header) or `"up"` (in a footer, where there is no room below). */
@@ -84,10 +87,12 @@ function Avatar({ profile, initials, large }: { profile?: Profile; initials: str
  * trigger that opens a dropdown showing the caller's avatar/name, an "Account" link to auth-server's account page,
  * an optional "Settings" and "Admin Console" link, and "Sign Out". This service has no local user directory (see
  * `.claude/NOTES.md`), so the name and avatar come from auth-server, and the displayed name (and the initials badge)
- * falls back down a chain: the profile's name (`GET /api/profiles/me`), else the caller's username - their first
- * verified `name` alias (`GET /api/aliases?type=name`, asked for only when the profile gave no name) - else the bare
- * uid. Either lookup can fail (auth-server's CORS list not including this origin, or no profile document at all - a
- * 404 for some accounts) and neither ever surfaces as an error. The avatar image comes from the profile alone.
+ * falls back down a chain: the profile's name (`GET /api/profiles/me`), else the display name of the mailbox the
+ * caller owns (`listMailboxes()`, or the list the app frame already holds; a shared or delegated mailbox does not count), else the caller's username - their first
+ * verified `name` alias (`GET /api/aliases?type=name`) - else the bare uid. The mailbox and the username are asked for
+ * only when the profile gave no name, and the username only when the mailbox gave none. Every lookup can fail
+ * (auth-server's CORS list not including this origin, or no profile document at all - a 404 for some accounts) and none
+ * ever surfaces as an error. The avatar image comes from the profile alone.
  */
 export default function UserMenu({
     userUid,
@@ -104,6 +109,8 @@ export default function UserMenu({
     unseenErrors = 0,
 }: UserMenuProps) {
     const env = useKeyEnvironment();
+    // A phone has no keyboard to speak of, so the shortcuts list (and the dialog it opens) has nothing to offer there.
+    const isMobile = useIsMobile();
     const [open, setOpen] = useState(false);
     // Where the menu sits, in window coordinates: it is drawn through a portal into `<body>` with `position: fixed`, so no ancestor's
     // `overflow`, `z-index` or stacking context - a custom branding header's, say - can clip it or put it behind the page.
@@ -113,7 +120,14 @@ export default function UserMenu({
     const [popups, setPopups] = useState(true);
     const [permission, setPermission] = useState<DesktopPermission>("unsupported");
     const [profile, setProfile] = useState<Profile | undefined>(undefined);
+    // Whether the profile lookup has answered, with a profile or without: the fallback names are only worth asking for after that.
+    const [profileSettled, setProfileSettled] = useState(false);
     const [username, setUsername] = useState<string | undefined>(undefined);
+    // The mailboxes this menu listed itself; `null` until it has, or when it has no need to.
+    const [ownListing, setOwnListing] = useState<Mailbox[] | null>(null);
+    // Inside the app frame the mailboxes are already listed for the whole session (see `useMailConnection()`), so they are reused, not listed again.
+    const connection = useContext(MailConnectionContext);
+    const framed = connection !== null;
     const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -126,24 +140,57 @@ export default function UserMenu({
             try {
                 loaded = await getMyProfile(authServerUrl);
             } catch {
-                // Unreachable, blocked, or no profile document (404) - fall through to the username.
+                // Unreachable, blocked, or no profile document (404) - fall through to the fallback names.
             }
-            if (cancelled) {
-                return;
-            }
-            setProfile(loaded);
-            // The username is only the fallback for a missing name - no second request when the profile has one.
-            if (!formatProfileName(loaded)) {
-                const alias = await getMyUsername(authServerUrl);
-                if (!cancelled) {
-                    setUsername(alias);
-                }
+            if (!cancelled) {
+                setProfile(loaded);
+                setProfileSettled(true);
             }
         })();
         return () => {
             cancelled = true;
         };
     }, [authServerUrl]);
+
+    // The mailbox's display name and then the username are only fallbacks for a missing name - nothing more is asked when the profile has
+    // one, and no username is asked for when the mailbox has a name. Without `authServerUrl` the profile never settles, so nothing is.
+    const needsFallbackName = profileSettled && !formatProfileName(profile);
+
+    useEffect(() => {
+        if (!needsFallbackName || framed) {
+            return;
+        }
+        let cancelled = false;
+        // A failure (no mail server, no access) is just "no mailbox name" - the username is asked for next.
+        listMailboxes({ limit: 50 }).then(
+            (list) => !cancelled && setOwnListing(Array.isArray(list) ? list : []),
+            () => !cancelled && setOwnListing([]),
+        );
+        return () => {
+            cancelled = true;
+        };
+    }, [needsFallbackName, framed]);
+
+    // `null` while the mailboxes are still on their way.
+    const listed = framed ? (connection.status === "checking" ? null : connection.mailboxes) : ownListing;
+    const mailboxesKnown = listed !== null;
+    // Only a mailbox the caller owns counts: a shared or delegated one carries somebody else's name.
+    const mailboxName = needsFallbackName ? listed?.find((mb) => mb.ownerUserUid === userUid)?.displayName?.trim() || undefined : undefined;
+
+    useEffect(() => {
+        if (!authServerUrl || !needsFallbackName || !mailboxesKnown || mailboxName) {
+            return;
+        }
+        let cancelled = false;
+        void getMyUsername(authServerUrl).then((alias) => {
+            if (!cancelled) {
+                setUsername(alias);
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [authServerUrl, needsFallbackName, mailboxesKnown, mailboxName]);
 
     // Keyed on the joined names, not the array: a caller's fresh `["admin"]` each render must not re-ask.
     const trustedRolesKey = JSON.stringify(trustedRoles);
@@ -166,14 +213,18 @@ export default function UserMenu({
     // Read fresh each time the menu opens - another tab may have changed either since - and only on the client.
     useEffect(() => {
         if (open && showNotificationSettings) {
-            setPopups(getNewMailPopupsEnabled());
+            setPopups(getNotificationsEnabled());
             setPermission(desktopPermission());
         }
     }, [open, showNotificationSettings]);
 
     function togglePopups() {
-        setNewMailPopupsEnabled(!popups);
+        setNotificationsEnabled(!popups);
         setPopups(!popups);
+        if (popups) {
+            // Turned off: what is on screen goes too (it stays in "Recent notifications").
+            dismissAll();
+        }
     }
 
     async function enableDesktopNotifications() {
@@ -230,8 +281,9 @@ export default function UserMenu({
         };
     }, [open, placement]);
 
-    const name = formatProfileName(profile) ?? username ?? userUid;
-    const initials = profileInitials(profile, userUid, username);
+    const name = formatProfileName(profile) ?? mailboxName ?? username ?? userUid;
+    // The badge takes its letter from whichever fallback name is shown, so it never disagrees with the name beside it.
+    const initials = profileInitials(profile, userUid, mailboxName ?? username);
     const accountUrl = accountUrlOf(authServerUrl);
 
     return (
@@ -299,7 +351,7 @@ export default function UserMenu({
                             onClick={togglePopups}
                             className="flex w-full items-center justify-between gap-2 px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
                         >
-                            <span>New mail pop-ups</span>
+                            <span>Notifications</span>
                             <span className="text-xs font-semibold text-text-muted">{popups ? "On" : "Off"}</span>
                         </button>
                     )}
@@ -332,7 +384,7 @@ export default function UserMenu({
                             )}
                         </button>
                     )}
-                    {onShowShortcuts && (
+                    {onShowShortcuts && !isMobile && (
                         <button
                             role="menuitem"
                             type="button"

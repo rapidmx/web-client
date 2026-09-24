@@ -3,6 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
+import { createPortal } from "react-dom";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -305,6 +306,46 @@ describe("MailShell", () => {
         await waitFor(() =>
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages", expect.objectContaining({ method: "POST" })),
         );
+    });
+
+    it("floats a round New message button for the phone layout, which opens the same compose window", async () => {
+        const draft = { uid: "d1", version: 0, folderUid: "f-drafts", mailboxUid: "mb-a", subject: "", flags: {}, recipients: [] };
+        mockFetch((url, init) => {
+            if (url === "/api/mail/mailboxes/mb-a") return jsonResponse(200, mailboxA);
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [draftsFolder, inboxFolder]);
+            if (url === "/api/mail/messages" && (init?.method ?? "GET") === "POST") return jsonResponse(200, draft);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailShell userUid="u1">content</MailShell>);
+        const button = await screen.findByRole("button", { name: "New message" });
+        // Phone only, fixed just above the `h-14` bottom tab bar.
+        expect(button.className).toContain("md:hidden");
+        expect(button.className).toContain("fixed");
+        expect(button.className).toContain("bottom-[4.5rem]");
+
+        await user.click(button);
+
+        expect(await screen.findByRole("dialog", { name: "New Message" })).toBeInTheDocument();
+    });
+
+    it("gives the page a slot beside the folders button for its search box on the phone layout", async () => {
+        mockMailboxesAndFolders([mailboxA], [draftsFolder, inboxFolder]);
+        function Search() {
+            const { mobileSearchSlot } = useMailShell();
+            return mobileSearchSlot ? createPortal(<input aria-label="Search all mail" />, mobileSearchSlot) : null;
+        }
+        render(
+            <MailShell userUid="u1">
+                <Search />
+            </MailShell>,
+        );
+
+        const search = await screen.findByLabelText("Search all mail");
+        const row = screen.getByRole("button", { name: "Open folders" }).parentElement!;
+        expect(row.className).toContain("md:hidden");
+        expect(row).toContainElement(search);
     });
 
     it("defaults to the mailbox's Inbox folder and highlights it", async () => {

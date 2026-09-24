@@ -125,12 +125,15 @@ describe("the message card", () => {
     });
 
     describe("the footer", () => {
-        it("has Reply and Forward at the foot of a single message's card, which do what the header's do", async () => {
+        it("has Reply, Reply All and Forward at the foot of a single message's card, which do what the header's do", async () => {
             const user = userEvent.setup();
             render(<MessageDetailPane message={message()} attachments={[]} />);
             const reply = screen.getByRole("button", { name: "Reply to this message" });
             expect(reply).toHaveTextContent("Reply");
+            expect(screen.getByRole("button", { name: "Reply all to this message" })).toHaveTextContent("Reply All");
             expect(screen.getByRole("button", { name: "Forward this message" })).toHaveTextContent("Forward");
+            // In that order: Reply, Reply All, Forward.
+            expect([...reply.closest("div")!.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Reply", "Reply All", "Forward"]);
             expect(reply.closest("div")!.className).toContain("border-t");
             expect(reply.closest("div")!.className).toContain("print:hidden");
 
@@ -138,9 +141,13 @@ describe("the message card", () => {
             await vi.waitFor(() => expect(openCompose).toHaveBeenCalledTimes(1));
             expect(openCompose.mock.calls[0][0]).toMatchObject({ subject: "Re: Hello there", to: "Sender One <sender@example.com>" });
 
-            await user.click(screen.getByRole("button", { name: "Forward this message" }));
+            await user.click(screen.getByRole("button", { name: "Reply all to this message" }));
             await vi.waitFor(() => expect(openCompose).toHaveBeenCalledTimes(2));
-            expect(openCompose.mock.calls[1][0]).toMatchObject({ subject: "Fwd: Hello there" });
+            expect(openCompose.mock.calls[1][0]).toMatchObject({ subject: "Re: Hello there" });
+
+            await user.click(screen.getByRole("button", { name: "Forward this message" }));
+            await vi.waitFor(() => expect(openCompose).toHaveBeenCalledTimes(3));
+            expect(openCompose.mock.calls[2][0]).toMatchObject({ subject: "Fwd: Hello there" });
         });
 
         it("is only where the caller asks for it, in a thread", () => {

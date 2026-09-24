@@ -29,6 +29,12 @@ afterEach(() => {
     sessionStorage.clear();
 });
 
+/** Opens the phone layout's menu (the hamburger in the header) and returns the section links in it. */
+async function openMenu(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Open menu" }));
+    return within(await screen.findByRole("navigation", { name: "Admin menu" }));
+}
+
 describe("AdminShell", () => {
     it("redirects to auth-server's sign-in page, carrying return_to, when there is no userUid", async () => {
         const location = mockLocation();
@@ -308,7 +314,7 @@ describe("AdminShell", () => {
         expect(mailboxes.className).not.toContain("bg-primary/10");
     });
 
-    it("does not render mailbox-scoped sections (Quarantine, Ingest Queue) in the icon rail or mobile tab bar", async () => {
+    it("does not render mailbox-scoped sections (Quarantine, Ingest Queue) in the icon rail or the phone menu", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             throw new Error(`unexpected ${url}`);
@@ -330,16 +336,9 @@ describe("AdminShell", () => {
                 name: "Ingest Queue",
             }),
         ).not.toBeInTheDocument();
-        expect(
-            within(screen.getByRole("navigation", { name: "Mobile navigation" })).queryByRole("link", {
-                name: "Quarantine",
-            }),
-        ).not.toBeInTheDocument();
-        expect(
-            within(screen.getByRole("navigation", { name: "Mobile navigation" })).queryByRole("link", {
-                name: "Ingest Queue",
-            }),
-        ).not.toBeInTheDocument();
+        const menu = await openMenu(userEvent.setup());
+        expect(menu.queryByRole("link", { name: "Quarantine" })).not.toBeInTheDocument();
+        expect(menu.queryByRole("link", { name: "Ingest Queue" })).not.toBeInTheDocument();
 
         // Still resolves the header label for a mailbox-scoped section reached via a mailbox detail page link.
         expect(screen.getByText("Quarantine", { selector: "span" })).toBeInTheDocument();
@@ -375,8 +374,8 @@ describe("AdminShell", () => {
             );
             await screen.findByText("content");
 
-            for (const name of ["Admin sections", "Mobile navigation"]) {
-                const nav = within(screen.getByRole("navigation", { name }));
+            const menu = await openMenu(userEvent.setup());
+            for (const nav of [within(screen.getByRole("navigation", { name: "Admin sections" })), menu]) {
                 const labels = nav.getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent);
                 expect(labels.slice(-3)).toEqual(["Branding", "Bookings", "Rooms"]);
                 expect(nav.getByRole("link", { name: "Bookings" })).toHaveAttribute("href", "/admin/bookings");
@@ -400,10 +399,7 @@ describe("AdminShell", () => {
             const rail = within(screen.getByRole("navigation", { name: "Admin sections" }));
             expect(rail.getByRole("link", { name: "Bookings" })).toHaveAttribute("aria-current", "page");
             expect(rail.getByRole("link", { name: "Bookings" }).className).toContain("bg-primary/10");
-            expect(within(screen.getByRole("navigation", { name: "Mobile navigation" })).getByRole("link", { name: "Bookings" })).toHaveAttribute(
-                "aria-current",
-                "page",
-            );
+            expect((await openMenu(userEvent.setup())).getByRole("link", { name: "Bookings" })).toHaveAttribute("aria-current", "page");
             expect(rail.getByRole("link", { name: "Mailboxes" })).not.toHaveAttribute("aria-current");
             expect(screen.getByText("Bookings", { selector: "header span" })).toBeInTheDocument();
         });
@@ -466,7 +462,7 @@ describe("AdminShell", () => {
         expect(screen.getByRole("navigation", { name: "Admin sections" })).toHaveClass("hidden", "md:flex");
     });
 
-    it("renders the mobile bottom tab bar with the same global sections, highlighting the active one", async () => {
+    it("has no bottom tab bar: on a phone the sections are a menu that slides in from the left, opened from the header", async () => {
         mockFetch(() => jsonResponse(200, {}));
         render(
             <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
@@ -475,9 +471,38 @@ describe("AdminShell", () => {
         );
         await screen.findByText("content");
 
-        const tabBar = within(screen.getByRole("navigation", { name: "Mobile navigation" }));
-        expect(tabBar.getByRole("link", { name: "Domains" })).toHaveAttribute("aria-current", "page");
-        expect(tabBar.getByRole("link", { name: "Mailboxes" })).not.toHaveAttribute("aria-current");
+        expect(screen.queryByRole("navigation", { name: "Mobile navigation" })).not.toBeInTheDocument();
+        // Closed until asked for, and phone-only.
+        expect(screen.queryByRole("dialog", { name: "Admin" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Open menu" })).toHaveClass("md:hidden");
+
+        const user = userEvent.setup();
+        const menu = await openMenu(user);
+        expect(screen.getByRole("dialog", { name: "Admin" })).toBeInTheDocument();
+        expect(menu.getByRole("link", { name: "Domains" })).toHaveAttribute("aria-current", "page");
+        expect(menu.getByRole("link", { name: "Mailboxes" })).not.toHaveAttribute("aria-current");
+        expect(menu.getByRole("link", { name: "Mailboxes" })).toHaveAttribute("href", "/admin");
+
+        await user.click(within(screen.getByRole("dialog", { name: "Admin" })).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog", { name: "Admin" })).not.toBeInTheDocument();
+    });
+
+    it("closes the menu when a section is picked", async () => {
+        mockFetch(() => jsonResponse(200, {}));
+        render(
+            <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AdminShell>,
+        );
+        await screen.findByText("content");
+        const user = userEvent.setup();
+        const menu = await openMenu(user);
+
+        // The link goes on to a page load; the menu doesn't wait for it.
+        menu.getByRole("link", { name: "Audit Log" }).addEventListener("click", (event) => event.preventDefault());
+        await user.click(menu.getByRole("link", { name: "Audit Log" }));
+
+        expect(screen.queryByRole("dialog", { name: "Admin" })).not.toBeInTheDocument();
     });
 
     it("shows the header with the active section's label and renders children, and signs out to auth-server", async () => {

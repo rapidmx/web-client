@@ -25,8 +25,12 @@ export const THREAD_PAGE_SIZE = 100;
  */
 export const THREAD_MESSAGE_LIMIT = 500;
 
+/** What the pane needs to know of a conversation up front: the thread itself is loaded by `conversationId`. The subject and
+ * count fill the header while it loads, so a caller that only has a message (the mobile route) gives its subject and a count of 1. */
+export type ConversationThreadHead = Pick<ConversationSummary, "conversationId" | "subject" | "messageCount">;
+
 export interface ConversationThreadPaneProps {
-    conversation: ConversationSummary | null;
+    conversation: ConversationThreadHead | null;
     /** The mailbox the conversation was listed from - `listConversationMessages()` is mailbox-scoped. */
     mailboxUid: string;
     /**

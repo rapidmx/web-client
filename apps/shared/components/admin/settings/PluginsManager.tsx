@@ -268,8 +268,9 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         void refreshUpdates();
     }
 
-    /** Runs an action on an installed plugin's row, which is busy meanwhile, and shows why it failed. */
-    async function onRow(plugin: Plugin, action: () => Promise<string | null>) {
+    /** Runs an action on a plugin's row (an installed plugin's, or an uninstalled one's), which is busy meanwhile, and
+     * shows why it failed. */
+    async function onRow(plugin: { uid: string }, action: () => Promise<string | null>) {
         setBusy(plugin.uid, true);
         setError(null);
         setRetryEnableUid(null);
@@ -381,6 +382,20 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
 
     function upgrade(plugin: Plugin, packageVersion: string) {
         return onRow(plugin, () => changeVersion(plugin, packageVersion));
+    }
+
+    /** Installs an uninstalled plugin again, at its latest version - as adding it by name would. */
+    function reinstall(purge: PluginPurgeInfo) {
+        const displayName: string = purgeName(purge);
+        return onRow(purge, async () => {
+            let latest: string;
+            try {
+                latest = (await planPluginChange(purge.name)).plugin.version;
+            } catch (err) {
+                return errorMessage(err, `Could not install ${displayName}.`);
+            }
+            return install(purge.name, latest, displayName);
+        });
     }
 
     /** Runs the steps of a failed data deletion that failed, again. */
@@ -564,7 +579,13 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                                 );
                             })}
                             {purges.map((purge) => (
-                                <UninstalledPluginRow key={purge.uid} purge={purge} busy={busyUids.has(purge.uid)} onRetry={() => void retryPurge(purge)} />
+                                <UninstalledPluginRow
+                                    key={purge.uid}
+                                    purge={purge}
+                                    busy={busyUids.has(purge.uid)}
+                                    onRetry={() => void retryPurge(purge)}
+                                    onInstall={() => void reinstall(purge)}
+                                />
                             ))}
                         </tbody>
                     </table>
@@ -899,7 +920,7 @@ function PluginServers({ plugin, status }: { plugin: Plugin; status: PluginStatu
 }
 
 /** The row of a plugin that was uninstalled but whose data deletion is still listed: what became of its data. */
-function UninstalledPluginRow({ purge, busy, onRetry }: { purge: PluginPurgeInfo; busy: boolean; onRetry: () => void }) {
+function UninstalledPluginRow({ purge, busy, onRetry, onInstall }: { purge: PluginPurgeInfo; busy: boolean; onRetry: () => void; onInstall: () => void }) {
     const failedSteps = purge.steps.filter((step) => !step.ok);
     return (
         <tr role="row" className={INSTALLED_ROW_CLASS}>
@@ -940,8 +961,8 @@ function UninstalledPluginRow({ purge, busy, onRetry }: { purge: PluginPurgeInfo
                 </div>
             </td>
             <td role="cell" className={`${INSTALLED_TD_CLASS} basis-full pt-1 pb-3`}>
-                {purge.state === "failed" && (
-                    <div className="flex lg:justify-end">
+                <div className="flex gap-2 lg:justify-end">
+                    {purge.state === "failed" && (
                         <Button
                             type="button"
                             variant="secondary"
@@ -953,8 +974,20 @@ function UninstalledPluginRow({ purge, busy, onRetry }: { purge: PluginPurgeInfo
                         >
                             Retry
                         </Button>
-                    </div>
-                )}
+                    )}
+                    {/* A plugin can always be installed again. Adding it before its data is deleted cancels the deletion;
+                        while the deletion is running the server asks to wait until it has finished. */}
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto"
+                        aria-label={`Install ${purgeName(purge)}`}
+                        disabled={busy || purge.state === "running"}
+                        onClick={onInstall}
+                    >
+                        Install
+                    </Button>
+                </div>
             </td>
         </tr>
     );
@@ -1266,11 +1299,31 @@ function needsSelection(definition: PluginSettingDefinition, saved: PluginSettin
     );
 }
 
+/** What a plugin's setting default writes for the host this console was reached at, like `https://<host>/meet`. */
+const HOST_PLACEHOLDER = "<host>";
+
+/**
+ * The value offered for a text setting whose default names the host (`https://<host>/meet`) and that has no real value
+ * saved yet - nothing, an empty value, or the placeholder itself, which an older server stores when it installs the
+ * plugin. It's the default with this console's host filled in, and is only stored once the form is saved.
+ */
+function suggestedHost(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined): string | undefined {
+    if (typeof definition.default !== "string" || !definition.default.includes(HOST_PLACEHOLDER) || typeof window === "undefined") {
+        return undefined;
+    }
+    const unset: boolean = saved === undefined || saved === "" || (typeof saved === "string" && saved.includes(HOST_PLACEHOLDER));
+    return unset ? definition.default.split(HOST_PLACEHOLDER).join(window.location.host) : undefined;
+}
+
 /** A setting's current form value: its saved value, else its default - or, for a required select with neither, its
  * first option. Kept as a string for text inputs. */
 function initialValue(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined): PluginSettingValue | "" {
     if (needsSelection(definition, saved)) {
         return definition.options![0].value;
+    }
+    const suggestion = suggestedHost(definition, saved);
+    if (suggestion !== undefined) {
+        return suggestion;
     }
     const value = saved ?? definition.default;
     if (definition.type === "boolean") {
@@ -1291,13 +1344,14 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
         e.preventDefault();
         // The server replaces the whole settings object, so every setting is sent. One left alone is sent as it's saved
         // - `null` when nothing is, so it keeps following the plugin's default rather than pinning the default shown.
-        // A required select with nothing to fall back on is sent as the form picked it.
+        // A required select with nothing to fall back on, and a setting offering this console's host, are sent as the
+        // form shows them.
         const settings: Record<string, PluginSettingValue | null> = {};
         let changed = false;
         for (const definition of definitions) {
             const key: string = definition.key;
             const value = values[key];
-            if (value === initial.current[key] && !needsSelection(definition, plugin.settings[key])) {
+            if (value === initial.current[key] && !needsSelection(definition, plugin.settings[key]) && suggestedHost(definition, plugin.settings[key]) === undefined) {
                 settings[key] = plugin.settings[key] ?? null;
                 continue;
             }

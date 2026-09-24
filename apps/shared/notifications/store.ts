@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { getNotificationsEnabled } from "./preferences.js";
+
 /**
  * The app's one notification store: every pop-up - new mail, a failed send, an API error, an expired session - goes through
  * `notify()`. It is deliberately framework-free (no React, no DOM beyond `sessionStorage`/timers), so it can be called from a hook,
@@ -19,6 +21,7 @@
  * hidden (`setAllPaused()`), and continues from where it was.
  * - **Deduplicated by `dedupeKey`**: a second notification with a key that is still on screen (or waiting) does not stack - it replaces
  * the first one's content, restarts its clock and raises its `count`, so a flapping error is one pop-up saying "x3".
+ * - **The user can turn them all off** (`preferences.ts`): `notify()` then shows nothing new, and only records it in the history.
  * - **Nothing is lost when one goes**: the last `HISTORY_LIMIT` (30, except new-mail pop-ups, which the inbox already holds) are
  * kept, in memory and in `sessionStorage`, with which errors nobody has seen yet.
  *
@@ -379,6 +382,12 @@ export function notify(input: NotifyInput): string {
         paused: false,
     };
     applyInput(entry, input);
+    if (!getNotificationsEnabled()) {
+        // The user has pop-ups off: nothing is shown, but it is listed in the history like any other.
+        record(entry);
+        emit();
+        return id;
+    }
     const room = visibleCount() < MAX_VISIBLE;
     entries.push(entry);
     if (room) {

@@ -185,7 +185,8 @@ describe("the uninstall dialog", () => {
         expect(within(row).getByText("@rapidmx/mapi")).toBeInTheDocument();
         expect(within(row).getByText("Uninstalled")).toBeInTheDocument();
         expect(within(row).getByText("1 of 2 servers still running it")).toBeInTheDocument();
-        expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+        // Nothing to retry, but the plugin can be installed again.
+        expect(within(row).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Install MAPI over HTTP"]);
         // The other plugin's row is untouched.
         expect(screen.getByRole("button", { name: "Disable Exchange ActiveSync" })).toBeInTheDocument();
         expect(toasts()).toEqual([expect.objectContaining({ kind: "info", title: "MAPI over HTTP uninstalled", message: expect.stringContaining("deleted once every server has stopped running it") })]);
@@ -602,7 +603,7 @@ describe("following a deletion", () => {
             plugins: [eas],
             status: { hash: "current", instances: [instance()], purges: [purgeOf({ serversRunning: 1, serversTotal: 1 })] },
             extra: (url, init) => {
-                if (url === "/api/system/plugins/registry/%40rapidmx%2Fmapi") {
+                if (url === "/api/system/plugins/registry?name=%40rapidmx%2Fmapi") {
                     return jsonResponse(200, {
                         package: { name: "@rapidmx/mapi", latest: "1.0.0", versions: ["1.0.0"] },
                         selected: { name: "@rapidmx/mapi", version: "1.0.0", peerDependencies: {}, manifest: { apiVersion: 1, displayName: "MAPI over HTTP" } },
@@ -636,11 +637,76 @@ describe("following a deletion", () => {
         expect(screen.getByRole("button", { name: "Enable MAPI over HTTP" })).toBeInTheDocument();
     });
 
+    describe("installing an uninstalled plugin again from its row", () => {
+        const planLatest = (url: string) =>
+            url === "/api/system/plugins/plan?name=%40rapidmx%2Fmapi"
+                ? jsonResponse(200, { plugin: { name: "@rapidmx/mapi", version: "1.2.0" }, install: [], enable: [], conflicts: [] })
+                : undefined;
+
+        it.each(["pending", "done", "failed"])("offers Install for a plugin whose data deletion is %s, at its latest version", async (state) => {
+            const fetchMock = mockApi({
+                plugins: [eas],
+                status: { hash: "current", instances: [instance()], purges: [purgeOf({ state, error: state === "failed" ? "boom" : undefined })] },
+                extra: (url, init) => {
+                    if (url === "/api/system/plugins" && init?.method === "POST") {
+                        return jsonResponse(200, { plugin: mapi, dependencies: [], warnings: state === "pending" ? ["Its data is kept."] : [] });
+                    }
+                    return planLatest(url);
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            await user.click(await screen.findByRole("button", { name: "Install MAPI over HTTP" }));
+
+            await waitFor(() => expect(screen.getByRole("button", { name: "Enable MAPI over HTTP" })).toBeInTheDocument());
+            const post = fetchMock.mock.calls.find((c) => c[0] === "/api/system/plugins" && (c[1] as RequestInit)?.method === "POST")!;
+            expect(JSON.parse((post[1] as RequestInit).body as string)).toMatchObject({ name: "@rapidmx/mapi", packageVersion: "1.2.0" });
+            // It is installed again, so the uninstalled entry is gone.
+            expect(screen.queryByRole("button", { name: "Install MAPI over HTTP" })).not.toBeInTheDocument();
+        });
+
+        it("can't be pressed while the data is being deleted", async () => {
+            mockApi({ plugins: [eas], status: { hash: "current", instances: [instance()], purges: [purgeOf({ state: "running" })] } });
+            renderPage();
+            expect(await screen.findByRole("button", { name: "Install MAPI over HTTP" })).toBeDisabled();
+        });
+
+        it("shows why it couldn't be installed", async () => {
+            mockApi({
+                plugins: [eas],
+                status: { hash: "current", instances: [instance()], purges: [purgeOf({ state: "done" })] },
+                extra: (url, init) => {
+                    if (url === "/api/system/plugins" && init?.method === "POST") {
+                        return jsonResponse(409, { message: "The data of @rapidmx/mapi is being deleted right now. Try again when that has finished." });
+                    }
+                    return planLatest(url);
+                },
+            });
+            const user = userEvent.setup();
+            renderPage();
+            await user.click(await screen.findByRole("button", { name: "Install MAPI over HTTP" }));
+            expect(await screen.findByText(/is being deleted right now/)).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Install MAPI over HTTP" })).toBeEnabled();
+        });
+
+        it("shows why the latest version couldn't be found", async () => {
+            mockApi({
+                plugins: [eas],
+                status: { hash: "current", instances: [instance()], purges: [purgeOf({ state: "done" })] },
+                extra: (url) => (url.startsWith("/api/system/plugins/plan?") ? jsonResponse(502, { message: "The plugin registry is unreachable." }) : undefined),
+            });
+            const user = userEvent.setup();
+            renderPage();
+            await user.click(await screen.findByRole("button", { name: "Install MAPI over HTTP" }));
+            expect(await screen.findByText("The plugin registry is unreachable.")).toBeInTheDocument();
+        });
+    });
+
     it("says nothing extra when adding a plugin cancels nothing", async () => {
         mockApi({
             plugins: [eas],
             extra: (url, init) => {
-                if (url === "/api/system/plugins/registry/%40rapidmx%2Fmapi") {
+                if (url === "/api/system/plugins/registry?name=%40rapidmx%2Fmapi") {
                     return jsonResponse(200, {
                         package: { name: "@rapidmx/mapi", latest: "1.0.0", versions: ["1.0.0"] },
                         selected: { name: "@rapidmx/mapi", version: "1.0.0", peerDependencies: {}, manifest: { apiVersion: 1, displayName: "MAPI over HTTP" } },

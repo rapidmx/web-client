@@ -1202,6 +1202,8 @@ describe("ComposeWindow", () => {
 
             expect(dialog.className).toContain("fixed inset-0 w-full h-full rounded-none");
             expect(dialog.className).not.toContain("w-[480px]");
+            // Not `relative` as well: Tailwind emits that after `fixed`, and it would win.
+            expect(dialog.className.split(" ")).not.toContain("relative");
             expect(screen.queryByRole("separator", { name: "Resize" })).not.toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Expand" })).not.toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Collapse" })).not.toBeInTheDocument();

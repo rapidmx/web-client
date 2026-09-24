@@ -9,6 +9,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
 import NewMailboxPage from "../../../../../apps/admin/mailboxes/new/index.js";
 
+// A fixed device zone, so the form's starting zone doesn't depend on the machine the tests run on.
+vi.mock("@rapidmx/react-shared/util/timeZone.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@rapidmx/react-shared/util/timeZone.js")>()),
+    deviceTimeZone: () => "Europe/Berlin",
+}));
+
 afterEach(() => {
     vi.unstubAllGlobals();
 });
@@ -82,6 +88,31 @@ describe("NewMailboxPage", () => {
         expect(requestBody.timezone).toBe("America/Los_Angeles");
         expect(requestBody.quotaBytes).toBe(10_000_000_000);
         expect(requestBody.ownerUserUid).toBeUndefined();
+    });
+
+    it("starts the timezone on the admin's device zone, and sends it when it is left alone", async () => {
+        let requestBody: any;
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+            if (url === "/api/mail/mailboxes" && init?.method === "POST") {
+                requestBody = JSON.parse(init.body as string);
+                return jsonResponse(200, { uid: "mb4" });
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        mockLocation();
+        const user = userEvent.setup();
+        render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New mailbox");
+
+        expect(screen.getByLabelText("Timezone")).toHaveValue("Europe/Berlin");
+        await user.type(screen.getByLabelText("Primary SMTP address"), "support@example.com");
+        await user.type(screen.getByLabelText("Display name"), "Support");
+        await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+        await vi.waitFor(() => expect(requestBody).toBeDefined());
+        expect(requestBody.timezone).toBe("Europe/Berlin");
     });
 
     it("creates a mailbox with an explicit owner, looked up and confirmed first", async () => {

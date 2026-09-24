@@ -6,13 +6,16 @@ import React from "react";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch } from "../testUtils.js";
+import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import UserMenu from "../../../apps/shared/components/layout/UserMenu.js";
+import { MailConnectionContext, type MailConnection } from "../../../apps/shared/mail/useMailConnection.js";
+import { getNotificationsSnapshot, notify, resetNotifications } from "../../../apps/shared/notifications/store.js";
 
 const AUTH_SERVER_URL = "https://auth.example.com";
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    resetNotifications();
 });
 
 describe("UserMenu", () => {
@@ -60,7 +63,7 @@ describe("UserMenu", () => {
         expect(screen.queryByRole("menuitem", { name: "Admin Console" })).not.toBeInTheDocument();
     });
 
-    describe("new mail notification settings", () => {
+    describe("notification settings", () => {
         function stubNotification(permission: NotificationPermission, requestPermission = vi.fn().mockResolvedValue(permission)) {
             vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission, requestPermission }));
             return requestPermission;
@@ -75,13 +78,13 @@ describe("UserMenu", () => {
             expect(screen.queryByRole("menuitem", { name: "Turn on desktop notifications" })).not.toBeInTheDocument();
         });
 
-        it("switch new mail pop-ups on and off, and remember it", async () => {
+        it("switch notifications on and off, and remember it", async () => {
             stubNotification("granted");
             const user = userEvent.setup();
             render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
             await user.click(screen.getByRole("button", { name: "Account menu" }));
 
-            const toggle = screen.getByRole("menuitemcheckbox", { name: /New mail pop-ups/ });
+            const toggle = screen.getByRole("menuitemcheckbox", { name: /Notifications/ });
             expect(toggle).toHaveAttribute("aria-checked", "true");
             expect(toggle).toHaveTextContent("On");
 
@@ -95,18 +98,35 @@ describe("UserMenu", () => {
             expect(localStorage.getItem("rapidmx-new-mail-popups")).toBeNull();
         });
 
+        it("take away the pop-ups on screen when switched off", async () => {
+            stubNotification("granted");
+            notify({ kind: "info", title: "Something happened" });
+            expect(getNotificationsSnapshot().visible).toHaveLength(1);
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            await user.click(screen.getByRole("menuitemcheckbox", { name: /Notifications/ }));
+            expect(getNotificationsSnapshot().visible).toEqual([]);
+            // Still in "Recent notifications".
+            expect(getNotificationsSnapshot().history.map((item) => item.title)).toEqual(["Something happened"]);
+
+            // Switching them back on brings nothing back.
+            await user.click(screen.getByRole("menuitemcheckbox", { name: /Notifications/ }));
+            expect(getNotificationsSnapshot().visible).toEqual([]);
+        });
+
         it("read the saved choice each time the menu opens", async () => {
             stubNotification("granted");
             localStorage.setItem("rapidmx-new-mail-popups", "off");
             const user = userEvent.setup();
             render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
             await user.click(screen.getByRole("button", { name: "Account menu" }));
-            expect(screen.getByRole("menuitemcheckbox", { name: /New mail pop-ups/ })).toHaveAttribute("aria-checked", "false");
+            expect(screen.getByRole("menuitemcheckbox", { name: /Notifications/ })).toHaveAttribute("aria-checked", "false");
 
             await user.click(screen.getByRole("button", { name: "Account menu" }));
             localStorage.removeItem("rapidmx-new-mail-popups");
             await user.click(screen.getByRole("button", { name: "Account menu" }));
-            expect(screen.getByRole("menuitemcheckbox", { name: /New mail pop-ups/ })).toHaveAttribute("aria-checked", "true");
+            expect(screen.getByRole("menuitemcheckbox", { name: /Notifications/ })).toHaveAttribute("aria-checked", "true");
         });
 
         it("offer desktop notifications only while the browser has not been asked, and ask only when clicked", async () => {
@@ -146,7 +166,7 @@ describe("UserMenu", () => {
             await user.click(screen.getByRole("button", { name: "Account menu" }));
             const items = [...screen.getByRole("menu").querySelectorAll('[role^="menuitem"]')];
             expect(items.map((item) => item.textContent)).toEqual([
-                expect.stringContaining("New mail pop-ups"),
+                expect.stringContaining("Notifications"),
                 "Turn on desktop notifications",
                 "Admin Console",
                 "Sign Out",
@@ -345,6 +365,19 @@ describe("UserMenu", () => {
     describe("displayed name fallback chain", () => {
         const PROFILE_URL = `${AUTH_SERVER_URL}/api/profiles/me`;
         const ALIASES_URL = `${AUTH_SERVER_URL}/api/aliases?type=name`;
+        const MAILBOXES_URL = "/api/mail/mailboxes?limit=50&page=0";
+        const mailbox = (overrides: Record<string, unknown> = {}) => ({
+            uid: "mb1",
+            version: 0,
+            ownerUserUid: "u1",
+            primarySmtpAddress: "u1@example.com",
+            aliasAddresses: [],
+            displayName: "Jean-Philippe Steinmetz",
+            timezone: "UTC",
+            quotaBytes: 1,
+            usedBytes: 0,
+            ...overrides,
+        });
 
         it("uses the profile's name and never asks for the username when the profile has one", async () => {
             const fetchMock = mockFetch((url) => {
@@ -410,7 +443,7 @@ describe("UserMenu", () => {
             render(<UserMenu userUid="b1c2d3" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
 
             await user.click(screen.getByRole("button", { name: "Account menu" }));
-            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
             expect(screen.getByText("b1c2d3")).toBeInTheDocument();
             expect(screen.getAllByText("B")).toHaveLength(2);
             expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -425,8 +458,169 @@ describe("UserMenu", () => {
             render(<UserMenu userUid="b1c2d3" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
 
             await user.click(screen.getByRole("button", { name: "Account menu" }));
-            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
             expect(screen.getByText("b1c2d3")).toBeInTheDocument();
+        });
+
+        it("uses the display name of the mailbox the caller owns when the profile has no name, without asking for the username", async () => {
+            const fetchMock = mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                if (url === MAILBOXES_URL) return jsonResponse(200, [mailbox()]);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("Jean-Philippe Steinmetz")).toBeInTheDocument();
+            // The badge's letter comes from the same name, not from the uid or the username.
+            expect(screen.getAllByText("J")).toHaveLength(2);
+            expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([PROFILE_URL, MAILBOXES_URL]);
+        });
+
+        it("uses the mailbox name when the profile exists but has no name, and keeps the profile's avatar image", async () => {
+            mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(200, { uid: "u1", avatar: "https://example.com/a.png" });
+                if (url === MAILBOXES_URL) return jsonResponse(200, [mailbox()]);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("Jean-Philippe Steinmetz")).toBeInTheDocument();
+            document.querySelectorAll("img").forEach((img) => expect(img).toHaveAttribute("src", "https://example.com/a.png"));
+        });
+
+        it("picks the mailbox the caller owns out of the ones they can reach", async () => {
+            mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                if (url === MAILBOXES_URL) {
+                    return jsonResponse(200, [
+                        mailbox({ uid: "shared", ownerUserUid: undefined, displayName: "Support" }),
+                        mailbox({ uid: "boss", ownerUserUid: "someone-else", displayName: "Boss" }),
+                        mailbox({ uid: "mine", displayName: "Arthur Dent" }),
+                    ]);
+                }
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("Arthur Dent")).toBeInTheDocument();
+            expect(screen.queryByText("Support")).not.toBeInTheDocument();
+            expect(screen.queryByText("Boss")).not.toBeInTheDocument();
+        });
+
+        it("ignores mailboxes the caller does not own (shared or delegated) and falls back to the username", async () => {
+            const fetchMock = mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                if (url === MAILBOXES_URL) return jsonResponse(200, [mailbox({ ownerUserUid: undefined, displayName: "Support" })]);
+                if (url === ALIASES_URL) return jsonResponse(200, [{ alias: "arthur", type: "name", verified: true }]);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("arthur")).toBeInTheDocument();
+            expect(screen.queryByText("Support")).not.toBeInTheDocument();
+            expect(fetchMock).toHaveBeenCalledWith(ALIASES_URL, expect.anything());
+        });
+
+        it("falls back to the username when the mailbox lookup fails, without surfacing an error", async () => {
+            mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                if (url === MAILBOXES_URL) return jsonResponse(500, { message: "boom" });
+                return jsonResponse(200, [{ alias: "arthur", type: "name", verified: true }]);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("arthur")).toBeInTheDocument();
+            expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        });
+
+        it("ignores a mailbox that has a blank display name", async () => {
+            mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                if (url === MAILBOXES_URL) return jsonResponse(200, [mailbox({ displayName: "  " })]);
+                return jsonResponse(200, [{ alias: "arthur", type: "name", verified: true }]);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("arthur")).toBeInTheDocument();
+        });
+
+        describe("inside the app frame", () => {
+            const framed = (connection: { status: string; mailboxes: unknown[] }, children: React.ReactNode) => (
+                <MailConnectionContext.Provider value={connection as unknown as MailConnection}>{children}</MailConnectionContext.Provider>
+            );
+
+            it("reuses the mailboxes the frame already listed, without listing them again", async () => {
+                const fetchMock = mockFetch((url) => {
+                    if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                    throw new Error(`unexpected ${url}`);
+                });
+                const user = userEvent.setup();
+                render(
+                    framed(
+                        { status: "ready", mailboxes: [mailbox({ ownerUserUid: undefined, displayName: "Support" }), mailbox()] },
+                        <UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />,
+                    ),
+                );
+
+                await user.click(screen.getByRole("button", { name: "Account menu" }));
+                expect(await screen.findByText("Jean-Philippe Steinmetz")).toBeInTheDocument();
+                expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([PROFILE_URL]);
+            });
+
+            it("waits for the frame's list before falling back to the username, then falls back when it holds no owned mailbox", async () => {
+                const fetchMock = mockFetch((url) => {
+                    if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                    if (url === ALIASES_URL) return jsonResponse(200, [{ alias: "arthur", type: "name", verified: true }]);
+                    throw new Error(`unexpected ${url}`);
+                });
+                const user = userEvent.setup();
+                const menu = <UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />;
+                const { rerender } = render(framed({ status: "checking", mailboxes: [] }, menu));
+                await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+                await act(async () => undefined);
+                expect(fetchMock).toHaveBeenCalledTimes(1);
+
+                rerender(framed({ status: "ready", mailboxes: [mailbox({ ownerUserUid: "someone-else" })] }, menu));
+                await user.click(screen.getByRole("button", { name: "Account menu" }));
+                expect(await screen.findByText("arthur")).toBeInTheDocument();
+            });
+
+            it("shows nothing from the frame's list without an authServerUrl", async () => {
+                const user = userEvent.setup();
+                render(framed({ status: "ready", mailboxes: [mailbox()] }, <UserMenu userUid="u1" onSignOut={vi.fn()} />));
+
+                await user.click(screen.getByRole("button", { name: "Account menu" }));
+                expect(screen.getByText("u1")).toBeInTheDocument();
+            });
+        });
+
+        it("ignores a mailbox response that lands after the menu is gone, and does not go on to ask for the username", async () => {
+            let resolveMailboxes: (response: Response) => void = () => undefined;
+            const fetchMock = mockFetch((url) =>
+                url === PROFILE_URL
+                    ? Promise.resolve(jsonResponse(404, { message: "Not found." }))
+                    : new Promise<Response>((resolve) => (resolveMailboxes = resolve)),
+            );
+            const { unmount } = render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+            unmount();
+
+            await act(async () => {
+                resolveMailboxes(jsonResponse(200, [mailbox()]));
+            });
+            expect(fetchMock).toHaveBeenCalledTimes(2);
         });
 
         it("ignores a profile response that lands after the menu is gone, and does not go on to ask for the username", async () => {
@@ -443,13 +637,13 @@ describe("UserMenu", () => {
 
         it("ignores a username response that lands after the menu is gone", async () => {
             let resolveAliases: (response: Response) => void = () => undefined;
-            const fetchMock = mockFetch((url) =>
-                url === PROFILE_URL
-                    ? Promise.resolve(jsonResponse(404, { message: "Not found." }))
-                    : new Promise<Response>((resolve) => (resolveAliases = resolve)),
-            );
+            const fetchMock = mockFetch((url) => {
+                if (url === PROFILE_URL) return Promise.resolve(jsonResponse(404, { message: "Not found." }));
+                if (url === MAILBOXES_URL) return Promise.resolve(jsonResponse(200, []));
+                return new Promise<Response>((resolve) => (resolveAliases = resolve));
+            });
             const { unmount } = render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
-            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
             unmount();
 
             await act(async () => {
@@ -507,6 +701,15 @@ describe("UserMenu keyboard shortcuts item", () => {
 
         await user.click(screen.getByRole("button", { name: "Account menu" }));
         expect(screen.queryByRole("menuitem", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
+    });
+
+    it("is left out on the phone layout, which has no keyboard for it", async () => {
+        mockMatchMedia(true);
+        const user = userEvent.setup();
+        render(<UserMenu userUid="jane" onSignOut={vi.fn()} showSettingsLink onShowShortcuts={vi.fn()} />);
+
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Settings", "Sign Out"]);
     });
 
     it("opens the shortcuts dialog and closes the menu, sitting above Sign Out and after Settings", async () => {

@@ -167,6 +167,47 @@ describe("MessageDetailPage", () => {
         );
     });
 
+    describe("opened from a conversation (?conversation=)", () => {
+        const read = { read: true, flagged: false, answered: false, forwarded: false };
+        const first = { ...message, flags: read };
+        const reply = { ...message, uid: "m2", subject: "Re: Hello there", flags: read, bodyPreview: "Thanks for writing.", receivedDate: "2026-01-02T00:00:00.000Z" };
+        const third = { ...message, uid: "m3", subject: "Re: Hello there", flags: read, bodyPreview: "One more thing.", receivedDate: "2026-01-03T00:00:00.000Z" };
+
+        beforeEach(() => {
+            window.history.pushState({}, "", "/messages/m2?conversation=c1");
+        });
+        afterEach(() => {
+            window.history.pushState({}, "", "/");
+        });
+
+        it("shows the whole thread, not only the message that was opened, and a link back to the list", async () => {
+            const fetchMock = mockShell((url) => {
+                if (url === "/api/mail/messages/m2") return jsonResponse(200, reply);
+                if (url.startsWith("/api/mail/messages/conversations/c1?")) return jsonResponse(200, [first, reply, third]);
+                return undefined;
+            });
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m2" }} />);
+
+            // Every message of the thread is on the page: the opened one and the newer one expanded, the older one folded to a summary.
+            expect(await screen.findByText("3 messages")).toBeInTheDocument();
+            expect(screen.getAllByRole("heading", { name: /Hello there/ }).length).toBeGreaterThan(0);
+            expect(screen.getByText("Hi there.")).toBeInTheDocument();
+            expect(screen.getByRole("link", { name: /Back to messages/ })).toHaveAttribute("href", "/?mailboxUid=mb1&folderUid=f1");
+            const threadUrl = fetchMock.mock.calls.map((c) => String(c[0])).find((url) => url.startsWith("/api/mail/messages/conversations/c1?"))!;
+            expect(new URLSearchParams(threadUrl.split("?")[1]).get("mailboxUid")).toBe("mb1");
+        });
+
+        it("shows why the conversation could not be loaded", async () => {
+            mockShell((url) => {
+                if (url === "/api/mail/messages/m2") return jsonResponse(200, reply);
+                if (url.startsWith("/api/mail/messages/conversations/c1?")) return jsonResponse(500, { message: "The thread is unavailable." });
+                return undefined;
+            });
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m2" }} />);
+            expect(await screen.findByText("The thread is unavailable.")).toBeInTheDocument();
+        });
+    });
+
     it("marks the message read once loaded", async () => {
         const fetchMock = mockShell((url, init) => {
             if (url === "/api/mail/messages/m1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, message);
