@@ -120,6 +120,20 @@ describe("EventModal (round-3 fixes)", () => {
             expect(body.recurrenceRule).toEqual({ freq: "weekly", interval: 1, byDay: ["WE"], exceptions: [] });
         });
 
+        it("still sends the timezone (and checks the master for it) when the event had none stored", async () => {
+            const master = recurring({ timezone: undefined });
+            const fetchMock = mockFetch((url) => (url.startsWith("/api/mail/calendar-events?") ? jsonResponse(200, []) : jsonResponse(200, master)));
+            const user = userEvent.setup();
+            const { onSaved } = renderModal(recurring({ timezone: undefined }));
+
+            await user.click(screen.getByRole("radio", { name: "The entire series" }));
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            await waitFor(() => expect(onSaved).toHaveBeenCalled());
+            // The form falls back to the browser's zone (pinned to UTC for the suite).
+            expect(bodyOf(fetchMock, "PUT").timezone).toBe("UTC");
+        });
+
         it("applies only the time-of-day change and new duration to the master's own start", async () => {
             const master = recurring({ startDate: "2026-05-06T15:00:00.000Z", endDate: "2026-05-06T15:30:00.000Z", isRecurringOccurrence: false });
             // saveEventSeries() also lists the folder to re-point detached occurrences - none here.

@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
@@ -68,6 +68,8 @@ describe("NewMailFilterPage", () => {
         render(<NewMailFilterPage userUid="u1" />);
 
         expect(await screen.findByText("Loading…")).toBeInTheDocument();
+        // The folders request goes out from an effect after the first render, so it may not have been issued yet.
+        await waitFor(() => expect(resolveFolders).toBeDefined());
         resolveFolders!();
         expect(await screen.findByLabelText("Name")).toBeInTheDocument();
     });

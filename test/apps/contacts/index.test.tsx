@@ -1100,7 +1100,9 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
 
         // Bob has no email, so only Jane's address should appear.
         // A first compose window in a process loads its code (a cold transform in the suite); give a busy machine longer than the default second.
-        expect(await screen.findByRole("dialog", { name: "New Message" }, { timeout: 20_000 })).toBeInTheDocument();
+        // On a cold load the first dialog is the placeholder frame, which the real window then replaces - so assert on a fresh
+        // query each time rather than on an element found earlier that may already have been swapped out of the document.
+        await waitFor(() => expect(screen.getByRole("dialog", { name: "New Message" })).toBeInTheDocument(), { timeout: 20_000 });
         // The window's frame is up on the click; its fields arrive with its code.
         await waitFor(() => expect(recipientChips("To")).toEqual(["jane@example.com"]), { timeout: 20_000 });
     });

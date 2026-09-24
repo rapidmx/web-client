@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Saving a recurring series without changing its times no longer makes a needless extra request.** `@rapidmx/react-shared` 0.15.0's `saveEventSeries()` fetches the series' master record whenever the update carries a `timezone` or `allDay`, to check whether the master's instant is being reinterpreted - and the event form always sent both, so every plain series edit (a new title, say) paid for that extra GET. When the times are unchanged and neither field differs from the occurrence's own, both are now left out; a genuinely changed (or previously unstored) timezone or all-day flag is still sent and still checked against the master.
+
+### Tests
+
+- **Two timing-dependent tests made reliable under load.** The Contacts toolbar "Email" test asserted on the compose window's placeholder frame, which the real window replaces once its code has loaded - it now re-queries instead of holding the stale element. The new-mail-filter "Loading…" test now waits for the folders request to actually be issued before resolving it, rather than assuming it already had been. No product behavior changed.
+
 ## v0.14.0
 
 ### Security

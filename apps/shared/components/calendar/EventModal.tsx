@@ -132,7 +132,11 @@ function wallTimeOfDayMs(instantMs: number, timezone: string | undefined): numbe
 async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventFields): Promise<EventFields> {
     const { startDate, endDate, ...rest } = fields;
     if (sameMinute(startDate as string, occurrence.startDate) && sameMinute(endDate as string, occurrence.endDate)) {
-        return rest;
+        // `saveEventSeries()` treats *any* `timezone`/`allDay` in the update as a possible reinterpretation of
+        // the master's instant and fetches the master to check - so when neither differs from the occurrence's
+        // own, both are dropped too, or every plain series save (e.g. just a new title) would pay for that GET.
+        const { timezone, allDay, ...others } = rest;
+        return timezone === occurrence.timezone && allDay === occurrence.allDay ? others : rest;
     }
     const master = await getCalendarEvent(occurrence.uid);
     const timezone = fields.timezone as string;
