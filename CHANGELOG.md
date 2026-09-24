@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-09-24
+
+### Added
+- Added a test for a series save whose timezone differs from the occurrence's
+
+### Changed
+- Lint is now part of the 'build' script
+- Document the changes in the release notes
+
+### Fixed
+- Fixed linter error
+- Fixed recurring series saves making an extra master fetch when times are unchanged, by dropping the unchanged timezone/allDay that react-shared 0.15.0's saveEventSeries() treats as a reason to fetch it
+- Fixed the Contacts toolbar Email test asserting on the compose placeholder frame that the real window replaces
+- Fixed the new mail filter Loading test resolving the folders request before it had been issued
+
 ## [0.14.0] - 2026-09-23
 
 ### Changed
@@ -858,7 +873,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/rapidmx/web-client/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rapidmx/web-client/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rapidmx/web-client/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rapidmx/web-client/compare/v0.11.0...v0.12.0
