@@ -119,8 +119,8 @@ afterEach(() => {
 });
 
 describe("CalendarPage swipe navigation", () => {
-    it("maps swiping left to the previous period and swiping right to the next", () => {
-        expect(SWIPE_PERIOD_SHIFT).toEqual({ left: -1, right: 1 });
+    it("maps swiping left to the next period and swiping right to the previous", () => {
+        expect(SWIPE_PERIOD_SHIFT).toEqual({ left: 1, right: -1 });
     });
 
     describe("on the phone layout", () => {
