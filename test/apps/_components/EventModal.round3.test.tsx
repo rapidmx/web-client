@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { clickModify, openTimeControls, setWhen } from "./eventModalHelpers.js";
 
 // Round-3 review fixes: occurrence vs. series saves, organizer preservation, invited (read-only) events,
 // explicit nulls for cleared fields, and date-only all-day events.
@@ -48,7 +49,8 @@ function recurring(overrides: Partial<CalendarOccurrence> = {}): CalendarOccurre
     });
 }
 
-function renderModal(occ: CalendarOccurrence | null, props: Partial<React.ComponentProps<typeof EventModal>> = {}) {
+/** Renders the dialog. An existing event opens read-only; unless `view` is set, Modify is pressed to reach the form. */
+function renderModal(occ: CalendarOccurrence | null, props: Partial<React.ComponentProps<typeof EventModal>> = {}, view = false) {
     const onSaved = vi.fn();
     render(
         <EventModal
@@ -63,6 +65,9 @@ function renderModal(occ: CalendarOccurrence | null, props: Partial<React.Compon
             {...props}
         />,
     );
+    if (occ && !view) {
+        clickModify();
+    }
     return { onSaved };
 }
 
@@ -85,9 +90,9 @@ describe("EventModal (round-3 fixes)", () => {
             const user = userEvent.setup();
             const { onSaved } = renderModal(recurring());
 
-            expect(screen.queryByRole("checkbox", { name: "Repeats" })).not.toBeInTheDocument();
+            expect(screen.queryByLabelText("Recurrence")).not.toBeInTheDocument();
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
-            expect(screen.getByRole("checkbox", { name: "Repeats" })).toBeChecked();
+            expect(screen.getByLabelText("Recurrence")).toHaveValue("weekly");
             await user.click(screen.getByRole("radio", { name: "This event only" }));
 
             await user.clear(screen.getByLabelText("Location"));
@@ -144,8 +149,8 @@ describe("EventModal (round-3 fixes)", () => {
             const { onSaved } = renderModal(recurring());
 
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-03T16:00" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-03T17:00" } });
+            setWhen("Start", "2026-06-03T16:00");
+            setWhen("End", "2026-06-03T17:00");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -180,7 +185,7 @@ describe("EventModal (round-3 fixes)", () => {
             const { onSaved } = renderModal(allDayOcc);
 
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-04" } });
+            setWhen("End", "2026-06-04");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -198,8 +203,8 @@ describe("EventModal (round-3 fixes)", () => {
 
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
             await user.click(screen.getByRole("checkbox", { name: "All day" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-03T09:00" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-03T10:00" } });
+            setWhen("Start", "2026-06-03T09:00");
+            setWhen("End", "2026-06-03T10:00");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -223,7 +228,7 @@ describe("EventModal (round-3 fixes)", () => {
 
         await user.clear(screen.getByLabelText("Location"));
         await user.clear(screen.getByLabelText("Reminder (minutes before)"));
-        await user.click(screen.getByRole("checkbox", { name: "Repeats" }));
+        await user.selectOptions(screen.getByLabelText("Recurrence"), "none");
         await user.click(screen.getByRole("checkbox", { name: "Send an automatic reply while this event is happening" }));
         await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -241,22 +246,24 @@ describe("EventModal (round-3 fixes)", () => {
         const invited = () =>
             occurrence({ attendees: [{ address: "bob@example.com", role: "required", responseStatus: "needsAction", isOrganizer: false }] });
 
-        it("is read-only apart from the RSVP controls", () => {
-            renderModal(invited(), { organizerAddress: "bob@example.com" });
+        it("is read-only apart from the RSVP controls: no Modify, no form", () => {
+            renderModal(invited(), { organizerAddress: "bob@example.com" }, true);
 
             expect(screen.getByText(/Only the organizer can change its details/)).toBeInTheDocument();
-            expect(screen.getByLabelText("Title")).toBeDisabled();
-            expect(screen.getByRole("button", { name: "+ Add attendee" })).toBeDisabled();
+            expect(screen.queryByRole("button", { name: "Modify" })).not.toBeInTheDocument();
+            expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
             expect(screen.getByRole("button", { name: "Accept" })).not.toBeDisabled();
+            expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
         });
 
-        it("hides the edit-scope choice for an invited recurring occurrence", () => {
-            renderModal(recurring({ organizer: { address: "jane@example.com", type: "to" } }), { organizerAddress: "BOB@example.com" });
+        it("has no edit-scope choice for an invited recurring occurrence", () => {
+            renderModal(recurring({ organizer: { address: "jane@example.com", type: "to" } }), { organizerAddress: "BOB@example.com" }, true);
+            expect(screen.queryByRole("button", { name: "Modify" })).not.toBeInTheDocument();
             expect(screen.queryByText("Apply changes to")).not.toBeInTheDocument();
         });
 
-        it("isn't read-only when the viewing mailbox is flagged as an organizer attendee", () => {
+        it("can be modified when the viewing mailbox is flagged as an organizer attendee", () => {
             renderModal(
                 occurrence({ attendees: [{ address: "bob@example.com", role: "required", responseStatus: "accepted", isOrganizer: true }] }),
                 { organizerAddress: "bob@example.com" },
@@ -269,13 +276,14 @@ describe("EventModal (round-3 fixes)", () => {
     describe("all-day events", () => {
         it("shows a stored all-day event's inclusive last day", () => {
             renderModal(occurrence({ allDay: true, startDate: "2026-06-10T00:00:00.000Z", endDate: "2026-06-12T00:00:00.000Z" }));
-            expect(screen.getByLabelText("Start")).toHaveValue("2026-06-10");
-            expect(screen.getByLabelText("End")).toHaveValue("2026-06-11");
+            expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-10");
+            expect(screen.getByLabelText("Event end date")).toHaveValue("2026-06-11");
+            expect(screen.queryByLabelText("Event start time")).not.toBeInTheDocument();
         });
 
         it("never shows an end date before the start for a zero-length all-day event", () => {
             renderModal(occurrence({ allDay: true, startDate: "2026-06-10T00:00:00.000Z", endDate: "2026-06-10T00:00:00.000Z" }));
-            expect(screen.getByLabelText("End")).toHaveValue("2026-06-10");
+            expect(screen.getByLabelText("Event end date")).toHaveValue("2026-06-10");
         });
 
         it("saves a one-day all-day event as UTC midnight with an exclusive end", async () => {
@@ -284,9 +292,10 @@ describe("EventModal (round-3 fixes)", () => {
             const { onSaved } = renderModal(null);
 
             await user.type(screen.getByLabelText("Title"), "Holiday");
+            await openTimeControls(user);
             await user.click(screen.getByRole("checkbox", { name: "All day" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-10" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-10" } });
+            setWhen("Start", "2026-06-10");
+            setWhen("End", "2026-06-10");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -302,9 +311,10 @@ describe("EventModal (round-3 fixes)", () => {
             renderModal(null);
 
             await user.type(screen.getByLabelText("Title"), "Holiday");
+            await openTimeControls(user);
             await user.click(screen.getByRole("checkbox", { name: "All day" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-10" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-09" } });
+            setWhen("Start", "2026-06-10");
+            setWhen("End", "2026-06-09");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             expect(await screen.findByText("The end date can't be before the start date.")).toBeInTheDocument();

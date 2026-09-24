@@ -4,10 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { eachDayOfInterval, endOfMonth, endOfWeek, format, isSameMonth, isToday, startOfMonth, startOfWeek } from "date-fns";
+import { addDays, eachDayOfInterval, endOfMonth, endOfWeek, format, isSameMonth, isToday, startOfMonth, startOfWeek } from "date-fns";
 import { dayDropId, eventDragId } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 import { occursOnDay, startsOnDay } from "./allDay.js";
+import { EventAnchor, anchorOf } from "./EventShell.js";
 
 const MAX_CHIPS_PER_DAY = 3;
 
@@ -20,11 +21,14 @@ export interface MonthViewProps {
     folderColors: Record<string, string>;
     onSelectDay: (date: Date) => void;
     onSelectEvent: (occurrence: CalendarOccurrence) => void;
+    /** Click on the empty part of a day: the day (from midnight to the next midnight) and the cell, for a new all-day event's quick-create
+     * popover to open beside. */
+    onSelectSlot?: (start: Date, end: Date, anchor: EventAnchor) => void;
 }
 
 /** A real 6-week month grid (Mon-start), matching Outlook/Gmail's month view. Multi-day and all-day
  * events are shown on every day they cover (see `allDay.ts`'s `occursOnDay`). */
-export default function MonthView({ viewDate, occurrences, folderColors, onSelectDay, onSelectEvent }: MonthViewProps) {
+export default function MonthView({ viewDate, occurrences, folderColors, onSelectDay, onSelectEvent, onSelectSlot }: MonthViewProps) {
     const gridStart = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 1 });
     const gridEnd = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 1 });
     const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
@@ -40,6 +44,7 @@ export default function MonthView({ viewDate, occurrences, folderColors, onSelec
                     folderColors={folderColors}
                     onSelectDay={onSelectDay}
                     onSelectEvent={onSelectEvent}
+                    onSelectSlot={onSelectSlot}
                 />
             ))}
         </div>
@@ -53,9 +58,10 @@ interface DayCellProps {
     folderColors: Record<string, string>;
     onSelectDay: (date: Date) => void;
     onSelectEvent: (occurrence: CalendarOccurrence) => void;
+    onSelectSlot?: (start: Date, end: Date, anchor: EventAnchor) => void;
 }
 
-function DayCell({ day, inCurrentMonth, occurrences, folderColors, onSelectDay, onSelectEvent }: DayCellProps) {
+function DayCell({ day, inCurrentMonth, occurrences, folderColors, onSelectDay, onSelectEvent, onSelectSlot }: DayCellProps) {
     const { setNodeRef, isOver } = useDroppable({ id: dayDropId(day) });
     const visible = occurrences.slice(0, MAX_CHIPS_PER_DAY);
     const overflowCount = occurrences.length - visible.length;
@@ -63,6 +69,12 @@ function DayCell({ day, inCurrentMonth, occurrences, folderColors, onSelectDay, 
     return (
         <div
             ref={setNodeRef}
+            onClick={(e) => {
+                // Only the empty part of the cell: the day number, the chips and "+N more" have their own clicks.
+                if (onSelectSlot && !(e.target as Element).closest("button")) {
+                    onSelectSlot(day, addDays(day, 1), anchorOf(e.currentTarget));
+                }
+            }}
             className={[
                 "border-b border-r border-border p-1 flex flex-col gap-0.5 min-h-0 overflow-hidden",
                 isOver ? "bg-primary/5" : "",

@@ -10,6 +10,7 @@ import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 import { CalendarOccurrence, expandOccurrences } from "@rapidmx/react-shared/calendar/recurrence.js";
 import { CalendarEvent } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { clickModify, openTimeControls, setWhen } from "./eventModalHelpers.js";
 
 // Round-4 review fixes: all-day series west of UTC, series time changes on the event's own wall clock,
 // unchanged-time detection, organizer aliases, and the detached-occurrence sync warning.
@@ -47,7 +48,8 @@ function recurring(overrides: Partial<CalendarOccurrence> = {}): CalendarOccurre
     });
 }
 
-function renderModal(occ: CalendarOccurrence | null, props: Partial<React.ComponentProps<typeof EventModal>> = {}) {
+/** Renders the dialog. An existing event opens read-only; unless `view` is set, Modify is pressed to reach the form. */
+function renderModal(occ: CalendarOccurrence | null, props: Partial<React.ComponentProps<typeof EventModal>> = {}, view = false) {
     const onSaved = vi.fn();
     render(
         <EventModal
@@ -62,6 +64,9 @@ function renderModal(occ: CalendarOccurrence | null, props: Partial<React.Compon
             {...props}
         />,
     );
+    if (occ && !view) {
+        clickModify();
+    }
     return { onSaved };
 }
 
@@ -94,10 +99,11 @@ describe("EventModal (round-4 fixes)", () => {
             const { onSaved } = renderModal(null);
 
             await user.type(screen.getByLabelText("Title"), "Gym");
+            await openTimeControls(user);
             await user.click(screen.getByRole("checkbox", { name: "All day" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-09-14" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-09-14" } });
-            await user.click(screen.getByRole("checkbox", { name: "Repeats" }));
+            setWhen("Start", "2026-09-14");
+            setWhen("End", "2026-09-14");
+            await user.selectOptions(screen.getByLabelText("Recurrence"), "custom");
             await user.click(screen.getByRole("button", { name: "Tue" }));
             await user.click(screen.getByRole("radio", { name: "On" }));
             fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-09-28" } });
@@ -125,7 +131,8 @@ describe("EventModal (round-4 fixes)", () => {
             const { onSaved } = renderModal(null);
 
             await user.type(screen.getByLabelText("Title"), "Gym");
-            await user.click(screen.getByRole("checkbox", { name: "Repeats" }));
+            await openTimeControls(user);
+            await user.selectOptions(screen.getByLabelText("Recurrence"), "custom");
             await user.click(screen.getByRole("radio", { name: "On" }));
             fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-09-28" } });
             await user.click(screen.getByRole("checkbox", { name: "All day" }));
@@ -169,8 +176,8 @@ describe("EventModal (round-4 fixes)", () => {
 
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
             await user.click(screen.getByRole("checkbox", { name: "All day" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-03T09:00" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-03T10:00" } });
+            setWhen("Start", "2026-06-03T09:00");
+            setWhen("End", "2026-06-03T10:00");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -190,8 +197,8 @@ describe("EventModal (round-4 fixes)", () => {
             const { onSaved } = renderModal(recurring({ startDate: "2026-06-03T23:00:00.000Z", endDate: "2026-06-03T23:30:00.000Z" }));
 
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-04T01:00" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-04T01:30" } });
+            setWhen("Start", "2026-06-04T01:00");
+            setWhen("End", "2026-06-04T01:30");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -208,8 +215,8 @@ describe("EventModal (round-4 fixes)", () => {
             const { onSaved } = renderModal(recurring({ startDate: "2026-06-03T05:00:00.000Z", endDate: "2026-06-03T05:30:00.000Z" }));
 
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-02T23:00" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-02T23:30" } });
+            setWhen("Start", "2026-06-02T23:00");
+            setWhen("End", "2026-06-02T23:30");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -225,8 +232,8 @@ describe("EventModal (round-4 fixes)", () => {
             const { onSaved } = renderModal(recurring({ startDate: "2026-06-03T13:00:00.000Z", endDate: "2026-06-03T13:30:00.000Z" }));
 
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-03T10:00" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-03T11:00" } });
+            setWhen("Start", "2026-06-03T10:00");
+            setWhen("End", "2026-06-03T11:00");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -264,8 +271,8 @@ describe("EventModal (round-4 fixes)", () => {
             const { onSaved } = renderModal(recurring());
 
             await user.click(screen.getByRole("radio", { name: "The entire series" }));
-            fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-03T16:00" } });
-            fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-03T16:30" } });
+            setWhen("Start", "2026-06-03T16:00");
+            setWhen("End", "2026-06-03T16:30");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t be moved with it/);
@@ -294,16 +301,21 @@ describe("EventModal (round-4 fixes)", () => {
                     attendees: [{ address: "JANE.ALIAS@example.com", role: "required", responseStatus: "needsAction", isOrganizer: false }],
                 }),
                 { organizerAliases: ["jane.alias@example.com"] },
+                true,
             );
             expect(screen.getByText(/Only the organizer can change its details/)).toBeInTheDocument();
             expect(screen.getByRole("button", { name: "Accept" })).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Modify" })).not.toBeInTheDocument();
         });
 
         it("still treats an unrelated organizer as an invitation when the mailbox isn't among mailboxOptions", () => {
-            renderModal(occurrence({ organizer: { address: "boss@example.com", type: "to" } }), {
-                mailboxOptions: [{ mailbox: { uid: "mb-other", primarySmtpAddress: "x@example.com" } as never, calendars: [] }],
-            });
+            renderModal(
+                occurrence({ organizer: { address: "boss@example.com", type: "to" } }),
+                { mailboxOptions: [{ mailbox: { uid: "mb-other", primarySmtpAddress: "x@example.com" } as never, calendars: [] }] },
+                true,
+            );
             expect(screen.getByText(/Only the organizer can change its details/)).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Modify" })).not.toBeInTheDocument();
         });
     });
 });
@@ -316,10 +328,11 @@ describe("EventModal (round-5 fixes)", () => {
         const { onSaved } = renderModal(null);
 
         await user.type(screen.getByLabelText("Title"), "Walk");
+        await openTimeControls(user);
         await user.click(screen.getByRole("checkbox", { name: "All day" }));
-        fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-09-17" } });
-        fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-09-17" } });
-        await user.click(screen.getByRole("checkbox", { name: "Repeats" }));
+        setWhen("Start", "2026-09-17");
+        setWhen("End", "2026-09-17");
+        await user.selectOptions(screen.getByLabelText("Recurrence"), "custom");
         expect(screen.getByRole("button", { name: "Thu" })).toHaveAttribute("aria-pressed", "true");
         expect(screen.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "false");
 

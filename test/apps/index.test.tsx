@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
 import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.js";
+import { clearInviteCache } from "../../apps/shared/components/mail/invite/inviteStore.js";
 import InboxPageRouted from "../../apps/www/index.js";
 
 // The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
@@ -423,6 +424,7 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    clearInviteCache();
     searchEncryptedCandidates.mockReset();
     searchLocalIndex.mockReset();
     getUnlockedKeys.mockReset();
@@ -666,6 +668,129 @@ describe("InboxPage", () => {
             // wired through and the untouched-message branch of the list patch leaves `other` intact.
             expect(screen.getByText("Hello there")).toBeInTheDocument();
             expect(screen.getByText("Untouched message")).toBeInTheDocument();
+        });
+    });
+
+    describe("meeting requests", () => {
+        const invite = {
+            method: "REQUEST",
+            uid: "ical-1",
+            sequence: 0,
+            summary: "Video Test",
+            startDate: "2026-06-16T13:00:00.000Z",
+            endDate: "2026-06-16T14:00:00.000Z",
+            allDay: false,
+            attendees: [],
+            recurring: false,
+            isOrganizer: false,
+            onCalendar: false,
+            outdated: false,
+            canRespond: true,
+            canAdd: false,
+            canRemove: false,
+            canPropose: true,
+            canAcceptProposal: false,
+            conflicts: [],
+            schedule: [],
+        };
+        const rows = () => [
+            messageFixture({ uid: "m1", subject: "Video Test", meetingMethod: "REQUEST" }),
+            messageFixture({ uid: "m2", subject: "Just a note" }),
+            messageFixture({ uid: "m3", subject: "Their answer", meetingMethod: "REPLY" }),
+        ];
+        function mockWithInvites() {
+            return mockShellAndInbox(rows(), (url, init) => {
+                if (url.endsWith("/respond")) return jsonResponse(200, { ...invite, response: JSON.parse(init!.body as string).responseStatus });
+                if (url.includes("/calendar-events/invite/")) return jsonResponse(200, invite);
+                return undefined;
+            });
+        }
+        const inviteCalls = (fetchMock: ReturnType<typeof mockFetch>) => fetchMock.mock.calls.filter(([url]) => String(url).includes("/calendar-events/invite/"));
+
+        it("draws an RSVP chip under a meeting request only, and asks the server about no other row", async () => {
+            const fetchMock = mockWithInvites();
+            render(<InboxPage userUid="u1" />);
+
+            const rsvp = await screen.findByRole("button", { name: "RSVP to Video Test" });
+            expect(screen.getAllByRole("button", { name: /RSVP/ })).toHaveLength(1);
+            expect(rsvp.closest("[data-invite-chip]")).toHaveTextContent("No conflicts");
+            expect(screen.getByText("Just a note")).toBeInTheDocument();
+            expect(inviteCalls(fetchMock).map(([url]) => url)).toEqual(["/api/mail/calendar-events/invite/m1"]);
+            // The chip sits with its row, beside the button that opens it (a button can't hold a button).
+            expect(rsvp.closest("[data-message-uid]")).toHaveAttribute("data-message-uid", "m1");
+            expect(rsvp.closest("[data-row-open]")).toBeNull();
+        });
+
+        it("answers from the chip without opening the row, and the list then shows the answer", async () => {
+            const fetchMock = mockWithInvites();
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+
+            await user.click(await screen.findByRole("button", { name: "RSVP to Video Test" }));
+            const dialog = await screen.findByRole("dialog", { name: "RSVP: Video Test" });
+            expect(screen.getByText(/no-message/)).toBeInTheDocument();
+            await user.click(within(dialog).getByRole("button", { name: "Tentative" }));
+
+            await waitFor(() => expect(screen.queryByRole("dialog", { name: "RSVP: Video Test" })).not.toBeInTheDocument());
+            expect(screen.getByRole("button", { name: "RSVP to Video Test" }).closest("[data-invite-chip]")).toHaveTextContent("Tentative");
+            // Neither the RSVP button nor the answer opened the message.
+            expect(screen.getByText(/no-message/)).toBeInTheDocument();
+            expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/invite/m1/respond", expect.objectContaining({ method: "POST" }));
+        });
+
+        it("draws the chip on a conversation's own row too, asking once, and answers from it without opening the conversation", async () => {
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: true }),
+            );
+            const fetchMock = mockShellAndInbox(
+                [],
+                (url, init) => {
+                    if (url.endsWith("/respond")) return jsonResponse(200, { ...invite, response: JSON.parse(init!.body as string).responseStatus });
+                    if (url.includes("/calendar-events/invite/")) return jsonResponse(200, invite);
+                    return undefined;
+                },
+                [
+                    conversationFixture({ conversationId: "c1", subject: "Video Test", latestMessageUid: "m1", latestMeetingMethod: "REQUEST", latestMeetingResponse: null }),
+                    conversationFixture({ conversationId: "c2", subject: "Just a note", latestMessageUid: "m2", latestMeetingMethod: null, latestMeetingResponse: null }),
+                ],
+            );
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+
+            await user.click(await screen.findByRole("button", { name: "RSVP to Video Test" }));
+            expect(screen.getAllByRole("button", { name: /RSVP/ })).toHaveLength(1);
+            await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Accept" }));
+
+            await waitFor(() => expect(screen.getByRole("button", { name: "RSVP to Video Test" }).closest("[data-invite-chip]")).toHaveTextContent("Accepted"));
+            expect(inviteCalls(fetchMock).map(([url]) => url)).toEqual(["/api/mail/calendar-events/invite/m1", "/api/mail/calendar-events/invite/m1/respond"]);
+            expect(screen.queryByText(/message:m1/)).not.toBeInTheDocument();
+        });
+
+        it("keeps a finger on the chip from swiping the row on a phone", async () => {
+            mockMatchMedia(true);
+            const fetchMock = mockWithInvites();
+            render(<InboxPage userUid="u1" />);
+            const rsvp = await screen.findByRole("button", { name: "RSVP to Video Test" });
+            const row = rsvp.closest("[data-message-uid]") as HTMLElement;
+
+            // The same drag on the row's own open button does start a swipe...
+            const open = within(row).getByText("Video Test").closest("[data-row-open]")!;
+            fireEvent.touchStart(open, { touches: [{ clientX: 300, clientY: 100 }] });
+            fireEvent.touchMove(open, { touches: [{ clientX: 150, clientY: 102 }] });
+            fireEvent.touchMove(open, { touches: [{ clientX: 60, clientY: 104 }] });
+            expect(row).toHaveAttribute("data-swiping", "true");
+            fireEvent.touchCancel(open);
+            await waitFor(() => expect(row).not.toHaveAttribute("data-swiping"));
+
+            // ...and on the chip it does not.
+            fireEvent.touchStart(rsvp, { touches: [{ clientX: 300, clientY: 100 }] });
+            fireEvent.touchMove(rsvp, { touches: [{ clientX: 150, clientY: 102 }] });
+            fireEvent.touchMove(rsvp, { touches: [{ clientX: 60, clientY: 104 }] });
+            fireEvent.touchEnd(rsvp);
+            expect(row).not.toHaveAttribute("data-swiping");
+            expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/mail/messages" && init?.method === "PUT")).toBe(false);
+            expect(screen.getByText("Video Test", { selector: "div" })).toBeInTheDocument();
         });
     });
 

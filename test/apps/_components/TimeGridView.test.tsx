@@ -107,14 +107,20 @@ describe("TimeGridView", () => {
         expect(freeBlock.style.backgroundColor).toBe("");
     });
 
-    it("clicking an empty time slot calls onSelectSlot with a 30-minute default block", async () => {
+    it("clicking an empty time slot calls onSelectSlot with a 30-minute default block and the slot as the anchor", async () => {
         const onSelectSlot = vi.fn();
         const user = userEvent.setup();
         renderGrid({ onSelectSlot });
+        const slot = screen.getByLabelText(/New event at 9:00 AM/);
+        vi.spyOn(slot, "getBoundingClientRect").mockReturnValue({ left: 60, top: 432, right: 260, bottom: 456, width: 200, height: 24, x: 60, y: 432, toJSON: () => ({}) });
 
-        await user.click(screen.getByLabelText(/New event at 9:00 AM/));
+        await user.click(slot);
 
-        expect(onSelectSlot).toHaveBeenCalledWith(new Date("2026-06-10T09:00:00.000Z"), new Date("2026-06-10T09:30:00.000Z"));
+        expect(onSelectSlot).toHaveBeenCalledWith(
+            new Date("2026-06-10T09:00:00.000Z"),
+            new Date("2026-06-10T09:30:00.000Z"),
+            { left: 60, top: 432, right: 260, bottom: 456, placement: "side" },
+        );
     });
 
     it("renders one day column per entry in `days` (week view)", () => {

@@ -12,6 +12,7 @@ import { EncryptedPreview, conversationLooksEncrypted } from "./reading/Encrypte
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "./unreadStyle.js";
 import SwipeRow from "./SwipeRow.js";
+import InviteRowChip from "./invite/InviteRowChip.js";
 
 export interface ConversationListProps {
     conversations: ConversationSummary[];
@@ -29,6 +30,8 @@ export interface ConversationListProps {
      * read, which this list would otherwise keep showing as unread until the thread is collapsed and
      * expanded again. */
     messageOverrides?: Record<string, Message>;
+    /** Called with one of a conversation's own messages carrying the answer the reader just gave to its meeting request (from that row's RSVP chip), so the caller can keep it. An answer given from the conversation's own (parent) row is kept by this list itself. */
+    onMeetingResponded?: (updated: Message) => void;
     /** Turns each parent row into a checkbox row: select mode here ticks whole conversations, since a
      * conversation is what this list's rows are. A child row stays a plain "open this message" button - a
      * mixed conversation/message selection has no sensible bulk semantics (see `MailListToolbar`). */
@@ -77,6 +80,7 @@ export default function ConversationList({
     selectedUid,
     onOpenMessage,
     messageOverrides,
+    onMeetingResponded,
     selectMode,
     selectedConversationIds,
     onToggleSelected,
@@ -87,6 +91,12 @@ export default function ConversationList({
     const [messagesById, setMessagesById] = useState<Record<string, Message[]>>({});
     const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
     const [errorsById, setErrorsById] = useState<Record<string, string>>({});
+    // The answers given from a row's RSVP chip, by message uid: a row draws them at once, whichever row (the conversation's, or one of its messages) they were given from.
+    const [answers, setAnswers] = useState<Record<string, Message["meetingResponse"]>>({});
+
+    function answered(updated: Message) {
+        setAnswers((prev) => ({ ...prev, [updated.uid]: updated.meetingResponse }));
+    }
 
     function toggle(conversation: ConversationSummary) {
         const id = conversation.conversationId;
@@ -179,52 +189,70 @@ export default function ConversationList({
                                     <HiChevronRight size={16} aria-hidden="true" />
                                 )}
                             </button>
-                            <button
-                                type="button"
-                                data-row-open
-                                onClick={() => onOpenMessage(conversation, conversation.latestMessageUid)}
-                                className={["flex-1 min-w-0 text-left pr-4 py-3", ROW_FOCUS_CLASS].join(" ")}
-                            >
-                                <UnreadLabel unread={unread} />
-                                <div className="flex items-center justify-between gap-2 text-sm">
-                                    {/* The first participant in full - name and address - and the rest as a count, with everyone's
-                                        address in its tooltip; the latest sender when the summary lists none. */}
-                                    <MailAddress
-                                        recipient={conversation.participants[0] ?? conversation.latestFrom}
-                                        className={["flex-1", senderClass(unread)].join(" ")}
-                                    />
-                                    {conversation.participants.length > 1 && (
-                                        <span className="text-xs text-text-muted shrink-0 font-normal" title={participantList(conversation)}>
-                                            +{conversation.participants.length - 1}
-                                            <span className="sr-only"> more: {participantList(conversation)}</span>
+                            {/* The open button and, for a meeting request, its RSVP chip: a button can't hold a button, so the chip is the button's sibling. */}
+                            <div className="flex-1 min-w-0 flex flex-col">
+                                <button
+                                    type="button"
+                                    data-row-open
+                                    onClick={() => onOpenMessage(conversation, conversation.latestMessageUid)}
+                                    className={["w-full text-left pr-4 py-3", ROW_FOCUS_CLASS].join(" ")}
+                                >
+                                    <UnreadLabel unread={unread} />
+                                    <div className="flex items-center justify-between gap-2 text-sm">
+                                        {/* The first participant in full - name and address - and the rest as a count, with everyone's
+                                            address in its tooltip; the latest sender when the summary lists none. */}
+                                        <MailAddress
+                                            recipient={conversation.participants[0] ?? conversation.latestFrom}
+                                            className={["flex-1", senderClass(unread)].join(" ")}
+                                        />
+                                        {conversation.participants.length > 1 && (
+                                            <span className="text-xs text-text-muted shrink-0 font-normal" title={participantList(conversation)}>
+                                                +{conversation.participants.length - 1}
+                                                <span className="sr-only"> more: {participantList(conversation)}</span>
+                                            </span>
+                                        )}
+                                        <span className={["text-xs shrink-0", dateClass(unread)].join(" ")}>
+                                            {new Date(conversation.latestDate).toLocaleDateString()}
                                         </span>
-                                    )}
-                                    <span className={["text-xs shrink-0", dateClass(unread)].join(" ")}>
-                                        {new Date(conversation.latestDate).toLocaleDateString()}
-                                    </span>
-                                </div>
-                                <div className={["text-sm truncate", subjectClass(unread)].join(" ")}>{conversation.subject || "(no subject)"}</div>
-                                <div className="text-xs text-text-muted truncate font-normal">
-                                    {/* An encrypted latest message has no preview (the server never had its plaintext): say so, with a lock, not nothing. */}
-                                    {conversationLooksEncrypted(conversation) ? <EncryptedPreview /> : conversation.latestPreview}
-                                </div>
-                                <div className="flex items-center gap-2 mt-1 text-xs text-text-muted font-normal">
-                                    {conversation.messageCount > 1 && <span>{conversation.messageCount} messages</span>}
-                                    {/* A one-message conversation's unread state is already the row's own
-                                        bolding - counting it "1 unread" on every such row is just noise. */}
-                                    {unread && conversation.messageCount > 1 && (
-                                        <span className="py-0.5 px-2 rounded-pill bg-primary/15 text-primary-dark font-bold">
-                                            {conversation.unreadCount} unread
-                                        </span>
-                                    )}
-                                    {conversation.hasAttachments && (
-                                        <HiOutlinePaperClip size={13} aria-label="Has attachments" />
-                                    )}
-                                    {conversation.flagged && (
-                                        <HiOutlineFlag size={13} aria-label="Flagged" className="text-danger" />
-                                    )}
-                                </div>
-                            </button>
+                                    </div>
+                                    <div className={["text-sm truncate", subjectClass(unread)].join(" ")}>{conversation.subject || "(no subject)"}</div>
+                                    <div className="text-xs text-text-muted truncate font-normal">
+                                        {/* An encrypted latest message has no preview (the server never had its plaintext): say so, with a lock, not nothing. */}
+                                        {conversationLooksEncrypted(conversation) ? <EncryptedPreview /> : conversation.latestPreview}
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-1 text-xs text-text-muted font-normal">
+                                        {conversation.messageCount > 1 && <span>{conversation.messageCount} messages</span>}
+                                        {/* A one-message conversation's unread state is already the row's own
+                                            bolding - counting it "1 unread" on every such row is just noise. */}
+                                        {unread && conversation.messageCount > 1 && (
+                                            <span className="py-0.5 px-2 rounded-pill bg-primary/15 text-primary-dark font-bold">
+                                                {conversation.unreadCount} unread
+                                            </span>
+                                        )}
+                                        {conversation.hasAttachments && (
+                                            <HiOutlinePaperClip size={13} aria-label="Has attachments" />
+                                        )}
+                                        {conversation.flagged && (
+                                            <HiOutlineFlag size={13} aria-label="Flagged" className="text-danger" />
+                                        )}
+                                    </div>
+                                </button>
+                                <InviteRowChip
+                                    message={
+                                        {
+                                            uid: conversation.latestMessageUid,
+                                            meetingMethod: conversation.latestMeetingMethod ?? undefined,
+                                            meetingResponse:
+                                                answers[conversation.latestMessageUid] ??
+                                                messageOverrides?.[conversation.latestMessageUid]?.meetingResponse ??
+                                                conversation.latestMeetingResponse ??
+                                                undefined,
+                                        } as Message
+                                    }
+                                    onResponded={answered}
+                                    className="mr-4"
+                                />
+                            </div>
                         </SwipeRow>
                         <ul id={panelId} hidden={!isExpanded}>
                             {errorsById[id] && (
@@ -275,6 +303,14 @@ export default function ConversationList({
                                                 )}
                                             </div>
                                         </button>
+                                        <InviteRowChip
+                                            message={{ ...message, meetingResponse: answers[message.uid] ?? message.meetingResponse }}
+                                            onResponded={(updated) => {
+                                                answered(updated);
+                                                onMeetingResponded?.(updated);
+                                            }}
+                                            className="ml-8 mr-4"
+                                        />
                                     </li>
                                 );
                             })}

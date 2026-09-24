@@ -92,13 +92,17 @@ describe("SplitDayView", () => {
         const onSelectSlot = vi.fn();
         const user = userEvent.setup();
         renderSplit({ onSelectSlot });
+        const slot = screen.getByLabelText("New event at 9:00 AM in Personal");
+        vi.spyOn(slot, "getBoundingClientRect").mockReturnValue({ left: 300, top: 432, right: 500, bottom: 456, width: 200, height: 24, x: 300, y: 432, toJSON: () => ({}) });
 
-        await user.click(screen.getByLabelText("New event at 9:00 AM in Personal"));
+        await user.click(slot);
 
+        // The slot itself is the anchor the quick-create popover opens beside.
         expect(onSelectSlot).toHaveBeenCalledWith(
             new Date("2026-06-10T09:00:00.000Z"),
             new Date("2026-06-10T09:30:00.000Z"),
             "f2",
+            { left: 300, top: 432, right: 500, bottom: 456, placement: "side" },
         );
     });
 

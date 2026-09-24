@@ -10,6 +10,7 @@ import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { addGuest, clickModify, openMoreOptions, openTimeControls, setWhen } from "./eventModalHelpers.js";
 
 // `ResourcePicker`'s own loading/filtering/error rendering is tested in its own file — mocked here so
 // this file only exercises how `EventModal` opens it and reacts to a selection.
@@ -82,12 +83,13 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
-        expect(screen.getByText("New event")).toBeInTheDocument();
+        expect(screen.getByRole("dialog", { name: "New event" })).toBeInTheDocument();
         expect(screen.getByLabelText("Title")).toHaveValue("");
+        expect(screen.getByLabelText("Title")).toHaveFocus();
         expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     });
 
-    it("shows 'Edit event' pre-filled from an existing occurrence", () => {
+    it("opens an existing event read-only, with Modify and Delete, and Modify switches to the form pre-filled from it", () => {
         render(
             <EventModal
                 open
@@ -100,10 +102,18 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
-        expect(screen.getByText("Edit event")).toBeInTheDocument();
+        expect(screen.getByRole("dialog", { name: "Event details" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Standup" })).toBeInTheDocument();
+        expect(screen.getByText("Room A")).toBeInTheDocument();
+        expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+
+        clickModify();
+        expect(screen.getByRole("dialog", { name: "Edit event" })).toBeInTheDocument();
         expect(screen.getByLabelText("Title")).toHaveValue("Standup");
         expect(screen.getByLabelText("Location")).toHaveValue("Room A");
-        expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     });
 
     it("shows a validation error and does not submit when the title is blank", async () => {
@@ -146,8 +156,9 @@ describe("EventModal", () => {
 
         // Set End to exactly whatever Start currently shows (component pre-fills both from the same
         // occurrence's local-time-converted start/end) — same instant, so "after start" must fail.
-        const startValue = screen.getByLabelText("Start").value;
-        fireEvent.change(screen.getByLabelText("End"), { target: { value: startValue } });
+        clickModify();
+        const startValue = screen.getByLabelText<HTMLInputElement>("Event start time").value;
+        fireEvent.change(screen.getByLabelText("Event end time"), { target: { value: startValue } });
 
         await user.click(screen.getByRole("button", { name: "Save" }));
         expect(await screen.findByText("The end time must be after the start time.")).toBeInTheDocument();
@@ -257,6 +268,7 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
+        clickModify();
 
         await user.clear(screen.getByLabelText("Title"));
         await user.type(screen.getByLabelText("Title"), "Renamed");
@@ -297,6 +309,7 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
+        clickModify();
 
         expect(screen.getByRole("radio", { name: "This event only" })).toBeChecked();
         await user.click(screen.getByRole("button", { name: "Save" }));
@@ -332,6 +345,7 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
+        clickModify();
 
         await user.click(screen.getByRole("radio", { name: "The entire series" }));
         await user.click(screen.getByRole("button", { name: "Save" }));
@@ -454,7 +468,8 @@ describe("EventModal", () => {
         await user.click(screen.getByRole("button", { name: "Delete" }));
 
         expect(await screen.findByText("delete failed")).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
+        expect(screen.getByRole("button", { name: "Delete" })).not.toBeDisabled();
+        expect(screen.getByRole("button", { name: "Modify" })).not.toBeDisabled();
     });
 
     it("shows a generic error message when delete fails with a non-API error", async () => {
@@ -494,19 +509,23 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
+        clickModify();
 
-        expect(screen.getByLabelText("Start")).toHaveAttribute("type", "datetime-local");
-        fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-04T09:00" } });
-        expect(screen.getByLabelText("Start")).toHaveValue("2026-06-04T09:00");
+        expect(screen.getByLabelText("Event start time")).toHaveAttribute("type", "time");
+        setWhen("Start", "2026-06-04T09:00");
+        expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-04");
+        expect(screen.getByLabelText("Event start time")).toHaveValue("09:00");
 
         await user.click(screen.getByRole("checkbox", { name: "All day" }));
-        expect(screen.getByLabelText("Start")).toHaveAttribute("type", "date");
-        expect(screen.getByLabelText("End")).toHaveAttribute("type", "date");
+        expect(screen.queryByLabelText("Event start time")).not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Event end time")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Event start date")).toHaveAttribute("type", "date");
+        expect(screen.getByLabelText("Event end date")).toHaveAttribute("type", "date");
 
-        fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2026-06-10" } });
-        expect(screen.getByLabelText("Start")).toHaveValue("2026-06-10");
-        fireEvent.change(screen.getByLabelText("End"), { target: { value: "2026-06-11" } });
-        expect(screen.getByLabelText("End")).toHaveValue("2026-06-11");
+        setWhen("Start", "2026-06-10");
+        expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-10");
+        setWhen("End", "2026-06-11");
+        expect(screen.getByLabelText("Event end date")).toHaveValue("2026-06-11");
     });
 
     it("updates Location and Busy status", async () => {
@@ -523,6 +542,7 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
+        clickModify();
 
         await user.clear(screen.getByLabelText("Location"));
         await user.type(screen.getByLabelText("Location"), "Room B");
@@ -552,12 +572,13 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
+        clickModify();
 
         await user.selectOptions(screen.getByLabelText("Attendee role 2"), "optional");
 
         expect(screen.getByLabelText("Attendee role 1")).toHaveValue("required");
         expect(screen.getByLabelText("Attendee role 2")).toHaveValue("optional");
-        expect(screen.getByLabelText("Attendee email 1")).toHaveValue("bob@example.com");
+        expect(screen.getByText(/bob@example.com/)).toBeInTheDocument();
     });
 
     it("switching the edit scope back to 'This event only' after picking 'The entire series'", async () => {
@@ -579,6 +600,7 @@ describe("EventModal", () => {
                 onDeleted={vi.fn()}
             />,
         );
+        clickModify();
 
         await user.click(screen.getByRole("radio", { name: "The entire series" }));
         await user.click(screen.getByRole("radio", { name: "This event only" }));
@@ -601,16 +623,20 @@ describe("EventModal", () => {
             />,
         );
 
-        await user.click(screen.getByRole("button", { name: "+ Add attendee" }));
-        const emailInput = screen.getByLabelText("Attendee email 1");
-        await user.type(emailInput, "bob@example.com");
-        expect(emailInput).toHaveValue("bob@example.com");
+        // Typing an address and pressing Enter adds it (as a chip in the quick popover)...
+        await addGuest(user, "bob@example.com");
+        expect(screen.getByLabelText("Add guests")).toHaveValue("");
+        expect(screen.getByText("bob@example.com")).toBeInTheDocument();
 
+        // ...and the full form lists it with its role and an answer of "Awaiting response".
+        await openMoreOptions(user);
+        expect(screen.getByText(/bob@example.com/)).toBeInTheDocument();
+        expect(screen.getByText(/Awaiting response/)).toBeInTheDocument();
         await user.selectOptions(screen.getByLabelText("Attendee role 1"), "optional");
         expect(screen.getByLabelText("Attendee role 1")).toHaveValue("optional");
 
         await user.click(screen.getByRole("button", { name: "Remove attendee 1" }));
-        expect(screen.queryByLabelText("Attendee email 1")).not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Attendee role 1")).not.toBeInTheDocument();
     });
 
     it("sends an explicit reminder value, and undefined when left blank", async () => {
@@ -632,6 +658,10 @@ describe("EventModal", () => {
         );
 
         await user.type(screen.getByLabelText("Title"), "Planning");
+        await openMoreOptions(user);
+        await user.click(screen.getByRole("button", { name: "Add notification" }));
+        expect(screen.queryByRole("button", { name: "Add notification" })).not.toBeInTheDocument();
+        await user.clear(screen.getByLabelText("Reminder (minutes before)"));
         await user.type(screen.getByLabelText("Reminder (minutes before)"), "15");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -825,7 +855,7 @@ describe("EventModal", () => {
         });
     });
 
-    it("calls onClose when Cancel is clicked", async () => {
+    it("calls onClose when the quick popover's close button is clicked", async () => {
         const onClose = vi.fn();
         const user = userEvent.setup();
         render(
@@ -841,7 +871,7 @@ describe("EventModal", () => {
             />,
         );
 
-        await user.click(screen.getByRole("button", { name: "Cancel" }));
+        await user.click(screen.getByRole("button", { name: "Close" }));
         expect(onClose).toHaveBeenCalled();
     });
 
@@ -1113,6 +1143,7 @@ describe("EventModal", () => {
                     onDeleted={vi.fn()}
                 />,
             );
+            await openMoreOptions(user);
 
             const toggle = screen.getByRole("checkbox", { name: "Send an automatic reply while this event is happening" });
             await user.click(toggle);
@@ -1136,6 +1167,7 @@ describe("EventModal", () => {
                     onDeleted={vi.fn()}
                 />,
             );
+            clickModify();
 
             expect(screen.getByRole("checkbox", { name: "Send an automatic reply while this event is happening" })).toBeChecked();
             expect(screen.getByLabelText("Automatic reply message")).toHaveValue("On vacation");
@@ -1158,6 +1190,7 @@ describe("EventModal", () => {
                     onDeleted={vi.fn()}
                 />,
             );
+            await openMoreOptions(user);
 
             await user.type(screen.getByLabelText("Title"), "Vacation");
             await user.click(screen.getByRole("checkbox", { name: "Send an automatic reply while this event is happening" }));
@@ -1186,6 +1219,7 @@ describe("EventModal", () => {
                     onDeleted={vi.fn()}
                 />,
             );
+            await openMoreOptions(user);
 
             expect(screen.queryByText("fake-resource")).not.toBeInTheDocument();
             await user.click(screen.getByRole("button", { name: "+ Add room/equipment" }));
@@ -1206,6 +1240,7 @@ describe("EventModal", () => {
                     onDeleted={vi.fn()}
                 />,
             );
+            await openMoreOptions(user);
 
             await user.click(screen.getByRole("button", { name: "+ Add room/equipment" }));
             await user.click(screen.getByText("fake-resource-close"));
@@ -1226,12 +1261,14 @@ describe("EventModal", () => {
                     onDeleted={vi.fn()}
                 />,
             );
+            await openMoreOptions(user);
 
             await user.click(screen.getByRole("button", { name: "+ Add room/equipment" }));
             await user.click(screen.getByText("fake-resource"));
 
             expect(screen.queryByText("fake-resource")).not.toBeInTheDocument();
-            expect(screen.getByLabelText("Attendee email 1")).toHaveValue("room-a@example.com");
+            expect(screen.getByText(/room-a@example.com/)).toBeInTheDocument();
+            expect(screen.getByText(/Room A/)).toBeInTheDocument();
             expect(screen.getByLabelText("Attendee role 1")).toHaveValue("resource");
         });
 
@@ -1252,6 +1289,7 @@ describe("EventModal", () => {
                     onDeleted={vi.fn()}
                 />,
             );
+            clickModify();
 
             await user.click(screen.getByRole("button", { name: "+ Add room/equipment" }));
             expect(screen.getByTestId("exclude-addresses")).toHaveTextContent("bob@example.com");

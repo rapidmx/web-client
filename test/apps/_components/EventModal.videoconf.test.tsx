@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { addGuest, clickModify } from "./eventModalHelpers.js";
 
 // The "Add video conferencing" toggle, the meeting it mints/cancels through
 // `@rapidmx/meet-plugin`'s `/mail/video-meetings` routes, and the organizer's own join affordance.
@@ -44,7 +45,8 @@ function occurrence(overrides: Partial<CalendarOccurrence> = {}): CalendarOccurr
     };
 }
 
-function renderModal(occ: CalendarOccurrence | null, props: Partial<React.ComponentProps<typeof EventModal>> = {}) {
+/** Renders the dialog. An existing event opens read-only; unless `view` is set, Modify is pressed to reach the form. */
+function renderModal(occ: CalendarOccurrence | null, props: Partial<React.ComponentProps<typeof EventModal>> = {}, view = false) {
     const onSaved = vi.fn();
     const rendered = render(
         <EventModal
@@ -59,6 +61,9 @@ function renderModal(occ: CalendarOccurrence | null, props: Partial<React.Compon
             {...props}
         />,
     );
+    if (occ && !view) {
+        clickModify();
+    }
     return { onSaved, ...rendered };
 }
 
@@ -139,12 +144,9 @@ describe("EventModal video conferencing toggle", () => {
         const user = userEvent.setup();
         const { onSaved } = renderModal(null);
         await user.type(screen.getByLabelText("Title"), "Standup");
-        await user.click(screen.getByRole("button", { name: "+ Add attendee" }));
-        await user.type(screen.getByLabelText("Attendee email 1"), "bob@example.com");
-        await user.click(screen.getByRole("button", { name: "+ Add attendee" }));
-        await user.type(screen.getByLabelText("Attendee email 2"), "jane@example.com");
-        // A third, still-blank row: never sent as an invitee.
-        await user.click(screen.getByRole("button", { name: "+ Add attendee" }));
+        await addGuest(user, "bob@example.com");
+        // The organizer's own address is never sent as an invitee either.
+        await addGuest(user, "jane@example.com");
         await user.click(screen.getByLabelText("Add video conferencing"));
         await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -223,8 +225,7 @@ describe("EventModal video conferencing toggle", () => {
         expect(screen.getByLabelText("Add video conferencing")).toBeChecked();
         expect(screen.getByText(HELPER_TEXT)).toBeInTheDocument();
 
-        await user.click(screen.getByRole("button", { name: "+ Add attendee" }));
-        await user.type(screen.getByLabelText("Attendee email 3"), "carol@example.com");
+        await addGuest(user, "carol@example.com");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
         await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -382,13 +383,51 @@ describe("EventModal video conferencing toggle", () => {
     });
 });
 
+describe("EventModal join video call in the edit form", () => {
+    it("fetches the organizer's join link again for the form (Modify) and opens it", async () => {
+        const fetchMock = mockVideoFetch();
+        const openSpy = vi.fn();
+        vi.stubGlobal("open", openSpy);
+        const user = userEvent.setup();
+        renderModal(occurrence({ videoMeetingUid: "vm1" }));
+
+        const join = screen.getByRole("button", { name: "Join video call" });
+        await waitFor(() => expect(join).toBeEnabled());
+        expect(callsTo(fetchMock, "/api/mail/video-meetings", "GET").length).toBeGreaterThan(0);
+        await user.click(join);
+        expect(openSpy).toHaveBeenCalledWith(JOIN_URL, "_blank", "noopener,noreferrer");
+    });
+
+    it("says so in the form when the meeting can't be fetched or has no link", async () => {
+        mockVideoFetch({ getMeeting: () => jsonResponse(404, { message: "Not found." }) });
+        renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Join video call" })).toBeDisabled();
+    });
+
+    it("says so in the form when the meeting carries no organizer link", async () => {
+        mockVideoFetch({ getMeeting: () => jsonResponse(200, meetingFixture) });
+        renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
+    });
+
+    it("drops a link that arrives after the form is gone", async () => {
+        let resolveMeeting: (res: Response) => void = () => undefined;
+        mockVideoFetch({ getMeeting: () => new Promise<Response>((resolve) => (resolveMeeting = resolve)) });
+        const { unmount } = renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        unmount();
+        resolveMeeting(jsonResponse(200, { ...meetingFixture, organizerJoinUrl: JOIN_URL }));
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Join video call" })).not.toBeInTheDocument());
+    });
+});
+
 describe("EventModal join video call affordance", () => {
     it("fetches the organizer's own join link for an event that already had a meeting, and opens it", async () => {
         const fetchMock = mockVideoFetch();
         const openSpy = vi.fn();
         vi.stubGlobal("open", openSpy);
         const user = userEvent.setup();
-        renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        renderModal(occurrence({ videoMeetingUid: "vm1" }), {}, true);
 
         const join = screen.getByRole("button", { name: "Join video call" });
         expect(join).toBeDisabled();
@@ -402,14 +441,14 @@ describe("EventModal join video call affordance", () => {
 
     it("says so when the meeting carries no organizer link", async () => {
         mockVideoFetch({ getMeeting: () => jsonResponse(200, meetingFixture) });
-        renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        renderModal(occurrence({ videoMeetingUid: "vm1" }), {}, true);
         expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "Join video call" })).toBeDisabled();
     });
 
     it("says so when the meeting can't be fetched at all", async () => {
         mockVideoFetch({ getMeeting: () => jsonResponse(404, { message: "Not found." }) });
-        renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        renderModal(occurrence({ videoMeetingUid: "vm1" }), {}, true);
         expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
     });
 
@@ -420,7 +459,7 @@ describe("EventModal join video call affordance", () => {
         const openSpy = vi.fn();
         vi.stubGlobal("open", openSpy);
         mockVideoFetch({ getMeeting: () => jsonResponse(200, { ...meetingFixture, organizerJoinUrl: "javascript:alert(1)" }) });
-        renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        renderModal(occurrence({ videoMeetingUid: "vm1" }), {}, true);
 
         expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "Join video call" })).toBeDisabled();
@@ -429,7 +468,7 @@ describe("EventModal join video call affordance", () => {
 
     it("is not offered at all for an event with no meeting, and fetches nothing", () => {
         const fetchMock = mockVideoFetch();
-        renderModal(occurrence());
+        renderModal(occurrence(), {}, true);
         expect(screen.queryByRole("button", { name: "Join video call" })).not.toBeInTheDocument();
         expect(fetchMock).not.toHaveBeenCalled();
     });
@@ -437,7 +476,7 @@ describe("EventModal join video call affordance", () => {
     it("drops a join link that arrives after the modal is gone", async () => {
         let resolveMeeting: (res: Response) => void = () => undefined;
         mockVideoFetch({ getMeeting: () => new Promise<Response>((resolve) => (resolveMeeting = resolve)) });
-        const { unmount } = renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        const { unmount } = renderModal(occurrence({ videoMeetingUid: "vm1" }), {}, true);
         unmount();
         resolveMeeting(jsonResponse(200, { ...meetingFixture, organizerJoinUrl: JOIN_URL }));
         // Nothing to assert on screen - the point is that settling after the unmount changes no state (a

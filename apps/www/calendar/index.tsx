@@ -32,6 +32,7 @@ import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../share
 import CalendarListSidebar from "../../shared/components/calendar/CalendarListSidebar.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import EventModal from "../../shared/components/calendar/EventModal.js";
+import { EventAnchor, anchorOf } from "../../shared/components/calendar/EventShell.js";
 import MiniDatePicker from "@rapidmx/react-shared/components/pickers/MiniDatePicker.js";
 import MonthView from "../../shared/components/calendar/MonthView.js";
 import SplitDayView from "../../shared/components/calendar/SplitDayView.js";
@@ -95,6 +96,10 @@ interface ModalState {
     /** Overrides the default calendar a new event is created into (e.g. the column clicked in Split
      * view) — ignored when editing an existing occurrence, which always keeps its own `folderUid`. */
     targetFolderUid?: string;
+    /** What was clicked to start a new event, for the quick-create popover to open beside (none: centered near the top). */
+    anchor?: EventAnchor;
+    /** A new event that starts as an all-day one (a day of the month view was clicked). */
+    initialAllDay?: boolean;
 }
 
 function CalendarContent({ userUid }: { userUid?: string }) {
@@ -309,7 +314,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
         setViewDate(startOfDay(date));
     }
 
-    function openNewEvent(start?: Date, end?: Date, targetFolderUid?: string) {
+    function openNewEvent(start?: Date, end?: Date, targetFolderUid?: string, anchor?: EventAnchor, initialAllDay?: boolean) {
         if (!mailboxUid || !folderUid) {
             return;
         }
@@ -318,6 +323,8 @@ function CalendarContent({ userUid }: { userUid?: string }) {
             initialStart: start ?? new Date(),
             initialEnd: end ?? new Date(Date.now() + 30 * 60_000),
             targetFolderUid,
+            anchor,
+            initialAllDay,
         });
     }
 
@@ -423,7 +430,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                     >
                         <HiOutlineBars3 size={20} aria-hidden="true" />
                     </button>
-                    <Button type="button" onClick={() => openNewEvent()} className="!w-auto shrink-0" {...newEventHint}>
+                    <Button type="button" onClick={(e) => openNewEvent(undefined, undefined, undefined, anchorOf(e.currentTarget, "below"))} className="!w-auto shrink-0" {...newEventHint}>
                         + New event
                     </Button>
                     <div className="flex items-center gap-1">
@@ -470,6 +477,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                                             folderColors={folderColors}
                                             onSelectDay={handleSelectDay}
                                             onSelectEvent={openEvent}
+                                            onSelectSlot={(start, end, anchor) => openNewEvent(start, end, undefined, anchor, true)}
                                         />
                                     ) : view === "split" ? (
                                         <SplitDayView
@@ -477,7 +485,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                                             columns={splitColumns}
                                             occurrences={occurrences}
                                             onSelectEvent={openEvent}
-                                            onSelectSlot={(start, end, targetFolderUid) => openNewEvent(start, end, targetFolderUid)}
+                                            onSelectSlot={(start, end, targetFolderUid, anchor) => openNewEvent(start, end, targetFolderUid, anchor)}
                                         />
                                     ) : (
                                         <TimeGridView
@@ -485,7 +493,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                                             occurrences={occurrences}
                                             folderColors={folderColors}
                                             onSelectEvent={openEvent}
-                                            onSelectSlot={openNewEvent}
+                                            onSelectSlot={(start, end, anchor) => openNewEvent(start, end, undefined, anchor)}
                                         />
                                     )}
                                 </DndContext>
@@ -506,11 +514,14 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                         folderUid={modalFolderUid!}
                         calendars={calendarFolders.filter((f) => f.mailboxUid === modalMailbox.uid).map((f) => ({ uid: f.uid, name: f.name }))}
                         mailboxOptions={mailboxOptions}
+                        folderColors={folderColors}
                         organizerAddress={modalMailbox.primarySmtpAddress}
                         organizerAliases={modalMailbox.aliasAddresses}
                         occurrence={modal.occurrence}
                         initialStart={modal.initialStart}
                         initialEnd={modal.initialEnd}
+                        initialAllDay={modal.initialAllDay}
+                        anchor={modal.anchor}
                         onSaved={handleSaved}
                         onDeleted={handleDeleted}
                     />

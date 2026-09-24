@@ -43,6 +43,9 @@ import {
     replySubject,
 } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import MoveToFolderDialog from "./MoveToFolderDialog.js";
+import InviteCard from "./InviteCard.js";
+import { isCalendarAttachment } from "./invite/inviteFormat.js";
+import { useMessageInvite } from "./invite/inviteStore.js";
 import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
 import type { MessageSecurityResult, SignatureFailureReason } from "@rapidmx/react-shared/crypto/messageSecurity.js";
 import { extractAddresses, type MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
@@ -992,6 +995,14 @@ function MessageDetailContent({
     const forwarded = message.flags.forwarded === true;
     const cardUnread = threadHeader?.unread ?? false;
     const showFooter = footer ?? !inThread;
+    // Only a message the server can read and that carries a calendar file is worth asking about an invitation. An encrypted message is out: the
+    // server holds only its ciphertext (the calendar file is inside it), so there is nothing for it to find. Drafts and Outbox hold messages
+    // that are being written or sent, not received invitations.
+    const mayHoldInvite = !message.encrypted && !inOutbox && message.folderUid !== draftsFolderUid && attachments.some(isCalendarAttachment);
+    // The calendar file of a message whose invitation card is drawn is the card, not a chip in the attachment list (a nameless "attachment" to click):
+    // it is listed again if the card could not be drawn (no invitation the server can read, or the lookup failed), so the file is never out of reach.
+    const { invite: shownInvite } = useMessageInvite(message.uid, mayHoldInvite);
+    const listedAttachments = shownInvite ? attachments.filter((attachment) => !isCalendarAttachment(attachment)) : attachments;
 
     const senderRecipient = { displayName: senderName, address: senderAddress };
     const sendingStatus = (
@@ -1348,6 +1359,7 @@ function MessageDetailContent({
                         </div>
                     ))}
                 {receiptError && <Alert>{receiptError}</Alert>}
+                {mayHoldInvite && <InviteCard messageUid={message.uid} headingLevel={inThread ? 3 : 2} />}
                 {security?.state === "signature_failed" && innerAttachments && innerAttachments.length > 0 && (
                     <p role="status" className="py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
                         These attachments come from a message whose signature couldn&rsquo;t be verified. Open them only if
@@ -1370,9 +1382,9 @@ function MessageDetailContent({
                               ))}
                           </ul>
                       )
-                    : attachments.length > 0 && (
+                    : listedAttachments.length > 0 && (
                           <ul className="flex flex-wrap gap-2">
-                              {attachments.map((attachment) => (
+                              {listedAttachments.map((attachment) => (
                                   <li key={attachment.uid}>
                                       <a
                                           href={attachmentContentUrl(attachment.uid)}

@@ -38,6 +38,9 @@ export interface RecurrenceEditorProps {
     /** The weekday the event starts on (in the frame its series expands in - see `allDay.ts`'s
      * `startWeekdayCode()`): the day a new weekly rule, or one switched to Weekly, repeats on. Defaults to Monday. */
     startWeekday?: WeekdayCode;
+    /** Leaves out the "Repeats" checkbox, for a caller that already turns repeating on and off itself (the event form's
+     * "Does not repeat" menu): what remains is the rule's details, shown only while there is a rule. */
+    hideToggle?: boolean;
 }
 
 /**
@@ -46,7 +49,7 @@ export interface RecurrenceEditorProps {
  * live "every ... until/for ..." summary comes from `describeRecurrence()` (built on `rrule`'s own
  * `.toText()`), so it never drifts out of sync with what will actually be submitted.
  */
-export default function RecurrenceEditor({ value, onChange, allDay = false, startWeekday = "MO" }: RecurrenceEditorProps) {
+export default function RecurrenceEditor({ value, onChange, allDay = false, startWeekday = "MO", hideToggle = false }: RecurrenceEditorProps) {
     function handleEnable(enabled: boolean) {
         onChange(enabled ? { freq: "weekly", interval: 1, byDay: [startWeekday], exceptions: [] } : null);
     }
@@ -109,10 +112,12 @@ export default function RecurrenceEditor({ value, onChange, allDay = false, star
 
     return (
         <div className="flex flex-col gap-3">
-            <label className="flex items-center gap-2 text-sm font-medium">
-                <input type="checkbox" checked={value !== null} onChange={(e) => handleEnable(e.target.checked)} />
-                Repeats
-            </label>
+            {!hideToggle && (
+                <label className="flex items-center gap-2 text-sm font-medium">
+                    <input type="checkbox" checked={value !== null} onChange={(e) => handleEnable(e.target.checked)} />
+                    Repeats
+                </label>
+            )}
 
             {value && (
                 <div className="flex flex-col gap-3 pl-6 border-l-2 border-border">

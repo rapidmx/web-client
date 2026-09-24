@@ -58,6 +58,7 @@ import { LazyConversationThreadPane, LazyMessageDetailPane, prefetchReadingPane 
 import ConversationList from "../shared/components/mail/ConversationList.js";
 import type { ConversationThreadHead } from "../shared/components/mail/ConversationThreadPane.js";
 import SwipeRow from "../shared/components/mail/SwipeRow.js";
+import InviteRowChip from "../shared/components/mail/invite/InviteRowChip.js";
 import MoveToFolderDialog from "../shared/components/mail/MoveToFolderDialog.js";
 import { EncryptedPreview } from "../shared/components/mail/reading/EncryptedPreview.js";
 import MailListToolbar from "../shared/components/mail/MailListToolbar.js";
@@ -1807,56 +1808,60 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         />
                     </span>
                 )}
-                <button
-                    type="button"
-                    data-row-open
-                    onClick={() => handleSelect(message)}
-                    className={["flex-1 min-w-0 text-left px-4 py-3", ROW_FOCUS_CLASS].join(" ")}
-                >
-                    <UnreadLabel unread={isUnread(message)} />
-                    <div className="flex items-center justify-between gap-2 text-sm">
-                        <MailAddress recipient={message.from} className={senderClass(isUnread(message))} />
-                        <span className={["text-xs shrink-0", dateClass(isUnread(message))].join(" ")}>
-                            {new Date(message.receivedDate).toLocaleDateString()}
-                        </span>
-                    </div>
-                    {aggregateFolderType && (
-                        // The one view where a row needs to say which mailbox it came from.
-                        <div className="text-xs text-text-muted truncate font-normal">
-                            {mailboxes.find((mb) => mb.uid === message.mailboxUid)?.displayName}
+                {/* The open button and, for a meeting request, its RSVP chip: a button can't hold a button, so the chip is the button's sibling. */}
+                <div className="flex-1 min-w-0 flex flex-col">
+                    <button
+                        type="button"
+                        data-row-open
+                        onClick={() => handleSelect(message)}
+                        className={["w-full text-left px-4 py-3", ROW_FOCUS_CLASS].join(" ")}
+                    >
+                        <UnreadLabel unread={isUnread(message)} />
+                        <div className="flex items-center justify-between gap-2 text-sm">
+                            <MailAddress recipient={message.from} className={senderClass(isUnread(message))} />
+                            <span className={["text-xs shrink-0", dateClass(isUnread(message))].join(" ")}>
+                                {new Date(message.receivedDate).toLocaleDateString()}
+                            </span>
                         </div>
-                    )}
-                    {isSearching && pendingUids.has(message.uid) ? (
-                        // §_Progressive Results_: "Unresolved encrypted results MUST
-                        // be rendered as skeleton entries in place, not appended on
-                        // arrival." This uid is a Tier 1 metadataOnly guess Tier 2/3
-                        // haven't confirmed (or ruled out) yet.
-                        <div className="flex flex-col gap-1.5 py-0.5">
-                            <Skeleton height="h-3.5" className="w-2/3 rounded-sm" />
-                            <Skeleton height="h-3" className="w-full rounded-sm" />
-                        </div>
-                    ) : (
-                        <>
-                            <div className={["text-sm truncate", subjectClass(isUnread(message))].join(" ")}>
-                                {rowSubject(message)}
+                        {aggregateFolderType && (
+                            // The one view where a row needs to say which mailbox it came from.
+                            <div className="text-xs text-text-muted truncate font-normal">
+                                {mailboxes.find((mb) => mb.uid === message.mailboxUid)?.displayName}
                             </div>
-                            <div className="flex items-center gap-2 text-xs text-text-muted font-normal">
-                                <span className="truncate">
-                                    {snippets[message.uid] ||
-                                        decryptedRows[message.uid]?.preview ||
-                                        message.bodyPreview ||
-                                        (message.encrypted ? <EncryptedPreview /> : null)}
-                                </span>
-                                {message.hasAttachments && <HiOutlinePaperClip size={12} aria-label="Has attachments" />}
-                                {message.flags.flagged && (
-                                    <HiOutlineFlag size={12} aria-label="Flagged" className="text-danger" />
-                                )}
+                        )}
+                        {isSearching && pendingUids.has(message.uid) ? (
+                            // §_Progressive Results_: "Unresolved encrypted results MUST
+                            // be rendered as skeleton entries in place, not appended on
+                            // arrival." This uid is a Tier 1 metadataOnly guess Tier 2/3
+                            // haven't confirmed (or ruled out) yet.
+                            <div className="flex flex-col gap-1.5 py-0.5">
+                                <Skeleton height="h-3.5" className="w-2/3 rounded-sm" />
+                                <Skeleton height="h-3" className="w-full rounded-sm" />
                             </div>
-                            {/* What the server is doing with a message in Outbox: sending, retrying, or why it wasn't sent. */}
-                            {isOutbox && <OutboxRowStatus message={message} />}
-                        </>
-                    )}
-                </button>
+                        ) : (
+                            <>
+                                <div className={["text-sm truncate", subjectClass(isUnread(message))].join(" ")}>
+                                    {rowSubject(message)}
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-text-muted font-normal">
+                                    <span className="truncate">
+                                        {snippets[message.uid] ||
+                                            decryptedRows[message.uid]?.preview ||
+                                            message.bodyPreview ||
+                                            (message.encrypted ? <EncryptedPreview /> : null)}
+                                    </span>
+                                    {message.hasAttachments && <HiOutlinePaperClip size={12} aria-label="Has attachments" />}
+                                    {message.flags.flagged && (
+                                        <HiOutlineFlag size={12} aria-label="Flagged" className="text-danger" />
+                                    )}
+                                </div>
+                                {/* What the server is doing with a message in Outbox: sending, retrying, or why it wasn't sent. */}
+                                {isOutbox && <OutboxRowStatus message={message} />}
+                            </>
+                        )}
+                    </button>
+                    <InviteRowChip message={message} onResponded={(updated) => patchListedMessage(updated)} />
+                </div>
             </SwipeRow>
         );
     }
@@ -2325,6 +2330,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             mailboxUid={activeMailboxUid}
                             selectedUid={selectedUid}
                             messageOverrides={conversationPatches}
+                            onMeetingResponded={patchListedMessage}
                             onOpenMessage={handleOpenConversation}
                             selectMode={selectMode}
                             selectedConversationIds={selectedConversationIds}

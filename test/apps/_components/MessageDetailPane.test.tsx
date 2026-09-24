@@ -14,6 +14,8 @@ import ComposeProvider from "../../../apps/shared/components/mail/compose/Compos
 import { clearBodyContentCache } from "../../../apps/shared/components/mail/reading/bodyContent.js";
 import { clearViewedOriginal } from "../../../apps/shared/components/mail/reading/viewOriginal.js";
 import { FRAME_SANDBOX } from "../../../apps/shared/components/mail/reading/frameDocument.js";
+import { dismissAll, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
+import { clearInviteCache } from "../../../apps/shared/components/mail/invite/inviteStore.js";
 
 // The real CMS/S-MIME crypto behind evaluateMessageSecurity() is already exercised end to end (against
 // real WebCrypto, under react-shared's own "node" test environment - see that repo's
@@ -182,6 +184,8 @@ afterEach(() => {
     mailShellOverride.current = undefined;
     // A never-settling contacts fetch from one test must not hold up the next test's pin lookup.
     clearPinnedSignerCache();
+    dismissAll();
+    clearInviteCache();
 });
 
 describe("MessageDetailPane", () => {
@@ -1800,6 +1804,263 @@ describe("MessageDetailPane", () => {
             await user.click(screen.getByRole("button", { name: "Send receipt" }));
 
             expect(await screen.findByText("Could not handle this receipt request.")).toBeInTheDocument();
+        });
+    });
+
+    describe("calendar invitation", () => {
+        const INVITE_URL = "/api/mail/calendar-events/invite/";
+
+        function attachmentFixture(filename: string, mimeType: string, uid = `a-${filename}`) {
+            return { uid, version: 0, dateCreated: "", dateModified: "", messageUid: "m1", folderUid: "f1", mailboxUid: "mb1", filename, mimeType, sizeBytes: 400, isInline: false } as any;
+        }
+
+        const ICS = () => [attachmentFixture("invite.ics", "text/calendar")];
+
+        const inviteBody = {
+            method: "REQUEST",
+            uid: "ical-1",
+            sequence: 0,
+            summary: "Quarterly planning",
+            startDate: "2026-06-16T14:00:00.000Z",
+            endDate: "2026-06-16T15:00:00.000Z",
+            allDay: false,
+            organizer: { address: "boss@example.com", displayName: "The Boss" },
+            attendees: [],
+            recurring: false,
+            isOrganizer: false,
+            onCalendar: false,
+            outdated: false,
+            canRespond: true,
+            canAdd: false,
+            canRemove: false,
+            canPropose: false,
+            canAcceptProposal: false,
+            conflicts: [],
+            schedule: [],
+        };
+
+        /** Answers the invite lookup with `lookup`; the message's own body and everything else as the pane needs. */
+        function mockInvite(lookup: () => Response | Promise<Response> = () => jsonResponse(200, inviteBody)) {
+            return mockFetch((url) => (url.startsWith(INVITE_URL) ? lookup() : url.endsWith("/raw") ? new Response("raw mime") : jsonResponse(200, {})));
+        }
+
+        function inviteRequests(fetchMock: ReturnType<typeof mockInvite>) {
+            return fetchMock.mock.calls.filter(([url]) => String(url).startsWith(INVITE_URL));
+        }
+
+        it("draws an invitation card with Accept, Tentative and Decline between the header and the body for a message with an .ics attachment", async () => {
+            const fetchMock = mockInvite();
+            render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+
+            const region = await screen.findByRole("region", { name: "Meeting invitation" });
+            expect(within(region).getByText("Quarterly planning")).toBeInTheDocument();
+            for (const name of ["Accept", "Tentative", "Decline"]) {
+                expect(within(region).getByRole("button", { name })).toBeEnabled();
+            }
+            expect(inviteRequests(fetchMock)).toHaveLength(1);
+            expect(inviteRequests(fetchMock)[0][0]).toBe(`${INVITE_URL}m1`);
+            // In the pane itself its heading sits under the subject's h1.
+            expect(within(region).getByRole("heading", { level: 2 })).toBeInTheDocument();
+            // Between the header (the sender) and the body's frame.
+            const frame = await screen.findByTitle("Hello there");
+            const sender = screen.getByText(/^From$/);
+            expect(sender.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+            expect(region.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        });
+
+        it.each([
+            ["text/calendar", "invite"],
+            ["application/ics", "invite"],
+            ["application/octet-stream", "Meeting.ICS"],
+        ])("recognizes a calendar file by type or name (%s, %s)", async (mimeType, filename) => {
+            const fetchMock = mockInvite();
+            render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={[attachmentFixture(filename, mimeType)]} />);
+            expect(await screen.findByRole("region", { name: "Meeting invitation" })).toBeInTheDocument();
+            expect(inviteRequests(fetchMock)).toHaveLength(1);
+        });
+
+        it("asks the server nothing for a message without a calendar attachment, or with none at all", async () => {
+            const fetchMock = mockInvite();
+            const { unmount } = render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+            await screen.findByTitle("Hello there");
+            unmount();
+
+            render(
+                <MessageDetailPane
+                    message={messageFixture({ hasAttachments: true }) as any}
+                    attachments={[attachmentFixture("report.pdf", "application/pdf"), attachmentFixture("notes.txt", "text/plain")]}
+                />,
+            );
+            await screen.findByTitle("Hello there");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(inviteRequests(fetchMock)).toHaveLength(0);
+            expect(screen.queryByRole("region", { name: /Meeting|Calendar/ })).not.toBeInTheDocument();
+        });
+
+        it("asks nothing for an encrypted message, whose calendar file the server cannot read", async () => {
+            getUnlockedKeys.mockReturnValue({ encryptionPrivateKey: {} as any, encryptionCertDer: new Uint8Array() });
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", html: "<p>Decrypted</p>" });
+            const fetchMock = mockInvite();
+            render(<MessageDetailPane message={messageFixture({ encrypted: true, hasAttachments: true }) as any} attachments={ICS()} />);
+            await screen.findByText("Encrypted");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(inviteRequests(fetchMock)).toHaveLength(0);
+            expect(screen.queryByRole("region", { name: "Meeting invitation" })).not.toBeInTheDocument();
+        });
+
+        it("asks nothing for a message in Drafts or Outbox", async () => {
+            const fetchMock = mockInvite();
+            const { unmount } = render(
+                <MessageDetailPane message={messageFixture({ folderUid: "f-drafts", hasAttachments: true }) as any} attachments={ICS()} draftsFolderUid="f-drafts" />,
+            );
+            await screen.findByTitle("Hello there");
+            unmount();
+
+            render(
+                <MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} isOutbox draftsFolderUid="f-drafts" />,
+            );
+            await screen.findByTitle("Hello there");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(inviteRequests(fetchMock)).toHaveLength(0);
+        });
+
+        it("draws nothing when the message has no readable invitation (404)", async () => {
+            const fetchMock = mockInvite(() => jsonResponse(404, { message: "No invite" }));
+            render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+            await waitFor(() => expect(inviteRequests(fetchMock)).toHaveLength(1));
+            await screen.findByTitle("Hello there");
+
+            expect(screen.queryByRole("region", { name: /Meeting|Calendar/ })).not.toBeInTheDocument();
+        });
+
+        it("keeps the message readable, without the card or a pop-up and without asking again, when the lookup fails", async () => {
+            const fetchMock = mockInvite(() => jsonResponse(500, { message: "Boom" }));
+            const { rerender } = render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+            await waitFor(() => expect(inviteRequests(fetchMock)).toHaveLength(1));
+
+            expect(await screen.findByTitle("Hello there")).toBeInTheDocument();
+            expect(screen.getByText(/^From$/)).toHaveTextContent("From Sender One <sender@example.com>");
+            expect(screen.getByRole("link", { name: /invite\.ics/ })).toBeInTheDocument();
+            expect(screen.queryByRole("region", { name: /Meeting|Calendar/ })).not.toBeInTheDocument();
+            expect(getNotificationsSnapshot().visible).toEqual([]);
+            // A change to the same message (its version moves on when it is marked read) does not ask again.
+            rerender(<MessageDetailPane message={messageFixture({ hasAttachments: true, version: 1 })} attachments={ICS()} />);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(inviteRequests(fetchMock)).toHaveLength(1);
+        });
+
+        it("leaves the calendar file out of the attachment list once the invitation card is drawn, and keeps the other attachments", async () => {
+            mockInvite();
+            render(
+                <MessageDetailPane
+                    message={messageFixture({ hasAttachments: true }) as any}
+                    attachments={[attachmentFixture("invite.ics", "application/octet-stream"), attachmentFixture("agenda.pdf", "application/pdf")]}
+                />,
+            );
+            await screen.findByRole("region", { name: "Meeting invitation" });
+
+            expect(screen.queryByRole("link", { name: /invite.ics/ })).not.toBeInTheDocument();
+            expect(screen.getByRole("link", { name: /agenda.pdf/ })).toBeInTheDocument();
+        });
+
+        it("draws no attachment list at all when the calendar file was the only attachment", async () => {
+            mockInvite();
+            const { container } = render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+            await screen.findByRole("region", { name: "Meeting invitation" });
+            expect(container.querySelector("ul.flex-wrap")).toBeNull();
+            expect(screen.queryByRole("link", { name: /invite.ics/ })).not.toBeInTheDocument();
+        });
+
+        it("keeps the calendar file listed while the lookup is out, and when there is no card to replace it", async () => {
+            const pending = mockInvite(() => new Promise<Response>(() => undefined));
+            const first = render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+            expect(screen.getByRole("link", { name: /invite.ics/ })).toBeInTheDocument();
+            expect(inviteRequests(pending)).toHaveLength(1);
+            first.unmount();
+            clearInviteCache();
+
+            mockInvite(() => jsonResponse(404, { message: "none" }));
+            const second = render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+            await screen.findByTitle("Hello there");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(screen.getByRole("link", { name: /invite.ics/ })).toBeInTheDocument();
+            second.unmount();
+            clearInviteCache();
+
+            mockInvite(() => jsonResponse(500, { message: "Boom" }));
+            render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+            await screen.findByTitle("Hello there");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(screen.getByRole("link", { name: /invite.ics/ })).toBeInTheDocument();
+        });
+
+        it("draws a reply's card as one line about who answered", async () => {
+            mockInvite(() =>
+                jsonResponse(200, {
+                    ...inviteBody,
+                    method: "REPLY",
+                    isOrganizer: true,
+                    canRespond: false,
+                    reply: { address: "jp@example.com", displayName: "Jean-Philippe Steinmetz", responseStatus: "tentative" },
+                }),
+            );
+            render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+            const region = await screen.findByRole("region", { name: "Meeting response" });
+            expect(region).toHaveTextContent("Jean-Philippe Steinmetz tentatively accepted.");
+            expect(screen.queryByRole("link", { name: /invite.ics/ })).not.toBeInTheDocument();
+        });
+
+        it("answers from the card and shows the answer", async () => {
+            const user = userEvent.setup();
+            const fetchMock = mockFetch((url, init) =>
+                !url.startsWith(INVITE_URL)
+                    ? jsonResponse(200, {})
+                    : init?.method === "POST"
+                      ? jsonResponse(200, { ...inviteBody, response: "accepted", onCalendar: true, calendarEventUid: "ev1" })
+                      : jsonResponse(200, inviteBody),
+            );
+            render(<MessageDetailPane message={messageFixture({ hasAttachments: true }) as any} attachments={ICS()} />);
+
+            await user.click(await screen.findByRole("button", { name: "Accept" }));
+
+            expect(await screen.findByText("You accepted this meeting.")).toBeInTheDocument();
+            expect(fetchMock).toHaveBeenCalledWith(`${INVITE_URL}m1/respond`, expect.objectContaining({ method: "POST" }));
+        });
+
+        it("draws the card inside a thread's card, under the sender line, with a lower heading", async () => {
+            const fetchMock = mockInvite();
+            render(
+                <MessageDetailPane
+                    inThread
+                    message={messageFixture({ hasAttachments: true }) as any}
+                    attachments={ICS()}
+                    threadSubject="Hello there"
+                    threadHeader={{ bodyId: "body-m1", unread: false, onToggle: vi.fn(), buttonRef: vi.fn() }}
+                />,
+            );
+
+            const region = await screen.findByRole("region", { name: "Meeting invitation" });
+            expect(within(region).getByRole("heading", { level: 3, name: "Meeting invitation" })).toBeInTheDocument();
+            expect(document.getElementById("body-m1")!.contains(region)).toBe(true);
+            expect(inviteRequests(fetchMock)).toHaveLength(1);
+        });
+
+        it("does not draw one in a thread for a message without a calendar attachment", async () => {
+            const fetchMock = mockInvite();
+            render(
+                <MessageDetailPane
+                    inThread
+                    message={messageFixture() as any}
+                    attachments={[]}
+                    threadSubject="Hello there"
+                    threadHeader={{ bodyId: "body-m1", unread: false, onToggle: vi.fn(), buttonRef: vi.fn() }}
+                />,
+            );
+            await screen.findByTitle("Hello there");
+            expect(inviteRequests(fetchMock)).toHaveLength(0);
         });
     });
 

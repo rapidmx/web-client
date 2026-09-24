@@ -8,6 +8,7 @@ import { addDays, addMinutes, format, isToday, startOfDay } from "date-fns";
 import { dayDropId, eventDragId, resizeDragId, slotDropId } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 import { occursOnDay, startsOnDay } from "./allDay.js";
+import { EventAnchor, anchorOf } from "./EventShell.js";
 
 const HOUR_HEIGHT_PX = 48;
 const SLOT_MINUTES = 30;
@@ -22,8 +23,9 @@ export interface TimeGridViewProps {
     /** Each occurrence's own calendar color, keyed by `folderUid` — see `calendarColors.ts`. */
     folderColors: Record<string, string>;
     onSelectEvent: (occurrence: CalendarOccurrence) => void;
-    /** Click on an empty slot — start/end default to a 30-minute block there, for the "New event" flow. */
-    onSelectSlot: (start: Date, end: Date) => void;
+    /** Click on an empty slot — start/end default to a 30-minute block there, for the "New event" flow. `anchor` is the slot, for the
+     * quick-create popover to open beside. */
+    onSelectSlot: (start: Date, end: Date, anchor: EventAnchor) => void;
 }
 
 /** An hourly time grid (Week, Work Week, or Day view — they share all their rendering/drag logic and
@@ -96,7 +98,7 @@ interface DayColumnProps {
     occurrences: CalendarOccurrence[];
     folderColors: Record<string, string>;
     onSelectEvent: (occurrence: CalendarOccurrence) => void;
-    onSelectSlot: (start: Date, end: Date) => void;
+    onSelectSlot: (start: Date, end: Date, anchor: EventAnchor) => void;
 }
 
 function DayColumn({ day, occurrences, folderColors, onSelectEvent, onSelectSlot }: DayColumnProps) {
@@ -131,13 +133,13 @@ function DayColumn({ day, occurrences, folderColors, onSelectEvent, onSelectSlot
     );
 }
 
-function TimeSlot({ start, onSelectSlot }: { start: Date; onSelectSlot: (start: Date, end: Date) => void }) {
+function TimeSlot({ start, onSelectSlot }: { start: Date; onSelectSlot: (start: Date, end: Date, anchor: EventAnchor) => void }) {
     const { setNodeRef, isOver } = useDroppable({ id: slotDropId(start) });
     return (
         <button
             ref={setNodeRef}
             type="button"
-            onClick={() => onSelectSlot(start, addMinutes(start, SLOT_MINUTES))}
+            onClick={(e) => onSelectSlot(start, addMinutes(start, SLOT_MINUTES), anchorOf(e.currentTarget))}
             style={{ height: HOUR_HEIGHT_PX / 2 }}
             className={["block w-full border-b border-border/50 text-left", isOver ? "bg-primary/10" : ""].join(" ")}
             aria-label={`New event at ${format(start, "h:mm a, MMM d")}`}

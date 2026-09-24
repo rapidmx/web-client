@@ -6,6 +6,7 @@ import React from "react";
 import { addDays, addMinutes, format, startOfDay } from "date-fns";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 import { occursOnDay } from "./allDay.js";
+import { EventAnchor, anchorOf } from "./EventShell.js";
 
 const HOUR_HEIGHT_PX = 48;
 const SLOT_MINUTES = 30;
@@ -25,8 +26,8 @@ export interface SplitDayViewProps {
      * calendar; this component splits them into columns itself by `occurrence.folderUid`. */
     occurrences: CalendarOccurrence[];
     onSelectEvent: (occurrence: CalendarOccurrence) => void;
-    /** Click on an empty slot in one calendar's column — the calendar it belongs to is `folderUid`. */
-    onSelectSlot: (start: Date, end: Date, folderUid: string) => void;
+    /** Click on an empty slot in one calendar's column — the calendar it belongs to is `folderUid`; `anchor` is the slot. */
+    onSelectSlot: (start: Date, end: Date, folderUid: string, anchor: EventAnchor) => void;
 }
 
 /**
@@ -88,7 +89,7 @@ function SplitColumn({
     dayStart: Date;
     occurrences: CalendarOccurrence[];
     onSelectEvent: (occurrence: CalendarOccurrence) => void;
-    onSelectSlot: (start: Date, end: Date, folderUid: string) => void;
+    onSelectSlot: (start: Date, end: Date, folderUid: string, anchor: EventAnchor) => void;
 }) {
     return (
         <div className="flex-1 min-w-0 relative border-l border-border">
@@ -98,7 +99,7 @@ function SplitColumn({
                     <button
                         key={i}
                         type="button"
-                        onClick={() => onSelectSlot(slotStart, addMinutes(slotStart, SLOT_MINUTES), column.folderUid)}
+                        onClick={(e) => onSelectSlot(slotStart, addMinutes(slotStart, SLOT_MINUTES), column.folderUid, anchorOf(e.currentTarget))}
                         style={{ height: HOUR_HEIGHT_PX / 2 }}
                         className="block w-full border-b border-border/50 text-left"
                         aria-label={`New event at ${format(slotStart, "h:mm a")} in ${column.name}`}

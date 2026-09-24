@@ -3,11 +3,12 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ConversationList from "../../../apps/shared/components/mail/ConversationList.js";
+import { clearInviteCache } from "../../../apps/shared/components/mail/invite/inviteStore.js";
 
 function conversationFixture(overrides: Record<string, unknown> = {}) {
     return {
@@ -71,6 +72,7 @@ function renderList(props: Partial<React.ComponentProps<typeof ConversationList>
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    clearInviteCache();
 });
 
 describe("ConversationList", () => {
@@ -433,5 +435,191 @@ describe("ConversationList row markers for the keyboard", () => {
         await user.click(screen.getByRole("button", { name: /^Expand conversation/ }));
         await waitFor(() => expect(document.querySelector('[data-message-uid="child-1"]')).toBeInTheDocument());
         expect(document.querySelector('[data-message-uid="child-1"] [data-row-open]')).toBeInTheDocument();
+    });
+});
+
+describe("meeting requests among a conversation's messages", () => {
+    const invite = {
+        method: "REQUEST",
+        uid: "ical-1",
+        sequence: 0,
+        summary: "Video Test",
+        startDate: "2026-06-16T13:00:00.000Z",
+        endDate: "2026-06-16T14:00:00.000Z",
+        allDay: false,
+        attendees: [],
+        recurring: false,
+        isOrganizer: false,
+        onCalendar: false,
+        outdated: false,
+        canRespond: true,
+        canAdd: false,
+        canRemove: false,
+        canPropose: false,
+        canAcceptProposal: false,
+        conflicts: [],
+        schedule: [],
+    };
+
+    it("draws the RSVP chip under a message that is a meeting request, asks only about that one, and reports an answer", async () => {
+        const user = userEvent.setup();
+        const onMeetingResponded = vi.fn();
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/messages/conversations/")) {
+                return jsonResponse(200, [messageFixture({ uid: "m1" }), messageFixture({ uid: "m2", meetingMethod: "REQUEST" })]);
+            }
+            if (url.endsWith("/respond")) return jsonResponse(200, { ...invite, response: "accepted" });
+            if (url.includes("/calendar-events/invite/")) return jsonResponse(200, invite);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        render(
+            <ConversationList conversations={[conversationFixture()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} onMeetingResponded={onMeetingResponded} />,
+        );
+        await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+
+        const rsvp = await screen.findByRole("button", { name: "RSVP to Video Test" });
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/calendar-events/invite/")).map(([url]) => url)).toEqual(["/api/mail/calendar-events/invite/m2"]);
+        expect(screen.getAllByRole("button", { name: /RSVP/ })).toHaveLength(1);
+
+        await user.click(rsvp);
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Accept" }));
+        await waitFor(() => expect(onMeetingResponded).toHaveBeenCalledWith(expect.objectContaining({ uid: "m2", meetingResponse: "accepted" })));
+    });
+
+    describe("on the conversation's own row", () => {
+        const request = (overrides: Record<string, unknown> = {}) => conversationFixture({ latestMeetingMethod: "REQUEST", latestMeetingResponse: null, ...overrides });
+        const serve = (children: unknown[] = []) =>
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/messages/conversations/")) return jsonResponse(200, children);
+                if (url.endsWith("/respond")) return jsonResponse(200, { ...invite, response: JSON.parse(init.body as string).responseStatus });
+                if (url.includes("/calendar-events/invite/")) return jsonResponse(200, invite);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+        const inviteUrls = (fetchMock: ReturnType<typeof mockFetch>) =>
+            fetchMock.mock.calls.filter(([url]) => String(url).includes("/calendar-events/invite/")).map(([url]) => url);
+
+        it("draws the RSVP chip for the latest message when it is a meeting request, looked up by that message's uid", async () => {
+            const fetchMock = serve();
+            render(<ConversationList conversations={[request()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+
+            const rsvp = await screen.findByRole("button", { name: "RSVP to Video Test" });
+            expect(inviteUrls(fetchMock)).toEqual(["/api/mail/calendar-events/invite/m2"]);
+            // Beside the row's open button, not inside it.
+            expect(rsvp.closest("[data-row-open]")).toBeNull();
+            expect(rsvp.closest("[data-message-uid]")).toHaveAttribute("data-message-uid", "m2");
+        });
+
+        it("draws nothing, and asks nothing, for other methods, none, or a null from the server", async () => {
+            const fetchMock = serve();
+            const rows = [
+                request({ conversationId: "c1", latestMeetingMethod: "REPLY" }),
+                request({ conversationId: "c2", latestMeetingMethod: null }),
+                request({ conversationId: "c3", latestMeetingMethod: undefined }),
+            ];
+            render(<ConversationList conversations={rows} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(screen.queryByRole("button", { name: /RSVP/ })).not.toBeInTheDocument();
+        });
+
+        it("answers from the chip without opening the conversation, and the row shows the answer at once", async () => {
+            const user = userEvent.setup();
+            const onOpenMessage = vi.fn();
+            const onMeetingResponded = vi.fn();
+            const fetchMock = serve();
+            const { container } = render(
+                <ConversationList conversations={[request()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={onOpenMessage} onMeetingResponded={onMeetingResponded} />,
+            );
+            await user.click(await screen.findByRole("button", { name: "RSVP to Video Test" }));
+            await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Decline" }));
+
+            await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toHaveTextContent("Declined"));
+            expect(fetchMock).toHaveBeenLastCalledWith("/api/mail/calendar-events/invite/m2/respond", expect.objectContaining({ method: "POST" }));
+            expect(onOpenMessage).not.toHaveBeenCalled();
+            // The parent row is not a message of the list: nothing is handed to the caller to patch.
+            expect(onMeetingResponded).not.toHaveBeenCalled();
+        });
+
+        it("starts from the answer the server already recorded, and from a newer copy of the message", async () => {
+            serve();
+            const { container, rerender } = render(
+                <ConversationList conversations={[request({ latestMeetingResponse: "accepted" })]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />,
+            );
+            await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toHaveTextContent("Accepted"));
+
+            clearInviteCache();
+            rerender(
+                <ConversationList
+                    conversations={[request({ latestMeetingResponse: null, conversationId: "c9", latestMessageUid: "m7" })]}
+                    messageOverrides={{ m7: messageFixture({ uid: "m7", meetingResponse: "tentative" }) }}
+                    mailboxUid="mb1"
+                    selectedUid={null}
+                    onOpenMessage={vi.fn()}
+                />,
+            );
+            await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toHaveTextContent("Tentative"));
+        });
+
+        it("asks once for a message that is both the conversation's latest and one of its expanded rows, and both rows agree", async () => {
+            const user = userEvent.setup();
+            const fetchMock = serve([messageFixture({ uid: "m1" }), messageFixture({ uid: "m2", meetingMethod: "REQUEST" })]);
+            render(<ConversationList conversations={[request()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await screen.findByRole("button", { name: "RSVP to Video Test" });
+            await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+            await waitFor(() => expect(screen.getAllByRole("button", { name: "RSVP to Video Test" })).toHaveLength(2));
+            expect(inviteUrls(fetchMock)).toEqual(["/api/mail/calendar-events/invite/m2"]);
+
+            await user.click(screen.getAllByRole("button", { name: "RSVP to Video Test" })[1]);
+            await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Accept" }));
+            await waitFor(() => {
+                const chips = Array.from(document.querySelectorAll("[data-invite-chip]"));
+                expect(chips).toHaveLength(2);
+                chips.forEach((chip) => expect(chip).toHaveTextContent("Accepted"));
+            });
+        });
+
+        it("keeps a finger on the chip from swiping the row", async () => {
+            serve();
+            const onArchive = vi.fn().mockResolvedValue(true);
+            render(
+                <ConversationList
+                    conversations={[request()]}
+                    mailboxUid="mb1"
+                    selectedUid={null}
+                    onOpenMessage={vi.fn()}
+                    swipe={{ enabled: true, onArchive, onMove: vi.fn() }}
+                />,
+            );
+            const rsvp = await screen.findByRole("button", { name: "RSVP to Video Test" });
+            const row = rsvp.closest("[data-message-uid]") as HTMLElement;
+
+            const open = row.querySelector("[data-row-open]")!;
+            fireEvent.touchStart(open, { touches: [{ clientX: 300, clientY: 100 }] });
+            fireEvent.touchMove(open, { touches: [{ clientX: 150, clientY: 102 }] });
+            fireEvent.touchMove(open, { touches: [{ clientX: 60, clientY: 104 }] });
+            expect(row).toHaveAttribute("data-swiping", "true");
+            fireEvent.touchCancel(open);
+            await waitFor(() => expect(row).not.toHaveAttribute("data-swiping"));
+
+            fireEvent.touchStart(rsvp, { touches: [{ clientX: 300, clientY: 100 }] });
+            fireEvent.touchMove(rsvp, { touches: [{ clientX: 150, clientY: 102 }] });
+            fireEvent.touchMove(rsvp, { touches: [{ clientX: 60, clientY: 104 }] });
+            fireEvent.touchEnd(rsvp);
+            expect(row).not.toHaveAttribute("data-swiping");
+            expect(onArchive).not.toHaveBeenCalled();
+        });
+    });
+
+    it("draws no chip under a request the reader cannot read (encrypted)", async () => {
+        const user = userEvent.setup();
+        const fetchMock = mockFetch((url) => {
+            if (url.startsWith("/api/mail/messages/conversations/")) return jsonResponse(200, [messageFixture({ uid: "m2", meetingMethod: "REQUEST", encrypted: true })]);
+            throw new Error(`unexpected ${url}`);
+        });
+        render(<ConversationList conversations={[conversationFixture()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+        await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+        await screen.findAllByRole("button", { name: /^Hello there|Sender One/ });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(screen.queryByRole("button", { name: /RSVP/ })).not.toBeInTheDocument();
     });
 });

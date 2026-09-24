@@ -94,6 +94,48 @@ describe("MonthView", () => {
         expect(calledWith.toISOString().slice(0, 10)).toBe("2026-06-15");
     });
 
+    describe("clicking the empty part of a day", () => {
+        it("calls onSelectSlot with that day (midnight to midnight) and the cell as the anchor", async () => {
+            const onSelectSlot = vi.fn();
+            const onSelectDay = vi.fn();
+            const user = userEvent.setup();
+            renderMonth({ onSelectSlot, onSelectDay });
+            const cell = screen.getByText("15").parentElement!;
+            vi.spyOn(cell, "getBoundingClientRect").mockReturnValue({ left: 10, top: 20, right: 110, bottom: 120, width: 100, height: 100, x: 10, y: 20, toJSON: () => ({}) });
+
+            await user.click(cell);
+
+            expect(onSelectSlot).toHaveBeenCalledTimes(1);
+            const [start, end, anchor] = onSelectSlot.mock.calls[0];
+            expect(start.toISOString()).toBe("2026-06-15T00:00:00.000Z");
+            expect(end.toISOString()).toBe("2026-06-16T00:00:00.000Z");
+            expect(anchor).toEqual({ left: 10, top: 20, right: 110, bottom: 120, placement: "side" });
+            // The day number still goes to the day view, not to a new event.
+            await user.click(screen.getByText("15"));
+            expect(onSelectSlot).toHaveBeenCalledTimes(1);
+            expect(onSelectDay).toHaveBeenCalledTimes(1);
+        });
+
+        it("leaves the day's event chips and '+N more' to their own clicks", async () => {
+            const onSelectSlot = vi.fn();
+            const onSelectEvent = vi.fn();
+            const user = userEvent.setup();
+            renderMonth({ onSelectSlot, onSelectEvent, occurrences: [occurrence()] });
+
+            await user.click(screen.getByRole("button", { name: /Standup/ }));
+
+            expect(onSelectEvent).toHaveBeenCalledTimes(1);
+            expect(onSelectSlot).not.toHaveBeenCalled();
+        });
+
+        it("does nothing when the caller gave no onSelectSlot", async () => {
+            const user = userEvent.setup();
+            renderMonth();
+            await user.click(screen.getByText("15").parentElement!);
+            expect(screen.getByRole("grid", { name: "Month" })).toBeInTheDocument();
+        });
+    });
+
     it("places an event chip on its start day and shows the time for a timed event", () => {
         renderMonth({ occurrences: [occurrence()] });
         // 2026-06-10T15:00:00.000Z falls on June 10 in UTC.

@@ -302,3 +302,17 @@ describe("RecurrenceEditor", () => {
         expect(screen.getByRole("option", { name: "months", selected: true })).toBeInTheDocument();
     });
 });
+
+describe("RecurrenceEditor without its own toggle", () => {
+    it("leaves out the 'Repeats' checkbox and shows nothing while there is no rule", () => {
+        render(<RecurrenceEditor value={null} onChange={vi.fn()} hideToggle />);
+        expect(screen.queryByRole("checkbox", { name: "Repeats" })).not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Recurrence frequency")).not.toBeInTheDocument();
+    });
+
+    it("shows a rule's details without the checkbox", () => {
+        render(<RecurrenceEditor value={{ freq: "daily", interval: 3, exceptions: [] }} onChange={vi.fn()} hideToggle />);
+        expect(screen.queryByRole("checkbox", { name: "Repeats" })).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Recurrence interval")).toHaveValue(3);
+    });
+});

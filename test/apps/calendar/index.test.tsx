@@ -224,16 +224,75 @@ describe("CalendarPage", () => {
         expect(screen.getByRole("heading", { name: "Monday, June 15, 2026" })).toBeInTheDocument();
     });
 
-    it("clicking an event opens the edit modal, and Cancel closes it without saving", async () => {
+    it("clicking an event opens its read-only details, Modify opens the form, and closing the form returns to the details", async () => {
         mockShellAndEvents([calendarEvent()]);
         const user = userEvent.setup();
         render(<CalendarPage userUid="u1" />);
 
         await user.click(await screen.findByRole("button", { name: /Standup/ }));
-        expect(screen.getByRole("dialog", { name: "Edit event" })).toBeInTheDocument();
+        expect(screen.getByRole("dialog", { name: "Event details" })).toBeInTheDocument();
+        expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
 
-        await user.click(screen.getByRole("button", { name: "Cancel" }));
+        await user.click(screen.getByRole("button", { name: "Modify" }));
+        expect(screen.getByRole("dialog", { name: "Edit event" })).toBeInTheDocument();
+        expect(screen.getByLabelText("Title")).toHaveValue("Standup");
+
+        // Closing the form discards its edits and shows the event again; nothing was saved.
+        await user.type(screen.getByLabelText("Title"), " (edited)");
+        await user.click(screen.getByRole("button", { name: "Close" }));
+        expect(screen.getByRole("dialog", { name: "Event details" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Standup" })).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Close" }));
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("'+ New event' opens the quick-create popover under the button", async () => {
+        mockShellAndEvents([]);
+        const user = userEvent.setup();
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("heading", { name: "June 2026" });
+        const button = screen.getByRole("button", { name: "+ New event" });
+        vi.spyOn(button, "getBoundingClientRect").mockReturnValue({ left: 100, top: 40, right: 220, bottom: 76, width: 120, height: 36, x: 100, y: 40, toJSON: () => ({}) });
+
+        await user.click(button);
+
+        const dialog = screen.getByRole("dialog", { name: "New event" });
+        expect(dialog.style.left).toBe("100px");
+        expect(dialog.style.top).toBe("84px");
+    });
+
+    it("clicking an empty slot in Week view opens the quick-create popover beside that slot", async () => {
+        mockShellAndEvents([]);
+        const user = userEvent.setup();
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("heading", { name: "June 2026" });
+        await user.click(screen.getByRole("button", { name: "Week" }));
+        const slot = screen.getByLabelText("New event at 9:00 AM, Jun 15");
+        vi.spyOn(slot, "getBoundingClientRect").mockReturnValue({ left: 300, top: 400, right: 420, bottom: 424, width: 120, height: 24, x: 300, y: 400, toJSON: () => ({}) });
+
+        await user.click(slot);
+
+        const dialog = screen.getByRole("dialog", { name: "New event" });
+        expect(dialog.style.left).toBe("428px");
+        expect(dialog.style.top).toBe("400px");
+        // The slot's own time is the event's: 9:00 - 9:30 on Monday, June 15.
+        expect(dialog).toHaveTextContent(/Monday, June 15(, \d{4})? 9:00am – 9:30am/);
+    });
+
+    it("clicking an empty part of a day in Month view opens the quick-create popover for an all-day event that day", async () => {
+        mockShellAndEvents([]);
+        const user = userEvent.setup();
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("heading", { name: "June 2026" });
+        const grid = screen.getByRole("grid", { name: "Month" });
+        const cell = within(grid).getByRole("button", { name: "15" }).parentElement!;
+
+        await user.click(cell);
+
+        const dialog = screen.getByRole("dialog", { name: "New event" });
+        expect(dialog).toHaveTextContent(/Monday, June 15/);
+        expect(dialog).not.toHaveTextContent(/am|pm/);
     });
 
     it("'+ New event' opens a blank create modal (no prefilled start/end) and saves it", async () => {
