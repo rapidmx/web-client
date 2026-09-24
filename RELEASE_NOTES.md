@@ -23,6 +23,8 @@
 - **The account menu has no "Keyboard shortcuts" on a phone.**
 
 - **A plugin setting whose default names the host is pre-filled** for a plugin installed before the server saved it itself (see `@rapidmx/restapi`). A string setting whose `default` contains `<host>` (`https://<host>/meet`, `https://<host>`) and that holds nothing opens showing the default with the address the console was reached at, and saving the form stores it. A setting already holding a real value is left alone.
+- **The mouse wheel moves through the calendar on a desktop, without end.** In the month view the wheel steps month to month, one for each notch, and keeps going for as long as you keep turning it (a touchpad's smaller movements add up). In the week, work-week, day and split views the wheel scrolls the hours as it always did, and when you keep scrolling past the last hour (or the first) it carries on into the next (or previous) day or week, arriving at its first (or last) hour. Each step enters with a short vertical slide - from below going on, from above going back - that never waits for the last one. Zooming (Ctrl+wheel) and sideways scrolling are left alone, and it is off while an event is being dragged or edited.
+- **The calendar's swipe on a phone is animated.** The month, week or day follows your finger, and once the swipe commits it slides out the way you swiped while the next (or previous) one slides in from the other side; a swipe that stops short slides back. Someone whose device asks for reduced motion gets the change at once, as before.
 
 ## v0.14.1
 

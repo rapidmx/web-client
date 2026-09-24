@@ -34,7 +34,7 @@ export default function TimeGridView({ days, occurrences, folderColors, onSelect
     const timedEvents = occurrences.filter((occ) => !occ.allDay);
 
     return (
-        <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+        <div data-calendar-scroller className="flex-1 flex flex-col min-h-0 overflow-y-auto">
             <div className="flex border-b border-border shrink-0">
                 <div className="w-14 shrink-0" />
                 {days.map((day) => (

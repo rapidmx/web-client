@@ -44,7 +44,7 @@ export default function SplitDayView({ day, columns, occurrences, onSelectEvent,
     const dayStart = startOfDay(day);
 
     return (
-        <div role="region" aria-label="Split view" className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+        <div role="region" aria-label="Split view" data-calendar-scroller className="flex-1 flex flex-col min-h-0 overflow-y-auto">
             <div className="flex border-b border-border shrink-0">
                 <div className="w-14 shrink-0" />
                 {columns.map((col) => (

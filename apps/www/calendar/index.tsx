@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { routedPage } from "../_routedPage.js";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { HiOutlineBars3 } from "react-icons/hi2";
 import {
@@ -39,7 +39,9 @@ import TimeGridView from "../../shared/components/calendar/TimeGridView.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import { SWIPE_PERIOD_SHIFT } from "../../shared/components/calendar/swipeNavigation.js";
-import { useSwipe } from "../../shared/gestures/useSwipe.js";
+import { useSwipeSlide } from "../../shared/gestures/useSwipeSlide.js";
+import { useEnterSlide } from "../../shared/gestures/useEnterSlide.js";
+import { useWheelPaging, type WheelEdge } from "../../shared/gestures/useWheelPaging.js";
 import { SHORTCUTS, ShortcutDef } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
@@ -266,11 +268,37 @@ function CalendarContent({ userUid }: { userUid?: string }) {
     // The phone layout's swipe between periods. Only the view area carries it (not the toolbar), it calls the same `shiftView()`
     // the Previous/Next buttons and shortcuts do, and it is off while an event is being dragged or the editor is open. The views
     // never scroll sideways (their columns share the width), so there is no horizontal scroller for the gesture to fight with.
+    // The view follows the finger and, once the swipe commits, slides out while the next period slides in (see `useSwipeSlide()`).
     const isMobile = useIsMobile();
-    const swipe = useSwipe({
+    const swipe = useSwipeSlide({
         enabled: isMobile && !dragging && !modal,
-        onSwipe: (direction) => shiftView(SWIPE_PERIOD_SHIFT[direction]),
+        onShift: (direction) => shiftView(SWIPE_PERIOD_SHIFT[direction]),
     });
+
+    // The desktop's mouse wheel steps through the months without end; in the views that scroll through the hours of a day it scrolls
+    // them as usual and, pushed past the last (or first) hour, carries on into the next (or previous) day, week or work week. Each
+    // step is the same `shiftView()` and enters with a short vertical slide (`useEnterSlide()`), which never waits for the last one.
+    const wheelSlide = useEnterSlide();
+    /** Where the scroller of the page a wheel step arrived at starts: its top after going on, its bottom after going back. */
+    const arrivalEdge = useRef<WheelEdge | null>(null);
+    const scrollerOf = (): HTMLElement | null => swipe.ref.current?.querySelector<HTMLElement>("[data-calendar-scroller]") ?? null;
+    useWheelPaging(swipe.ref, {
+        enabled: !isMobile && !dragging && !modal,
+        getScroller: () => (view === "month" ? null : scrollerOf()),
+        onStep: (direction, edge) => {
+            arrivalEdge.current = edge;
+            shiftView(direction);
+            wheelSlide.enter(direction);
+        },
+    });
+    useLayoutEffect(() => {
+        const edge = arrivalEdge.current;
+        arrivalEdge.current = null;
+        const scroller = edge ? scrollerOf() : null;
+        if (scroller) {
+            scroller.scrollTop = edge === "top" ? 0 : scroller.scrollHeight;
+        }
+    }, [viewDate]);
 
     function goToday() {
         setViewDate(startOfDay(new Date()));
@@ -423,43 +451,47 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                     </div>
                 )}
 
-                <div className="flex-1 min-w-0 flex flex-col min-h-0" {...swipe.handlers} style={swipe.style}>
-                    {loading ? (
-                        <p className="p-4 text-sm text-text-muted">Loading&hellip;</p>
-                    ) : (
-                        <DndContext
-                            sensors={sensors}
-                            onDragStart={() => setDragging(true)}
-                            onDragEnd={handleDragEnd}
-                            onDragCancel={() => setDragging(false)}
-                        >
-                            {view === "month" ? (
-                                <MonthView
-                                    viewDate={viewDate}
-                                    occurrences={occurrences}
-                                    folderColors={folderColors}
-                                    onSelectDay={handleSelectDay}
-                                    onSelectEvent={openEvent}
-                                />
-                            ) : view === "split" ? (
-                                <SplitDayView
-                                    day={viewDate}
-                                    columns={splitColumns}
-                                    occurrences={occurrences}
-                                    onSelectEvent={openEvent}
-                                    onSelectSlot={(start, end, targetFolderUid) => openNewEvent(start, end, targetFolderUid)}
-                                />
+                <div ref={swipe.ref} className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden" {...swipe.handlers} style={swipe.style}>
+                    <div data-swipe-phase={swipe.phase} className="flex-1 min-w-0 flex flex-col min-h-0" style={swipe.contentStyle}>
+                        <div className="flex-1 min-w-0 flex flex-col min-h-0" style={wheelSlide.style}>
+                            {loading ? (
+                                <p className="p-4 text-sm text-text-muted">Loading&hellip;</p>
                             ) : (
-                                <TimeGridView
-                                    days={days}
-                                    occurrences={occurrences}
-                                    folderColors={folderColors}
-                                    onSelectEvent={openEvent}
-                                    onSelectSlot={openNewEvent}
-                                />
+                                <DndContext
+                                    sensors={sensors}
+                                    onDragStart={() => setDragging(true)}
+                                    onDragEnd={handleDragEnd}
+                                    onDragCancel={() => setDragging(false)}
+                                >
+                                    {view === "month" ? (
+                                        <MonthView
+                                            viewDate={viewDate}
+                                            occurrences={occurrences}
+                                            folderColors={folderColors}
+                                            onSelectDay={handleSelectDay}
+                                            onSelectEvent={openEvent}
+                                        />
+                                    ) : view === "split" ? (
+                                        <SplitDayView
+                                            day={viewDate}
+                                            columns={splitColumns}
+                                            occurrences={occurrences}
+                                            onSelectEvent={openEvent}
+                                            onSelectSlot={(start, end, targetFolderUid) => openNewEvent(start, end, targetFolderUid)}
+                                        />
+                                    ) : (
+                                        <TimeGridView
+                                            days={days}
+                                            occurrences={occurrences}
+                                            folderColors={folderColors}
+                                            onSelectEvent={openEvent}
+                                            onSelectSlot={openNewEvent}
+                                        />
+                                    )}
+                                </DndContext>
                             )}
-                        </DndContext>
-                    )}
+                        </div>
+                    </div>
                 </div>
 
                 {/* `folderUid` is guaranteed defined whenever `modal` is: `openNewEvent` only sets it after
