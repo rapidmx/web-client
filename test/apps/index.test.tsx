@@ -3430,20 +3430,20 @@ describe("InboxPage", () => {
                 const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
 
                 expect(press("ArrowDown")).toBe(false);
-                expect(detail()).toHaveTextContent("message:m1");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
                 expect(rowButton("First")).toHaveFocus();
                 expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
                 press("j");
-                expect(detail()).toHaveTextContent("message:m2");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m2"));
                 expect(rowButton("Second")).toHaveFocus();
                 press("ArrowUp");
-                expect(detail()).toHaveTextContent("message:m1");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
                 press("k");
-                expect(detail()).toHaveTextContent("message:m1");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
                 for (let i = 0; i < 5; i++) {
                     press("ArrowDown");
                 }
-                expect(detail()).toHaveTextContent("message:m3");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m3"));
                 scrollIntoView.mockRestore();
             });
 
@@ -3455,7 +3455,7 @@ describe("InboxPage", () => {
 
                 expect(press("j", {}, search)).toBe(true);
                 expect(press("ArrowDown", {}, search)).toBe(true);
-                expect(detail()).toHaveTextContent("no-message");
+                await waitFor(() => expect(detail()).toHaveTextContent("no-message"));
             });
 
             it("does not move the selection in select mode, where the arrow keys are the list's own", async () => {
@@ -3490,17 +3490,17 @@ describe("InboxPage", () => {
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await user.click(await screen.findByText("Second"));
-                expect(detail()).toHaveTextContent("message:m2");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m2"));
 
                 expect(press(".", CTRL)).toBe(false);
-                expect(detail()).toHaveTextContent("message:m3");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m3"));
                 // Nothing unread below it: the key is taken and nothing moves.
                 expect(press(".", CTRL)).toBe(false);
-                expect(detail()).toHaveTextContent("message:m3");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m3"));
                 expect(press(",", CTRL)).toBe(false);
-                expect(detail()).toHaveTextContent("message:m1");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
                 expect(press(",", CTRL)).toBe(false);
-                expect(detail()).toHaveTextContent("message:m1");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
             });
 
             it("deletes the selected message with Ctrl+D through the same bulk move to Deleted Items, then carries on from where it was", async () => {
@@ -3508,35 +3508,38 @@ describe("InboxPage", () => {
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
                 press("ArrowDown");
-                expect(detail()).toHaveTextContent("message:m1");
+                // The detail pane shows the selection a render later, and on a slow runner that is after this line has run.
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
 
                 expect(press("d", CTRL)).toBe(false);
 
                 await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
                 expect(puts(fetchMock)).toContainEqual([{ uid: "m1", version: 0, folderUid: "f6" }]);
-                expect(detail()).toHaveTextContent("no-message");
+                await waitFor(() => expect(detail()).toHaveTextContent("no-message"));
                 // The next row is the one that slid into the deleted one's place.
                 press("ArrowDown");
-                expect(detail()).toHaveTextContent("message:m2");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m2"));
                 press("ArrowUp");
-                expect(detail()).toHaveTextContent("message:m2");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m2"));
             });
 
             it("deletes with the Delete key too, and steps back when the deleted row was the last", async () => {
                 const fetchMock = mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
-                for (let i = 0; i < 3; i++) {
+                // One key at a time, each waited for: the selection moves a render after the key, and on a slow runner three keys pressed
+                // back to back all act on the selection as it was before the first of them.
+                for (const uid of ["m1", "m2", "m3"]) {
                     press("ArrowDown");
+                    await waitFor(() => expect(detail()).toHaveTextContent(`message:${uid}`));
                 }
-                expect(detail()).toHaveTextContent("message:m3");
 
                 expect(press("Delete")).toBe(false);
 
                 await waitFor(() => expect(screen.queryByText("Third")).not.toBeInTheDocument());
                 expect(puts(fetchMock)).toContainEqual([{ uid: "m3", version: 0, folderUid: "f6" }]);
                 press("ArrowUp");
-                expect(detail()).toHaveTextContent("message:m2");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m2"));
             });
 
             it("does not register Delete, mark read, mark unread, flag, Enter or Escape until something is selected", async () => {
@@ -3561,7 +3564,7 @@ describe("InboxPage", () => {
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("Gone already");
                 press("ArrowDown");
-                expect(detail()).toHaveTextContent("message:m9");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m9"));
 
                 expect(press("d", CTRL)).toBe(false);
 
@@ -3721,11 +3724,11 @@ describe("InboxPage", () => {
                 await screen.findByText("First");
                 expect(press("Escape")).toBe(true);
                 press("ArrowDown");
-                expect(detail()).toHaveTextContent("message:m1");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
 
                 expect(press("Escape")).toBe(false);
 
-                expect(detail()).toHaveTextContent("no-message");
+                await waitFor(() => expect(detail()).toHaveTextContent("no-message"));
                 expect(press("Escape")).toBe(true);
             });
 
@@ -3757,7 +3760,7 @@ describe("InboxPage", () => {
 
                 expect(search).toHaveValue("");
                 // The selection is still there for the next Escape.
-                expect(detail()).toHaveTextContent("message:m2");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m2"));
             });
 
             it("focuses the search box with / and Ctrl+E, and leaves / to the box once it has the focus", async () => {
