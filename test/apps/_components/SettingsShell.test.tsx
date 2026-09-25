@@ -303,6 +303,37 @@ describe("SettingsShell", () => {
         expect(location.href).toBe("/settings/auto-reply?mailboxUid=mb-b");
     });
 
+    describe("primary mailbox", () => {
+        // The server lists a shared mailbox ahead of the caller's own.
+        it("defaults the mailbox switcher to the caller's own mailbox, listed first with the shared one after it", async () => {
+            mockLocation();
+            mockMailboxes([mailboxB, mailboxA]);
+            render(
+                <SettingsShell active="auto-reply" userUid="u1">
+                    content
+                </SettingsShell>,
+            );
+
+            const select = await screen.findByLabelText("Mailbox");
+            expect(select).toHaveValue("mb-a");
+            expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual(["Mailbox A", "Mailbox B (shared)"]);
+        });
+
+        it("lets an explicit ?mailboxUid= choice of the shared mailbox win over the default", async () => {
+            const location = mockLocation();
+            (location as any).search = "?mailboxUid=mb-b";
+            mockMailboxes([mailboxB, mailboxA]);
+            render(
+                <SettingsShell active="auto-reply" userUid="u1">
+                    content
+                </SettingsShell>,
+            );
+
+            expect(await screen.findByLabelText("Mailbox")).toHaveValue("mb-b");
+            mockLocation();
+        });
+    });
+
     it("honors a ?mailboxUid= query param that names an accessible mailbox", async () => {
         const location = mockLocation();
         (location as any).search = "?mailboxUid=mb-b";

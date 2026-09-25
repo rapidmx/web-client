@@ -13,6 +13,7 @@ import {
     countDeltas,
     countOfFolder,
     inboxUnreadTotal,
+    unreadBadgeTotal,
     useFolderCounts,
 } from "../../../apps/shared/mail/folderCounts.js";
 
@@ -105,6 +106,25 @@ describe("inboxUnreadTotal", () => {
         expect(inboxUnreadTotal(entries, {})).toBe(7);
         expect(inboxUnreadTotal(entries, { "b-inbox": { unread: 0, total: 3 } })).toBe(2);
         expect(inboxUnreadTotal([], {})).toBe(0);
+    });
+});
+
+describe("unreadBadgeTotal", () => {
+    it("sums the unread of the folders whose badge shows an unread count, using the overlay where there is one", () => {
+        const folders = [
+            folder("inbox", "a", "inbox", 2),
+            folder("archive", "a", "archive", 1),
+            folder("mine", "a", "user", 4),
+            // Drafts and Outbox badge a total, Sent, Deleted and Junk badge nothing: none of these is unread mail to notice.
+            folder("drafts", "a", "drafts", 9, 9),
+            folder("outbox", "a", "outbox", 9, 9),
+            folder("sent", "a", "sent_items", 9),
+            folder("trash", "a", "deleted_items", 9),
+            folder("junk", "a", "junk", 9),
+        ];
+        expect(unreadBadgeTotal(folders, {})).toBe(7);
+        expect(unreadBadgeTotal(folders, { inbox: { unread: 10, total: 10 }, mine: { unread: 0, total: 3 } })).toBe(11);
+        expect(unreadBadgeTotal([], {})).toBe(0);
     });
 });
 

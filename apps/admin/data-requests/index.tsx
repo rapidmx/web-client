@@ -380,8 +380,9 @@ function ErasureRequestsSection() {
         <section>
             <h2 className="text-sm font-bold uppercase tracking-wide text-text-muted mb-3">Erasure requests</h2>
             <p className="text-xs text-text-muted mb-3">
-                Self-service only — a mailbox owner requests their own account's erasure; there is no
-                admin-initiated path here, only review.
+                A mailbox owner requests their own account's erasure and it is reviewed here. Erasing the data a{" "}
+                <em>deleted</em> mailbox left behind is started from the <a href="/admin" className="text-primary-dark hover:underline">Mailboxes page</a>;
+                those requests are approved when filed and are marked &ldquo;Deleted mailbox data&rdquo; below.
             </p>
 
             {list.loadError && <Alert>{list.loadError}</Alert>}
@@ -397,6 +398,7 @@ function ErasureRequestsSection() {
                             <div className="flex items-center justify-between gap-3">
                                 <span className="text-sm">
                                     {request.mailboxUid} &middot; {new Date(request.dateCreated).toLocaleString()}
+                                    {request.leftoverOnly && <span className="text-text-muted"> &middot; Deleted mailbox data</span>}
                                     {request.status === "denied" && request.reason && (
                                         <span className="text-danger"> — {request.reason}</span>
                                     )}

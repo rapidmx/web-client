@@ -50,6 +50,7 @@ import MailShell, {
 import MailAddress from "../shared/components/mail/MailAddress.js";
 import OutboxRowStatus from "../shared/components/mail/OutboxRowStatus.js";
 import { mergeFirstPage } from "../shared/mail/mergeFirstPage.js";
+import { primaryMailboxUid } from "../shared/mail/primaryMailbox.js";
 import { listSnapshotKey, readListSnapshot, saveListScroll, writeListSnapshot } from "../shared/mail/listSnapshots.js";
 import { setReadStateMany } from "../shared/mail/messageReadState.js";
 import { useMarkMessageRead } from "../shared/mail/useMarkMessageRead.js";
@@ -602,7 +603,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // aggregate-view row from a *different*, not-yet-unlocked mailbox stays locked until that mailbox's
     // own folder view is opened directly - an accepted limitation, not a bug (see `MailShell`'s own doc
     // comment on the same tradeoff for its `LocalIndexLifecycle`/`KeyEnrollmentGate` wiring).
-    const activeMailboxUid = mailboxUid ?? mailboxes.find((mb) => mb.ownerUserUid === userUid)?.uid ?? mailboxes[0]?.uid;
+    // Always set once this page renders: a caller with no mailbox at all gets `MailboxProvisioning` from the shell instead.
+    const activeMailboxUid = (mailboxUid ?? primaryMailboxUid(mailboxes, userUid))!;
     const mailboxKeys = mailboxes.find((mb) => mb.uid === activeMailboxUid)?.keys ?? [];
     // The Sort/Filter menus' and "Show as conversations"' current settings, remembered per mailbox across
     // reloads (`listPreferences.ts`). Read during render, not in an effect, so the very first listing

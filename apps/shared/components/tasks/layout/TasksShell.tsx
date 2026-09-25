@@ -12,6 +12,7 @@ import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedbac
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import { useLocationSearch, useNavigate } from "../../../navigation/AppRouter.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
+import { orderMailboxes, primaryMailboxUid } from "../../../mail/primaryMailbox.js";
 
 export type TasksShellProps = Omit<AppShellProps, "active">;
 
@@ -79,7 +80,7 @@ export default function TasksShell({
         }
         listMailboxes({ limit: 100 })
             .then((result) => {
-                setMailboxes(result);
+                setMailboxes(orderMailboxes(result, userUid));
                 setStatus("ready");
             })
             .catch((err) => {
@@ -90,7 +91,7 @@ export default function TasksShell({
 
     const mailboxUid: string | undefined =
         (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
-        mailboxes[0]?.uid;
+        primaryMailboxUid(mailboxes, userUid);
 
     useEffect(() => {
         if (!mailboxUid) {

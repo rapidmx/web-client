@@ -5,12 +5,14 @@
 import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { getMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
+import { LeftoverConflict, leftoverConflictOf } from "@rapidmx/react-shared/admin/leftoverMailboxApi.js";
 import { createMailbox, listMailboxDomains, Mailbox, resolveMailboxOwner, ResolvedPrincipal } from "@rapidmx/react-shared/mail/mailApi.js";
 import { deviceTimeZone } from "@rapidmx/react-shared/util/timeZone.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
 import PrincipalResolver, { describePerson } from "../../sharing/PrincipalResolver.js";
+import EraseLeftoverDataDialog from "../mailboxes/EraseLeftoverDataDialog.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -51,6 +53,10 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
     const [maxDurationMinutes, setMaxDurationMinutes] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    // The address a deleted mailbox left data at, when creating a mailbox there was refused for that - and what to do about it.
+    const [leftover, setLeftover] = useState<{ address: string; conflict: LeftoverConflict } | null>(null);
+    const [erasing, setErasing] = useState(false);
+    const formRef = useRef<HTMLFormElement>(null);
 
     // An empty `mail:domains` list (the default) means this server enforces no domain restriction —
     // the address field stays free text, exactly as before. Once an admin configures at least one
@@ -74,12 +80,18 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
     }, []);
 
     const constrained = domains.length > 0;
+    const address = constrained ? `${localPart.trim()}@${domain}` : primarySmtpAddress.trim();
+
+    // What was said about one address is not said about another: typing a different one takes the explanation away.
+    useEffect(() => {
+        setLeftover((current) => (current && current.address !== address ? null : current));
+    }, [address]);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
         setError(null);
+        setLeftover(null);
 
-        const address = constrained ? `${localPart.trim()}@${domain}` : primarySmtpAddress.trim();
         if (constrained ? !localPart.trim() : !primarySmtpAddress.trim()) {
             setError("A primary SMTP address is required.");
             return;
@@ -121,7 +133,13 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
             });
             onCreated(mailbox);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not create the mailbox.");
+            const conflict = leftoverConflictOf(err);
+            if (conflict) {
+                // Not a plain failure: the address is taken by what a deleted mailbox left, which can be erased right here.
+                setLeftover({ address, conflict });
+            } else {
+                setError(err instanceof ApiRequestError ? err.message : "Could not create the mailbox.");
+            }
         } finally {
             setSaving(false);
         }
@@ -131,7 +149,36 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
         <>
             {error && <Alert>{error}</Alert>}
 
-            <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-md p-6">
+            {leftover && (
+                <div role="alert" className="py-3 px-3.5 rounded-sm text-sm mb-5 bg-danger-bg text-danger">
+                    <p className="font-semibold mb-1">
+                        {leftover.conflict.reason === "mailbox-data-erasing"
+                            ? "The data left at this address is being erased."
+                            : "This address still has data from a deleted mailbox."}
+                    </p>
+                    <p className="mb-3">
+                        {leftover.conflict.reason === "mailbox-data-erasing"
+                            ? "A new mailbox can be created there once the erasure has finished."
+                            : "Deleting a mailbox keeps everything in it, and a new mailbox can't take the address until that data is erased."}
+                    </p>
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setErasing(true)}>
+                        {leftover.conflict.reason === "mailbox-data-erasing" ? "Show the erasure" : "Erase the leftover data"}
+                    </Button>
+                </div>
+            )}
+
+            {erasing && leftover && (
+                <EraseLeftoverDataDialog
+                    key={leftover.address}
+                    address={leftover.address}
+                    resume={leftover.conflict.reason === "mailbox-data-erasing" ? leftover.conflict.erasure : undefined}
+                    doneLabel="Create mailbox"
+                    onDone={() => formRef.current?.requestSubmit()}
+                    onClose={() => setErasing(false)}
+                />
+            )}
+
+            <form ref={formRef} onSubmit={handleSubmit} className="bg-surface border border-border rounded-md p-6">
                 {constrained ? (
                     <FormField label="Local part" htmlFor="localPart">
                         <div className="flex gap-2 items-center">

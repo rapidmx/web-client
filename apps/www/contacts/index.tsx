@@ -21,6 +21,8 @@ import { useCompose } from "../../shared/components/mail/compose/ComposeContext.
 import ContactsShell, { ContactsShellProps, useContactsShell } from "../../shared/components/contacts/layout/ContactsShell.js";
 import ContactsSidebar, { ContactsView } from "../../shared/components/contacts/ContactsSidebar.js";
 import ContactsToolbar from "../../shared/components/contacts/ContactsToolbar.js";
+import FloatingActionButton from "../../shared/components/layout/FloatingActionButton.js";
+import { HiOutlineUserPlus } from "react-icons/hi2";
 import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar.js";
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
@@ -419,6 +421,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                     onExportVCard={handleExportVCard}
                     onImportFile={handleImportFile}
                     shortcuts
+                    hideNew={isMobile}
                 />
                 <div className="p-3 border-b border-border">
                     <input
@@ -580,6 +583,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                     </Button>
                 </div>
             </Modal>
+            {/* The phone layout's New contact, in place of the toolbar's button: the same action, and not while the new-contact form (which takes the
+                list's place there) is open. */}
+            {isMobile && mode !== "new" && <FloatingActionButton label="New contact" icon={HiOutlineUserPlus} onClick={handleNew} />}
         </div>
     );
 }

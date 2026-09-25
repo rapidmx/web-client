@@ -3,11 +3,11 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { format } from "date-fns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
+import { emptyResponse, jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import CalendarPageRouted from "../../../apps/www/calendar/index.js";
 
 // The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
@@ -713,5 +713,63 @@ describe("CalendarPage keyboard shortcuts", () => {
         await renderCalendar([], []);
         expect(screen.getByRole("button", { name: "+ New event" })).toHaveAttribute("title", "New event");
         expect(screen.getByRole("button", { name: "+ New event" })).not.toHaveAttribute("aria-keyshortcuts");
+    });
+});
+
+describe("CalendarPage floating New event button", () => {
+    it("is offered on the phone layout in place of the toolbar's '+ New event', and opens the quick-create sheet", async () => {
+        mockMatchMedia(true);
+        mockShellAndEvents([]);
+        const user = userEvent.setup();
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("heading", { name: "June 2026" });
+
+        const fab = await screen.findByRole("button", { name: "New event" });
+        expect(fab.tagName).toBe("BUTTON");
+        expect(fab).toHaveClass("fixed", "rounded-full");
+        expect(screen.queryByRole("button", { name: "+ New event" })).not.toBeInTheDocument();
+
+        await user.click(fab);
+
+        expect(await screen.findByRole("dialog", { name: "New event" })).toBeInTheDocument();
+        // Not floating over the sheet - and back once it is closed.
+        await waitFor(() => expect(screen.queryByRole("button", { name: "New event" })).not.toBeInTheDocument());
+        await user.click(screen.getByRole("button", { name: "Close" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        expect(await screen.findByRole("button", { name: "New event" })).toBeInTheDocument();
+    });
+
+    it("is not offered on the phone layout while there is no calendar to create in", async () => {
+        mockMatchMedia(true);
+        mockShellAndEvents([], undefined, []);
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("heading", { name: "June 2026" });
+
+        await waitFor(() => expect(screen.queryByRole("button", { name: "+ New event" })).not.toBeInTheDocument());
+        expect(screen.queryByRole("button", { name: "New event" })).not.toBeInTheDocument();
+    });
+
+    it("is not offered on the desktop layout, which keeps the toolbar's '+ New event'", async () => {
+        mockShellAndEvents([]);
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("heading", { name: "June 2026" });
+
+        expect(screen.getByRole("button", { name: "+ New event" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "New event" })).not.toBeInTheDocument();
+    });
+
+    it("follows the window across the breakpoint", async () => {
+        const media = mockMatchMedia(false);
+        mockShellAndEvents([]);
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("button", { name: "+ New event" });
+
+        act(() => media.setMatches(true));
+        expect(await screen.findByRole("button", { name: "New event" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "+ New event" })).not.toBeInTheDocument();
+
+        act(() => media.setMatches(false));
+        expect(await screen.findByRole("button", { name: "+ New event" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "New event" })).not.toBeInTheDocument();
     });
 });

@@ -356,6 +356,9 @@ describe("ContactsPage", () => {
         render(<ContactsPage userUid="u1" />);
 
         await screen.findByText("Jane Doe");
+        // The desktop layout keeps the toolbar's own button and has no floating one.
+        expect(within(screen.getByRole("toolbar", { name: "Contacts actions" })).getByRole("button", { name: "New contact" })).toBeInTheDocument();
+        expect(screen.getAllByRole("button", { name: "New contact" })).toHaveLength(1);
         await user.click(screen.getByRole("button", { name: "New contact" }));
 
         expect(screen.getByRole("heading", { name: "New contact" })).toBeInTheDocument();
@@ -1365,6 +1368,31 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     describe("on mobile", () => {
+        it("offers New contact as a floating button in place of the toolbar's, which opens a blank form and steps aside while it is open", async () => {
+            mockMatchMedia(true);
+            mockShellAndContacts([jane]);
+            const user = userEvent.setup();
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Jane Doe");
+
+            const fab = await screen.findByRole("button", { name: "New contact" });
+            expect(fab.tagName).toBe("BUTTON");
+            expect(fab).toHaveClass("fixed", "rounded-full");
+            // The toolbar is still there for the rest, just without its New contact.
+            expect(within(screen.getByRole("toolbar", { name: "Contacts actions" })).queryByRole("button", { name: "New contact" })).not.toBeInTheDocument();
+            expect(within(screen.getByRole("toolbar", { name: "Contacts actions" })).getByRole("button", { name: "Import" })).toBeInTheDocument();
+            expect(screen.getAllByRole("button", { name: "New contact" })).toHaveLength(1);
+
+            await user.click(fab);
+
+            expect(await screen.findByRole("heading", { name: "New contact" })).toBeInTheDocument();
+            // The form takes the list's place, so the button no longer floats over its Save/Cancel.
+            expect(screen.queryByRole("button", { name: "New contact" })).not.toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: "Cancel" }));
+            expect(await screen.findByRole("button", { name: "New contact" })).toBeInTheDocument();
+        });
+
         it("navigates to the contact detail route instead of selecting in place when a row is tapped", async () => {
             mockMatchMedia(true);
             mockShellAndContacts([jane]);

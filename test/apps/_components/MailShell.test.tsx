@@ -363,16 +363,19 @@ describe("MailShell", () => {
         mockPerMailboxFolders([mailboxA, mailboxB]);
         render(<MailShell userUid="u1">content</MailShell>);
 
-        // "All Mailboxes" only renders once every mailbox's folders have loaded.
+        // "All Mailboxes" only renders once every mailbox's folders have loaded. Every mailbox's tree is in the document, though the shared one is collapsed (hidden) until opened.
         await screen.findByText("All Mailboxes");
         expect(screen.getByText("Mailbox A")).toBeInTheDocument();
         expect(screen.getByText("Mailbox B (shared)")).toBeInTheDocument();
         expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
-        const folderLinks = screen.getAllByRole("link").filter((el) => el.getAttribute("href")?.includes("folderUid="));
+        const folderLinks = screen.getAllByRole("link", { hidden: true }).filter((el) => el.getAttribute("href")?.includes("folderUid="));
         expect(folderLinks.map((el) => el.getAttribute("href"))).toEqual([
             "/?mailboxUid=mb-a&folderUid=f-inbox-mb-a",
             "/?mailboxUid=mb-b&folderUid=f-inbox-mb-b",
         ]);
+        // Only the primary mailbox's folders are on show.
+        const shown = screen.getAllByRole("link").filter((el) => el.getAttribute("href")?.includes("folderUid="));
+        expect(shown.map((el) => el.getAttribute("href"))).toEqual(["/?mailboxUid=mb-a&folderUid=f-inbox-mb-a"]);
     });
 
     it("shows an All Mailboxes aggregate section, summing unread counts across mailboxes, only when there's more than one mailbox", async () => {
@@ -537,6 +540,48 @@ describe("MailShell", () => {
         await screen.findByText("All Mailboxes");
         const linkFor = (href: string) => screen.getAllByRole("link").find((el) => el.getAttribute("href") === href)!;
         expect(linkFor("/?mailboxUid=mb-a&folderUid=f-inbox-mb-a").className).toContain("bg-primary/10");
+    });
+
+    describe("primary mailbox", () => {
+        // The server lists mailboxes in its own order, which puts a shared mailbox ("Hello") ahead of the caller's own.
+        const shared = { ...mailboxB, uid: "mb-hello", displayName: "Hello", primarySmtpAddress: "hello@example.com" };
+        // Created before the caller's other mailbox, which is what makes it the primary one of the two.
+        const own = { ...mailboxA, uid: "mb-jp", displayName: "Jean-Philippe", primarySmtpAddress: "jp@example.com", dateCreated: "2025-01-01T00:00:00.000Z" };
+        const inboxHref = (uid: string) => `/?mailboxUid=${uid}&folderUid=f-inbox-${uid}`;
+        const linkFor = (href: string) => screen.getAllByRole("link", { hidden: true }).find((el) => el.getAttribute("href") === href)!;
+
+        it("lists the caller's own mailbox first and the shared ones after it, whatever order the server lists them in", async () => {
+            const other = { ...mailboxA, uid: "mb-other", displayName: "Alpha", primarySmtpAddress: "alpha@example.com" };
+            mockPerMailboxFolders([shared, other, own]);
+            render(<MailShell userUid="u1">content</MailShell>);
+
+            await screen.findByText("All Mailboxes");
+            const folderLinks = screen.getAllByRole("link", { hidden: true }).filter((el) => el.getAttribute("href")?.includes("folderUid="));
+            expect(folderLinks.map((el) => el.getAttribute("href"))).toEqual([inboxHref("mb-jp"), inboxHref("mb-other"), inboxHref("mb-hello")]);
+            // The section headings follow the same order, the shared one marked.
+            const headings = screen.getAllByText(/^(Jean-Philippe|Alpha|Hello)/).map((el) => el.textContent?.trim());
+            expect(headings).toEqual(["Jean-Philippe", "Alpha", "Hello (shared)"]);
+        });
+
+        it("opens the caller's own Inbox, not a shared mailbox's that the server lists first", async () => {
+            mockPerMailboxFolders([shared, own]);
+            render(<MailShell userUid="u1">content</MailShell>);
+
+            await screen.findByText("All Mailboxes");
+            expect(linkFor(inboxHref("mb-jp")).className).toContain("bg-primary/10");
+            expect(linkFor(inboxHref("mb-hello")).className).not.toContain("bg-primary/10");
+        });
+
+        it("still opens the mailbox the URL names, even a shared one", async () => {
+            const location = mockLocation();
+            (location as any).search = "?mailboxUid=mb-hello";
+            mockPerMailboxFolders([shared, own]);
+            render(<MailShell userUid="u1">content</MailShell>);
+
+            await screen.findByText("All Mailboxes");
+            expect(linkFor(inboxHref("mb-hello")).className).toContain("bg-primary/10");
+            expect(linkFor(inboxHref("mb-jp")).className).not.toContain("bg-primary/10");
+        });
     });
 
     it("honors a ?folderUid= query param that names one of the mailbox's folders", async () => {

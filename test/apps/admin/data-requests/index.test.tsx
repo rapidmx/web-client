@@ -726,6 +726,25 @@ describe("DataRequestsPage — erasure requests", () => {
         expect(screen.queryByRole("link", { name: "Download" })).not.toBeInTheDocument();
     });
 
+    it("marks a request filed for the data of a deleted mailbox, says where those are started, and offers no review for it", async () => {
+        mockShell((url) =>
+            url === "/api/mail/erasure-requests?limit=50&page=0"
+                ? jsonResponse(200, [
+                      erasureRequest({ uid: "e1", mailboxUid: "gone@example.com", status: "approved", leftoverOnly: true }),
+                      erasureRequest({ uid: "e2", mailboxUid: "mb2", status: "approved" }),
+                  ])
+                : undefined,
+        );
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        const marked = (await screen.findByText(/gone@example.com/)).closest("li")!;
+        expect(within(marked).getByText(/Deleted mailbox data/)).toBeInTheDocument();
+        expect(within(screen.getByText(/mb2/).closest("li")!).queryByText(/Deleted mailbox data/)).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+        expect(screen.getByRole("link", { name: "Mailboxes page" })).toHaveAttribute("href", "/admin");
+        expect(screen.queryByText(/there is no admin-initiated path/)).not.toBeInTheDocument();
+    });
+
     it("shows the purged-record count for a completed request", async () => {
         mockShell((url) =>
             url === "/api/mail/erasure-requests?limit=50&page=0" ? jsonResponse(200, [erasureRequest({ status: "completed", purgedCount: 128 })]) : undefined,

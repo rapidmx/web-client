@@ -5,7 +5,7 @@
 import React, { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
-import { HiOutlineShieldCheck } from "react-icons/hi2";
+import { HiOutlineArrowUturnLeft, HiOutlineShieldCheck } from "react-icons/hi2";
 import { formatProfileName, getMyProfile, getMyUsername, Profile, profileInitials } from "@rapidmx/react-shared/auth/profileApi.js";
 import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import { accountUrlOf } from "../../auth/accountUrl.js";
@@ -13,8 +13,9 @@ import { DEFAULT_TRUSTED_ROLES, lookUpAdminAccess } from "../../auth/adminAccess
 import { ariaKeyShortcuts } from "../../keyboard/format.js";
 import { SHORTCUTS } from "../../keyboard/keymap.js";
 import { useKeyEnvironment } from "../../keyboard/ShortcutProvider.js";
-import { SETTINGS_HREF } from "../../navigation/appHrefs.js";
+import { APP_HREFS, SETTINGS_HREF } from "../../navigation/appHrefs.js";
 import { MailConnectionContext } from "../../mail/useMailConnection.js";
+import { ownMailboxes } from "../../mail/primaryMailbox.js";
 import ThemeSwitch from "./ThemeSwitch.js";
 import {
     DesktopPermission,
@@ -58,6 +59,9 @@ export interface UserMenuProps {
     placement?: "down" | "up";
     /** Shows a "Recent notifications" item that calls this - opening the history of the last pop-ups (`AppChrome` only). */
     onShowNotifications?: () => void;
+    /** Shows a "Back to mail" item, first in the menu, linking to the main application (`/`, on this same host). For the consoles
+     * (`AdminShell`), which are a step away from the app; the app itself has no need of it. */
+    showMailLink?: boolean;
     /** Errors in that history nobody has looked at yet: a count beside the item, and a dot on the menu button. */
     unseenErrors?: number;
 }
@@ -106,6 +110,7 @@ export default function UserMenu({
     onShowShortcuts,
     placement = "down",
     onShowNotifications,
+    showMailLink,
     unseenErrors = 0,
 }: UserMenuProps) {
     const env = useKeyEnvironment();
@@ -175,7 +180,7 @@ export default function UserMenu({
     const listed = framed ? (connection.status === "checking" ? null : connection.mailboxes) : ownListing;
     const mailboxesKnown = listed !== null;
     // Only a mailbox the caller owns counts: a shared or delegated one carries somebody else's name.
-    const mailboxName = needsFallbackName ? listed?.find((mb) => mb.ownerUserUid === userUid)?.displayName?.trim() || undefined : undefined;
+    const mailboxName = needsFallbackName ? ownMailboxes(listed ?? [], userUid)[0]?.displayName?.trim() || undefined : undefined;
 
     useEffect(() => {
         if (!authServerUrl || !needsFallbackName || !mailboxesKnown || mailboxName) {
@@ -324,6 +329,16 @@ export default function UserMenu({
                         <Avatar profile={profile} initials={initials} large />
                         <span className="text-sm font-semibold text-text truncate">{name}</span>
                     </div>
+                    {showMailLink && (
+                        <a
+                            role="menuitem"
+                            href={APP_HREFS.mail}
+                            className="flex items-center gap-2 px-3.5 py-2 text-sm text-text hover:bg-surface-alt"
+                        >
+                            <HiOutlineArrowUturnLeft size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
+                            Back to mail
+                        </a>
+                    )}
                     <ThemeSwitch />
                     {accountUrl && (
                         <a

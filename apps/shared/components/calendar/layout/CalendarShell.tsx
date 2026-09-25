@@ -11,6 +11,7 @@ import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedbac
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import { useLocationSearch } from "../../../navigation/AppRouter.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
+import { orderMailboxes, primaryMailboxUid } from "../../../mail/primaryMailbox.js";
 
 export type CalendarShellProps = Omit<AppShellProps, "active">;
 
@@ -94,7 +95,7 @@ export default function CalendarShell({
         }
         listMailboxes({ limit: 100 })
             .then((result) => {
-                setMailboxes(result);
+                setMailboxes(orderMailboxes(result, userUid));
                 setStatus("ready");
             })
             .catch((err) => {
@@ -103,7 +104,7 @@ export default function CalendarShell({
             });
     }, [userUid]);
 
-    const ownMailboxUid = mailboxes.find((mb) => mb.ownerUserUid === userUid)?.uid ?? mailboxes[0]?.uid;
+    const ownMailboxUid = primaryMailboxUid(mailboxes, userUid);
     const mailboxUid: string | undefined =
         (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
         ownMailboxUid;

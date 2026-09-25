@@ -534,6 +534,30 @@ describe("AdminShell", () => {
         );
     });
 
+    it("offers a first 'Back to mail' item in the account menu that returns to the main application at the site root", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") {
+                return jsonResponse(200, {});
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <AdminShell active="mailboxes" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AdminShell>,
+        );
+        await screen.findByText("content");
+
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        const first = screen.getAllByRole("menuitem")[0];
+        expect(first).toHaveTextContent("Back to mail");
+        expect(first).toHaveAttribute("href", "/");
+        // The console's other items follow it.
+        expect(screen.getByRole("menuitem", { name: "Account" })).toBeInTheDocument();
+        expect(screen.getByRole("menuitem", { name: "Sign Out" })).toBeInTheDocument();
+    });
+
     it("signs out to '/' when authServerUrl is not configured", async () => {
         mockFetch(() => jsonResponse(200, {}));
         const location = mockLocation();

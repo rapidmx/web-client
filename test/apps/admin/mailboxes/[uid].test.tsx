@@ -248,7 +248,7 @@ describe("MailboxDetailPage", () => {
         const location = mockLocation();
 
         await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
-        expect(await screen.findByText(/permanently deletes the mailbox/)).toBeInTheDocument();
+        expect(await screen.findByText(/Deleting removes the mailbox itself/)).toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Delete" }));
 
         await vi.waitFor(() => expect(location.href).toBe("/admin"));
@@ -268,7 +268,7 @@ describe("MailboxDetailPage", () => {
         await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
         await user.click(screen.getByRole("button", { name: "Cancel" }));
 
-        expect(screen.queryByText(/permanently deletes the mailbox/)).not.toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
     it("closes the delete-confirmation modal via its own close button", async () => {
@@ -286,7 +286,7 @@ describe("MailboxDetailPage", () => {
         const dialog = await screen.findByRole("dialog");
         await user.click(within(dialog).getByRole("button", { name: /close/i }));
 
-        expect(screen.queryByText(/permanently deletes the mailbox/)).not.toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
     it("shows the server's own message when deleting the mailbox fails, e.g. an active legal hold", async () => {
@@ -325,6 +325,136 @@ describe("MailboxDetailPage", () => {
         await user.click(screen.getByRole("button", { name: "Delete" }));
 
         expect(await screen.findByText("Could not delete this mailbox.")).toBeInTheDocument();
+    });
+
+    describe("the delete confirmation and the mailbox's data", () => {
+        function server(onDelete: (url: string) => Response) {
+            const deletes: string[] = [];
+            mockFetch((url, init) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url === "/api/mail/mailboxes/mb1?scope=admin" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+                if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
+                if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/mailboxes/mb1?") && init?.method === "DELETE") {
+                    deletes.push(url);
+                    return onDelete(url);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            return deletes;
+        }
+
+        async function openDelete(user: ReturnType<typeof userEvent.setup>) {
+            render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
+            await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
+            return await screen.findByRole("dialog", { name: "Delete mailbox" });
+        }
+
+        it("says the data is kept until it is erased, and that the address can't be reused meanwhile - and no longer that everything is deleted", async () => {
+            server(() => jsonResponse(200, {}));
+            const user = userEvent.setup();
+            const dialog = await openDelete(user);
+
+            expect(within(dialog).getByText(/Deleting removes the mailbox itself/)).toBeInTheDocument();
+            expect(within(dialog).getByText("kept")).toBeInTheDocument();
+            expect(within(dialog).getByText(/address can.t be used for a new\s+mailbox/)).toBeInTheDocument();
+            expect(within(dialog).getByText(/erase them later from the Mailboxes page/)).toBeInTheDocument();
+            expect(within(dialog).queryByText(/permanently deletes the mailbox/)).not.toBeInTheDocument();
+            expect(within(dialog).getByRole("checkbox", { name: "Also erase all of its data now (permanent)" })).not.toBeChecked();
+            expect(within(dialog).queryByLabelText("Type the address to confirm")).not.toBeInTheDocument();
+            expect(within(dialog).getByRole("button", { name: "Delete" })).toBeEnabled();
+        });
+
+        it("deletes without erasing by default: the request asks for nothing more", async () => {
+            const deletes = server(() => jsonResponse(200, {}));
+            const location = mockLocation();
+            const user = userEvent.setup();
+            const dialog = await openDelete(user);
+
+            await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+            await vi.waitFor(() => expect(location.href).toBe("/admin"));
+            expect(deletes).toEqual(["/api/mail/mailboxes/mb1?version=0"]);
+        });
+
+        it("offers 'Delete and erase all its data' behind a checkbox, and needs the address typed before it will send it", async () => {
+            const deletes = server(() => jsonResponse(200, {}));
+            const location = mockLocation();
+            const user = userEvent.setup();
+            const dialog = await openDelete(user);
+
+            await user.click(within(dialog).getByRole("checkbox", { name: "Also erase all of its data now (permanent)" }));
+            expect(within(dialog).getByText("Everything in this mailbox will be permanently erased, and this cannot be undone.")).toBeInTheDocument();
+            const erase = within(dialog).getByRole("button", { name: "Delete and erase all its data" });
+            expect(erase).toBeDisabled();
+            expect(within(dialog).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+
+            const input = within(dialog).getByLabelText("Type the address to confirm");
+            await user.type(input, "u1@example");
+            expect(erase).toBeDisabled();
+            await user.type(input, ".COM ");
+            expect(erase).toBeEnabled();
+            await user.click(erase);
+
+            await vi.waitFor(() => expect(location.href).toBe("/admin"));
+            expect(deletes).toEqual(["/api/mail/mailboxes/mb1?version=0&erase=true"]);
+        });
+
+        it("takes the erase option back, and the typed address with it, when the checkbox is cleared or the dialog is closed and opened again", async () => {
+            const deletes = server(() => jsonResponse(200, {}));
+            const user = userEvent.setup();
+            const dialog = await openDelete(user);
+            const checkbox = within(dialog).getByRole("checkbox", { name: "Also erase all of its data now (permanent)" });
+
+            await user.click(checkbox);
+            await user.type(within(dialog).getByLabelText("Type the address to confirm"), "u1@example.com");
+            await user.click(checkbox);
+            expect(within(dialog).queryByLabelText("Type the address to confirm")).not.toBeInTheDocument();
+            expect(within(dialog).getByRole("button", { name: "Delete" })).toBeEnabled();
+            await user.click(checkbox);
+            expect(within(dialog).getByLabelText("Type the address to confirm")).toHaveValue("");
+
+            await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+            await user.click(screen.getByRole("button", { name: "Delete mailbox" }));
+            const again = await screen.findByRole("dialog", { name: "Delete mailbox" });
+            expect(within(again).getByRole("checkbox", { name: "Also erase all of its data now (permanent)" })).not.toBeChecked();
+            expect(deletes).toEqual([]);
+        });
+
+        it("shows the server's refusal - a non-administrator's 403, a legal hold - and keeps the erase option for another try", async () => {
+            let refuse = true;
+            const deletes = server(() =>
+                refuse ? jsonResponse(409, { message: "This action is blocked by an active legal hold: matter-1." }) : jsonResponse(200, {}),
+            );
+            const location = mockLocation();
+            const user = userEvent.setup();
+            const dialog = await openDelete(user);
+            await user.click(within(dialog).getByRole("checkbox", { name: "Also erase all of its data now (permanent)" }));
+            await user.type(within(dialog).getByLabelText("Type the address to confirm"), "u1@example.com");
+
+            await user.click(within(dialog).getByRole("button", { name: "Delete and erase all its data" }));
+            expect(await within(dialog).findByText("This action is blocked by an active legal hold: matter-1.")).toBeInTheDocument();
+            expect(within(dialog).getByRole("checkbox", { name: "Also erase all of its data now (permanent)" })).toBeChecked();
+            expect(location.href).not.toBe("/admin");
+
+            refuse = false;
+            await user.click(within(dialog).getByRole("button", { name: "Delete and erase all its data" }));
+            await vi.waitFor(() => expect(location.href).toBe("/admin"));
+            expect(deletes).toHaveLength(2);
+        });
+
+        it("forgets an earlier attempt's error once the dialog is closed and opened again", async () => {
+            server(() => jsonResponse(409, { message: "on legal hold" }));
+            const user = userEvent.setup();
+            const dialog = await openDelete(user);
+            await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+            expect(await within(dialog).findByText("on legal hold")).toBeInTheDocument();
+
+            await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+            await user.click(screen.getByRole("button", { name: "Delete mailbox" }));
+
+            expect(within(await screen.findByRole("dialog", { name: "Delete mailbox" })).queryByText("on legal hold")).not.toBeInTheDocument();
+        });
     });
 
     // Mocks window.location wholesale (see testUtils.mockLocation), which isn't undone between tests

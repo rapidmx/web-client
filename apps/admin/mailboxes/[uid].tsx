@@ -42,6 +42,9 @@ function MailboxDetailContent({
     const [confirmingDelete, setConfirmingDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
+    // Deleting keeps the mailbox's data; this also erases it in the same step, after the address is typed to confirm.
+    const [eraseData, setEraseData] = useState(false);
+    const [typedAddress, setTypedAddress] = useState("");
 
     // Ignored while the action is under way (Escape/Close; Cancel is disabled then too), so its result or error
     // can't land on a modal reopened afterwards.
@@ -68,6 +71,9 @@ function MailboxDetailContent({
     function closeDeleteModal() {
         if (deleting) return;
         setConfirmingDelete(false);
+        setEraseData(false);
+        setTypedAddress("");
+        setDeleteError(null);
     }
 
     // Only ever invoked from the delete-confirmation modal below, which itself only renders once
@@ -76,7 +82,8 @@ function MailboxDetailContent({
         setDeleting(true);
         setDeleteError(null);
         try {
-            await deleteMailbox(mailbox!.uid, mailbox!.version);
+            await deleteMailbox(mailbox!.uid, mailbox!.version, { erase: eraseData });
+            // The Mailboxes page it goes to lists what a delete without `erase` kept, and how far an erasure has got.
             window.location.href = "/admin";
         } catch (err) {
             // Most commonly a 409 if this mailbox is a custodian on an open legal hold (restapi's own
@@ -198,11 +205,49 @@ function MailboxDetailContent({
             </Modal>
 
             <Modal open={confirmingDelete} onClose={closeDeleteModal} title="Delete mailbox">
-                <p className="text-sm mb-5">
-                    Are you sure you want to delete <strong>{mailbox.primarySmtpAddress}</strong>? This permanently
-                    deletes the mailbox and everything in it, and cannot be undone. It fails if this mailbox is a
-                    custodian on an active legal hold.
+                <p className="text-sm mb-3">
+                    Are you sure you want to delete <strong className="break-all">{mailbox.primarySmtpAddress}</strong>?
+                    This cannot be undone. It fails if this mailbox is a custodian on an active legal hold.
                 </p>
+                <p className="text-sm mb-3">
+                    Deleting removes the mailbox itself. Its mail, contacts, calendars and everything else in it are{" "}
+                    <strong>kept</strong> until they are erased, and until then the address can&rsquo;t be used for a new
+                    mailbox. You can erase them later from the Mailboxes page.
+                </p>
+                <label className="flex items-start gap-2 text-sm mb-3">
+                    <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={eraseData}
+                        disabled={deleting}
+                        onChange={(e) => {
+                            setEraseData(e.target.checked);
+                            setTypedAddress("");
+                        }}
+                    />
+                    <span>Also erase all of its data now (permanent)</span>
+                </label>
+                {eraseData && (
+                    <div className="mb-3">
+                        <p className="text-sm font-semibold text-danger mb-2">
+                            Everything in this mailbox will be permanently erased, and this cannot be undone.
+                        </p>
+                        <label className="flex flex-col gap-1.5 text-sm">
+                            <span className="font-semibold">
+                                Type <span className="break-all">{mailbox.primarySmtpAddress}</span> to confirm
+                            </span>
+                            <input
+                                aria-label="Type the address to confirm"
+                                className="w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary"
+                                value={typedAddress}
+                                disabled={deleting}
+                                autoComplete="off"
+                                spellCheck={false}
+                                onChange={(e) => setTypedAddress(e.target.value)}
+                            />
+                        </label>
+                    </div>
+                )}
                 {deleteError && <Alert>{deleteError}</Alert>}
                 <div className="flex gap-3 justify-end mt-5">
                     <Button type="button" variant="secondary" className="!w-auto" disabled={deleting} onClick={closeDeleteModal}>
@@ -212,10 +257,10 @@ function MailboxDetailContent({
                         type="button"
                         className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger"
                         loading={deleting}
-                        disabled={deleting}
+                        disabled={deleting || (eraseData && typedAddress.trim().toLowerCase() !== mailbox.primarySmtpAddress.trim().toLowerCase())}
                         onClick={handleDelete}
                     >
-                        Delete
+                        {eraseData ? "Delete and erase all its data" : "Delete"}
                     </Button>
                 </div>
             </Modal>

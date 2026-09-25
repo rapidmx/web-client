@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
@@ -410,5 +410,185 @@ describe("NewMailboxPage", () => {
         await vi.waitFor(() => expect(requestBody).toBeDefined());
         expect(requestBody.isResource).toBeUndefined();
         expect(requestBody.resourceType).toBeUndefined();
+    });
+
+    describe("an address a deleted mailbox left data at", () => {
+        const REMAINING = {
+            code: "api-011",
+            message: "This address still has data from a deleted mailbox. Erase that data before reusing the address.",
+            reason: "mailbox-data-remaining",
+            mailboxUid: "admin@powerlevel.gg",
+        };
+        const ERASING = {
+            code: "api-011",
+            message: "The data at this address is being erased. Try again once that has finished.",
+            reason: "mailbox-data-erasing",
+            mailboxUid: "admin@powerlevel.gg",
+            erasure: { uid: "der1", status: "in_progress" },
+        };
+        const request = (status: string) => ({
+            uid: "der1",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            mailboxUid: "admin@powerlevel.gg",
+            requestedByUserUid: "admin-1",
+            status,
+            leftoverOnly: true,
+        });
+
+        /** A server whose first create answers `first`, whose erasure finishes on the first look, and whose later creates succeed. */
+        function server(first: { status: number; body: unknown }, options: { eraseFails?: boolean } = {}) {
+            const calls: string[] = [];
+            const fetchMock = mockFetch((url, init) => {
+                calls.push(`${init?.method ?? "GET"} ${url}`);
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+                if (url === "/api/mail/mailboxes" && init?.method === "POST") {
+                    const created = calls.filter((call) => call === "POST /api/mail/mailboxes").length;
+                    return created === 1 ? jsonResponse(first.status, first.body) : jsonResponse(200, { uid: "mb9" });
+                }
+                if (url === "/api/mail/erasure-requests/leftover" && init?.method === "POST") {
+                    return options.eraseFails
+                        ? jsonResponse(409, { message: "This action is blocked by an active legal hold: matter-1." })
+                        : jsonResponse(200, request("approved"));
+                }
+                if (url === "/api/mail/erasure-requests/der1") return jsonResponse(200, request("completed"));
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            return { calls, fetchMock };
+        }
+
+        async function fillShared(user: ReturnType<typeof userEvent.setup>) {
+            render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+            await screen.findByText("New mailbox");
+            await user.type(screen.getByLabelText("Primary SMTP address"), "admin@powerlevel.gg");
+            await user.type(screen.getByLabelText("Display name"), "Admin");
+        }
+
+        it("explains it, instead of showing the bare error, and offers to erase the leftover data", async () => {
+            server({ status: 409, body: REMAINING });
+            const user = userEvent.setup();
+            await fillShared(user);
+
+            await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+            const alert = await screen.findByRole("alert");
+            expect(within(alert).getByText("This address still has data from a deleted mailbox.")).toBeInTheDocument();
+            expect(within(alert).getByText(/a new mailbox can.t take the address until that data is erased/)).toBeInTheDocument();
+            expect(screen.queryByText(/Erase that data before reusing the address/)).not.toBeInTheDocument();
+            expect(within(alert).getByRole("button", { name: "Erase the leftover data" })).toBeInTheDocument();
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        });
+
+        it("erases it after the address is typed, watches the erasure finish, then creates the mailbox again", async () => {
+            const { calls } = server({ status: 409, body: REMAINING });
+            const location = mockLocation();
+            const user = userEvent.setup();
+            await fillShared(user);
+            await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+            await user.click(await screen.findByRole("button", { name: "Erase the leftover data" }));
+            const dialog = await screen.findByRole("dialog", { name: "Erase leftover data" });
+            expect(within(dialog).getAllByText("admin@powerlevel.gg").length).toBeGreaterThan(0);
+            const erase = within(dialog).getByRole("button", { name: "Erase data" });
+            expect(erase).toBeDisabled();
+            await user.type(within(dialog).getByLabelText("Type the address to confirm"), "admin@powerlevel.gg");
+            await user.click(erase);
+
+            expect(await within(dialog).findByText(/The address is free to use again/)).toBeInTheDocument();
+            // Nothing is created again until the admin says so.
+            expect(calls.filter((call) => call === "POST /api/mail/mailboxes")).toHaveLength(1);
+            await user.click(within(dialog).getByRole("button", { name: "Create mailbox" }));
+
+            await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/mb9"));
+            expect(calls.filter((call) => call === "POST /api/mail/mailboxes")).toHaveLength(2);
+            expect(calls.indexOf("POST /api/mail/erasure-requests/leftover")).toBeGreaterThan(calls.indexOf("POST /api/mail/mailboxes"));
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        });
+
+        it("watches an erasure that is already running, without filing another, when that is what the server says", async () => {
+            const { calls } = server({ status: 409, body: ERASING });
+            const location = mockLocation();
+            const user = userEvent.setup();
+            await fillShared(user);
+
+            await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+            const alert = await screen.findByRole("alert");
+            expect(within(alert).getByText("The data left at this address is being erased.")).toBeInTheDocument();
+            await user.click(within(alert).getByRole("button", { name: "Show the erasure" }));
+
+            const dialog = await screen.findByRole("dialog", { name: "Erase leftover data" });
+            expect(within(dialog).queryByLabelText("Type the address to confirm")).not.toBeInTheDocument();
+            await user.click(await within(dialog).findByRole("button", { name: "Create mailbox" }));
+
+            await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/mb9"));
+            expect(calls).not.toContain("POST /api/mail/erasure-requests/leftover");
+        });
+
+        it("keeps the explanation, and does not create anything, when the erasure is refused - the server's own words are shown", async () => {
+            const { calls } = server({ status: 409, body: REMAINING }, { eraseFails: true });
+            const user = userEvent.setup();
+            await fillShared(user);
+            await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+            await user.click(await screen.findByRole("button", { name: "Erase the leftover data" }));
+            const dialog = await screen.findByRole("dialog", { name: "Erase leftover data" });
+            await user.type(within(dialog).getByLabelText("Type the address to confirm"), "admin@powerlevel.gg");
+            await user.click(within(dialog).getByRole("button", { name: "Erase data" }));
+
+            expect(await within(dialog).findByText("This action is blocked by an active legal hold: matter-1.")).toBeInTheDocument();
+            await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Erase the leftover data" })).toBeInTheDocument();
+            expect(calls.filter((call) => call === "POST /api/mail/mailboxes")).toHaveLength(1);
+        });
+
+        it("shows the explanation again if the address is still taken when the mailbox is created after the erasure", async () => {
+            const bodies = [REMAINING, REMAINING];
+            mockFetch((url, init) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+                if (url === "/api/mail/mailboxes" && init?.method === "POST") return jsonResponse(409, bodies.shift());
+                if (url === "/api/mail/erasure-requests/leftover" && init?.method === "POST") return jsonResponse(200, request("approved"));
+                if (url === "/api/mail/erasure-requests/der1") return jsonResponse(200, request("completed"));
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            await fillShared(user);
+            await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+            await user.click(await screen.findByRole("button", { name: "Erase the leftover data" }));
+            await user.type(screen.getByLabelText("Type the address to confirm"), "admin@powerlevel.gg");
+            await user.click(screen.getByRole("button", { name: "Erase data" }));
+
+            const dialog = await screen.findByRole("dialog", { name: "Erase leftover data" });
+            await user.click(await within(dialog).findByRole("button", { name: "Create mailbox" }));
+
+            expect(await screen.findByText("This address still has data from a deleted mailbox.")).toBeInTheDocument();
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        });
+
+        it("takes the explanation away when a different address is typed", async () => {
+            server({ status: 409, body: REMAINING });
+            const user = userEvent.setup();
+            await fillShared(user);
+            await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+            await screen.findByRole("button", { name: "Erase the leftover data" });
+
+            await user.type(screen.getByLabelText("Primary SMTP address"), "2");
+
+            await waitFor(() => expect(screen.queryByRole("button", { name: "Erase the leftover data" })).not.toBeInTheDocument());
+        });
+
+        it("still shows a 409 that does not say it is about leftover data as the plain error it is", async () => {
+            server({ status: 409, body: { code: "api-011", message: "This address is already in use by another mailbox or distribution list." } });
+            const user = userEvent.setup();
+            await fillShared(user);
+
+            await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+            expect(await screen.findByText("This address is already in use by another mailbox or distribution list.")).toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Erase the leftover data" })).not.toBeInTheDocument();
+        });
     });
 });

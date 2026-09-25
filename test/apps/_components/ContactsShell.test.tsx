@@ -173,6 +173,29 @@ describe("ContactsShell", () => {
         expect(await screen.findByText("Could not load this mailbox's contacts folder.")).toBeInTheDocument();
     });
 
+    describe("primary mailbox", () => {
+        // The server lists a shared mailbox ahead of the caller's own.
+        it("defaults the mailbox switcher to the caller's own mailbox, listed first with the shared one after it", async () => {
+            mockLocation();
+            mockMailboxesAndFolders([mailboxB, mailboxA], [contactsFolder]);
+            render(<ContactsShell userUid="u1">content</ContactsShell>);
+
+            const select = await screen.findByLabelText("Mailbox");
+            expect(select).toHaveValue("mb-a");
+            expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual(["Mailbox A", "Mailbox B (shared)"]);
+        });
+
+        it("lets an explicit ?mailboxUid= choice of the shared mailbox win over the default", async () => {
+            const location = mockLocation();
+            (location as any).search = "?mailboxUid=mb-b";
+            mockMailboxesAndFolders([mailboxB, mailboxA], [contactsFolder]);
+            render(<ContactsShell userUid="u1">content</ContactsShell>);
+
+            expect(await screen.findByLabelText("Mailbox")).toHaveValue("mb-b");
+            mockLocation();
+        });
+    });
+
     it("honors a ?mailboxUid= query param that names an accessible mailbox", async () => {
         const location = mockLocation();
         (location as any).search = "?mailboxUid=mb-b";

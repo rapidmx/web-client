@@ -55,6 +55,38 @@ describe("UserMenu", () => {
         expect(item.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     });
 
+    describe("Back to mail", () => {
+        it("is the first item of the menu when showMailLink is set, linking to the main application at the site root", async () => {
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showAdminLink showMailLink />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            const items = screen.getAllByRole("menuitem");
+            expect(items[0]).toBe(screen.getByRole("menuitem", { name: "Back to mail" }));
+            expect(items[0]).toHaveAttribute("href", "/");
+            // An icon beside the label, like the Admin Console item's, hidden from assistive technology so the name stays the label.
+            expect(items[0].querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+            expect(items.map((item) => item.textContent)).toEqual(["Back to mail", "Admin Console", "Sign Out"]);
+        });
+
+        it("is an ordinary link, so the keyboard reaches it first when the menu opens and Tab is pressed", async () => {
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showMailLink />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            await user.tab();
+            expect(screen.getByRole("menuitem", { name: "Back to mail" })).toHaveFocus();
+        });
+
+        it("is left out unless asked for", async () => {
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showAdminLink />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.queryByRole("menuitem", { name: "Back to mail" })).not.toBeInTheDocument();
+        });
+    });
+
     it("hides the Admin Console item when showAdminLink is not set", async () => {
         const user = userEvent.setup();
         render(<UserMenu userUid="jane" onSignOut={vi.fn()} />);
@@ -511,6 +543,25 @@ describe("UserMenu", () => {
             expect(await screen.findByText("Arthur Dent")).toBeInTheDocument();
             expect(screen.queryByText("Support")).not.toBeInTheDocument();
             expect(screen.queryByText("Boss")).not.toBeInTheDocument();
+        });
+
+        it("uses the name of the caller's primary mailbox - the earliest created - when they own several", async () => {
+            mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                if (url === MAILBOXES_URL) {
+                    return jsonResponse(200, [
+                        mailbox({ uid: "later", displayName: "Later Mailbox", dateCreated: "2026-05-01T00:00:00.000Z" }),
+                        mailbox({ uid: "first", displayName: "First Mailbox", dateCreated: "2026-01-01T00:00:00.000Z" }),
+                    ]);
+                }
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />);
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("First Mailbox")).toBeInTheDocument();
+            expect(screen.queryByText("Later Mailbox")).not.toBeInTheDocument();
         });
 
         it("ignores mailboxes the caller does not own (shared or delegated) and falls back to the username", async () => {

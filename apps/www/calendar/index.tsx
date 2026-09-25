@@ -5,7 +5,7 @@
 import { routedPage } from "../_routedPage.js";
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors } from "@dnd-kit/core";
-import { HiOutlineBars3 } from "react-icons/hi2";
+import { HiOutlineBars3, HiOutlinePlus } from "react-icons/hi2";
 import {
     addDays,
     addMonths,
@@ -33,6 +33,7 @@ import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../share
 import CalendarListSidebar from "../../shared/components/calendar/CalendarListSidebar.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import EventModal from "../../shared/components/calendar/EventModal.js";
+import FloatingActionButton from "../../shared/components/layout/FloatingActionButton.js";
 import { EventAnchor, anchorOf } from "../../shared/components/calendar/EventShell.js";
 import MiniDatePicker from "@rapidmx/react-shared/components/pickers/MiniDatePicker.js";
 import MonthView from "../../shared/components/calendar/MonthView.js";
@@ -466,9 +467,12 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                     >
                         <HiOutlineBars3 size={20} aria-hidden="true" />
                     </button>
-                    <Button type="button" onClick={(e) => openNewEvent(undefined, undefined, undefined, anchorOf(e.currentTarget, "below"))} className="!w-auto shrink-0" {...newEventHint}>
-                        + New event
-                    </Button>
+                    {/* On a phone New event is the floating button at the bottom of the page instead, as in Mail. */}
+                    {!isMobile && (
+                        <Button type="button" onClick={(e) => openNewEvent(undefined, undefined, undefined, anchorOf(e.currentTarget, "below"))} className="!w-auto shrink-0" {...newEventHint}>
+                            + New event
+                        </Button>
+                    )}
                     <div className="flex items-center gap-1">
                         <button type="button" onClick={() => shiftView(-1)} aria-label="Previous" {...previousHint} className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt">
                             &lsaquo;
@@ -563,6 +567,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                         onDeleted={handleDeleted}
                     />
                 )}
+                {/* The phone layout's New event: the old toolbar button's action (its quick form is a bottom sheet there, so no anchor), offered
+                    only where that button could act - a calendar to put the event in - and not while the editor or its sheet is open. */}
+                {isMobile && mailboxUid && folderUid && !modal && <FloatingActionButton label="New event" icon={HiOutlinePlus} onClick={() => openNewEvent()} />}
             </div>
         </div>
     );

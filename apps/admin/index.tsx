@@ -7,6 +7,7 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import { reopenSetup } from "@rapidmx/react-shared/admin/setupApi.js";
 import AdminShell, { AdminShellProps } from "../shared/components/admin/layout/AdminShell.js";
+import LeftoverMailboxesSection from "../shared/components/admin/mailboxes/LeftoverMailboxesSection.js";
 import MailboxTable from "../shared/components/admin/mailboxes/MailboxTable.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -119,6 +120,8 @@ function MailboxesListContent() {
                     Next
                 </Button>
             </div>
+
+            <LeftoverMailboxesSection />
         </>
     );
 }

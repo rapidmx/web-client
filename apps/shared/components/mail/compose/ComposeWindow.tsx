@@ -32,6 +32,7 @@ import {
 import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
 import { buildComposeBodyHtml } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
 import { peekMailboxWritability, useMailboxWritability } from "../writableMailboxes.js";
+import { orderMailboxes, primaryMailboxUid } from "../../../mail/primaryMailbox.js";
 import { resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
 import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
 import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
@@ -320,11 +321,13 @@ export default function ComposeWindow({
                 if (cancelled) {
                     return;
                 }
-                setMailboxes(result);
+                // Listed with the caller's own (primary) mailbox first, and defaulted to below.
+                const ordered = orderMailboxes(result, userUid);
+                setMailboxes(ordered);
                 // Never default to a mailbox already known to be view-only (see the effect below for one
                 // that turns out to be).
-                const candidates = result.filter((mb) => peekMailboxWritability(mb, userUid, trusted) !== false);
-                setFromMailboxUid((current) => current ?? (candidates.find((mb) => mb.ownerUserUid === userUid) ?? candidates[0])?.uid);
+                const candidates = ordered.filter((mb) => peekMailboxWritability(mb, userUid, trusted) !== false);
+                setFromMailboxUid((current) => current ?? primaryMailboxUid(candidates, userUid));
             })
             .catch((err) => {
                 // Only fatal when there's no mailbox to fall back on - a session that already names one just
@@ -610,7 +613,7 @@ export default function ComposeWindow({
         if (!fromIsViewOnly || hasUploads) {
             return;
         }
-        const ordered = [...mailboxes.filter((mb) => mb.ownerUserUid === userUid), ...mailboxes.filter((mb) => mb.ownerUserUid !== userUid)];
+        const ordered = orderMailboxes(mailboxes, userUid);
         const alternative = ordered.find((mb) => writability[mb.uid] === true) ?? ordered.find((mb) => writability[mb.uid] === undefined);
         if (alternative) {
             handleFromChange(alternative.uid);

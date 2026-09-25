@@ -96,6 +96,15 @@ export function inboxUnreadTotal(mailboxFolders: { folders: Folder[] }[], counts
     );
 }
 
+/** The unread messages behind the badges of `folders` that show an unread count (see `badgeFor()`: Inbox, Archive and the user's own
+ * folders - not Drafts, Outbox, Sent Items, Deleted Items or Junk Email) - what a collapsed sidebar section shows on its heading. */
+export function unreadBadgeTotal(folders: readonly Folder[], counts: Record<string, FolderCount>): number {
+    return folders.reduce((total, folder) => {
+        const badge = badgeFor(folder.type, countOfFolder(folder, counts));
+        return badge?.kind === "unread" ? total + badge.value : total;
+    }, 0);
+}
+
 /** How long after the last change of this page's own has finished a server-published count is trusted again: one published
  * about an earlier state of the folder could otherwise arrive late and put back what the change just took away. */
 export const COUNT_QUIET_MS = 1_500;

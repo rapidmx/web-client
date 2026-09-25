@@ -37,6 +37,14 @@ describe("ContactsToolbar", () => {
         expect(screen.getByText("Import").closest("button")).not.toBeDisabled();
     });
 
+    it("leaves New contact out, and nothing else, when hideNew is set.", () => {
+        renderToolbar({ hideNew: true });
+        expect(screen.queryByText("New contact")).not.toBeInTheDocument();
+        for (const label of ["Edit", "Delete", "Email", "Favorite", "Add category", "Export", "Import"]) {
+            expect(screen.getByText(label)).toBeInTheDocument();
+        }
+    });
+
     it("disables every selection-dependent action when nothing is selected.", () => {
         renderToolbar({ selectedCount: 0 });
         for (const label of ["Edit", "Delete", "Email", "Favorite", "Add category", "Export"]) {

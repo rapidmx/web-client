@@ -9,6 +9,7 @@ import { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js"
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
+import FloatingActionButton from "../../layout/FloatingActionButton.js";
 import { useLocationSearch, useNavigate } from "../../../navigation/AppRouter.js";
 import KeyEnrollmentGate from "../../layout/KeyEnrollmentGate.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
@@ -17,15 +18,19 @@ import LocalIndexLifecycle from "../../../search/LocalIndexLifecycle.js";
 import { LiveUpdates, NO_LIVE_UPDATES } from "../../../mail/useMailLiveUpdates.js";
 import { MAILBOX_LIST_LIMIT, MailConnectionContext, useMailConnection } from "../../../mail/useMailConnection.js";
 import { folderRows } from "../../../mail/folderTree.js";
+import { primaryMailboxUid } from "../../../mail/primaryMailbox.js";
 import {
     CountTracker,
     FolderBadge,
     FolderCount,
     badgeFor,
-    badgeLabel,
     countOfFolder,
     inboxUnreadTotal,
+    unreadBadgeTotal,
 } from "../../../mail/folderCounts.js";
+import { ALL_MAILBOXES_SECTION, useSidebarSections } from "../../../mail/useCollapsedSections.js";
+import FolderBadgeChip from "./FolderBadgeChip.js";
+import SidebarSection from "./SidebarSection.js";
 import { useUnreadTitle } from "../../../mail/useUnreadTitle.js";
 import { pendingCountFor, usePendingSends } from "../../../mail/outbox/pendingSends.js";
 import OutboxBadge from "../OutboxBadge.js";
@@ -143,21 +148,6 @@ function aggregateBadge(mailboxFolders: MailboxFolders[], type: AggregateFolderT
     return badgeFor(type, sum);
 }
 
-/** A folder's badge: an accent pill with the unread count, or - for the folders that show how many they hold - plain muted text. */
-function FolderBadgeChip({ badge }: { badge: FolderBadge }) {
-    return (
-        <span
-            className={[
-                "text-xs rounded-pill py-0.5 px-1.5",
-                badge.kind === "unread" ? "font-bold bg-primary/15 text-primary-dark" : "font-medium text-text-muted",
-            ].join(" ")}
-        >
-            <span aria-hidden="true">{badge.value}</span>
-            <span className="sr-only"> {badgeLabel(badge)}</span>
-        </span>
-    );
-}
-
 type Status = "checking" | "error" | "ready";
 
 export { MAILBOX_LIST_LIMIT };
@@ -200,16 +190,13 @@ function ComposeButton({ mailboxUid }: { mailboxUid?: string }) {
 function MobileComposeButton({ mailboxUid }: { mailboxUid?: string }) {
     const { openCompose } = useCompose();
     return (
-        <button
-            type="button"
-            aria-label="New message"
+        <FloatingActionButton
+            label="New message"
+            icon={HiOutlinePencilSquare}
             onClick={() => openCompose({ mailboxUid })}
             onPointerEnter={prefetchComposeWindow}
             onFocus={prefetchComposeWindow}
-            className="md:hidden fixed right-4 bottom-[4.5rem] z-30 w-12 h-12 flex items-center justify-center rounded-full bg-primary text-white shadow-lg hover:bg-primary-dark"
-        >
-            <HiOutlinePencilSquare size={22} aria-hidden="true" />
-        </button>
+        />
     );
 }
 
@@ -284,10 +271,12 @@ export default function MailShell({
         ? requestedAggregateType
         : undefined;
 
+    // The mailbox the caller has not chosen: their own, never a shared one that merely sorts first.
+    const defaultMailboxUid = primaryMailboxUid(mailboxes, userUid);
     const mailboxUid: string | undefined = aggregateFolderType
         ? undefined
         : (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
-          mailboxes[0]?.uid;
+          defaultMailboxUid;
 
     const selectedMailboxFolders = mailboxFolders.find((mf) => mf.mailbox.uid === mailboxUid)?.folders ?? [];
     const folderUid: string | undefined = aggregateFolderType
@@ -296,12 +285,19 @@ export default function MailShell({
           selectedMailboxFolders.find((f) => f.type === "inbox")?.uid;
 
     // The mailbox `KeyEnrollmentGate`/`LocalIndexLifecycle`/`ComposeButton` treat as "the" mailbox when
-    // there's no single selected one to use (aggregate mode) - the caller's own owned mailbox if they
-    // have one, else whichever accessible mailbox happens to be first. See MailShell's own doc comment on
+    // there's no single selected one to use (aggregate mode) - the caller's primary mailbox (`primaryMailbox()`). See MailShell's own doc comment on
     // this being an accepted limitation: an aggregate-view message from a *different*, not-yet-visited
     // mailbox may still need that mailbox's own folder view opened directly to unlock/decrypt it.
-    const defaultMailboxUid = mailboxes.find((mb) => mb.ownerUserUid === userUid)?.uid ?? mailboxes[0]?.uid;
     const activeMailboxUid = mailboxUid ?? defaultMailboxUid;
+
+    // Which sidebar sections are open: "All mailboxes" and the primary mailbox unless the reader chose otherwise, the section of the open
+    // folder always (see `useSidebarSections()`). A lone mailbox has nothing to collapse, so its section is never a toggle.
+    const sections = useSidebarSections({
+        userUid,
+        primaryUid: defaultMailboxUid,
+        activeId: aggregateFolderType ? ALL_MAILBOXES_SECTION : mailboxUid,
+    });
+    const collapsible = mailboxes.length > 1;
 
     const counts = folderCounts.counts;
     const trackMessageChange = folderCounts.track;
@@ -345,7 +341,8 @@ export default function MailShell({
         // A function, not a plain JSX constant — it's rendered twice (desktop `<aside>` + mobile
         // `Drawer`), possibly *simultaneously* mounted (the aside is only CSS-hidden below `md`, not
         // unmounted).
-        const sidebarContent = () => (
+        // `idPrefix` keeps each section's folder list's id (which its heading's `aria-controls` names) unique between the two.
+        const sidebarContent = (idPrefix: string) => (
             <>
                 <div className="p-3">
                     <ComposeButton mailboxUid={defaultMailboxUid} />
@@ -357,91 +354,107 @@ export default function MailShell({
                 ) : (
                     <nav className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col gap-3">
                         {mailboxes.length > 1 && (
-                            <div>
-                                <div className="text-xs font-bold uppercase tracking-wide text-text-muted mb-1 px-2.5">
-                                    All Mailboxes
-                                </div>
-                                <div className="flex flex-col gap-0.5">
-                                    {AGGREGATE_FOLDER_TYPES.map((type) => {
-                                        const badge = aggregateBadge(mailboxFolders, type, counts);
-                                        return (
-                                            <a
-                                                key={type}
-                                                href={`/?aggregate=${encodeURIComponent(type)}`}
-                                                className={[
-                                                    "flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5",
-                                                    aggregateFolderType === type
-                                                        ? "bg-primary/10 text-primary-dark font-semibold"
-                                                        : "text-text hover:bg-surface-alt",
-                                                ].join(" ")}
-                                            >
-                                                <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>{FOLDER_LABELS[type]}</span>
-                                                {badge && <FolderBadgeChip badge={badge} />}
-                                            </a>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        )}
-                        {mailboxFolders.map(({ mailbox, folders, error: mailboxError }) => (
-                            <div key={mailbox.uid}>
-                                <div className="text-xs font-bold uppercase tracking-wide text-text-muted mb-1 px-2.5 truncate">
-                                    {mailbox.displayName}
-                                    {mailbox.ownerUserUid ? "" : " (shared)"}
-                                </div>
-                                {mailboxError && (
-                                    <div className="px-2.5 pb-1">
-                                        <Alert>{mailboxError}</Alert>
-                                    </div>
+                            <SidebarSection
+                                domId={`${idPrefix}-mail-section-${ALL_MAILBOXES_SECTION}`}
+                                label="All Mailboxes"
+                                collapsible={collapsible}
+                                expanded={sections.isExpanded(ALL_MAILBOXES_SECTION)}
+                                locked={sections.isLocked(ALL_MAILBOXES_SECTION)}
+                                onToggle={() => sections.toggle(ALL_MAILBOXES_SECTION)}
+                                unread={unreadBadgeTotal(
+                                    mailboxFolders.flatMap((mf) => mf.folders.filter((f) => (AGGREGATE_FOLDER_TYPES as readonly string[]).includes(f.type))),
+                                    counts,
                                 )}
-                                <div className="flex flex-col gap-0.5">
-                                    {folderRows(folders, pendingCountFor(mailbox.uid, pendingSends)).map((row) => {
-                                        if (row.kind === "placeholder") {
-                                            // A folder the server has not made (or told us about) yet - the Outbox and Sent Items are made with the first message
-                                            // sent - shown the moment a message is on its way. Nothing to open; the real folder replaces it when it arrives.
-                                            const sending = pendingCountFor(mailbox.uid, pendingSends);
-                                            return (
-                                                <div
-                                                    key={`placeholder-${row.type}`}
-                                                    data-folder-placeholder={row.type}
-                                                    className="flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5 text-text-muted"
-                                                >
-                                                    <span>{FOLDER_LABELS[row.type]}</span>
-                                                    {row.type === "outbox" && <OutboxBadge total={sending} pendingHere={sending} />}
-                                                </div>
-                                            );
-                                        }
-                                        const folder = row.folder;
-                                        const badge = badgeFor(folder.type, countOfFolder(folder, counts));
-                                        return (
+                            >
+                                {AGGREGATE_FOLDER_TYPES.map((type) => {
+                                    const badge = aggregateBadge(mailboxFolders, type, counts);
+                                    return (
                                         <a
-                                            key={folder.uid}
-                                            href={`/?mailboxUid=${encodeURIComponent(mailbox.uid)}&folderUid=${encodeURIComponent(folder.uid)}`}
+                                            key={type}
+                                            href={`/?aggregate=${encodeURIComponent(type)}`}
                                             className={[
                                                 "flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5",
-                                                folder.uid === folderUid
+                                                aggregateFolderType === type
                                                     ? "bg-primary/10 text-primary-dark font-semibold"
                                                     : "text-text hover:bg-surface-alt",
                                             ].join(" ")}
                                         >
-                                            <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>
-                                                {FOLDER_LABELS[folder.type] ?? folder.name}
-                                            </span>
-                                            {badge &&
-                                                (folder.type === "outbox" ? (
-                                                    <OutboxBadge
-                                                        total={badge.value}
-                                                        status={outboxStatuses[folder.uid]}
-                                                        pendingHere={pendingCountFor(mailbox.uid, pendingSends)}
-                                                    />
-                                                ) : (
-                                                    <FolderBadgeChip badge={badge} />
-                                                ))}
+                                            <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>{FOLDER_LABELS[type]}</span>
+                                            {badge && <FolderBadgeChip badge={badge} />}
                                         </a>
+                                    );
+                                })}
+                            </SidebarSection>
+                        )}
+                        {mailboxFolders.map(({ mailbox, folders, error: mailboxError }) => (
+                            <SidebarSection
+                                key={mailbox.uid}
+                                domId={`${idPrefix}-mail-section-${mailbox.uid}`}
+                                label={
+                                    <>
+                                        {mailbox.displayName}
+                                        {mailbox.ownerUserUid ? "" : " (shared)"}
+                                    </>
+                                }
+                                collapsible={collapsible}
+                                expanded={sections.isExpanded(mailbox.uid)}
+                                locked={sections.isLocked(mailbox.uid)}
+                                onToggle={() => sections.toggle(mailbox.uid)}
+                                unread={unreadBadgeTotal(folders, counts)}
+                                notice={
+                                    mailboxError && (
+                                        <div className="px-2.5 pb-1">
+                                            <Alert>{mailboxError}</Alert>
+                                        </div>
+                                    )
+                                }
+                            >
+                                {folderRows(folders, pendingCountFor(mailbox.uid, pendingSends)).map((row) => {
+                                    if (row.kind === "placeholder") {
+                                        // A folder the server has not made (or told us about) yet - the Outbox and Sent Items are made with the first message
+                                        // sent - shown the moment a message is on its way. Nothing to open; the real folder replaces it when it arrives.
+                                        const sending = pendingCountFor(mailbox.uid, pendingSends);
+                                        return (
+                                            <div
+                                                key={`placeholder-${row.type}`}
+                                                data-folder-placeholder={row.type}
+                                                className="flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5 text-text-muted"
+                                            >
+                                                <span>{FOLDER_LABELS[row.type]}</span>
+                                                {row.type === "outbox" && <OutboxBadge total={sending} pendingHere={sending} />}
+                                            </div>
                                         );
-                                    })}
-                                </div>
-                            </div>
+                                    }
+                                    const folder = row.folder;
+                                    const badge = badgeFor(folder.type, countOfFolder(folder, counts));
+                                    return (
+                                    <a
+                                        key={folder.uid}
+                                        href={`/?mailboxUid=${encodeURIComponent(mailbox.uid)}&folderUid=${encodeURIComponent(folder.uid)}`}
+                                        className={[
+                                            "flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5",
+                                            folder.uid === folderUid
+                                                ? "bg-primary/10 text-primary-dark font-semibold"
+                                                : "text-text hover:bg-surface-alt",
+                                        ].join(" ")}
+                                    >
+                                        <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>
+                                            {FOLDER_LABELS[folder.type] ?? folder.name}
+                                        </span>
+                                        {badge &&
+                                            (folder.type === "outbox" ? (
+                                                <OutboxBadge
+                                                    total={badge.value}
+                                                    status={outboxStatuses[folder.uid]}
+                                                    pendingHere={pendingCountFor(mailbox.uid, pendingSends)}
+                                                />
+                                            ) : (
+                                                <FolderBadgeChip badge={badge} />
+                                            ))}
+                                    </a>
+                                    );
+                                })}
+                            </SidebarSection>
                         ))}
                     </nav>
                 )}
@@ -451,9 +464,9 @@ export default function MailShell({
         inner = (
             <>
                 <MailShortcuts mailboxUid={defaultMailboxUid} />
-                <aside className="hidden md:flex w-64 shrink-0 bg-surface border-r border-border flex-col">{sidebarContent()}</aside>
+                <aside className="hidden md:flex w-64 shrink-0 bg-surface border-r border-border flex-col">{sidebarContent("desktop")}</aside>
                 <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Folders">
-                    <div className="flex flex-col">{sidebarContent()}</div>
+                    <div className="flex flex-col">{sidebarContent("mobile")}</div>
                 </Drawer>
                 <main className="flex-1 min-w-0 overflow-y-auto">
                     <div className="md:hidden flex items-center gap-2 p-3">

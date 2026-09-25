@@ -252,6 +252,32 @@ describe("ComposeWindow", () => {
             await waitFor(() => expect(draftCreates(fetchMock)).toEqual([expect.objectContaining({ mailboxUid: "mb-own", folderUid: "drafts-mb-own" })]));
         });
 
+        it("lists the caller's own mailbox first in the picker, and the shared one after it", async () => {
+            mockTwoMailboxes();
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            const from = await screen.findByLabelText("From");
+            expect(within(from).getAllByRole("option").map((option) => option.textContent)).toEqual([
+                "Me <me@example.com>",
+                "Support <support@example.com> (shared)",
+            ]);
+        });
+
+        it("defaults to the earliest created of the caller's own mailboxes, and lists it first", async () => {
+            const oldMailbox = { ...ownMailbox, uid: "mb-old", displayName: "Old", primarySmtpAddress: "old@example.com", dateCreated: "2020-01-01T00:00:00.000Z" };
+            const fetchMock = mockTwoMailboxes((url) => {
+                if (url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, [sharedMailbox, ownMailbox, oldMailbox]);
+                if (url === "/api/mail/mailboxes/mb-old") return jsonResponse(200, oldMailbox);
+                return undefined;
+            });
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            const from = await screen.findByLabelText("From");
+            expect(from).toHaveValue("mb-old");
+            expect(within(from).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["mb-old", "mb-own", "mb-shared"]);
+            await waitFor(() => expect(draftCreates(fetchMock)).toEqual([expect.objectContaining({ mailboxUid: "mb-old" })]));
+        });
+
         it("keeps the session's mailbox (e.g. a reply to a shared mailbox's message) as the default", async () => {
             mockTwoMailboxes();
             render(<ComposeWindow session={session({ mailboxUid: "mb-shared" })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
@@ -366,10 +392,12 @@ describe("ComposeWindow", () => {
             await waitFor(() => expect(screen.queryByLabelText("From")).not.toBeInTheDocument());
             first.unmount();
 
-            // A later compose already knows mb-view is view-only, so never even defaults to it.
+            // A later compose already knows mb-view is view-only, so never even defaults to it. (u2 owns none of these, so the
+            // default is the first of the rest in display order - by name.)
             mockTwoMailboxes((url) => (url.startsWith("/api/mail/mailboxes?") ? jsonResponse(200, [viewOnly, sharedMailbox, ownMailbox]) : undefined));
             const second = render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u2" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
-            expect(await screen.findByLabelText("From")).toHaveValue("mb-shared");
+            expect(await screen.findByLabelText("From")).toHaveValue("mb-own");
+            expect(screen.queryByRole("option", { name: /Announcements/ })).not.toBeInTheDocument();
             second.unmount();
 
             mockTwoMailboxes((url) => (url.startsWith("/api/mail/mailboxes?") ? jsonResponse(200, [viewOnly]) : undefined));

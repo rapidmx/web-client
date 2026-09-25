@@ -35,6 +35,8 @@ export interface ContactsToolbarProps {
     onImportFile: (file: File) => void;
     /** The keyboard's "New contact" is registered by the page: the button names its shortcut in its tooltip and `aria-keyshortcuts`. */
     shortcuts?: boolean;
+    /** Leaves the New contact button out - the phone layout offers it as a floating button instead. */
+    hideNew?: boolean;
 }
 
 /**
@@ -58,6 +60,7 @@ export default function ContactsToolbar({
     onExportVCard,
     onImportFile,
     shortcuts,
+    hideNew,
 }: ContactsToolbarProps) {
     const newContactHint = useShortcutProps("New contact", SHORTCUTS.contacts.create, !!shortcuts);
     const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -72,7 +75,9 @@ export default function ContactsToolbar({
     }
 
     const actions: ToolbarAction[] = [
-        { id: "new", label: "New contact", icon: HiOutlineUserPlus, onClick: onNewContact, hint: shortcuts ? newContactHint : undefined, group: 0, rank: 99, essential: true },
+        ...(hideNew
+            ? []
+            : [{ id: "new", label: "New contact", icon: HiOutlineUserPlus, onClick: onNewContact, hint: shortcuts ? newContactHint : undefined, group: 0, rank: 99, essential: true }]),
         { id: "edit", label: "Edit", icon: HiOutlinePencil, onClick: onEdit, disabled: selectedCount !== 1, group: 1, rank: 6 },
         { id: "delete", label: "Delete", icon: HiOutlineTrash, onClick: onDelete, disabled: !hasSelection, group: 1, rank: 5 },
         { id: "email", label: "Email", icon: HiOutlineEnvelope, onClick: onEmail, disabled: !hasSelection, group: 2, rank: 4 },

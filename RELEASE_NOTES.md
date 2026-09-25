@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Your own mailbox is first, and the default, everywhere mailboxes are listed.** The Mail sidebar, the Contacts, Tasks and Settings mailbox selectors, the calendar list, the compose From picker and the New event and Task mailbox selects showed mailboxes in the order the server listed them, so a shared mailbox could come before yours and be the one that opened. Your own mailbox (the earliest created, if you own several) now comes first, then the shared and delegated ones alphabetically, and Mail, Contacts, Tasks, Calendar, Settings and the compose window open on it; a mailbox named in the address (`?mailboxUid=`) or a reply's own mailbox still wins.
+
+
+### Added
+
+- **The Mail sidebar's sections collapse.** "All mailboxes" and each mailbox are disclosure headings (a turning chevron, Enter or Space to toggle) that start with All mailboxes and your primary mailbox open and every other mailbox collapsed, so a newly shared mailbox arrives collapsed. Your choices are remembered per browser, the section holding the open folder always stays shown, a collapsed section shows its unread total on its heading, and the phone's folders drawer works the same. A lone mailbox's sidebar is unchanged.
+- **Calendar and Contacts use the round floating button on a phone**, like Mail's: a plus for New event and a person-plus for New contact, above the bottom tab bar in place of the wide top button. The desktop layouts are unchanged. The Calendar button is hidden while there is no calendar to add to or an event is open, and the Contacts button while the new-contact form is open. Mail's own button now uses the same shared component.
+
+- **An address stuck after deleting a mailbox can be freed from the console.** Creating a mailbox at an address a deleted mailbox left data at now explains it and offers "Erase the leftover data": the administrator types the address to confirm, the erasure is shown until it finishes, and "Create mailbox" then creates it. The Mailboxes page lists "Deleted mailboxes with remaining data" (only when there are any) with the same "Erase data" action and the progress of an erasure under way. The delete-mailbox dialog no longer claims everything is deleted: it says the data is kept until erased, and offers "Also erase all of its data now" (the address typed to confirm), which sends "Delete and erase all its data". The Data Requests page marks requests filed this way "Deleted mailbox data". Needs `@rapidmx/restapi` 0.22.0 or later.
+- **A "Back to mail" item first in the admin console's account menu** returns to the main application.
+
+
 ## v0.15.1
 
 ### Fixes

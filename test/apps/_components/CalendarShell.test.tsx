@@ -250,6 +250,42 @@ describe("CalendarShell", () => {
         expect(await screen.findByText("mb-a/f-cal-mb-a")).toBeInTheDocument();
     });
 
+    it("lists the caller's own mailbox's calendars first, and the shared mailbox's after them, whatever order the server lists them in", async () => {
+        function Probe() {
+            const { mailboxes, mailboxCalendars, calendarFolders } = useCalendarShell();
+            return (
+                <span>
+                    {`${mailboxes.map((mb) => mb.uid).join(",")}|${mailboxCalendars.map((mc) => mc.mailbox.uid).join(",")}|${calendarFolders.map((f) => f.uid).join(",")}`}
+                </span>
+            );
+        }
+        mockLocation();
+        mockPerMailboxFolders([mailboxB, mailboxA]);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
+        expect(await screen.findByText("mb-a,mb-b|mb-a,mb-b|f-cal-mb-a,f-cal-mb-b")).toBeInTheDocument();
+    });
+
+    it("lets an explicit ?mailboxUid= choice of a shared mailbox listed first win over the default", async () => {
+        function Probe() {
+            const { mailboxUid } = useCalendarShell();
+            return <span>{`mailbox:${mailboxUid}`}</span>;
+        }
+        const location = mockLocation();
+        (location as any).search = "?mailboxUid=mb-b";
+        mockPerMailboxFolders([mailboxB, mailboxA]);
+        render(
+            <CalendarShell userUid="u1">
+                <Probe />
+            </CalendarShell>,
+        );
+        expect(await screen.findByText("mailbox:mb-b")).toBeInTheDocument();
+        mockLocation();
+    });
+
     it("honors a ?mailboxUid= query param that names an accessible mailbox", async () => {
         function Probe() {
             const { mailboxUid, folderUid } = useCalendarShell();

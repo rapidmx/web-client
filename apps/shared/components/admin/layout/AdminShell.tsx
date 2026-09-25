@@ -357,7 +357,7 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                                 </button>
                                 <span className="font-display font-bold text-lg uppercase tracking-wide truncate">{activeItem?.label}</span>
                             </div>
-                            <UserMenu userUid={userUid} authServerUrl={authServerUrl} onSignOut={handleSignOut} />
+                            <UserMenu userUid={userUid} authServerUrl={authServerUrl} onSignOut={handleSignOut} showMailLink />
                         </header>
                         <div id="app-content" className="flex-1">
                             <main className="max-w-6xl mx-auto px-6 py-8">{children}</main>

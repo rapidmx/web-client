@@ -12,6 +12,7 @@ import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedbac
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import { useLocationSearch, useNavigate } from "../../../navigation/AppRouter.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
+import { orderMailboxes, primaryMailboxUid } from "../../../mail/primaryMailbox.js";
 import { mergePluginNavItems, PluginNav } from "../../../plugins/pluginNav.js";
 
 export interface SettingsSectionDef {
@@ -116,7 +117,7 @@ export default function SettingsShell({
         }
         listMailboxes({ limit: 100 })
             .then((result) => {
-                setMailboxes(result);
+                setMailboxes(orderMailboxes(result, userUid));
                 setStatus("ready");
             })
             .catch((err) => {
@@ -127,7 +128,7 @@ export default function SettingsShell({
 
     const mailboxUid: string | undefined =
         (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
-        mailboxes[0]?.uid;
+        primaryMailboxUid(mailboxes, userUid);
 
     const contextValue = useMemo<SettingsShellContextValue>(() => ({ mailboxUid, mailboxes }), [mailboxUid, mailboxes]);
 
@@ -195,12 +196,12 @@ export default function SettingsShell({
                             key={section.id}
                             // `inner` (this whole branch) is only ever computed once `status === "ready"`
                             // and `mailboxUid` has already resolved truthy — a falsy `mailboxUid` returns
-                            // `<MailboxProvisioning />` above instead (and TypeScript's own narrowing of
-                            // this `const` already reflects that, no `!` needed) — so no fallback is
+                            // `<MailboxProvisioning />` above instead (which is what the `!` below records,
+                            // `primaryMailboxUid()` being honest that it may find none) — so no fallback is
                             // needed here, matching this plan's established "dead guard the UI
                             // structurally can't trigger" removal precedent (e.g.
                             // `DomainDetailContent.handleVerify`).
-                            href={`${section.href}?mailboxUid=${encodeURIComponent(mailboxUid)}`}
+                            href={`${section.href}?mailboxUid=${encodeURIComponent(mailboxUid!)}`}
                             aria-current={section.id === active ? "page" : undefined}
                             className={[
                                 "block px-2.5 py-1.5 rounded-sm text-sm",

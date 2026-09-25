@@ -7,6 +7,7 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Folder, Mailbox, Message, listFolders, listMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
 import { FOLDER_ORDER, FolderChange, MAIL_FOLDER_TYPES, isMailFolder, knownFolderUids, reconcileFolders, removeFolder, upsertFolder } from "./folderTree.js";
 import type { MailboxFolders } from "../components/mail/layout/MailShell.js";
+import { orderMailboxes } from "./primaryMailbox.js";
 import { LiveUpdates, useMailLiveUpdates } from "./useMailLiveUpdates.js";
 import type { CountTracker, FolderCounts } from "./folderCounts.js";
 import { NewMailNotifications, useNewMailNotifications } from "./useNewMailNotifications.js";
@@ -86,7 +87,8 @@ export function useMailConnection({ userUid, enabled, open }: UseMailConnectionO
         }
         listMailboxes({ limit: MAILBOX_LIST_LIMIT })
             .then((result) => {
-                setMailboxes(result);
+                // The caller's own mailbox first, then the others: every sidebar, picker and default below follows this order.
+                setMailboxes(orderMailboxes(result, userUid));
                 setStatus("ready");
             })
             .catch((err) => {
