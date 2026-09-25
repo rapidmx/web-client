@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-25
+
+### Added
+- Added an Install button to the uninstalled plugin rows of the admin console's Plugins page, which installs the latest version and cancels a data deletion that has not started
+- Added a Reply All button at the foot of a message card
+- Added a Profile page to Settings for the mailbox's display name and time zone, preselecting the device's time zone while the mailbox still has the placeholder UTC, and start a mailbox created from the admin console in the device's time zone
+- Added an invitation card to the reading pane and to each expanded message of a conversation for a message with a calendar file, with Accept, Tentative, Decline, Propose new time, Add to calendar, Remove from calendar, a Conflicts with line and an Open in Calendar link
+- Added an Outlook-style RSVP chip under a meeting request in the message list, on conversation rows, plain rows and an expanded conversation's rows, opening a popover with a day view of the reader's schedule and Accept, Decline, Tentative and Propose new time, without opening the row or starting a swipe
+- Added Event, Task and Appointment schedule tabs to the New event popover, creating a task in the chosen mailbox's Tasks folder or publishing a bookable schedule through the booking plugin with a copyable public link
+- Added a rich-text description to events, edited in the event card and in an Add description row of the quick popover, and shown read-only in the details and on the invitation card without ever rendering unsanitized markup
+- Added event visibility and guest permissions to the event card, show a private event on a shared calendar to a read-only reader as a plain Busy block, and refetch such an event when a live update announces it
+- Added a Find a time tab to the event card with the reader's and each guest's day side by side and suggested times, showing a guest whose availability is unknown or hidden as such and never as free
+- Added a Free/busy visibility setting to the Profile page
+
+### Changed
+- Pre-fill a plugin setting whose default names the host (https://<host>) in the settings form for a plugin installed before the server saved it itself
+- Turn the account menu's new mail pop-ups switch into a Notifications switch for every pop-up, keeping its stored setting, and clear what is on screen when it is turned off
+- Open the whole conversation on the message page on a phone, with a back link, when a conversation is opened from the list
+- Let a mail row be swiped on a phone: right to left archives it (or every message of the conversation in the folder), left to right asks which folder to move it to, through the same bulk path as the selection bar
+- Swipe the calendar on a phone to change the month, week or day, using the same navigation as the Previous and Next buttons
+- Show the search box in the header beside the folders button on a phone and add a floating New message button above the bottom tab bar
+- Make search work on every device and with the list arranged by conversation: results are grouped under their conversation listing only the messages that match, and opening one shows the whole thread positioned at that message
+- Leave Keyboard shortcuts out of the account menu on a phone
+- Replace the admin console's bottom tab bar on a phone with a hamburger that opens a menu of the sections from the left
+- Show the mailbox's display name in the account menu when the profile has no name, before the username
+- Test each of the above
+- Document the changes in the release notes and NOTES
+- Flip the calendar swipe on a phone to the usual direction: swiping left shows the next month, week or day and swiping right shows the previous
+- Test the flipped mapping
+- Document the change in the release notes and NOTES
+- Animate the calendar's swipe on a phone: the view follows the finger and slides out while the next or previous month, week or day slides in, and a swipe that stops short slides back
+- Move through the calendar with the mouse wheel on a desktop: the month view steps month to month without end, and the week, work-week, day and split views scroll their hours and carry on into the next or previous period at the ends, each step entering with a short vertical slide
+- Test the swipe and wheel hooks and the calendar's slides and wheel navigation
+- Document the changes in the release notes and NOTES
+- Draw a reply to the reader's own invitation as one line naming who answered and a proposed new time with an Accept proposal button, and stop listing the calendar file as an attachment while the card is shown
+- Share one invitation lookup per message between the card, the chip and the popover so an answer given in one shows in the others
+- Open an existing calendar event to a read-only details view, with Accept, Tentative and Decline for an invited reader and Modify and Delete for the organizer, instead of the edit form
+- Make new events in a quick-create popover beside what was clicked, a bottom sheet on a phone, with More options opening a full card that keeps what was typed, and give the card separate date and time fields, a time zone choice, a recurrence menu, a notification with a unit and guests with roles
+- Start an all-day event from a click on an empty part of a day in the month view, and move an event's end with its start
+- Say so when a date or time in the event form is cleared instead of raising an error, and refresh the calendar when the form is closed after an event was saved but its video meeting failed
+- Test the cards, the chip, the popover and the event dialog
+- Document the change in the release notes and NOTES
+- Let a guest whose event allows it request a change or add guests from the event details and the invitation card, hide the guest list from an invited reader when the organizer hides it, and word a received change request on the organizer's card
+- Test the tabs, the editor, Find a time, change requests, the live update and the setting
+- Document the change in the release notes and NOTES
+- Bump @rapidmx/react-shared to 0.16.0, the release with the event dialog and free/busy API, and refresh the lockfile
+- Test the paths the full suite left uncovered: the swipe row and its gestures, the conversation swipe, the thread pane callbacks, moving into a new folder, the signing certificate dialog, the alias save failure and the calendar drag handlers
+- Document the bump in the release notes
+
+### Fixed
+- Fixed the compose window not covering the screen on a phone, because relative and fixed were both on it and relative won
+- Fixed the calendar page crashing after saving an event from a clicked time slot, because a resize reported after the popover had closed read a dialog that was gone
+
+### Removed
+- Removed code that could not be reached from the swipe row, the compose sender select, the domain alias input and the swipe move
+
 ## [0.14.1] - 2026-09-24
 
 ### Added
@@ -873,7 +929,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/rapidmx/web-client/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rapidmx/web-client/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rapidmx/web-client/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rapidmx/web-client/compare/v0.12.0...v0.13.0

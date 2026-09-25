@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.15.0
+
 ### Changed
 
 - Bump `@rapidmx/react-shared` to `^0.16.0`, the release with the event dialog and free/busy API this version uses, and cover the swipe, move-to-folder, compose and admin paths that the full suite left untested.
