@@ -220,7 +220,7 @@ export default function SettingsShell({
                 <aside className="hidden md:flex w-56 shrink-0 bg-surface border-r border-border flex-col p-3 gap-3">
                     {sidebarContent("desktop")}
                 </aside>
-                <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Settings">
+                <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Settings" fullScreen>
                     <div className="flex flex-col gap-3">{sidebarContent("mobile")}</div>
                 </Drawer>
                 <main className="flex-1 min-w-0 flex flex-col">

@@ -453,7 +453,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     return (
         <div className="flex-1 min-w-0 flex min-h-0">
             <div className="hidden lg:flex w-56 shrink-0 border-r border-border flex-col overflow-y-auto">{sidebarContent}</div>
-            <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Calendars">
+            <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Calendars" fullScreen>
                 <div className="flex flex-col">{sidebarContent}</div>
             </Drawer>
             {/* `min-w-0`: without it the column is as wide as its widest row (the toolbar, the month grid) and runs off the window instead of the row wrapping. */}

@@ -195,7 +195,7 @@ export default function TasksSidebar({ mailboxUid, tasks, userUid, active, onSel
             <nav aria-label="Tasks" className="hidden lg:flex w-56 shrink-0 border-r border-border flex-col gap-4 p-3 overflow-y-auto">
                 {navContent("desktop")}
             </nav>
-            <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Tasks">
+            <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Tasks" fullScreen>
                 <div className="flex flex-col gap-4">{navContent("mobile")}</div>
             </Drawer>
         </>

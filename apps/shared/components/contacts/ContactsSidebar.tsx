@@ -240,7 +240,7 @@ export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect
             <nav aria-label="Contacts" className="hidden lg:flex w-56 shrink-0 border-r border-border flex-col gap-4 p-3 overflow-y-auto">
                 {navContent("desktop")}
             </nav>
-            <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Contacts">
+            <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Contacts" fullScreen>
                 <div className="flex flex-col gap-4">{navContent("mobile")}</div>
             </Drawer>
         </>

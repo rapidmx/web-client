@@ -325,7 +325,7 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                         ))}
                     </nav>
                     {/* Below `md` the sections are a menu that slides in from the left: ten or so of them don't fit a bar along the bottom. */}
-                    <Drawer open={menuOpen} onClose={() => setMenuOpen(false)} title="Admin">
+                    <Drawer open={menuOpen} onClose={() => setMenuOpen(false)} title="Admin" fullScreen>
                         <nav aria-label="Admin menu" className="flex flex-col gap-1 -mx-2">
                             {navItems.map(({ id, href, label, icon: Icon }) => (
                                 <a

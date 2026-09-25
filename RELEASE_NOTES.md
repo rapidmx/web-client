@@ -4,6 +4,8 @@
 
 ### Fixes
 
+- **On a phone, the menu behind the hamburger button fills the screen.** The folders drawer in Mail, the calendars drawer, the Contacts, Tasks and Settings drawers and the admin console's menu were a narrow strip beside a dimmed sliver of the page; they now cover the whole window. Needs `@rapidmx/react-shared` 0.18.0 or later.
+
 - **The compose From picker's unselected options are readable on the dark theme.** The browser drew the pop-up list white behind the page's light text; every native drop-down's options now take the theme's own colours.
 - **Mail opens on All mailboxes > Inbox when you have more than one mailbox**, and on the mailbox's own Inbox when you have one; a mailbox, folder or all-mailboxes view in the address still wins. Compose, the New message button and the new-message shortcut still use your primary mailbox while the combined view is open.
 - **Your own mailbox is first, and the default, everywhere mailboxes are listed.** The Mail sidebar, the Contacts, Tasks and Settings mailbox selectors, the calendar list, the compose From picker and the New event and Task mailbox selects showed mailboxes in the order the server listed them, so a shared mailbox could come before yours and be the one that opened. Your own mailbox (the earliest created, if you own several) now comes first, then the shared and delegated ones alphabetically, and Mail, Contacts, Tasks, Calendar, Settings and the compose window open on it; a mailbox named in the address (`?mailboxUid=`) or a reply's own mailbox still wins.

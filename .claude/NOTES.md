@@ -3466,3 +3466,7 @@ JP's clean install: shared mailboxes were listed before his own and were the def
 - **Not collapsible on purpose:** Contacts/Tasks (a mailbox `<select>`, no sections) and the calendar's My calendars groups (their checkboxes drive what is drawn, so hiding them - or defaulting shared mailboxes to hidden - would hide state that is on screen).
 - **`FloatingActionButton`** (`apps/shared/components/layout/`): the shared round phone-layout primary action `{label, icon}` plus any button attributes, with Mail's classes verbatim (`md:hidden fixed right-4 bottom-[4.5rem] z-30 ...`). Calendar ("New event", shown with a mailbox and calendar folder and no open modal) and Contacts ("New contact", hidden in `mode === "new"`) render it when `useIsMobile()` is true and hide their top button then (`!isMobile` in the calendar toolbar, `ContactsToolbar hideNew`); Mail's `MobileComposeButton` uses it too. `useIsMobile()` is false on the first render, so a phone shows the old top button for one frame. Tasks keeps its inline quick-add row.
 - Not verified on a real phone: the placement of the floating buttons.
+
+### 2026-09-25 - phone navigation drawers are full screen
+
+Every `Drawer` call site (Mail folders, Calendars, Contacts, Tasks, Settings, Admin menu, the Contacts/Tasks sidebars) passes `fullScreen`, a new react-shared `Drawer` prop (`fixed inset-0 w-full`, safe-area padding top and bottom); the default is still the 18rem strip, so other consumers are unaffected. Needs the react-shared release that has the prop.

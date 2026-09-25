@@ -180,7 +180,7 @@ export default function ContactsShell({
                         {sidebarContent("desktop")}
                     </aside>
                 )}
-                <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Mailbox">
+                <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Mailbox" fullScreen>
                     <div className="flex flex-col gap-3">{sidebarContent("mobile")}</div>
                 </Drawer>
                 <main className="flex-1 min-w-0 flex flex-col">

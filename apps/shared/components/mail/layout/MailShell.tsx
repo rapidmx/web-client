@@ -476,7 +476,7 @@ export default function MailShell({
             <>
                 <MailShortcuts mailboxUid={defaultMailboxUid} />
                 <aside className="hidden md:flex w-64 shrink-0 bg-surface border-r border-border flex-col">{sidebarContent("desktop")}</aside>
-                <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Folders">
+                <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Folders" fullScreen>
                     <div className="flex flex-col">{sidebarContent("mobile")}</div>
                 </Drawer>
                 <main className="flex-1 min-w-0 overflow-y-auto">
