@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixes
+
+- **The Appearance page put the old background kind back when a choice was made right after the page appeared**; it now follows only later changes of the stored kind.
+- **The build workflow's validate job runs the license check and the production audit** (it enables corepack, so yarn 4 is used), and the test suite no longer fails on a slow CI runner: the test and `findBy`/`waitFor` timeouts are longer, the window location, size and history are restored after each test, and the tests that read state on the same tick it changed now wait for it.
+
 ## v0.15.0
 
 ### Changed
