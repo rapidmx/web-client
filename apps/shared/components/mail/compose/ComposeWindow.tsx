@@ -1423,7 +1423,9 @@ export default function ComposeWindow({
                         <select
                             id={`compose-from-${id}`}
                             className={`${FIELD_INPUT} disabled:opacity-55`}
-                            value={mailboxUid ?? ""}
+                            // Two or more options only exist once the mailboxes have loaded, and the same answer that lets them list
+                            // (one that isn't known to be view-only) is what picks the default sender, so a sender is always chosen by now.
+                            value={mailboxUid}
                             disabled={hasUploads}
                             title={hasUploads ? "The sender can't be changed after adding attachments or images." : undefined}
                             onChange={(e) => handleFromChange(e.target.value)}

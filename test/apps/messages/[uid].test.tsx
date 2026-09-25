@@ -9,6 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MessageDetailPageRouted from "../../../apps/www/messages/[uid].js";
 
+// Archiving and moving a message update the on-device search index through a worker, which jsdom doesn't have.
+vi.mock("../../../apps/shared/search/localIndexRpcClient.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../apps/shared/search/localIndexRpcClient.js")>()),
+    moveLocalEntity: vi.fn(),
+}));
+
 // The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
 const MessageDetailPage = MessageDetailPageRouted.page;
 
@@ -195,6 +201,92 @@ describe("MessageDetailPage", () => {
             expect(screen.getByRole("link", { name: /Back to messages/ })).toHaveAttribute("href", "/?mailboxUid=mb1&folderUid=f1");
             const threadUrl = fetchMock.mock.calls.map((c) => String(c[0])).find((url) => url.startsWith("/api/mail/messages/conversations/c1?"))!;
             expect(new URLSearchParams(threadUrl.split("?")[1]).get("mailboxUid")).toBe("mb1");
+        });
+
+        const label = { uid: "l1", version: 0, dateCreated: "2026-01-01T00:00:00.000Z", dateModified: "2026-01-01T00:00:00.000Z", mailboxUid: "mb1", name: "Invoices" };
+
+        /** The thread's server: the opened message `opened`, an older `first`, the mailbox's labels, and whatever else a test handles. */
+        function mockThread(opened: typeof reply, extra?: (url: string, init?: RequestInit) => Response | undefined) {
+            return mockShell((url, init) => {
+                const custom = extra?.(url, init);
+                if (custom) return custom;
+                if (url === "/api/mail/messages/m2" && (init?.method ?? "GET") === "GET") return jsonResponse(200, opened);
+                if (url.startsWith("/api/mail/messages/conversations/c1?")) return jsonResponse(200, [first, opened]);
+                if (url.startsWith("/api/mail/labels") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [label]);
+                return undefined;
+            });
+        }
+
+        it("marks the opened message read in the thread, as it does on the single-message page", async () => {
+            const unread = { ...reply, flags: { ...read, read: false } };
+            const fetchMock = mockThread(unread, (url, init) =>
+                url === "/api/mail/messages/m2" && init?.method === "PUT" ? jsonResponse(200, { ...unread, version: 1, flags: read }) : undefined,
+            );
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m2" }} />);
+
+            expect(await screen.findByText("2 messages")).toBeInTheDocument();
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m2", expect.objectContaining({ method: "PUT" })));
+            const put = fetchMock.mock.calls.find(([url, init]: any) => url === "/api/mail/messages/m2" && init?.method === "PUT")!;
+            expect(JSON.parse((put[1] as RequestInit).body as string)).toEqual(expect.objectContaining({ flags: expect.objectContaining({ read: true }) }));
+            await waitFor(() => expect(document.querySelector("[data-unread]")).toBeNull());
+        });
+
+        it("takes a message out of the thread once it is archived", async () => {
+            mockThread(reply, (url, init) =>
+                url === "/api/mail/messages/m2/archive" && init?.method === "POST" ? jsonResponse(200, { ...reply, folderUid: "f-archive", version: 1 }) : undefined,
+            );
+            const user = userEvent.setup();
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m2" }} />);
+            expect(await screen.findByText("2 messages")).toBeInTheDocument();
+
+            await user.click(await screen.findByRole("button", { name: "Archive" }));
+
+            expect(await screen.findByText("1 message")).toBeInTheDocument();
+            expect(screen.queryByText("Thanks for writing.")).not.toBeInTheDocument();
+        });
+
+        it("offers a label created from a message's Labels menu in that menu afterwards", async () => {
+            const created = { ...label, uid: "l2", name: "Receipts" };
+            const fetchMock = mockThread(reply, (url, init) => (url === "/api/mail/labels" && init?.method === "POST" ? jsonResponse(200, created) : undefined));
+            const user = userEvent.setup();
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m2" }} />);
+            await screen.findByText("2 messages");
+
+            await user.click(await screen.findByRole("button", { name: "Labels" }));
+            expect(screen.queryByRole("menuitemcheckbox", { name: "Receipts" })).not.toBeInTheDocument();
+            await user.click(screen.getByRole("menuitem", { name: "New label…" }));
+            const dialog = await screen.findByRole("dialog", { name: "New label" });
+            await user.type(within(dialog).getByLabelText("Name"), "Receipts");
+            await user.click(within(dialog).getByRole("button", { name: "Create" }));
+            await waitFor(() => expect(screen.queryByRole("dialog", { name: "New label" })).not.toBeInTheDocument());
+
+            expect(fetchMock).toHaveBeenCalledWith("/api/mail/labels", expect.objectContaining({ method: "POST" }));
+            await user.click(screen.getByRole("button", { name: "Labels" }));
+            expect(await screen.findByRole("menuitemcheckbox", { name: "Receipts" })).toBeInTheDocument();
+            expect(screen.getByRole("menuitemcheckbox", { name: "Invoices" })).toBeInTheDocument();
+        });
+
+        it("offers a folder created while moving a message on the next move in the thread", async () => {
+            const created = { ...inboxFolder, uid: "f7", name: "Trips", type: "user" as const };
+            mockThread(reply, (url, init) => {
+                if (url === "/api/mail/folders" && init?.method === "POST") return jsonResponse(200, created);
+                if (url === "/api/mail/messages/m2" && init?.method === "PUT") return jsonResponse(200, { ...reply, folderUid: "f7", version: 1 });
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m2" }} />);
+            await screen.findByText("2 messages");
+
+            await user.click(await screen.findByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+            await user.type(screen.getByLabelText("New folder name"), "Trips");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+
+            // The moved message leaves the thread; the older one, opened again, can be moved into the folder that was just made.
+            expect(await screen.findByText("1 message")).toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: /^Sender One/ }));
+            await user.click(await screen.findByRole("button", { name: "Move to" }));
+            expect(await screen.findByRole("button", { name: /^Trips/ })).toBeInTheDocument();
         });
 
         it("shows why the conversation could not be loaded", async () => {

@@ -212,6 +212,16 @@ describe("MailSelectionBar", () => {
         expect(screen.getByRole("dialog", { name: "Move 2 messages to" })).toBeInTheDocument();
     });
 
+    it("says in the new folder form that all the selected messages are moved into it", async () => {
+        const user = userEvent.setup();
+        renderBar({ selected: [messageFixture("m1"), messageFixture("m2")] });
+
+        await user.click(screen.getByRole("button", { name: "Move to" }));
+        await user.click(screen.getByRole("button", { name: /New folder/ }));
+
+        expect(screen.getByText(/the messages are moved into it/)).toBeInTheDocument();
+    });
+
     it("creates a folder from the prompt and moves the selection into it", async () => {
         const created = { uid: "f7", mailboxUid: "mb1", name: "Trips", type: "user", version: 0 };
         const fetchMock = mockFetch((url, init) =>

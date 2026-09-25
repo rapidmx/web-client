@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Bump `@rapidmx/react-shared` to `^0.16.0`, the release with the event dialog and free/busy API this version uses, and cover the swipe, move-to-folder, compose and admin paths that the full suite left untested.
+
 ### Fixes
 
 - **Clearing a date or time in the event form says so** instead of raising an error, and closing the form after an event was saved but its video meeting failed refreshes the calendar.

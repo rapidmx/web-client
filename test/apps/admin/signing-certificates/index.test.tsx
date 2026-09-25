@@ -10,7 +10,7 @@ import { jsonResponse, mockFetch } from "../../testUtils.js";
 import SigningCertificatesPage from "../../../../apps/admin/signing-certificates/index.js";
 import { getNotificationsSnapshot } from "../../../../apps/shared/notifications/store.js";
 
-type Handler = (url: string, init?: RequestInit) => Response | undefined;
+type Handler = (url: string, init?: RequestInit) => Response | Promise<Response> | undefined;
 
 const toasts = () => getNotificationsSnapshot().history;
 
@@ -236,6 +236,62 @@ describe("SigningCertificatesPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Reject" }));
         expect(screen.getByLabelText("Rejection reason")).toHaveValue("");
+    });
+
+    it("keeps the upload dialog open, and what was typed, when Escape is pressed while the certificate is being sent", async () => {
+        let finish: (response: Response) => void = () => undefined;
+        mockShell({
+            enrollments: [enrollment()],
+            extra: (url, init) =>
+                url === "/api/admin/signing-enrollments/e1/certificate" && init?.method === "POST"
+                    ? new Promise<Response>((resolve) => (finish = resolve))
+                    : undefined,
+        });
+        const user = userEvent.setup();
+        render(<SigningCertificatesPage userUid="admin-1" />);
+
+        await user.click(await screen.findByRole("button", { name: "Upload certificate" }));
+        await user.type(screen.getByLabelText("Certificate PEM"), "-----BEGIN CERTIFICATE-----");
+        await user.click(screen.getByRole("button", { name: "Upload" }));
+        await vi.waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled());
+
+        await user.keyboard("{Escape}");
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+        expect(screen.getByLabelText("Certificate PEM")).toHaveValue("-----BEGIN CERTIFICATE-----");
+
+        // The server refuses it: the dialog is still there to say so, and can be dismissed again.
+        finish(jsonResponse(400, { message: "Not signed by our CA." }));
+        expect(await screen.findByText("Not signed by our CA.")).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+
+    it("keeps the reject dialog open, and the reason typed, when Escape is pressed while the rejection is being sent", async () => {
+        let finish: (response: Response) => void = () => undefined;
+        mockShell({
+            enrollments: [enrollment()],
+            extra: (url, init) =>
+                url === "/api/admin/signing-enrollments/e1/reject" && init?.method === "POST"
+                    ? new Promise<Response>((resolve) => (finish = resolve))
+                    : undefined,
+        });
+        const user = userEvent.setup();
+        render(<SigningCertificatesPage userUid="admin-1" />);
+
+        await user.click(await screen.findByRole("button", { name: "Reject" }));
+        const dialog = screen.getByRole("dialog");
+        await user.type(within(dialog).getByLabelText("Rejection reason"), "not our employee");
+        await user.click(within(dialog).getByRole("button", { name: "Reject" }));
+        await vi.waitFor(() => expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled());
+
+        await user.keyboard("{Escape}");
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+        expect(within(dialog).getByLabelText("Rejection reason")).toHaveValue("not our employee");
+
+        finish(jsonResponse(409, { message: "This request is already issued." }));
+        expect(await screen.findByText("This request is already issued.")).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     });
 
     it("rejects a request with a reason, notifies and reloads", async () => {

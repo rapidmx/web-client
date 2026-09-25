@@ -1479,10 +1479,12 @@ describe("InboxPage", () => {
                 fireEvent.touchMove(row, { touches: [{ clientX: toX, clientY: 104 }] });
                 fireEvent.touchEnd(row);
             };
-            function mockThread(messages: any[]) {
+            function mockThread(messages: any[], before?: (url: string, init?: RequestInit) => Response | undefined) {
                 return mockShellAndInbox(
                     messages,
                     (url, init) => {
+                        const custom = before?.(url, init);
+                        if (custom) return custom;
                         if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder, archiveFolder]);
                         if (url === "/api/mail/messages" && init?.method === "PUT") {
                             return jsonResponse(
@@ -1531,6 +1533,65 @@ describe("InboxPage", () => {
                 await user.click(within(dialog).getByRole("button", { name: /^Archive/ }));
                 await waitFor(() => expect(bulkPut(fetchMock)).toBeDefined());
                 expect(JSON.parse(bulkPut(fetchMock)![1].body as string).map((update: { uid: string }) => update.uid)).toEqual(["m1", "m2"]);
+            });
+
+            const conversationLoadFailed = (url: string) =>
+                url.startsWith("/api/mail/messages/conversations/c1") ? jsonResponse(500, { message: "The server is unavailable." }) : undefined;
+            const failedToLoad = () =>
+                getNotificationsSnapshot().visible.some((item) => item.kind === "error" && item.title === "Couldn't load the messages in that conversation");
+            const panelsOf = (row: HTMLElement) => row.querySelector("[data-swipe-panel]");
+
+            it("puts the row back, and says why, when the messages of a conversation swiped to archive can't be loaded", async () => {
+                mockMatchMedia(true);
+                const fetchMock = mockThread(threadMessages(), conversationLoadFailed);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                const row = (await screen.findByText("Thread subject")).closest("[data-message-uid]") as HTMLElement;
+
+                swipeRow(row, 300, 60);
+                // On its way out while the messages are fetched...
+                expect(panelsOf(row)).not.toBeNull();
+
+                await waitFor(() => expect(failedToLoad()).toBe(true));
+                // ...and back once they can't be.
+                await waitFor(() => expect(panelsOf(row)).toBeNull());
+                expect(bulkPut(fetchMock)).toBeUndefined();
+                expect(screen.getByText("Thread subject")).toBeInTheDocument();
+            });
+
+            it("closes the folder prompt, and says why, when the messages of a conversation swiped to move can't be loaded", async () => {
+                mockMatchMedia(true);
+                const fetchMock = mockThread(threadMessages(), conversationLoadFailed);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+
+                swipeRow((await screen.findByText("Thread subject")).closest("[data-message-uid]") as HTMLElement, 40, 300);
+                const dialog = await screen.findByRole("dialog", { name: "Move 2 messages to" });
+                await user.click(within(dialog).getByRole("button", { name: /^Archive/ }));
+
+                await waitFor(() => expect(failedToLoad()).toBe(true));
+                await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+                expect(bulkPut(fetchMock)).toBeUndefined();
+                expect(screen.getByText("Thread subject")).toBeInTheDocument();
+            });
+
+            it("puts the row back without an error when none of the conversation's messages are in this folder", async () => {
+                mockMatchMedia(true);
+                const elsewhere = threadMessages().map((message) => ({ ...message, folderUid: "f-elsewhere" }));
+                const fetchMock = mockThread(elsewhere);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                const row = (await screen.findByText("Thread subject")).closest("[data-message-uid]") as HTMLElement;
+
+                swipeRow(row, 300, 60);
+                expect(panelsOf(row)).not.toBeNull();
+
+                await waitFor(() => expect(panelsOf(row)).toBeNull());
+                expect(bulkPut(fetchMock)).toBeUndefined();
+                expect(failedToLoad()).toBe(false);
             });
         });
 
@@ -1706,6 +1767,35 @@ describe("InboxPage", () => {
                 expect(await screen.findByText("3 messages")).toBeInTheDocument();
                 expect(screen.queryByText("Select a conversation to read it.")).not.toBeInTheDocument();
                 expect(screen.getByText("Second budget note").closest("li")).toHaveAttribute("data-message-uid", "m3");
+            });
+
+            it("treats a matching message that belongs to no conversation, and has no subject, as a thread of its own", async () => {
+                const lone = messageFixture({ uid: "m7", subject: undefined, conversationId: undefined, bodyPreview: "Figures attached" });
+                const fetchMock = mockShellAndInbox(
+                    [lone],
+                    (url) =>
+                        url.startsWith("/api/mail/search")
+                            ? jsonResponse(200, { results: [{ entityType: "message", entityUid: "m7", score: 1 }] })
+                            : undefined,
+                    [],
+                    { m7: [lone] },
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                await user.type(await screen.findByLabelText("Search all mail"), "figures");
+
+                const group = (await screen.findByText("1 matching message")).closest("[data-search-group]") as HTMLElement;
+                expect(group).toHaveAttribute("data-search-group", "m7");
+                expect(group.firstElementChild).toHaveTextContent("(no subject)");
+                await user.click(within(group).getByText("Figures attached"));
+
+                // The message is its own thread: asked for by its uid, and headed "(no subject)" while it loads.
+                await waitFor(() =>
+                    expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/messages/conversations/m7?"))).toBe(true),
+                );
+                expect(await screen.findByText("1 message")).toBeInTheDocument();
+                expect(screen.getAllByText("(no subject)").length).toBeGreaterThan(1);
             });
 
             it("brings the conversations back when the search is cleared", async () => {
@@ -2437,6 +2527,70 @@ describe("InboxPage", () => {
             expect(await screen.findByTestId("detail-pane")).toHaveTextContent("labels:Shared label");
         });
 
+        it("adds a label created from a message of another mailbox to that mailbox's labels, not the open mailbox's", async () => {
+            const shared = { ...mailbox, uid: "mb2", ownerUserUid: "u2", displayName: "Support" };
+            const hit = messageFixture({ uid: "s1", subject: "Shared hit", mailboxUid: "mb2", folderUid: "f-shared" });
+            const own = messageFixture({ uid: "m1", subject: "My own mail" });
+            mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, shared]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/labels") && url.includes("mailboxUid=mb2")) return jsonResponse(200, [labelFixture("l9", "Shared label")]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, LABELS);
+                if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/s1")) return jsonResponse(200, hit);
+                if (url.startsWith("/api/mail/messages/m1")) return jsonResponse(200, own);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [hit, own]);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await user.click(await screen.findByText("Shared hit"));
+            await waitFor(() => expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Shared label"));
+
+            await user.click(screen.getByRole("button", { name: "simulate-label-created" }));
+
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Shared label/Made here");
+            // The open mailbox's own labels are untouched: its message still offers exactly the ones it had.
+            await user.click(screen.getByText("My own mail"));
+            await waitFor(() => expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:m1"));
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Invoices/Travel");
+            expect(screen.getByTestId("detail-pane")).not.toHaveTextContent("Made here");
+        });
+
+        it("does not let a slow answer about one shared mailbox's labels replace another's, once the reader has moved on", async () => {
+            const sharedA = { ...mailbox, uid: "mb2", ownerUserUid: "u2", displayName: "Support" };
+            const sharedB = { ...mailbox, uid: "mb3", ownerUserUid: "u3", displayName: "Sales" };
+            const hitA = messageFixture({ uid: "sa", subject: "Support hit", mailboxUid: "mb2", folderUid: "f-a" });
+            const hitB = messageFixture({ uid: "sb", subject: "Sales hit", mailboxUid: "mb3", folderUid: "f-b" });
+            let answerA: (response: Response) => void = () => undefined;
+            const fetchMock = mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedA, sharedB]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url.startsWith("/api/mail/labels") && url.includes("mailboxUid=mb2")) return new Promise<Response>((resolve) => (answerA = resolve));
+                if (url.startsWith("/api/mail/labels") && url.includes("mailboxUid=mb3")) return jsonResponse(200, [labelFixture("l3", "Sales label")]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, LABELS);
+                if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/sa")) return jsonResponse(200, hitA);
+                if (url.startsWith("/api/mail/messages/sb")) return jsonResponse(200, hitB);
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [hitA, hitB]);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await user.click(await screen.findByText("Support hit"));
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]: any[]) => String(url).includes("mailboxUid=mb2") && String(url).startsWith("/api/mail/labels"))).toBe(true));
+
+            await user.click(screen.getByText("Sales hit"));
+            await waitFor(() => expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Sales label"));
+            answerA(jsonResponse(200, [labelFixture("l2", "Support label")]));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+
+            expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Sales label");
+            expect(screen.getByTestId("detail-pane")).not.toHaveTextContent("Support label");
+        });
+
         it("hides the Labels control when another mailbox's labels can't be loaded", async () => {
             const shared = { ...mailbox, uid: "mb2", ownerUserUid: "u2", displayName: "Support" };
             const hit = messageFixture({ uid: "s1", subject: "Shared hit", mailboxUid: "mb2", folderUid: "f-shared" });
@@ -2589,7 +2743,7 @@ describe("InboxPage", () => {
         function mockSelectable(
             messages: unknown[],
             folders: unknown[] = [inboxFolder, junkFolder, deletedFolder, userFolder],
-            extra?: (url: string, init?: RequestInit) => Response | undefined,
+            extra?: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined,
         ) {
             return mockFetch((url, init) => {
                 const custom = extra?.(url, init);
@@ -2929,6 +3083,30 @@ describe("InboxPage", () => {
                 await waitFor(() => expect(getNotificationsSnapshot().visible.some((item) => item.kind === "error")).toBe(true));
                 await waitFor(() => expect(rowOf("First")).not.toHaveAttribute("data-swiping"));
                 expect(screen.getByText("First")).toBeInTheDocument();
+            });
+
+            it("holds a second swipe while the first archive is still on the wire, and puts that row back", async () => {
+                mockMatchMedia(true);
+                let finish: (response: Response) => void = () => undefined;
+                const messages = twoMessages();
+                const fetchMock = mockSelectable(messages, [inboxFolder, archiveFolder], (url, init) =>
+                    url === "/api/mail/messages" && init?.method === "PUT" ? new Promise<Response>((resolve) => (finish = resolve)) : undefined,
+                );
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("First");
+
+                swipe(rowOf("First"), [300, 100], [60, 104]);
+                await waitFor(() => expect(bulkPut(fetchMock)).toBeDefined());
+                swipe(rowOf("Second"), [300, 100], [60, 104]);
+                expect(rowOf("Second").querySelector("[data-swipe-panel]")).not.toBeNull();
+
+                await waitFor(() => expect(rowOf("Second").querySelector("[data-swipe-panel]")).toBeNull());
+                expect(fetchMock.mock.calls.filter(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT")).toHaveLength(1);
+
+                // The first archive lands: its row goes, the one that was held stays.
+                finish(jsonResponse(200, [{ ...messages[0], folderUid: "f8" }]));
+                await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+                expect(screen.getByText("Second")).toBeInTheDocument();
             });
 
             it("does nothing for a short swipe, a mostly vertical one, or a swipe on a desktop", async () => {
@@ -3496,7 +3674,7 @@ describe("InboxPage", () => {
                 const gate = new Promise<void>((resolve) => (release = resolve));
                 const fetchMock = mockSelectable(threeMessages(), undefined, (url, init) =>
                     url === "/api/mail/messages" && init?.method === "PUT" && String(init.body).includes("f6")
-                        ? (gate.then(() => jsonResponse(200, [messageFixture({ uid: "m1", folderUid: "f6" })])) as unknown as Response)
+                        ? gate.then(() => jsonResponse(200, [messageFixture({ uid: "m1", folderUid: "f6" })]))
                         : undefined,
                 );
                 render(<InboxPage userUid="u1" />);
@@ -6025,6 +6203,22 @@ describe("InboxPage", () => {
             pushMessage("f1");
             await new Promise((resolve) => setTimeout(resolve, 900));
             expect(row()).not.toHaveAttribute("data-unread");
+        });
+
+        it("takes the newer copy of a row that changed elsewhere, such as a message read on another device", async () => {
+            const unread = { read: false, flagged: false, answered: false, forwarded: false };
+            const messages: any[] = [messageFixture({ uid: "m1", subject: "First", version: 1, flags: unread })];
+            mockShellAndInbox(messages);
+            const { container } = render(<InboxPage userUid="u1" />);
+            await screen.findByText("First");
+            const row = () => container.querySelector("ul > li")!;
+            expect(row()).toHaveAttribute("data-unread", "true");
+
+            messages[0] = { ...messages[0], version: 2, flags: { ...unread, read: true } };
+            pushMessage("f1");
+
+            await waitFor(() => expect(row()).not.toHaveAttribute("data-unread"), { timeout: 3000 });
+            expect(screen.getByText("First")).toBeInTheDocument();
         });
 
         it("refreshes a conversation list too, whichever folder the event is about, since a conversation can span folders", async () => {

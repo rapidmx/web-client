@@ -56,7 +56,8 @@ export default function SwipeRow({ as: Tag = "div", enabled, onArchive, onMove, 
                 onMove();
                 return;
             }
-            const rowWidth = element.current?.clientWidth ?? 0;
+            // A swipe is only ever heard by the row's own element, which is what `element` holds.
+            const rowWidth = element.current!.clientWidth;
             setWidth(rowWidth);
             setLeaving(true);
             setOffset(-rowWidth);

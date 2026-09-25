@@ -178,6 +178,24 @@ describe("CalendarPage swipe navigation", () => {
             expect(slid().style.transform).toBe("translate3d(0, -56px, 0)");
         });
 
+        it("steps a week by whole notches while the week is still loading, when there are no hours yet to scroll", async () => {
+            window.history.pushState(null, "", "/calendar?date=2026-06-15&view=week");
+            mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [calendarFolder]);
+                if (url.startsWith("/api/mail/calendar-events")) return new Promise<Response>(() => undefined);
+                throw new Error(`unexpected ${url}`);
+            });
+            render(<CalendarPage userUid="u1" />);
+            await screen.findByRole("heading", { name: "Jun 15 – Jun 21, 2026" });
+            const loading = await screen.findByText(/Loading/);
+            expect(document.querySelector("[data-calendar-scroller]")).toBeNull();
+
+            // Nothing inside to scroll yet, so every notch counts towards a step: 100px is one.
+            expect(fireEvent.wheel(loading, { deltaY: 100 })).toBe(false);
+            expect(await screen.findByRole("heading", { name: "Jun 22 – Jun 28, 2026" })).toBeInTheDocument();
+        });
+
         it("scrolls the hours of a day with the wheel, and only past the last one carries on into the next day", async () => {
             await renderCalendar("day", "Monday, June 15, 2026");
             const hours = scroller(0);

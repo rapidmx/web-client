@@ -1752,14 +1752,14 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     async function swipeMove(folderUidToMoveTo: string): Promise<void> {
-        const target = moveDialog;
-        if (!target) {
+        // Only ever asked by the folder prompt, which is only open while `moveDialog` is set.
+        const target = moveDialog!;
+        const chosen = "messages" in target ? target.messages : await swipedConversationMessages(target.conversation);
+        if (!chosen || chosen.length === 0) {
+            setMoveDialog(null);
             return;
         }
-        const chosen = "messages" in target ? target.messages : await swipedConversationMessages(target.conversation);
-        if (chosen && chosen.length > 0) {
-            await runBulkAction((moving) => moveMessages(moving, folderUidToMoveTo), true, chosen);
-        }
+        await runBulkAction((moving) => moveMessages(moving, folderUidToMoveTo), true, chosen);
         setMoveDialog(null);
     }
 
@@ -2376,7 +2376,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                 ? resultGroups.map((group) => (
                                       <li key={group.id} data-search-group={group.id}>
                                           <div className="px-4 py-1.5 bg-surface-alt border-b border-border text-xs text-text-muted flex items-center justify-between gap-2">
-                                              <span className="truncate font-semibold">{rowSubject(group.messages[0]) || "(no subject)"}</span>
+                                              <span className="truncate font-semibold">{rowSubject(group.messages[0])}</span>
                                               <span className="shrink-0">
                                                   {group.messages.length} matching message{group.messages.length === 1 ? "" : "s"}
                                               </span>

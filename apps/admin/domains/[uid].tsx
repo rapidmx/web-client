@@ -113,7 +113,8 @@ function DomainDetailContent({ uid }: { uid: string }) {
                             id="aliasOf"
                             type="text"
                             className={INPUT_CLASS}
-                            value={aliasInput ?? ""}
+                            // Set in the same update as `domain` (see `handleLoaded()`), which is what this section waits for.
+                            value={aliasInput!}
                             onChange={(e) => {
                                 setAliasInput(e.target.value);
                                 setAliasSaved(false);
@@ -126,7 +127,7 @@ function DomainDetailContent({ uid }: { uid: string }) {
                             type="button"
                             className="!w-auto"
                             loading={savingAlias}
-                            disabled={savingAlias || (aliasInput ?? "") === (domain.aliasOf ?? "")}
+                            disabled={savingAlias || aliasInput! === (domain.aliasOf ?? "")}
                             onClick={handleSaveAlias}
                         >
                             Save

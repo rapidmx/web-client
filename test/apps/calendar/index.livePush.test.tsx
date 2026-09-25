@@ -152,8 +152,8 @@ describe("CalendarPage live updates for a private event", () => {
         expect(screen.getByText(/Standup/)).toBeInTheDocument();
     });
 
-    it("replaces an event the page already holds", async () => {
-        events = [calendarEvent({ uid: "e2", title: "Old title" })];
+    it("replaces an event the page already holds, and leaves the others as they are", async () => {
+        events = [calendarEvent(), calendarEvent({ uid: "e2", title: "Old title" })];
         mockCalendar();
         render(<CalendarPage userUid="u1" />);
         await screen.findByText(/Old title/);
@@ -163,6 +163,7 @@ describe("CalendarPage live updates for a private event", () => {
 
         expect(await screen.findByText(/New title/)).toBeInTheDocument();
         expect(screen.queryByText(/Old title/)).not.toBeInTheDocument();
+        expect(screen.getByText(/Standup/)).toBeInTheDocument();
     });
 
     it("drops an event that is gone, and leaves the calendar alone when the fetch fails for any other reason", async () => {

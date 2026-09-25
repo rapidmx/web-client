@@ -111,6 +111,42 @@ describe("useSwipe", () => {
         expect(onSwipe).not.toHaveBeenCalled();
     });
 
+    it("waits for the finger to move a little before deciding which way the gesture goes", () => {
+        const onSwipe = vi.fn();
+        const onDrag = vi.fn();
+        render(<Target onSwipe={onSwipe} onDrag={onDrag} />);
+        const target = screen.getByTestId("target");
+        fireEvent.touchStart(target, touch(300, 100));
+        // A wobble of a few px, either way, is a tap and not yet a drag.
+        fireEvent.touchMove(target, touch(305, 103));
+        fireEvent.touchMove(target, touch(296, 98));
+        expect(onDrag).not.toHaveBeenCalled();
+
+        fireEvent.touchMove(target, touch(100, 100));
+        expect(onDrag).toHaveBeenLastCalledWith(-200);
+        fireEvent.touchEnd(target);
+        expect(onSwipe).toHaveBeenCalledExactlyOnceWith("left");
+    });
+
+    it("has nothing to let go of when a gesture is cancelled before it moved, or once it turned out to be a scroll", () => {
+        const onSwipe = vi.fn();
+        const onDrag = vi.fn();
+        render(<Target onSwipe={onSwipe} onDrag={onDrag} />);
+        const target = screen.getByTestId("target");
+        fireEvent.touchStart(target, touch(300, 100));
+        fireEvent.touchCancel(target);
+
+        fireEvent.touchStart(target, touch(300, 100));
+        fireEvent.touchMove(target, touch(298, 200));
+        fireEvent.touchCancel(target);
+        // A cancelled gesture is over: a later move is not part of anything.
+        fireEvent.touchMove(target, touch(100, 100));
+        fireEvent.touchEnd(target);
+
+        expect(onDrag).not.toHaveBeenCalled();
+        expect(onSwipe).not.toHaveBeenCalled();
+    });
+
     it("does nothing while disabled, and asks the browser for no panning rules", () => {
         const onSwipe = vi.fn();
         render(<Target enabled={false} onSwipe={onSwipe} />);

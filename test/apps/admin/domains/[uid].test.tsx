@@ -579,6 +579,26 @@ describe("DomainDetailPage", () => {
         expect(await screen.findByText("'no-such-domain.gg' is not a domain known to this server - add it first.")).toBeInTheDocument();
     });
 
+    it("shows a generic message, and keeps the typed value, when saving Alias of fails without an API error", async () => {
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/domains/example.com" && init?.method === "PUT") throw new TypeError("network down");
+            if (url === "/api/mail/domains/example.com") return jsonResponse(200, domain);
+            if (url === "/api/mail/domains/example.com/dns-setup") return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        renderDomainPage();
+
+        const input = await screen.findByLabelText("Alias of");
+        await user.type(input, "powerlevel.gg");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Could not update this domain.")).toBeInTheDocument();
+        expect(input).toHaveValue("powerlevel.gg");
+        expect(screen.queryByText("Saved.")).not.toBeInTheDocument();
+    });
+
     it("closes the delete confirmation modal on Cancel without deleting", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});

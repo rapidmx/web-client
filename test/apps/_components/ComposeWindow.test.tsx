@@ -893,15 +893,19 @@ describe("ComposeWindow", () => {
     });
 
     it("ignores a change event with no file list", async () => {
-        mockCompose();
+        const fetchMock = mockCompose();
         render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
         await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
 
-        const input = screen.getByLabelText("Attach files");
+        // `getByLabelText` finds the paperclip's `<label>`, which the change event is not about: the file input inside it is.
+        const input = screen.getByLabelText("Attach files").querySelector("input")!;
         Object.defineProperty(input, "files", { value: null, configurable: true });
         fireEvent.change(input);
 
-        expect(screen.queryByText(/too large|boom/)).not.toBeInTheDocument();
+        // Nothing to upload: no request, no error, and the window carries on as it was.
+        await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+        expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/attachments"))).toBe(false);
+        expect(screen.queryByText(/too large|boom|Could not upload/)).not.toBeInTheDocument();
     });
 
     it("does nothing when Send is clicked before the draft has loaded", async () => {
