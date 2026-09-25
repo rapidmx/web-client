@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.16.0
+
 ### Changed
 
 - Bump `@rapidmx/react-shared` to `^0.18.0`, the release with the full-screen `Drawer` and the CSRF header on uploads that the phone drawers and the admin uploads here need.

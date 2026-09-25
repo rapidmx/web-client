@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-25
+
+### Added
+- Added a Back to mail item, first in the admin console's account menu, that returns to the main application
+- Added a message that arrives in the open conversation from another tab, another device or a recipient as it arrives, keeping which messages were expanded or removed
+
+### Changed
+- Show the signed-in user's own mailbox first in the Mail sidebar, the Contacts, Tasks and Settings mailbox selectors, the calendar list and the compose From picker, with shared and delegated mailboxes after it in alphabetical order, and open on it by default in Mail, Contacts, Tasks, Calendar, Settings and the compose window, where a mailbox named in the address or a reply's own mailbox still wins
+- Choose the earliest created mailbox as the primary one when a user owns several
+- Make the Mail sidebar's All mailboxes and per-mailbox sections collapsible, starting with All mailboxes and the primary mailbox open and every other mailbox collapsed, remembering each user's choices, always showing the section of the open folder, showing a collapsed section's unread total on its heading and working the same in the phone's folders drawer
+- Free an address stuck after deleting a mailbox from the console: explain the leftover data on the create form and offer to erase it after the address is typed to confirm, list deleted mailboxes with remaining data on the Mailboxes page, offer to erase a mailbox's data as it is deleted, and mark such requests on the Data Requests page
+- Use a round floating button for New event and New contact on a phone, like Mail's, from a shared FloatingActionButton that Mail now uses too, and leave the desktop toolbars unchanged
+- Bump @rapidmx/react-shared to 0.17.0
+- Test the ordering, the sections, the admin menu link, the erase flow and the floating buttons
+- Document the change in the release notes and NOTES
+- Let every section of the Mail sidebar be collapsed, the primary mailbox and the one holding the open folder included, remembering the choice across reloads and opening a collapsed section when a folder in it is chosen or linked to
+- Show a collapsed section's unread total across all its folders except Drafts, Outbox, Sent Items, Deleted Items and Junk Email on its heading, so mail a filter rule moved out of the Inbox is not overlooked
+- Open Mail on All mailboxes Inbox when there is more than one mailbox, and on the mailbox's own Inbox when there is one, while a mailbox, folder or all-mailboxes view in the address still wins and Compose keeps using the primary mailbox
+- Test the sections, the badge, the default view and the navigation rule
+- Document the change in the release notes and NOTES
+- Make the phone's navigation drawers fill the screen instead of a narrow strip beside a dimmed sliver of the page: the Mail folders, calendars, Contacts, Tasks and Settings drawers and the admin console's menu
+- Document the change in the release notes and NOTES
+- Search every mailbox the user can read from the All mailboxes view, up to 25 at once, merging the results by relevance with each row naming its mailbox, and add Search all mailboxes and Search this mailbox only to widen and narrow a search from one mailbox's folder
+- Name a mailbox that cannot be searched, because it is denied, slow or failing, in a non-blocking note while the other mailboxes' results stay, and say which mailboxes' encrypted mail is searched through the local index, through the server, or not at all until unlocked, with a button to unlock the user's own locked mailboxes
+- Archive, delete and report as junk the selected search results in each result's own mailbox, and offer Move to and Apply label only for results of one mailbox
+- Test the fan-out, the merge, the cursors, the failure notes and the actions
+- Document the change in the release notes and NOTES
+- Use compose's recipient field for the guests of a calendar event, in the quick popover, the full form and a guest's Add guests request, so typing a name suggests matching contacts, mailboxes and distribution lists and a chosen one becomes a chip with its name and address
+- Accept addresses, Name <address>, several pasted at once, commas, semicolons, Enter and leaving the field as guests, keep something that is not an address as a flagged chip without an error while typing, and add neither an already invited guest nor the organizer twice
+- Test the guest input, the merge and the change request
+- Document the change in the release notes and NOTES
+- Show a reply or forward sent from an open conversation in it at once, as a Sending card at the top that the real Sent Items message replaces when the server has filed it and that shows Not sent with Retry and Open draft when the send fails
+- Test the outgoing store, the send job, the thread pane and the mobile message page
+- Document the change in the release notes and NOTES
+- Bump @rapidmx/react-shared to 0.18.0, the release with the full-screen Drawer and the CSRF header on uploads, and refresh the lockfile
+- Document the bump in the release notes
+
+### Fixed
+- Fixed the unselected options of the compose From picker and every native drop-down being unreadable on the dark theme, by giving the options the theme's opaque colours
+
 ## [0.15.1] - 2026-09-25
 
 ### Changed
@@ -942,7 +982,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/rapidmx/web-client/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/rapidmx/web-client/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/rapidmx/web-client/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rapidmx/web-client/compare/v0.14.0...v0.14.1
