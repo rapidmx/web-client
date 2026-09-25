@@ -6,6 +6,7 @@ import React, { ReactNode, useRef, useState } from "react";
 import { HiOutlineBars3BottomLeft, HiOutlineBell, HiOutlineMapPin, HiOutlineUserGroup, HiOutlineVideoCamera, HiOutlineXMark } from "react-icons/hi2";
 import { AttendeeRole, EventVisibility, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import GuestInput from "./GuestInput.js";
 import LazyDescriptionEditor from "./LazyDescriptionEditor.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
 import ResourcePicker from "./ResourcePicker.js";
@@ -103,63 +104,31 @@ export function VideoConferencingRow({ c }: { c: EventFormController }) {
 }
 
 /**
- * The guests field: an address box (Enter, a comma or a semicolon adds what is typed) and what has been added - chips in the quick popover,
- * rows with a role, the answer so far and a remove button in the full form, which also offers rooms and equipment.
+ * The guests field: compose's recipient field (`GuestInput`), which looks a name up among the contacts and the server's mailboxes and lists and
+ * turns what is picked, typed or pasted into chips - drawn in the field itself in the quick popover. In the full form the guests are rows with a
+ * role, the answer so far and a remove button instead (the field then draws only what is not an address), and rooms and equipment can be added.
  */
 export function GuestsField({ c, compact }: { c: EventFormController; compact: boolean }) {
     const { values } = c;
-    const [hint, setHint] = useState<string | null>(null);
     const [pickerOpen, setPickerOpen] = useState(false);
     const pickerAnchor = useRef<HTMLButtonElement>(null);
 
-    function commit() {
-        const invalid = c.addGuests(values.guestDraft);
-        setHint(invalid.length > 0 ? `“${invalid[0]}” isn’t a valid email address.` : null);
-    }
-
     return (
         <div className="flex flex-col gap-2">
-            <input
-                type="text"
-                aria-label="Add guests"
+            <GuestInput
+                id="event-guests"
+                label="Add guests"
                 placeholder="Add guests"
-                className={compact ? QUIET_INPUT_CLASS : INPUT_CLASS}
-                value={values.guestDraft}
-                onChange={(e) => {
-                    setHint(null);
-                    c.update({ guestDraft: e.target.value });
-                }}
-                onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === "," || e.key === ";") {
-                        e.preventDefault();
-                        commit();
-                    }
-                }}
+                variant={compact ? "quiet" : "box"}
+                listedElsewhere={!compact}
+                guests={values.attendees}
+                invalid={values.guestInvalid}
+                draft={values.guestDraft}
+                skipAddresses={[c.organizerAddress]}
+                mailboxUid={values.targetMailboxUid}
+                onChange={(next) => c.update({ attendees: next.guests, guestInvalid: next.invalid, guestDraft: next.draft })}
             />
-            {hint && (
-                <p role="alert" className="text-xs text-danger">
-                    {hint}
-                </p>
-            )}
-            {compact ? (
-                values.attendees.length > 0 && (
-                    <ul className="flex flex-wrap gap-1.5">
-                        {values.attendees.map((attendee, i) => (
-                            <li key={i} className="flex items-center gap-1 text-xs rounded-full bg-surface-alt pl-2.5 pr-1 py-0.5">
-                                <span className="truncate max-w-[16rem]">{attendee.address}</span>
-                                <button
-                                    type="button"
-                                    onClick={() => c.removeAttendee(i)}
-                                    className="w-4 h-4 flex items-center justify-center rounded-full text-text-muted hover:text-text"
-                                    aria-label={`Remove attendee ${i + 1}`}
-                                >
-                                    <HiOutlineXMark size={12} aria-hidden="true" />
-                                </button>
-                            </li>
-                        ))}
-                    </ul>
-                )
-            ) : (
+            {compact ? null : (
                 <>
                     {values.attendees.length > 0 && (
                         <ul className="flex flex-col gap-2">

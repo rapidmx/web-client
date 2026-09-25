@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
 import { HiOutlineXMark } from "react-icons/hi2";
-import { EventChangeRequest, requestEventChange } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { Attendee, EventChangeRequest, requestEventChange } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import { htmlToPlainText, sanitizeEventDescriptionHtml } from "@rapidmx/react-shared/calendar/eventDescription.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -12,6 +12,7 @@ import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import { notify } from "../../notifications/store.js";
 import { INPUT_CLASS } from "./EventFormParts.js";
+import GuestInput, { GuestEntries } from "./GuestInput.js";
 import LazyDescriptionEditor from "./LazyDescriptionEditor.js";
 import { descriptionProblem, initialDescriptionHtml } from "./eventDialogFields.js";
 import { mergeGuests } from "./eventFormat.js";
@@ -66,47 +67,31 @@ export default function RequestChangeForm({ subject, canChange, canInvite, onSen
     const [start, setStart] = useState(subject.startDate ? toDatetimeLocal(subject.startDate) : "");
     const [end, setEnd] = useState(subject.endDate ? toDatetimeLocal(subject.endDate) : "");
     const [descriptionHtml, setDescriptionHtml] = useState(() => initialDescriptionHtml(subject));
-    const [added, setAdded] = useState<{ address: string }[]>([]);
-    const [guestDraft, setGuestDraft] = useState("");
+    // The guests to add (not the ones already invited: `subject.guestAddresses` are skipped), what is flagged in the field, and what is being typed.
+    const [entries, setEntries] = useState<GuestEntries>({ guests: [], invalid: [], draft: "" });
     const [error, setError] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
     const heading = canChange ? "Request a change" : "Add guests";
 
-    /** Adds what was typed into the guests box, returning the guests as they now stand; a mistyped address stays in the box and is said. */
-    function addTypedGuests(): { address: string }[] | undefined {
-        const invited = [...subject.guestAddresses, ...added.map((guest) => guest.address)].map((address) => ({ address }));
-        const merged = mergeGuests(
-            invited.map((guest) => ({ ...guest, role: "required" as const, responseStatus: "needsAction" as const, isOrganizer: false })),
-            guestDraft,
-        );
+    /** Adds what was typed into the guests box, returning the guests to add as they now stand; something that is not an address is said. */
+    function addTypedGuests(): Attendee[] | undefined {
+        const merged = mergeGuests(entries.guests, [...entries.invalid, entries.draft].join(", "), subject.guestAddresses);
         if (merged.invalid.length > 0) {
             setError(`“${merged.invalid[0]}” isn’t a valid email address.`);
-            setGuestDraft(merged.invalid.join(" "));
             return undefined;
         }
-        setGuestDraft("");
-        return merged.attendees.slice(invited.length).map((guest) => ({ address: guest.address }));
-    }
-
-    function handleGuestKey(event: React.KeyboardEvent<HTMLInputElement>) {
-        if (event.key === "Enter" || event.key === "," || event.key === ";") {
-            event.preventDefault();
-            setError(null);
-            const more = addTypedGuests();
-            if (more) {
-                setAdded((current) => [...current, ...more]);
-            }
-        }
+        setEntries({ guests: merged.attendees, invalid: [], draft: "" });
+        return merged.attendees;
     }
 
     async function handleSubmit(event: FormEvent) {
         event.preventDefault();
         setError(null);
-        const typed = canInvite ? addTypedGuests() : [];
-        if (!typed) {
+        const added = canInvite ? addTypedGuests() : [];
+        if (!added) {
             return;
         }
-        const guests = [...added, ...typed];
+        const guests = added.map((guest) => (guest.displayName ? { address: guest.address, displayName: guest.displayName } : { address: guest.address }));
         const request: EventChangeRequest = {};
 
         if (canChange) {
@@ -226,35 +211,19 @@ export default function RequestChangeForm({ subject, canChange, canInvite, onSen
             )}
 
             {canInvite && (
-                <div className="flex flex-col gap-2">
-                    <label className="flex flex-col gap-1 text-xs font-medium">
+                <div className="flex flex-col gap-1">
+                    <label htmlFor="request-guests" className="text-xs font-medium">
                         Guests to add
-                        <input
-                            type="text"
-                            className={INPUT_CLASS}
-                            placeholder="name@example.com"
-                            value={guestDraft}
-                            onChange={(e) => setGuestDraft(e.target.value)}
-                            onKeyDown={handleGuestKey}
-                        />
                     </label>
-                    {added.length > 0 && (
-                        <ul className="flex flex-wrap gap-1.5">
-                            {added.map((guest, index) => (
-                                <li key={guest.address} className="flex items-center gap-1 text-xs rounded-full bg-surface-alt pl-2.5 pr-1 py-0.5">
-                                    <span className="truncate max-w-[16rem]">{guest.address}</span>
-                                    <button
-                                        type="button"
-                                        aria-label={`Remove ${guest.address}`}
-                                        onClick={() => setAdded((current) => current.filter((_, i) => i !== index))}
-                                        className="w-4 h-4 flex items-center justify-center rounded-full text-text-muted hover:text-text"
-                                    >
-                                        <HiOutlineXMark size={12} aria-hidden="true" />
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
-                    )}
+                    <GuestInput
+                        id="request-guests"
+                        label="Guests to add"
+                        placeholder="Name or name@example.com"
+                        variant="box"
+                        skipAddresses={subject.guestAddresses}
+                        {...entries}
+                        onChange={setEntries}
+                    />
                 </div>
             )}
 

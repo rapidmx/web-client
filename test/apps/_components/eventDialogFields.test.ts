@@ -26,6 +26,7 @@ function values(overrides: Partial<EventFormValues> = {}): EventFormValues {
         timezone: "UTC",
         attendees: [],
         guestDraft: "",
+        guestInvalid: [],
         recurrenceRule: null,
         reminderMinutes: "",
         busyStatus: "busy",

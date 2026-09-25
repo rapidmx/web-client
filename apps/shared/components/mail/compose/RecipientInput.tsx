@@ -46,6 +46,28 @@ export interface RecipientInputProps {
     disabled?: boolean;
     /** Focuses the input when it mounts - a new message starts in To. */
     autoFocus?: boolean;
+
+    // The rest are for fields other than To/Cc/Bcc that reuse the input (the event dialog's guests); compose leaves them all out.
+    /** Called whenever the field's entries change: every committed entry (chips - a picked suggestion, a finished or
+     * pasted one, or a typed one committed by Enter or leaving the field) and the text still being typed (`""` after a
+     * commit). Lets a field that keeps its entries as something other than text (attendees) read them without parsing
+     * `value` and guessing which part of it is still being typed. */
+    onEdit?: (chips: string[], pending: string) => void;
+    /** Text being typed already when the input mounts (the last recipient of `value`), so a field that is remounted
+     * (a popover growing into a form) keeps it in the input instead of turning it into a chip. */
+    initialPending?: string;
+    /** Chips this returns true for are not drawn (they stay in the value, and out of the suggestions): a field that
+     * lists some entries itself. Backspace in an empty input removes the last chip that is drawn. */
+    hideChip?: (chip: string) => boolean;
+    placeholder?: string;
+    /** The input's accessible name, for a field without a `<label htmlFor>`. */
+    ariaLabel?: string;
+    /** The chip list's accessible name; `${label} recipients` by default. */
+    listLabel?: string;
+    /** Classes for the field's outer element, after its own (a border, padding). */
+    className?: string;
+    /** The suggestions' `z-index`, for a field inside an overlay that stacks above the default's (`z-[60]`). */
+    dropdownZIndex?: number;
 }
 
 interface DropdownPosition {
@@ -92,8 +114,16 @@ export default function RecipientInput({
     debounceMs = RECIPIENT_SUGGESTION_DEBOUNCE_MS,
     disabled,
     autoFocus,
+    onEdit,
+    initialPending = "",
+    hideChip,
+    placeholder,
+    ariaLabel,
+    listLabel,
+    className,
+    dropdownZIndex,
 }: RecipientInputProps) {
-    const [pending, setPending] = useState("");
+    const [pending, setPending] = useState(initialPending);
     const [suggestions, setSuggestions] = useState<RecipientSuggestion[]>([]);
     const [open, setOpen] = useState(false);
     const [activeIndex, setActiveIndex] = useState(0);
@@ -110,6 +140,8 @@ export default function RecipientInput({
     const chips = pendingActive ? tokens.slice(0, -1) : tokens;
     const inputValue = pendingActive ? pending : "";
     const query = pendingActive ? pendingText : "";
+    const drawn = chips.map((chip, index) => ({ chip, index })).filter(({ chip }) => !hideChip?.(chip));
+    const lastDrawn = drawn.length > 0 ? drawn[drawn.length - 1].index : -1;
     const listboxId = `${id}-suggestions`;
     const optionId = (index: number) => `${id}-suggestion-${index}`;
 
@@ -174,6 +206,7 @@ export default function RecipientInput({
 
     function emit(nextChips: string[], nextPending: string) {
         onChange([...nextChips, nextPending.trim()].filter((part) => part.length > 0).join(", "));
+        onEdit?.(nextChips, nextPending.trim());
     }
 
     function handleInputChange(e: ChangeEvent<HTMLInputElement>) {
@@ -185,18 +218,23 @@ export default function RecipientInput({
     }
 
     function commitPending(): string {
-        const next = [...chips, pendingText].filter((part) => part.length > 0).join(", ");
+        const committed = [...chips, pendingText].filter((part) => part.length > 0);
         setPending("");
         setOpen(false);
-        return next;
+        if (pendingText) {
+            onEdit?.(committed, "");
+        }
+        return committed.join(", ");
     }
 
     function select(suggestion: RecipientSuggestion) {
-        const next = [...chips, formatRecipient({ address: suggestion.address, displayName: suggestion.displayName || undefined })].join(", ");
+        const committed = [...chips, formatRecipient({ address: suggestion.address, displayName: suggestion.displayName || undefined })];
+        const next = committed.join(", ");
         setPending("");
         setOpen(false);
         setSuggestions([]);
         onChange(next);
+        onEdit?.(committed, "");
         onCommit?.(next);
     }
 
@@ -249,9 +287,12 @@ export default function RecipientInput({
                 }
                 return;
             case "Backspace":
-                if (inputValue === "" && chips.length > 0) {
+                if (inputValue === "" && lastDrawn >= 0) {
                     e.preventDefault();
-                    emit(chips.slice(0, -1), "");
+                    emit(
+                        chips.filter((_, i) => i !== lastDrawn),
+                        "",
+                    );
                 }
                 return;
         }
@@ -263,10 +304,10 @@ export default function RecipientInput({
     }
 
     return (
-        <div ref={anchorRef} className="flex-1 min-w-0 flex flex-wrap items-center gap-1">
-            {chips.length > 0 && (
-                <ul role="list" aria-label={`${label} recipients`} className="contents">
-                    {chips.map((chip, index) => {
+        <div ref={anchorRef} className={`flex-1 min-w-0 flex flex-wrap items-center gap-1${className ? ` ${className}` : ""}`}>
+            {drawn.length > 0 && (
+                <ul role="list" aria-label={listLabel ?? `${label} recipients`} className="contents">
+                    {drawn.map(({ chip, index }) => {
                         const recipient = parseRecipient(chip);
                         const valid = isValidRecipientAddress(recipient.address);
                         const name = recipient.displayName || recipient.address;
@@ -303,6 +344,8 @@ export default function RecipientInput({
                 role="combobox"
                 autoComplete="off"
                 aria-autocomplete="list"
+                aria-label={ariaLabel}
+                placeholder={placeholder}
                 aria-expanded={expanded}
                 aria-controls={listboxId}
                 aria-activedescendant={expanded ? optionId(active) : undefined}
@@ -325,7 +368,7 @@ export default function RecipientInput({
                         role="listbox"
                         aria-label={`${label} suggestions`}
                         onMouseDown={(e) => e.preventDefault()}
-                        style={{ position: "fixed", left: position.left, width: position.width, top: position.top, bottom: position.bottom, maxHeight: position.maxHeight }}
+                        style={{ position: "fixed", left: position.left, width: position.width, top: position.top, bottom: position.bottom, maxHeight: position.maxHeight, zIndex: dropdownZIndex }}
                         className="z-[60] overflow-y-auto bg-surface border border-border rounded-md shadow-modal py-1"
                     >
                         {visible.map((suggestion, index) => (

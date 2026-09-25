@@ -28,6 +28,8 @@ export interface EventFormValues {
     attendees: Attendee[];
     /** What has been typed into the guests field but not added yet. */
     guestDraft: string;
+    /** What was committed to the guests field (Enter, a comma, leaving it) but is not an address: kept there, flagged, until it is fixed or removed. */
+    guestInvalid: string[];
     recurrenceRule: RecurrenceRule | null;
     /** Minutes before the start, as typed; blank means no reminder. */
     reminderMinutes: string;
@@ -70,8 +72,6 @@ export interface EventFormController {
     deviceZone: string;
 
     // Guests.
-    /** Adds the addresses in `text`; returns the ones that are not valid addresses. */
-    addGuests: (text: string) => string[];
     updateAttendee: (index: number, patch: Partial<Attendee>) => void;
     removeAttendee: (index: number) => void;
     addResource: (mailbox: Mailbox) => void;

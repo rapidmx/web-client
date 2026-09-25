@@ -4,18 +4,18 @@
 import { describe, expect, it } from "vitest";
 import { Attendee } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import {
+    applyGuestChips,
     bestReminderUnit,
     describeReminder,
     formatFormWhen,
     formatStoredWhen,
     formatWhen,
+    guestChip,
     reminderOf,
-    isValidGuestAddress,
     localDateFromKey,
     mergeGuests,
     msToWallString,
     newGuest,
-    splitGuestInput,
     wallStringToMs,
 } from "../../../apps/shared/components/calendar/eventFormat.js";
 
@@ -56,30 +56,61 @@ describe("reminders as typed", () => {
 });
 
 describe("guests", () => {
-    it("splits what was typed on commas, semicolons and white space", () => {
-        expect(splitGuestInput("a@x.com, b@x.com;c@x.com  d@x.com ,")).toEqual(["a@x.com", "b@x.com", "c@x.com", "d@x.com"]);
-        expect(splitGuestInput("  ")).toEqual([]);
-    });
-
-    it("accepts something, an @ and something, and nothing looser", () => {
-        expect(isValidGuestAddress("bob@example.com")).toBe(true);
-        expect(isValidGuestAddress("bob")).toBe(false);
-        expect(isValidGuestAddress("@example.com")).toBe(false);
-        expect(isValidGuestAddress("bob@")).toBe(false);
-        expect(isValidGuestAddress("bob@@example.com")).toBe(false);
-    });
-
-    it("builds a required, unanswered guest", () => {
+    it("builds a required, unanswered guest, with the name it was given", () => {
         expect(newGuest("bob@example.com")).toEqual({ address: "bob@example.com", role: "required", responseStatus: "needsAction", isOrganizer: false });
+        expect(newGuest("bob@example.com", "Bob")).toEqual({
+            address: "bob@example.com",
+            displayName: "Bob",
+            role: "required",
+            responseStatus: "needsAction",
+            isOrganizer: false,
+        });
+    });
+
+    it("shows a guest as compose shows a recipient: Name <address>, or the bare address", () => {
+        expect(guestChip({ address: "bob@example.com" })).toBe("bob@example.com");
+        expect(guestChip({ address: "bob@example.com", displayName: "Bob" })).toBe("Bob <bob@example.com>");
+        expect(guestChip({ address: "bob@example.com", displayName: "Doe, Bob" })).toBe('"Doe, Bob" <bob@example.com>');
     });
 
     it("adds new addresses, skips ones already listed in any case, and returns what is not an address", () => {
         const current: Attendee[] = [newGuest("Bob@Example.com")];
-        const merged = mergeGuests(current, "bob@example.com amy@example.com nonsense");
+        const merged = mergeGuests(current, "bob@example.com, amy@example.com; Support Desk");
         expect(merged.attendees.map((a) => a.address)).toEqual(["Bob@Example.com", "amy@example.com"]);
-        expect(merged.invalid).toEqual(["nonsense"]);
+        expect(merged.invalid).toEqual(["Support Desk"]);
         // The list it was given is left alone.
         expect(current).toHaveLength(1);
+    });
+
+    it("keeps the name of a guest typed as Name <address>, and takes addresses that only white space separates as several", () => {
+        const merged = mergeGuests([], 'Amy Lee <amy@example.com>, bob@example.com cat@example.com, "Doe, Dan" <dan@example.com>');
+        expect(merged.attendees.map((a) => [a.address, a.displayName])).toEqual([
+            ["amy@example.com", "Amy Lee"],
+            ["bob@example.com", undefined],
+            ["cat@example.com", undefined],
+            ["dan@example.com", "Doe, Dan"],
+        ]);
+        expect(merged.invalid).toEqual([]);
+    });
+
+    it("leaves out the addresses it is told to, such as the organizer's, in any case, and an address typed twice", () => {
+        const merged = mergeGuests([], "Jane@Example.com, bob@example.com, BOB@example.com", ["jane@example.com"]);
+        expect(merged.attendees.map((a) => a.address)).toEqual(["bob@example.com"]);
+    });
+
+    it("flags what is not an address once, and a list of addresses with something else among them as it was typed", () => {
+        const merged = applyGuestChips([], ["nonsense", "nonsense", "bob@example.com nonsense", "@example.com"]);
+        expect(merged.attendees).toEqual([]);
+        expect(merged.invalid).toEqual(["nonsense", "bob@example.com nonsense", "@example.com"]);
+    });
+
+    it("keeps a guest whose chip is there as they are, removes one whose chip is gone, and lists an address once", () => {
+        const bob: Attendee = { ...newGuest("bob@example.com", "Bob"), role: "optional", responseStatus: "accepted" };
+        const amy = newGuest("amy@example.com");
+        const odd = newGuest("not an address");
+        const { attendees } = applyGuestChips([bob, amy, odd], ["Robert <BOB@example.com>", "bob@example.com", "not an address"]);
+        expect(attendees).toEqual([bob, odd]);
+        expect(attendees[0]).toBe(bob);
     });
 });
 

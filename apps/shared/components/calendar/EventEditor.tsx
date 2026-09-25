@@ -201,6 +201,7 @@ export default function EventEditor({
             timezone: occurrence?.timezone ?? deviceZone,
             attendees: occurrence?.attendees ?? [],
             guestDraft: "",
+            guestInvalid: [],
             recurrenceRule: occurrence?.recurrenceRule ?? null,
             reminderMinutes: occurrence?.reminderMinutesBeforeStart?.toString() ?? "",
             busyStatus: occurrence?.busyStatus ?? "busy",
@@ -271,13 +272,8 @@ export default function EventEditor({
     // "This event only" detaches a standalone, non-repeating copy - the series' rule doesn't apply to it.
     const editingSingleOccurrence = !!occurrence?.isRecurringOccurrence && editScope === "occurrence";
 
-    dirtyRef.current = !!(values.title.trim() || values.location.trim() || values.attendees.length > 0 || values.guestDraft.trim() || hasDescriptionText(values.descriptionHtml));
+    dirtyRef.current = !!(values.title.trim() || values.location.trim() || values.attendees.length > 0 || values.guestDraft.trim() || values.guestInvalid.length > 0 || hasDescriptionText(values.descriptionHtml));
 
-    function addGuests(text: string): string[] {
-        const merged = mergeGuests(values.attendees, text);
-        update({ attendees: merged.attendees, guestDraft: merged.invalid.join(" ") });
-        return merged.invalid;
-    }
     function updateAttendee(index: number, patch: Partial<Attendee>) {
         setValues((prev) => ({ ...prev, attendees: prev.attendees.map((a, i) => (i === index ? { ...a, ...patch } : a)) }));
     }
@@ -466,8 +462,8 @@ export default function EventEditor({
             setError("A title is required.");
             return;
         }
-        // An address typed into the guests field but not added yet is added now - or, not being one, stops the save.
-        const merged = mergeGuests(values.attendees, values.guestDraft);
+        // An address typed into the guests field but not added yet is added now - or, not being one (nor what was already flagged there), stops the save.
+        const merged = mergeGuests(values.attendees, [...values.guestInvalid, values.guestDraft].join(", "), [effectiveOrganizerAddress]);
         if (merged.invalid.length > 0) {
             setError(`“${merged.invalid[0]}” isn’t a valid email address.`);
             return;
@@ -478,7 +474,7 @@ export default function EventEditor({
             return;
         }
         if (values.guestDraft) {
-            update({ attendees: merged.attendees, guestDraft: "" });
+            update({ attendees: merged.attendees, guestDraft: "", guestInvalid: [] });
         }
         let startDate: string;
         let endDate: string;
@@ -607,7 +603,6 @@ export default function EventEditor({
             values.timezone,
         ),
         editingSingleOccurrence,
-        addGuests,
         updateAttendee,
         removeAttendee,
         addResource,

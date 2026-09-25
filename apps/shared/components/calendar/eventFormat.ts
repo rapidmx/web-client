@@ -6,6 +6,7 @@ import { format } from "date-fns";
 import { Attendee, AttendeeResponseStatus, BusyStatus, EventVisibility, GuestPermissions } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import { fromEventWallClock, toEventWallClock } from "@rapidmx/react-shared/calendar/recurrence.js";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
+import { formatRecipient, isValidRecipientAddress, parseRecipient, splitRecipientList } from "../mail/compose/recipients.js";
 import { addDaysToKey, allDayDateKey } from "./allDay.js";
 
 /** What the event form and the read-only event view both need to say about a busy status / an answer. */
@@ -80,19 +81,53 @@ export function describeReminder(minutes: number | undefined): string {
     return `Notify ${amount} ${amount === 1 ? unit.singular : unit.unit} before`;
 }
 
-/** Splits what was typed into the guests field into its addresses: commas, semicolons and white space separate them. */
-export function splitGuestInput(text: string): string[] {
-    return text.split(/[,;\s]+/).filter(Boolean);
-}
-
-/** The loosest address check that is still worth making before an invitation is sent: something, an @, something. */
-export function isValidGuestAddress(address: string): boolean {
-    return /^[^\s@<>,;]+@[^\s@<>,;]+$/.test(address);
-}
-
 /** An attendee as the guests field adds one. */
-export function newGuest(address: string): Attendee {
-    return { address, role: "required", responseStatus: "needsAction", isOrganizer: false };
+export function newGuest(address: string, displayName?: string): Attendee {
+    return { address, ...(displayName ? { displayName } : {}), role: "required", responseStatus: "needsAction", isOrganizer: false };
+}
+
+/** A guest as the guests field shows it: `Name <address>`, or the bare address for one without a name (the form compose's recipient fields use). */
+export function guestChip(guest: { address: string; displayName?: string }): string {
+    return formatRecipient({ address: guest.address, displayName: guest.displayName });
+}
+
+/**
+ * The guests the guests field's chips name, given the guests `current`ly on the list: a chip for someone already there keeps that guest as
+ * they are (their role and answer, whatever the case of the address), a chip for a new address adds a required guest with the chip's name, and
+ * an address twice (or one of `skipAddresses` - the organizer's, or the people already invited) is added once. The chips are the field's whole
+ * list, so a guest without a chip is removed. What is not an address comes back as `invalid`, to stay in the field flagged; several addresses
+ * separated by white space in one chip ("a@x.com b@x.com", as a paste can be) are taken as several.
+ */
+export function applyGuestChips(current: Attendee[], chips: string[], skipAddresses: string[] = []): { attendees: Attendee[]; invalid: string[] } {
+    const skip = new Set(skipAddresses.map((address) => address.toLowerCase()));
+    const attendees: Attendee[] = [];
+    const invalid: string[] = [];
+    const known = (address: string) => current.find((guest) => guest.address.toLowerCase() === address.toLowerCase());
+    const listed = (address: string) => attendees.some((guest) => guest.address.toLowerCase() === address.toLowerCase());
+
+    function add(address: string, displayName?: string) {
+        const existing = known(address);
+        if (existing) {
+            if (!listed(address)) {
+                attendees.push(existing);
+            }
+        } else if (!skip.has(address.toLowerCase()) && !listed(address)) {
+            attendees.push(newGuest(address, displayName));
+        }
+    }
+
+    for (const chip of chips) {
+        const { address, displayName } = parseRecipient(chip);
+        const parts = chip.trim().split(/\s+/);
+        if (isValidRecipientAddress(address) || known(address)) {
+            add(address, displayName);
+        } else if (parts.length > 1 && parts.every(isValidRecipientAddress)) {
+            parts.forEach((part) => add(part));
+        } else if (!invalid.includes(chip.trim())) {
+            invalid.push(chip.trim());
+        }
+    }
+    return { attendees, invalid };
 }
 
 /** The wall-clock string a form input holds ("YYYY-MM-DDTHH:mm") read as `zone`'s clock, as an instant. `deviceZone` is the zone the browser
@@ -152,19 +187,11 @@ export function formatStoredWhen(startDate: string, endDate: string, allDay: boo
     return formatWhen(new Date(startDate), new Date(endDate), false, now);
 }
 
-/** Adds the addresses typed into the guests field to `current`: an address already on the list (in any case) is skipped, and what is not an
- * address comes back as `invalid` for the field to keep. */
-export function mergeGuests(current: Attendee[], text: string): { attendees: Attendee[]; invalid: string[] } {
-    const attendees = [...current];
-    const invalid: string[] = [];
-    for (const token of splitGuestInput(text)) {
-        if (!isValidGuestAddress(token)) {
-            invalid.push(token);
-        } else if (!attendees.some((a) => a.address.toLowerCase() === token.toLowerCase())) {
-            attendees.push(newGuest(token));
-        }
-    }
-    return { attendees, invalid };
+/** Adds the guests typed or pasted into the guests field to `current` - recipients separated by commas or semicolons, each an address or
+ * `Name <address>` (see `applyGuestChips()`, which keeps who is already there): an address already on the list (in any case) or in
+ * `skipAddresses` is skipped, and what is not an address comes back as `invalid` for the field to keep. */
+export function mergeGuests(current: Attendee[], text: string, skipAddresses: string[] = []): { attendees: Attendee[]; invalid: string[] } {
+    return applyGuestChips(current, [...current.map(guestChip), ...splitRecipientList(text)], skipAddresses);
 }
 
 /** `formatWhen()` for the form's own wall-clock strings (an all-day event's `end` is its inclusive last day); a message while either is empty. */

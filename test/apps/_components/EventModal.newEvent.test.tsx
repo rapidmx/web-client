@@ -199,7 +199,7 @@ describe("quick create", () => {
 
         await addGuest(user, "bob@example.com");
         fireEvent.mouseDown(screen.getByRole("dialog").parentElement!);
-        await user.click(screen.getByRole("button", { name: "Remove attendee 1" }));
+        await user.click(screen.getByRole("button", { name: "Remove bob@example.com" }));
 
         await user.type(screen.getByLabelText("Add guests"), "amy");
         fireEvent.mouseDown(screen.getByRole("dialog").parentElement!);
@@ -380,17 +380,21 @@ describe("guests", () => {
         expect(screen.getByLabelText("Add guests")).toHaveValue("");
     });
 
-    it("keeps what is not an address in the box with a note, and clears the note when it is edited", async () => {
+    it("keeps what is not an address as a flagged chip once it is committed, and says nothing while it is being typed", async () => {
         const user = userEvent.setup();
         renderNew();
-        await user.type(screen.getByLabelText("Add guests"), "bob@example.com nonsense{Enter}");
+        await user.type(screen.getByLabelText("Add guests"), "bob@example.com, nonsense");
 
+        // Still being typed: a guest and the text, and no complaint.
         expect(screen.getByText("bob@example.com")).toBeInTheDocument();
         expect(screen.getByLabelText("Add guests")).toHaveValue("nonsense");
-        expect(screen.getByRole("alert")).toHaveTextContent("“nonsense” isn’t a valid email address.");
-
-        await user.type(screen.getByLabelText("Add guests"), "x");
+        expect(screen.queryByText(/not a valid email address/)).not.toBeInTheDocument();
         expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+        await user.type(screen.getByLabelText("Add guests"), "{Enter}");
+        expect(screen.getByLabelText("Add guests")).toHaveValue("");
+        expect(screen.getByText("nonsense").closest("li")).toHaveTextContent("nonsense (not a valid email address)");
+        expect(screen.getByText("bob@example.com").closest("li")).not.toHaveTextContent("not a valid email address");
     });
 
     it("adds an address left in the box when the event is saved, and sends it as a required guest", async () => {
@@ -405,6 +409,21 @@ describe("guests", () => {
         expect(postedBody(fetchMock).attendees).toEqual([{ address: "bob@example.com", role: "required", responseStatus: "needsAction", isOrganizer: false }]);
     });
 
+    it("adds an address still in the box when the form is submitted without the box having lost focus", async () => {
+        const fetchMock = mockCreate();
+        const user = userEvent.setup();
+        const { onSaved } = renderNew();
+        await user.type(screen.getByLabelText("Title"), "Sync");
+        await user.type(screen.getByLabelText("Add guests"), "Bob <bob@example.com>");
+        expect(screen.getByLabelText("Add guests")).toHaveFocus();
+        fireEvent.submit(screen.getByLabelText("Title").closest("form")!);
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(postedBody(fetchMock).attendees).toEqual([
+            { address: "bob@example.com", displayName: "Bob", role: "required", responseStatus: "needsAction", isOrganizer: false },
+        ]);
+    });
+
     it("does not save while the box holds something that is not an address", async () => {
         const fetchMock = mockCreate();
         const user = userEvent.setup();
@@ -414,7 +433,25 @@ describe("guests", () => {
         await user.click(screen.getByRole("button", { name: "Save" }));
 
         expect(await screen.findByText("“bob” isn’t a valid email address.")).toBeInTheDocument();
-        expect(fetchMock).not.toHaveBeenCalled();
+        // Nothing was saved (the guests field itself may have asked for suggestions).
+        expect(fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toEqual([]);
+    });
+
+    it("does not save while a flagged chip is still in the field, and saves once it is removed", async () => {
+        const fetchMock = mockCreate();
+        const user = userEvent.setup();
+        const { onSaved } = renderNew();
+        await user.type(screen.getByLabelText("Title"), "Sync");
+        await user.type(screen.getByLabelText("Add guests"), "bob{Enter}");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("“bob” isn’t a valid email address.")).toBeInTheDocument();
+        expect(onSaved).not.toHaveBeenCalled();
+
+        await user.click(screen.getByRole("button", { name: "Remove bob" }));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(postedBody(fetchMock).attendees).toEqual([]);
     });
 
     it("removes a chip", async () => {
@@ -422,7 +459,7 @@ describe("guests", () => {
         renderNew();
         await addGuest(user, "bob@example.com");
         await addGuest(user, "amy@example.com");
-        await user.click(screen.getByRole("button", { name: "Remove attendee 1" }));
+        await user.click(screen.getByRole("button", { name: "Remove bob@example.com" }));
         expect(screen.queryByText("bob@example.com")).not.toBeInTheDocument();
         expect(screen.getByText("amy@example.com")).toBeInTheDocument();
     });
@@ -476,8 +513,11 @@ describe("More options", () => {
         expect(screen.getByLabelText("Title")).toHaveFocus();
         expect(screen.getByLabelText("Location")).toHaveValue("Lisbon");
         expect(screen.getByLabelText("Add video conferencing")).toBeChecked();
-        expect(screen.getByLabelText("Add guests")).toHaveValue("amy@example.com");
-        expect(screen.getByText(/bob@example.com/)).toBeInTheDocument();
+        // The address left in the box was committed when the box lost focus, so both guests are listed with their role and answer.
+        expect(screen.getByLabelText("Add guests")).toHaveValue("");
+        expect(screen.getByText(/^bob@example.com/)).toBeInTheDocument();
+        expect(screen.getByText(/^amy@example.com/)).toBeInTheDocument();
+        expect(screen.getByLabelText("Attendee role 2")).toBeInTheDocument();
         expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-12");
         expect(screen.getByLabelText("Event start time")).toHaveValue("13:00");
         expect(screen.queryByRole("button", { name: "More options" })).not.toBeInTheDocument();

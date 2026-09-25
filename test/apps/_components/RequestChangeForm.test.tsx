@@ -51,8 +51,13 @@ function mockRequest(status = 200, body: unknown = { requested: true, changes: [
     return mockFetch((url) => (url === "/api/mail/calendar-events/e%2F1/request-change" ? jsonResponse(status, body) : undefined));
 }
 
+/** The calls that sent the request (the guests field also asks for suggestions as names are typed). */
+function requestsSent(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/request-change"));
+}
+
 function sentBody(fetchMock: ReturnType<typeof vi.fn>) {
-    return JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    return JSON.parse((requestsSent(fetchMock)[0][1] as RequestInit).body as string);
 }
 
 async function descriptionEditor(container: HTMLElement): Promise<Editor> {
@@ -266,17 +271,41 @@ describe("RequestChangeForm sending", () => {
         const { onSent } = renderForm({ canChange: false });
 
         await user.type(screen.getByLabelText("Guests to add"), "not-an-address{Enter}");
-        expect(screen.getByRole("alert")).toHaveTextContent("“not-an-address” isn’t a valid email address.");
-        expect(screen.getByLabelText("Guests to add")).toHaveValue("not-an-address");
+        // Committed, it stays as a flagged chip; the error comes with the send.
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Guests to add")).toHaveValue("");
+        expect(screen.getByText("not-an-address").closest("li")).toHaveTextContent("not-an-address (not a valid email address)");
         send();
         expect(screen.getByRole("alert")).toHaveTextContent("“not-an-address” isn’t a valid email address.");
-        expect(fetchMock).not.toHaveBeenCalled();
+        expect(requestsSent(fetchMock)).toEqual([]);
 
-        await user.clear(screen.getByLabelText("Guests to add"));
+        await user.click(screen.getByRole("button", { name: "Remove not-an-address" }));
         await user.type(screen.getByLabelText("Guests to add"), "fay@example.com");
         send();
         await waitFor(() => expect(onSent).toHaveBeenCalled());
         expect(sentBody(fetchMock)).toEqual({ addAttendees: [{ address: "fay@example.com" }] });
+    });
+
+    it("suggests people by name as they are typed, and asks for the one picked to be added with their name and address", async () => {
+        const fetchMock = mockFetch((url) => {
+            if (url === "/api/mail/calendar-events/e%2F1/request-change") {
+                return jsonResponse(200, { requested: true, changes: ["addAttendees"], addAttendees: [] });
+            }
+            if (url.startsWith("/api/mail/directory/contacts")) {
+                return jsonResponse(200, []);
+            }
+            return url.startsWith("/api/mail/directory") ? jsonResponse(200, [{ displayName: "Support Desk", address: "support@example.com", kind: "shared" }]) : undefined;
+        });
+        const user = userEvent.setup();
+        const { onSent } = renderForm({ canChange: false });
+
+        await user.type(screen.getByLabelText("Guests to add"), "sup");
+        await user.click(await screen.findByRole("option", { name: /Support Desk/ }, { timeout: 5000 }));
+        expect(screen.getByText("Support Desk").closest("li")).toHaveAttribute("title", "Support Desk <support@example.com>");
+        send();
+
+        await waitFor(() => expect(onSent).toHaveBeenCalled());
+        expect(sentBody(fetchMock)).toEqual({ addAttendees: [{ address: "support@example.com", displayName: "Support Desk" }] });
     });
 
     it("sends a change alone when the organizer does not let guests invite others", async () => {
