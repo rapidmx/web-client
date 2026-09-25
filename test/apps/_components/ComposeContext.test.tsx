@@ -5,9 +5,15 @@
 import React from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import ComposeProvider, { ComposeLateInput, useCompose } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
+
+// The compose window is a chunk of its own, imported when the first window opens; the first render to need it transforms it on demand, which
+// takes seconds on a busy machine. It is brought in here, once, rather than inside whichever test happens to open the first window.
+beforeAll(async () => {
+    await import("../../../apps/shared/components/mail/compose/ComposeWindow.js");
+});
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -166,7 +172,9 @@ describe("ComposeProvider / useCompose", () => {
 
         await user.click(screen.getByRole("button", { name: "Open mb1" }));
         await user.click(screen.getByRole("button", { name: "Open mb2" }));
-        await screen.findAllByRole("dialog", { name: "New Message" });
+        // A window is a dialog (a placeholder one) while the compose window's code is still being imported: it is the editors that say both
+        // windows are really up, and only then is there an editor for minimizing to take away.
+        await waitFor(() => expect(screen.getAllByTestId("html-editor")).toHaveLength(2));
 
         const [minimizeFirst] = screen.getAllByRole("button", { name: "Minimize" });
         await user.click(minimizeFirst);
@@ -239,7 +247,7 @@ describe("ComposeProvider / useCompose", () => {
 
             // The newly-minimized session's chip, plus the earlier session now shown full-screen.
             expect(await screen.findAllByRole("dialog", { name: "New Message" })).toHaveLength(2);
-            expect(screen.getAllByTestId("html-editor")).toHaveLength(1);
+            await waitFor(() => expect(screen.getAllByTestId("html-editor")).toHaveLength(1));
         });
     });
 

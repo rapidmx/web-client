@@ -293,7 +293,8 @@ describe("ComposeToolbar", () => {
         renderToolbar({ editor });
 
         await user.click(screen.getByLabelText("Insert emoji"));
-        await user.click(screen.getByText("fake-emoji-close"));
+        // The picker is a lazy chunk: the first test in the file to open it waits for it, whichever that is.
+        await user.click(await screen.findByText("fake-emoji-close"));
 
         expect(screen.queryByText("fake-emoji-close")).not.toBeInTheDocument();
         expect(editor.calls).not.toContain(expect.stringContaining("insertContent"));
@@ -305,7 +306,7 @@ describe("ComposeToolbar", () => {
         renderToolbar({ editor });
 
         await user.click(screen.getByLabelText("Insert emoji"));
-        expect(screen.getByText("fake-emoji")).toBeInTheDocument();
+        expect(await screen.findByText("fake-emoji")).toBeInTheDocument();
         await user.click(screen.getByLabelText("Insert emoji"));
 
         expect(screen.queryByText("fake-emoji")).not.toBeInTheDocument();
@@ -353,7 +354,7 @@ describe("ComposeToolbar", () => {
         renderToolbar({ editor });
 
         await user.click(screen.getByLabelText("Insert emoji"));
-        expect(screen.getByText("fake-emoji")).toBeInTheDocument();
+        expect(await screen.findByText("fake-emoji")).toBeInTheDocument();
 
         await user.click(screen.getByLabelText("Insert GIF"));
 

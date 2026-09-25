@@ -75,7 +75,15 @@ export default function AppearanceForm() {
 
     // The kind the radio shows: chosen before it can take effect ("Image" is chosen before there is one).
     const [kind, setKind] = useState<BackgroundKind>(background?.kind ?? "none");
-    useEffect(() => setKind(background?.kind ?? "none"), [background?.kind]);
+    // Follows a change of the stored kind (the server's answer, another tab, a reset) - not the first render, which `useState()` above
+    // already started from: that effect can run after a choice made right after the page appeared, and would put the old kind back.
+    const shownKind = useRef(background?.kind);
+    useEffect(() => {
+        if (shownKind.current !== background?.kind) {
+            shownKind.current = background?.kind;
+            setKind(background?.kind ?? "none");
+        }
+    }, [background?.kind]);
     const [fileError, setFileError] = useState<string | null>(null);
     const [dragging, setDragging] = useState(false);
     const [uploading, setUploading] = useState<string | null>(null);

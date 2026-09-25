@@ -351,14 +351,19 @@ describe("AppShell", () => {
         location.href = "https://mail.example.com/";
         vi.useFakeTimers({ shouldAdvanceTime: true });
         try {
+            // Only the logout call hangs. The shell also makes its own background requests (none of which carries a
+            // signal), and they land whenever the machine gets to them - so what is captured here must be the
+            // logout's signal specifically, not whichever request happened to be the latest.
             let signal: AbortSignal | undefined;
-            mockFetch(
-                (_url, init) =>
-                    new Promise<Response>((_resolve, reject) => {
-                        signal = init.signal as AbortSignal;
-                        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-                    }),
-            );
+            mockFetch((url, init) => {
+                if (url !== `${AUTH_SERVER_URL}/api/auth/logout`) {
+                    return jsonResponse(404, {});
+                }
+                return new Promise<Response>((_resolve, reject) => {
+                    signal = init.signal as AbortSignal;
+                    signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+                });
+            });
             const user2 = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
             render(
                 <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
@@ -367,6 +372,8 @@ describe("AppShell", () => {
             );
             await user2.click(screen.getByRole("button", { name: "Account menu" }));
             await user2.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+            // The logout is on the wire (and its own timeout armed alongside it) before time is moved.
+            await waitFor(() => expect(signal).toBeDefined());
             expect(location.href).toBe("https://mail.example.com/");
             await vi.advanceTimersByTimeAsync(LOGOUT_TIMEOUT_MS);
             await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));

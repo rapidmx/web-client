@@ -5,7 +5,7 @@
 import React from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MessageDetailPageRouted from "../../../apps/www/messages/[uid].js";
 
@@ -79,6 +79,22 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+// The reading pane and the thread pane are chunks of their own, imported when the first message is shown: the first render in a file to need
+// them transforms them on demand, which takes seconds on a busy machine. They are brought in here, once, rather than inside whichever test
+// happens to be first.
+beforeAll(async () => {
+    await import("../../../apps/shared/components/mail/MessageDetailPane.js");
+    await import("../../../apps/shared/components/mail/ConversationThreadPane.js");
+});
+
+/**
+ * Resolves once the reading pane itself is on screen. Not once the page shows the message's subject: while the pane's code is still being
+ * imported (the first render in a file transforms it on demand, which takes seconds on a busy machine) `LazyReadingPane` already draws the
+ * subject in a placeholder header, so a heading named after the subject says nothing about the controls the pane adds afterwards, and a
+ * test that acts on - or asserts the absence of - one of them would race the import.
+ */
+const paneLoaded = () => screen.findByRole("link", { name: /Back to messages/ });
+
 describe("MessageDetailPage", () => {
     it("shows a loading state before the message resolves", async () => {
         let resolveMessage: (() => void) | undefined;
@@ -127,7 +143,7 @@ describe("MessageDetailPage", () => {
             return undefined;
         });
         render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
-        await screen.findByRole("heading", { name: "Hello there" });
+        await paneLoaded();
 
         await user.click(await screen.findByRole("button", { name: "Labels" }));
         await user.click(screen.getByRole("menuitem", { name: "New label…" }));
@@ -167,10 +183,7 @@ describe("MessageDetailPage", () => {
         render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
 
         expect(await screen.findByRole("heading", { name: "Hello there" })).toBeInTheDocument();
-        expect(screen.getByRole("link", { name: /Back to messages/ })).toHaveAttribute(
-            "href",
-            "/?mailboxUid=mb1&folderUid=f1",
-        );
+        expect(await paneLoaded()).toHaveAttribute("href", "/?mailboxUid=mb1&folderUid=f1");
     });
 
     describe("opened from a conversation (?conversation=)", () => {
@@ -342,7 +355,7 @@ describe("MessageDetailPage", () => {
             mockShell((url) => (url === "/api/mail/messages/m1" ? jsonResponse(200, message) : undefined));
             render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
 
-            await screen.findByRole("heading", { name: "Hello there" });
+            await paneLoaded();
             expect(screen.queryByRole("button", { name: "Recall this message" })).not.toBeInTheDocument();
         });
 
@@ -375,7 +388,7 @@ describe("MessageDetailPage", () => {
             mockShell((url) => (url === "/api/mail/messages/m1" ? jsonResponse(200, message) : undefined));
             render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
 
-            await screen.findByRole("heading", { name: "Hello there" });
+            await paneLoaded();
             expect(screen.queryByText(/Scheduled for/)).not.toBeInTheDocument();
         });
 

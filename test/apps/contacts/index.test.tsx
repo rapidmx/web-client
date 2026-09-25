@@ -1349,6 +1349,13 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         });
         render(<ContactsPage userUid="u1" />);
         await screen.findByText("Select a contact, or create a new one.");
+        // The page asks for the mailbox's contact lists and folders only once the mailbox has answered, so the empty state can be
+        // showing before those two requests are even made. Counting from a snapshot taken then would count them as the upload's.
+        await waitFor(() => {
+            const urls = fetchMock.mock.calls.map(([url]) => String(url));
+            expect(urls.some((url) => url.startsWith("/api/mail/folders"))).toBe(true);
+            expect(urls.some((url) => url.startsWith("/api/mail/contact-lists"))).toBe(true);
+        });
 
         const callsBefore = fetchMock.mock.calls.length;
         const file = new File(["BEGIN:VCARD\r\nFN:Nobody\r\nEND:VCARD"], "contacts.vcf", { type: "text/vcard" });

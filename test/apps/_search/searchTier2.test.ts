@@ -8,7 +8,7 @@
 // environment here implements OPFS - so it's covered instead by localIndexBlockCipher.test.ts (the
 // crypto, with real WebCrypto) and by manual browser verification, per this feature's own
 // implementation plan.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { searchLocalIndex } from "../../../apps/shared/search/searchTier2.js";
@@ -28,6 +28,13 @@ function parsedQuery(overrides: Partial<ParsedSearchQuery> = {}): ParsedSearchQu
 }
 
 const unlocked = { masterKey: new Uint8Array(32) } as UnlockedKeys;
+
+// `clearMocks` only forgets calls: the `mockRejectedValue()` a test gave `initLocalIndex` would otherwise still be there for whichever test runs next.
+beforeEach(() => {
+    for (const mock of [initLocalIndex, searchLocal, getLocalCoverage, deriveLocalIndexKey]) {
+        mock.mockReset();
+    }
+});
 
 describe("searchTier2 (local index)", () => {
     it("returns no results and no coverage without unlocked keys, without touching the RPC client at all", async () => {

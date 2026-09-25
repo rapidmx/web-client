@@ -3952,6 +3952,9 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 fireEvent.change(screen.getByLabelText("To"), { target: { value: "bob@example.com" } });
                 fireEvent.click(screen.getByRole("button", { name: "Send" }));
                 await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+                // The window closes as soon as the send is queued; the message is built after that, in the background - and only once the
+                // S/MIME code (a chunk of its own) has been imported.
+                await waitFor(() => expect(buildSignedOnlyMessage).toHaveBeenCalled());
                 expect(buildSignedOnlyMessage).toHaveBeenCalledWith(
                     expect.anything(),
                     expect.anything(),

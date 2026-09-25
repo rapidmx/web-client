@@ -182,8 +182,11 @@ describe("prepareBodyHtml", () => {
         expect(prepared.html).toBe("");
     });
 
-    it("survives markup nested thousands deep", () => {
-        const depth = 3000;
+    it("survives markup nested a thousand deep", () => {
+        // Deeper than a browser's own parser allows (it stops nesting at 512), so nothing here is left to recurse over. Not deeper still: jsdom
+        // serializes `innerHTML` recursively, and runs out of stack somewhere around 2500 levels - less when the test is called from a deeper stack -
+        // which made 3000 pass or fail with what else was running.
+        const depth = 1000;
         const prepared = prepareBodyHtml("<div>".repeat(depth) + "deep" + "</div>".repeat(depth));
         expect(prepared.status).toBe("ok");
         expect(prepared.html).toContain("deep");

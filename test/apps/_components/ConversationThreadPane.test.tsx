@@ -199,6 +199,9 @@ afterEach(() => {
     paneOptions.omitHeaderButton = false;
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    // jsdom keeps one document for the whole file: the page scrolled by the test that checks the page is the fallback would otherwise be
+    // where the tests that check it is left alone start, and they pass or fail on the order the tests run in.
+    document.documentElement.scrollTop = 0;
 });
 
 describe("ConversationThreadPane", () => {

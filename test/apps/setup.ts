@@ -8,7 +8,13 @@
 import "@testing-library/jest-dom/vitest";
 
 if (typeof document !== "undefined") {
-    const { cleanup } = await import("@testing-library/react");
+    const { cleanup, configure } = await import("@testing-library/react");
+    // How long a `findBy*()` / `waitFor()` keeps looking before it gives up (one second by default). It returns the moment
+    // what it waits for is there, so this only matters when something is slow: the first render of a page imports its
+    // heaviest code (the reading pane, the compose window) and transforms it on demand, which takes seconds on a busy CI
+    // runner (measured here: over five seconds with the machine kept busy). Waiting for a condition that never comes still fails - just
+    // after this, not after one second.
+    configure({ asyncUtilTimeout: 10_000 });
     const { resetPushClient } = await import("@rapidmx/react-shared/mail/pushClient.js");
     const { clearListSnapshots } = await import("../../apps/shared/mail/listSnapshots.js");
     const { clearOriginalMessageCache } = await import("../../apps/shared/components/mail/compose/quotedBody.js");
@@ -16,13 +22,25 @@ if (typeof document !== "undefined") {
     const { resetPendingSends } = await import("../../apps/shared/mail/outbox/pendingSends.js");
     const { resetSendJobs } = await import("../../apps/shared/mail/outbox/sendState.js");
     const { setApiUnauthorizedObserver } = await import("@rapidmx/react-shared/util/api.js");
+    // `window.location` (a stub, so `location.href = ...` can be asserted on) and the window's size are replaced by tests with
+    // `Object.defineProperty()`, which nothing undoes: jsdom keeps one window for the whole file, so a test that ran after one of
+    // those would read a stub's (empty) `search` where it set `?folderUid=` - and pass or fail on the order the tests ran in.
+    const windowDefaults = (["location", "innerWidth", "innerHeight"] as const).map((name) => [name, Object.getOwnPropertyDescriptor(window, name)] as const);
+    const initialUrl = window.location.href;
     afterEach(async () => {
         cleanup();
+        for (const [name, descriptor] of windowDefaults) {
+            if (descriptor) {
+                Object.defineProperty(window, name, descriptor);
+            }
+        }
+        // Where a test navigated to (`history.pushState()`) is not where the next one starts.
+        window.history.replaceState(null, "", initialUrl);
         // The notification stack, its history, the messages being sent and what was kept of them are module-level too: a pop-up (or a send)
         // one test raised must not be on screen - or block a same-uid send - in the next.
         resetNotifications();
         resetPendingSends();
-        resetSendJobs();
+        resetSendJobs();
         setApiUnauthorizedObserver(undefined);
         // A signing-certificate enrollment being followed (a pending one is kept after its page has gone) must not poll into the next test. Imported here,
         // not above: a module loaded by this setup file would be loaded before a test file's `vi.mock()` of `keyvaultApi` and keep the real one.

@@ -558,6 +558,10 @@ describe("InboxPage", () => {
             render(<InboxPage userUid="u1" />);
             await screen.findByText("Hello there");
             expect(screen.getByTestId("detail-pane")).toHaveTextContent("folders:Inbox/Sent Items");
+            // The folder in the address is read in an effect, after the first render: until then the shell is on the Inbox (and every
+            // list this mock serves shows the same message), so the folder being Sent Items - not the message being listed - is what says the
+            // tabs have been taken away.
+            await waitFor(() => expect(screen.getByRole("link", { name: /^Sent Items/ })).toHaveClass("bg-primary/10"));
             expect(screen.queryByRole("button", { name: "Focused" })).not.toBeInTheDocument();
         });
 

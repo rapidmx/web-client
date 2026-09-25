@@ -25,6 +25,12 @@ export default defineConfig({
         env: { TZ: "UTC" },
         fileParallelism: false,
         pool: "forks",
+        // The defaults (5 s a test, 10 s a hook) are sized for a fast developer machine. A test renders whole pages
+        // - 500-row lists, pages that import their heaviest chunk on first use - and a CI runner is several times
+        // slower than that, so a test that takes 1.5 s here can take more than 5 s there. A test that is stuck
+        // still fails, only later; a fast one is unaffected.
+        testTimeout: 30_000,
+        hookTimeout: 30_000,
         clearMocks: true,
         coverage: {
             enabled: true,
