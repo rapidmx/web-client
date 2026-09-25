@@ -9,6 +9,7 @@ import { loadOriginalMessage } from "../../components/mail/compose/quotedBody.js
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import { dismiss, notify } from "../../notifications/store.js";
 import { beginPendingSend, finishPendingSend, setPendingStage } from "./pendingSends.js";
+import { failOutgoing, forgetOutgoing, markOutgoingSending, markOutgoingSent } from "./outgoingReplies.js";
 import { openComposeFromOutside } from "./composeBridge.js";
 import { describeMessage, forgetRetainedRequest, notifySent, openDraftFromRequest, retainedRequest } from "./sendJob.js";
 
@@ -45,6 +46,8 @@ function escapeHtml(text: string): string {
 async function openFailedDraft(event: SendEvent): Promise<void> {
     try {
         const moved = await moveBackToDrafts(event.uid, event.mailboxUid ?? "");
+        // Back in Drafts it is no longer a message on its way in its conversation.
+        forgetOutgoing(event.uid);
         const request = retainedRequest(event.uid);
         if (request) {
             openDraftFromRequest({ ...request, draft: moved });
@@ -90,6 +93,7 @@ async function retryFailed(event: SendEvent): Promise<void> {
         return;
     }
     dismiss(failedId(event.uid));
+    markOutgoingSending(event.uid);
     try {
         setPendingStage(event.uid, "queuing");
         const result = await queueMessageSend(event.uid);
@@ -108,6 +112,8 @@ export function handleSendEvent(event: SendEvent): void {
     if (event.action === "send-succeeded") {
         dismiss(retryId(event.uid));
         dismiss(failedId(event.uid));
+        // The conversation on screen swaps the message it drew for the Sent Items copy (a message this tab did not send has nothing drawn).
+        markOutgoingSent(event.uid);
         // The server reports every message it relays, scheduled ones from long ago included: only a message this tab queued in the background is
         // worth a confirmation (several are one pop-up counting up). Anything else - a send-later message going out, another tab's send - is quiet.
         if (retainedRequest(event.uid)) {
@@ -132,15 +138,18 @@ export function handleSendEvent(event: SendEvent): void {
         return;
     }
     dismiss(retryId(event.uid));
+    const actions = [
+        { label: "Retry", onClick: () => void retryFailed(event) },
+        { label: "Open draft", onClick: () => void openFailedDraft(event) },
+    ];
     notify({
         id: failedId(event.uid),
         kind: "error",
         title: "This message wasn't sent",
         message: `${what}: ${failure.message}`,
         details: failure.lines,
-        actions: [
-            { label: "Retry", onClick: () => void retryFailed(event) },
-            { label: "Open draft", onClick: () => void openFailedDraft(event) },
-        ],
+        actions,
     });
+    // The conversation on screen shows the same failure under the message, with the same ways out.
+    failOutgoing(event.uid, failure.message, actions);
 }

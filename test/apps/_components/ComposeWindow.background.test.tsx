@@ -13,6 +13,7 @@ import ComposeWindow from "../../../apps/shared/components/mail/compose/ComposeW
 import ComposeProvider, { ComposeSession } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
 import { openComposeFromOutside } from "../../../apps/shared/mail/outbox/composeBridge.js";
 import { beginPendingSend, isSendPending } from "../../../apps/shared/mail/outbox/pendingSends.js";
+import { getOutgoingReplies } from "../../../apps/shared/mail/outbox/outgoingReplies.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import { clearMailboxWritabilityCache } from "../../../apps/shared/components/mail/writableMailboxes.js";
 import { ShortcutProvider } from "../../../apps/shared/keyboard/ShortcutProvider.js";
@@ -386,5 +387,39 @@ describe("a window re-opened around a message that was already composed", () => 
         });
         expect(await screen.findByLabelText("Encrypt this message")).toBeChecked();
         expect(screen.queryByLabelText("Cc")).not.toBeInTheDocument();
+    });
+});
+
+describe("Send of a reply shows the message in its conversation", () => {
+    it("hands the thread the window was opened with on, so the open conversation draws the message at once", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        mockServer();
+        const { onClose } = await renderReady({ initialTo: "b@example.com", initialSubject: "Re: Hello", threading: { inReplyTo: "orig@example.com", references: ["root@example.com", "orig@example.com"] } });
+
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+        await waitFor(() => expect(onClose).toHaveBeenCalled());
+        expect(getOutgoingReplies()).toEqual([
+            expect.objectContaining({
+                uid: "m1",
+                mailboxUid: "mb1",
+                inReplyTo: "orig@example.com",
+                references: ["root@example.com", "orig@example.com"],
+                subject: "Re: Hello",
+                sender: { address: "u1@example.com", displayName: "User" },
+                to: [expect.objectContaining({ address: "b@example.com" })],
+            }),
+        ]);
+    });
+
+    it("leaves a new message out of every conversation", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        mockServer();
+        const { onClose } = await renderReady({ initialTo: "b@example.com" });
+
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+        await waitFor(() => expect(onClose).toHaveBeenCalled());
+        expect(getOutgoingReplies()).toEqual([]);
     });
 });

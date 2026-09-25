@@ -6,6 +6,7 @@ import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     Attachment,
     ComposeRecipientInput,
+    DraftThreading,
     Mailbox,
     Message,
     assembleDraft,
@@ -26,6 +27,7 @@ import { policyCanAutoEncrypt } from "../../components/mail/compose/encryptionRe
 import { NotificationAction, dismiss, notify } from "../../notifications/store.js";
 import { INLINE_IMAGE_PATTERN, SendBlock, SendDecisionInput, decideSend } from "./sendDecision.js";
 import { beginPendingSend, finishPendingSend, setPendingStage } from "./pendingSends.js";
+import { failOutgoing, forgetOutgoing, markOutgoingSending, markOutgoingSent, trackOutgoing } from "./outgoingReplies.js";
 import { openComposeFromOutside, requestUnlockFromOutside } from "./composeBridge.js";
 import { OutboxCountTracker, sendState } from "./sendState.js";
 
@@ -60,6 +62,10 @@ export interface SendRequest {
     forcePlaintext: boolean;
     /** Settles when the window's own autosaves have landed, so none can overwrite the assembly below. */
     saved?: Promise<unknown>;
+    /** The thread this message continues (a reply or forward), as the compose session was opened with it - what lets the conversation on screen
+     * show the message as soon as it is sent (see `outgoingReplies.ts`). Absent for a new message, and for a draft opened again, which the draft's own
+     * `inReplyTo`/`references` stand in for. */
+    threading?: DraftThreading;
 }
 
 /** How long a background send waits for the mailbox / encryption policy it did not have, before it goes ahead treating them as unknown. Nobody waits for it. */
@@ -311,7 +317,7 @@ export function describeMessage(subject: string, recipients: string): string {
 
 /** Re-opens the compose window around a request's message, with everything as it was typed. */
 export function openDraftFromRequest(request: SendRequest): boolean {
-    return openComposeFromOutside({
+    const opened = openComposeFromOutside({
         mailboxUid: request.mailboxUid,
         resume: {
             draft: request.draft,
@@ -327,6 +333,11 @@ export function openDraftFromRequest(request: SendRequest): boolean {
             encryptRequested: request.encryptRequested,
         },
     });
+    // Being edited again, it is no longer a message on its way in the conversation.
+    if (opened) {
+        forgetOutgoing(request.draft.uid);
+    }
+    return opened;
 }
 
 function failureNotificationId(draftUid: string): string {
@@ -363,6 +374,8 @@ function notifyFailure(request: SendRequest, failure: Failure): void {
         details: failure.details,
         actions,
     });
+    // The conversation on screen shows the same failure under the message, with the same ways out.
+    failOutgoing(uid, failure.message, actions);
 }
 
 const SENT_BURST_MS = 6_000;
@@ -389,6 +402,8 @@ export function startSend(request: SendRequest): boolean {
     }
     // The failure of an earlier attempt is resolved by trying again.
     dismiss(failureNotificationId(uid));
+    // A reply or forward is on screen in its conversation from this moment, before any of the work below.
+    trackOutgoing(request);
     const tracker = sendState.countTracker?.(request.mailboxUid);
     void attempt(request).then((outcome) => {
         finishPendingSend(uid);
@@ -402,6 +417,8 @@ export function startSend(request: SendRequest): boolean {
             retain(request);
             sendState.queuedListener?.(request.mailboxUid);
         } else if (outcome.kind === "sent") {
+            // A server with no queue relayed it before answering: the Sent Items copy exists already.
+            markOutgoingSent(uid);
             notifySent();
         } else {
             notify({
@@ -420,6 +437,7 @@ export function startSend(request: SendRequest): boolean {
 export async function retrySend(request: SendRequest): Promise<void> {
     if (await alreadyAccepted(request)) {
         dismiss(failureNotificationId(request.draft.uid));
+        markOutgoingSending(request.draft.uid);
         notify({ id: `already-sent:${request.draft.uid}`, kind: "info", title: "This message is already on its way", timeoutMs: 5_000 });
         return;
     }

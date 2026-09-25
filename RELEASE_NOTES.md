@@ -4,6 +4,8 @@
 
 ### Fixes
 
+- **A reply or forward sent from an open conversation now shows in it at once.** It appears at the top of the conversation as "Sending…", is replaced by the real Sent Items message when the server has filed it, and shows "Not sent" with Retry and Open draft when it fails. A new message arriving in the open conversation from another tab, another device or a recipient is added to it as it arrives, without losing which messages you had expanded or removed.
+
 - **On a phone, the menu behind the hamburger button fills the screen.** The folders drawer in Mail, the calendars drawer, the Contacts, Tasks and Settings drawers and the admin console's menu were a narrow strip beside a dimmed sliver of the page; they now cover the whole window. Needs `@rapidmx/react-shared` 0.18.0 or later.
 
 - **The compose From picker's unselected options are readable on the dark theme.** The browser drew the pop-up list white behind the page's light text; every native drop-down's options now take the theme's own colours.

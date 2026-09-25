@@ -821,6 +821,7 @@ export default function ComposeWindow({
                 encryptRequested: current.encryptRequested,
                 forcePlaintext,
                 saved: saveInFlightRef.current,
+                threading: session.threading,
             };
             if (request.to.length === 0) {
                 setSendError("At least one recipient is required.");

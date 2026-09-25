@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Attachment, Folder, Message, listAttachments } from "@rapidmx/react-shared/mail/mailApi.js";
 import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
@@ -11,8 +12,10 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import MessageDetailPane from "./MessageDetailPane.js";
 import { EncryptedPreview, displaySubject } from "./reading/EncryptedPreview.js";
 import { CollapsedCard, SkeletonCards, SubjectCard } from "./reading/MessageCard.js";
+import PendingMessageCard from "./reading/PendingMessageCard.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { setReadState } from "../../mail/messageReadState.js";
+import { adoptedOutgoing, belongsToThread, settleOutgoing, useOutgoingReplies } from "../../mail/outbox/outgoingReplies.js";
 import { dateClass, isUnread, senderClass } from "./unreadStyle.js";
 
 /** One request's worth of the thread. The server's own default for `listConversationMessages()`. */
@@ -121,6 +124,21 @@ async function loadThread(mailboxUid: string, conversationId: string): Promise<{
     return { messages, truncated: more };
 }
 
+/**
+ * `next` - the thread as it was just read again - for the pane to show in place of `previous`. A message the pane holds a newer copy of (one that
+ * was read, flagged or labelled here a moment ago, whose change the read may have started before) keeps that copy, and a read that changed
+ * nothing gives back `previous` itself, so the pane is not drawn again.
+ */
+function mergeThread(previous: Message[], next: Message[]): Message[] {
+    const held = new Map(previous.map((message) => [message.uid, message]));
+    const merged = next.map((message) => {
+        const own = held.get(message.uid);
+        return own && own.version > message.version ? own : message;
+    });
+    const unchanged = merged.length === previous.length && merged.every((message, index) => message.uid === previous[index].uid && message.version === previous[index].version);
+    return unchanged ? previous : merged;
+}
+
 /** Whether the browser is showing a focus ring on `element` - it was focused from the keyboard (or by a key press's handler), not by a click. */
 function hasFocusRing(element: HTMLElement): boolean {
     try {
@@ -160,7 +178,9 @@ export default function ConversationThreadPane({
     onFolderCreated,
     shortcuts,
 }: ConversationThreadPaneProps) {
-    const { trackMessageChange } = useMailShell();
+    const { trackMessageChange, live } = useMailShell();
+    // The replies and forwards this tab has sent, drawn at the top of the thread they continue until the server's own copy is in it.
+    const outgoing = useOutgoingReplies();
     const [messages, setMessages] = useState<Message[]>([]);
     const [attachmentsByUid, setAttachmentsByUid] = useState<Record<string, Attachment[]>>({});
     const [expandedUids, setExpandedUids] = useState<Set<string>>(new Set());
@@ -183,13 +203,19 @@ export default function ConversationThreadPane({
      * expansion run below must sit that render out rather than anchor on a message from another thread. */
     const loadedIdRef = useRef<string | null>(null);
     const rowRefs = useRef<Record<string, HTMLLIElement | null>>({});
-    const headerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+    const headerRefs = useRef<Record<string, HTMLElement | null>>({});
     /** Where the toggled message's header sat in the viewport before it expanded, so the run below can put
      * it back there - expanding a message above the one being read must not shove that one off-screen. */
     const anchorRef = useRef<{ uid: string; top: number } | null>(null);
     /** The message whose header button had the focus when it was toggled: expanding or collapsing swaps that button for the other state's, so the
      * focus is put back on the new one. */
     const refocusRef = useRef<string | null>(null);
+    /** The pending cards that have already been scrolled to, so that only a message that has just been sent takes the view and the focus. */
+    const announcedRef = useRef<Set<string>>(new Set());
+    /** Messages that left the thread here (archived, moved, a scheduled send taken back): a read of the thread again still lists them, since a conversation spans folders. */
+    const removedRef = useRef<Set<string>>(new Set());
+    /** The last live update this pane has answered - one already in the shell's hands when the pane opened is not news. */
+    const seenLiveRef = useRef(live);
 
     const conversationId = conversation?.conversationId;
 
@@ -197,6 +223,8 @@ export default function ConversationThreadPane({
         const generation = ++generationRef.current;
         markReadRequestedRef.current = new Set();
         attachmentsRequestedRef.current = new Set();
+        announcedRef.current = new Set();
+        removedRef.current = new Set();
         appliedSelectionRef.current = null;
         loadedIdRef.current = null;
         setMessages([]);
@@ -216,6 +244,8 @@ export default function ConversationThreadPane({
             .then((loaded) => {
                 if (generation !== generationRef.current) return;
                 loadedIdRef.current = conversationId;
+                // A message sent from here whose Sent Items copy is already in the thread is drawn as that copy, not as a pending card.
+                settleOutgoing(mailboxUid, loaded.messages);
                 setMessages(loaded.messages);
                 setTruncated(loaded.truncated);
             })
@@ -338,6 +368,80 @@ export default function ConversationThreadPane({
         }
     }, [expandedUids, messages]);
 
+    /**
+     * Reads the thread again, quietly: what is on screen stays until the answer is here (a read that fails changes nothing), a message that arrived
+     * is added at the top, and the reader's expanded and collapsed cards are left as they are. A message this tab sent - which the server has
+     * now filed in Sent Items under the same `uid` - takes the place of its pending card, expanded as that card was, with the focus if the
+     * card had it. A thread that has not finished its first load is not read again: that load is the fresh read.
+     */
+    function refreshThread() {
+        const id = loadedIdRef.current;
+        if (!id) {
+            return;
+        }
+        const generation = generationRef.current;
+        loadThread(mailboxUid, id).then(
+            (loaded) => {
+                if (generation !== generationRef.current) return;
+                const current = loaded.messages.filter((message) => !removedRef.current.has(message.uid));
+                const adopted = adoptedOutgoing(mailboxUid, current);
+                const refocus = adopted.find((uid) => document.activeElement === headerRefs.current[uid]);
+                // Drawn first, and only then is the pending card forgotten: there is never a frame with neither it nor the real message.
+                flushSync(() => {
+                    setMessages((previous) => mergeThread(previous, current));
+                    setTruncated(loaded.truncated);
+                    if (adopted.length > 0) {
+                        setExpandedUids((previous) => new Set([...previous, ...adopted]));
+                    }
+                    if (refocus) {
+                        setPendingFocusUid(refocus);
+                    }
+                });
+                settleOutgoing(mailboxUid, current);
+            },
+            // Quietly: the next live update reads it again, and what is shown is still right.
+            () => undefined,
+        );
+    }
+
+    // Another message of this conversation may have arrived - a recipient's reply, one sent from another tab or device, or this tab's own reply
+    // filed in Sent Items - whenever the shell announces a live update that touched one of this mailbox's folders (or does not say which).
+    useEffect(() => {
+        if (live === seenLiveRef.current) return;
+        seenLiveRef.current = live;
+        if (live.folderUids === null || folders.some((folder) => live.folderUids!.has(folder.uid))) {
+            refreshThread();
+        }
+    }, [live]);
+
+    // The server has relayed a message this tab sent: its Sent Items copy is read for at once, without waiting for the live update that follows.
+    const sentKey = outgoing
+        .filter((reply) => reply.state === "sent" && reply.mailboxUid === mailboxUid)
+        .map((reply) => reply.uid)
+        .join(",");
+    useEffect(() => {
+        if (sentKey) {
+            refreshThread();
+        }
+    }, [sentKey]);
+
+    // The messages sent from here that continue this thread and whose real copy it does not hold yet, newest first (the pane's order). A message
+    // that replies to nothing here - a new message, or a reply to another conversation - is not in this list, and never is.
+    const pendingCards = outgoing
+        .filter((reply) => reply.mailboxUid === mailboxUid && !messages.some((message) => message.uid === reply.uid) && belongsToThread(reply, messages))
+        .reverse();
+    // A message that has just been sent is scrolled into view and takes the focus - the compose window it was sent from has just closed, and the focus
+    // with it - once. A failed one, or one that was already there when the thread was opened, is left where it is.
+    const pendingKey = pendingCards.map((reply) => reply.uid).join(",");
+    useEffect(() => {
+        const fresh = pendingCards.filter((reply) => reply.state === "sending" && !announcedRef.current.has(reply.uid));
+        if (fresh.length === 0) return;
+        for (const reply of fresh) {
+            announcedRef.current.add(reply.uid);
+        }
+        setPendingFocusUid(fresh[0].uid);
+    }, [pendingKey]);
+
     /** A newer copy of one of the thread's messages, kept here and handed to the list - with the copy it
      * replaces where the caller was given one, so a conversation row can tell what actually changed. */
     function patchMessage(updated: Message, previous?: Message) {
@@ -347,6 +451,7 @@ export default function ConversationThreadPane({
 
     /** A message that left the folder being listed - it leaves the thread too, as it left the list. */
     function removeMessage(updated: Message) {
+        removedRef.current.add(updated.uid);
         setMessages((prev) => prev.filter((message) => message.uid !== updated.uid));
         onMessageRemoved(updated);
     }
@@ -399,7 +504,7 @@ export default function ConversationThreadPane({
                             : undefined
                         : error
                           ? undefined
-                          : `${messages.length} message${messages.length === 1 ? "" : "s"}`
+                          : `${messages.length + pendingCards.length} message${messages.length + pendingCards.length === 1 ? "" : "s"}`
                 }
             >
                 {truncated && !loading && !error && (
@@ -417,6 +522,22 @@ export default function ConversationThreadPane({
                 </div>
             ) : (
             <ul className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3 flex flex-col gap-3">
+                {pendingCards.map((reply) => (
+                    <li
+                        key={reply.uid}
+                        ref={(node) => {
+                            rowRefs.current[reply.uid] = node;
+                        }}
+                        data-outgoing="true"
+                    >
+                        <PendingMessageCard
+                            reply={reply}
+                            headerRef={(node) => {
+                                headerRefs.current[reply.uid] = node;
+                            }}
+                        />
+                    </li>
+                ))}
                 {messages.map((message) => {
                     const uid = message.uid;
                     const expanded = expandedUids.has(uid);

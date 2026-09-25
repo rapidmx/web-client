@@ -21,6 +21,7 @@ if (typeof document !== "undefined") {
     const { resetNotifications } = await import("../../apps/shared/notifications/store.js");
     const { resetPendingSends } = await import("../../apps/shared/mail/outbox/pendingSends.js");
     const { resetSendJobs } = await import("../../apps/shared/mail/outbox/sendState.js");
+    const { resetOutgoingReplies } = await import("../../apps/shared/mail/outbox/outgoingReplies.js");
     const { setApiUnauthorizedObserver } = await import("@rapidmx/react-shared/util/api.js");
     // `window.location` (a stub, so `location.href = ...` can be asserted on) and the window's size are replaced by tests with
     // `Object.defineProperty()`, which nothing undoes: jsdom keeps one window for the whole file, so a test that ran after one of
@@ -41,6 +42,7 @@ if (typeof document !== "undefined") {
         resetNotifications();
         resetPendingSends();
         resetSendJobs();
+        resetOutgoingReplies();
         setApiUnauthorizedObserver(undefined);
         // A signing-certificate enrollment being followed (a pending one is kept after its page has gone) must not poll into the next test. Imported here,
         // not above: a module loaded by this setup file would be loaded before a test file's `vi.mock()` of `keyvaultApi` and keep the real one.
