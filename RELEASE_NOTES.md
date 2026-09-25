@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Bump `@rapidmx/react-shared` to `^0.18.0`, the release with the full-screen `Drawer` and the CSRF header on uploads that the phone drawers and the admin uploads here need.
+
 ### Fixes
 
 - **A reply or forward sent from an open conversation now shows in it at once.** It appears at the top of the conversation as "Sending…", is replaced by the real Sent Items message when the server has filed it, and shows "Not sent" with Retry and Open draft when it fails. A new message arriving in the open conversation from another tab, another device or a recipient is added to it as it arrives, without losing which messages you had expanded or removed.
