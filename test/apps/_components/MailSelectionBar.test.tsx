@@ -278,6 +278,29 @@ describe("MailSelectionBar", () => {
         expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
     });
 
+    it("disables Move to and Apply label, saying why, when the page says a selection spread over mailboxes cannot use them", () => {
+        renderBar({
+            moveDisabledReason: "The selected messages are in different mailboxes",
+            labelsDisabledReason: "Labels can only be applied here to messages in the open mailbox",
+        });
+        const move = screen.getByRole("button", { name: "Move to" });
+        expect(move).toBeDisabled();
+        expect(move).toHaveAttribute("title", "The selected messages are in different mailboxes");
+        const labels = screen.getByRole("button", { name: "Apply label" });
+        expect(labels).toBeDisabled();
+        expect(labels).toHaveAttribute("title", "Labels can only be applied here to messages in the open mailbox");
+        // Nothing else is held back.
+        expect(screen.getByRole("button", { name: "Archive" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
+    });
+
+    it("leaves Move to and Apply label as they were without those reasons", () => {
+        renderBar();
+        expect(screen.getByRole("button", { name: "Move to" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Move to" })).not.toHaveAttribute("title");
+        expect(screen.getByRole("button", { name: "Apply label" })).toBeEnabled();
+    });
+
     it("disables every action with nothing selected, and while one is in flight", () => {
         renderBar({ selected: [] });
         expect(screen.getByRole("button", { name: "Mark read" })).toBeDisabled();

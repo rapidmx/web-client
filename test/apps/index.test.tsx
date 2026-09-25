@@ -4465,7 +4465,7 @@ describe("InboxPage", () => {
             });
         }
 
-        it("merges every mailbox's Inbox newest-first, labels each row with its mailbox, and disables search", async () => {
+        it("merges every mailbox's Inbox newest-first, labels each row with its mailbox, and offers search across all of them", async () => {
             const location = mockLocation();
             (location as any).search = "?aggregate=inbox";
             mockAggregate({
@@ -4481,7 +4481,8 @@ describe("InboxPage", () => {
             expect(subjects).toEqual(["Shared newer", "Own older"]);
             // The sidebar header/compose picker say "Support (shared)"; the bare name is the row's own label.
             expect(screen.getByText("Support")).toBeInTheDocument();
-            expect(screen.getByPlaceholderText("Open a mailbox's own folder to search")).toBeDisabled();
+            expect(screen.getByPlaceholderText("Search all mail…")).toBeEnabled();
+            expect(screen.queryByPlaceholderText("Open a mailbox's own folder to search")).not.toBeInTheDocument();
             expect(screen.getByText(/Showing the most recent mail from each mailbox/)).toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Focused" })).not.toBeInTheDocument();
         });
@@ -4517,7 +4518,7 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Own survives")).toBeInTheDocument();
         });
 
-        it("registers no delete, mark or flag keys and no search key: the selection bar and the search box aren't offered here either", async () => {
+        it("registers no delete, mark or flag keys in the listing (the selection bar isn't offered there), but the search key still focuses the search box", async () => {
             const location = mockLocation();
             (location as any).search = "?aggregate=inbox";
             mockAggregate({ f1: [messageFixture({ uid: "m-own", subject: "Own row" })] });
@@ -4526,11 +4527,14 @@ describe("InboxPage", () => {
             await user.click(await screen.findByText("Own row"));
             expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:m-own");
 
-            for (const [key, init] of [["d", { ctrlKey: true }], ["Delete", {}], ["q", { ctrlKey: true }], ["u", { ctrlKey: true }], ["Insert", {}], ["/", {}]] as const) {
+            for (const [key, init] of [["d", { ctrlKey: true }], ["Delete", {}], ["q", { ctrlKey: true }], ["u", { ctrlKey: true }], ["Insert", {}]] as const) {
                 expect(fireEvent.keyDown(document.body, { key, ...init }), key).toBe(true);
             }
             // The keys that only need the list still work: Escape closes it.
             expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false);
+            // Search covers every mailbox, so the key that focuses its box works here too.
+            expect(fireEvent.keyDown(document.body, { key: "/" })).toBe(false);
+            expect(screen.getByPlaceholderText("Search all mail…")).toHaveFocus();
         });
     });
 
@@ -5575,7 +5579,7 @@ describe("InboxPage", () => {
             });
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
-            await screen.findByPlaceholderText("Open a mailbox's own folder to search");
+            await screen.findByPlaceholderText("Search all mail…");
 
             // Folders still loading: an aggregate view is built from them, so nothing is listed yet either
             // way - see "what one view costs".
@@ -5860,7 +5864,7 @@ describe("InboxPage", () => {
             });
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
-            await screen.findByPlaceholderText("Open a mailbox's own folder to search");
+            await screen.findByPlaceholderText("Search all mail…");
 
             await toggleConversations(user);
 

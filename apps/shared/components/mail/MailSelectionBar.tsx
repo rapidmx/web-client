@@ -53,6 +53,11 @@ export interface MailSelectionBarProps {
     /** The keyboard acts on this selection (Delete, Ctrl+Q, Ctrl+U, Insert - registered by the page): Mark read, Mark unread, Flag and
      * Delete name their shortcut in the tooltip and `aria-keyshortcuts`. */
     shortcuts?: boolean;
+    /** Why Move to is unavailable, when the selection is spread over mailboxes and a folder can only belong to one (search results over several
+     * mailboxes). Shown as the button's tooltip. */
+    moveDisabledReason?: string;
+    /** The same for Apply label: a label belongs to one mailbox, and `labels` are one mailbox's. */
+    labelsDisabledReason?: string;
 }
 
 function actionClassName(): string {
@@ -91,6 +96,8 @@ export default function MailSelectionBar({
     onDelete,
     busy,
     shortcuts,
+    moveDisabledReason,
+    labelsDisabledReason,
 }: MailSelectionBarProps) {
     const env = useKeyEnvironment();
     /** `title` and `aria-keyshortcuts` for an action the keyboard also does; `reason` (why it is disabled) wins the tooltip. */
@@ -185,7 +192,8 @@ export default function MailSelectionBar({
                     partial={appliedToSome.map((label) => label.uid)}
                     onCommit={onApplyLabels}
                     busy={busy}
-                    disabled={none || busy}
+                    disabled={none || busy || !!labelsDisabledReason}
+                    title={labelsDisabledReason}
                     note={
                         selected.length === 1
                             ? "Ticked labels are applied, unticked ones removed."
@@ -198,7 +206,8 @@ export default function MailSelectionBar({
                 <button
                     type="button"
                     onClick={() => setMovePrompt(true)}
-                    disabled={none || busy}
+                    disabled={none || busy || !!moveDisabledReason}
+                    title={moveDisabledReason}
                     className={actionClassName()}
                 >
                     Move to

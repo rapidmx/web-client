@@ -35,8 +35,20 @@ import {
 } from "@rapidmx/react-shared/mail/conversationsApi.js";
 import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
 import { parseSearchQuery, type ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
-import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
 import { searchLocalIndex } from "../shared/search/searchTier2.js";
+import {
+    MailboxFailure,
+    MailboxHit,
+    SEARCH_LIMITS,
+    classifyFailure,
+    describeFailures,
+    hitKey,
+    mergeSearchResults,
+    runLimited,
+    searchPageSize,
+    tagHits,
+    withTimeout,
+} from "../shared/search/crossMailboxSearch.js";
 import type { Coverage } from "../shared/search/localIndexWorker.js";
 import { getUnlockedKeys, subscribeKeySession, UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
 import { useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
@@ -50,7 +62,7 @@ import MailShell, {
 import MailAddress from "../shared/components/mail/MailAddress.js";
 import OutboxRowStatus from "../shared/components/mail/OutboxRowStatus.js";
 import { mergeFirstPage } from "../shared/mail/mergeFirstPage.js";
-import { primaryMailboxUid } from "../shared/mail/primaryMailbox.js";
+import { isOwnMailbox, orderMailboxes, primaryMailboxUid } from "../shared/mail/primaryMailbox.js";
 import { listSnapshotKey, readListSnapshot, saveListScroll, writeListSnapshot } from "../shared/mail/listSnapshots.js";
 import { setReadStateMany } from "../shared/mail/messageReadState.js";
 import { useMarkMessageRead } from "../shared/mail/useMarkMessageRead.js";
@@ -128,13 +140,15 @@ function stripHtmlToText(html: string): string {
  */
 async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys): Promise<Record<string, DecryptedRow>> {
     const encrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER);
+    // Imported once for all the rows, by whichever needs it first.
+    let securityModule: Promise<typeof import("@rapidmx/react-shared/crypto/messageSecurity.js")> | undefined;
     const entries = await Promise.all(
         encrypted.map(async (message): Promise<[string, DecryptedRow] | null> => {
             try {
                 const rawMime = await getMessageRawContent(message.uid);
                 // Loaded here, on first use: the S/MIME code (PKI.js, ASN.1, X.509) is over half a megabyte and an inbox with
                 // no encrypted mail in it never needs it.
-                const { evaluateMessageSecurity } = await import("@rapidmx/react-shared/crypto/messageSecurity.js");
+                const { evaluateMessageSecurity } = await (securityModule ??= import("@rapidmx/react-shared/crypto/messageSecurity.js"));
                 const security = await evaluateMessageSecurity(rawMime, unlocked);
                 if (!security.subject && !security.html) {
                     return null;
@@ -155,54 +169,20 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
     return result;
 }
 
-/** Merges Tier 1 (server, possibly `metadataOnly` for an encrypted message), Tier 2 (local index, fully
- * decrypted and re-scored), and Tier 3 (server-narrowed candidates, decrypted and re-scored) results into
- * one ranked list, per `specs/search.md` §7's "client MUST re-score all results it can see... normalise
- * into the same space rather than interleaving raw scores": each tier is normalized independently via
- * `normalizeServerScores()` before merging, since a Postgres/OpenSearch score, a local `bm25()` score,
- * and this module's own Tier 3 term-count score all occupy unrelated ranges. A uid present in more than
- * one list keeps only the last-inserted entry (Tier 2 wins over Tier 3 wins over Tier 1) - Tier 2 and
- * Tier 3 both represent genuine, content-verified scores for the same message, so which one "wins" on
- * overlap doesn't change correctness, only which of two equally-valid scores is shown; either supersedes
- * Tier 1's metadata-only guess for the same uid.
- *
- * Called progressively - once per tier as it resolves, each time with whatever tiers have reported so
- * far (an empty array for the rest) - by `InboxContent`'s own search orchestration below, per §_Progressive
- * Results_' "reordering is permitted and preferred over appending." This function itself stays pure and
- * stateless; it has no notion of "in progress" versus "final." */
-function mergeSearchResults(tier1: SearchResult[], tier2: SearchResult[], tier3: SearchResult[]): SearchResult[] {
-    const normalizedTier1 = normalizeServerScores(tier1);
-    const normalizedTier2 = normalizeServerScores(tier2);
-    const normalizedTier3 = normalizeServerScores(tier3);
-    const merged = new Map<string, { result: SearchResult; normalizedScore: number }>();
-    for (const entry of normalizedTier1) {
-        merged.set(entry.result.entityUid, entry);
-    }
-    for (const entry of normalizedTier3) {
-        merged.set(entry.result.entityUid, entry);
-    }
-    for (const entry of normalizedTier2) {
-        merged.set(entry.result.entityUid, entry);
-    }
-    return Array.from(merged.values())
-        .sort((a, b) => b.normalizedScore - a.normalizedScore)
-        .map((entry) => entry.result);
-}
-
 /** `type:` narrows `entityTypes`; when absent this still defaults to `["message"]` — a non-message hit
  * (contact/calendarEvent/note/task) has no `Message` to resolve via `getMessage()` below and is simply
  * dropped by the same eventually-consistent-index fallback that already existed, rather than rendered
  * (this inbox list only ever shows message rows; a real multi-entity-type results view is a separate,
  * larger UI project outside this pass). Shared by both the fresh-search orchestration and `loadMore()`
  * below, which each build this from the same `ParsedSearchQuery` differently only in `cursor`. */
-function tier1SearchParams(parsed: ParsedSearchQuery, cursor: string | undefined, mailboxUid: string) {
+function tier1SearchParams(parsed: ParsedSearchQuery, cursor: string | undefined, mailboxUid: string, limit: number) {
     return {
-        // The mailbox actually open - omitted, the server searches the caller's *own* mailbox, which is the
-        // wrong one whenever a shared mailbox's folder is being viewed.
+        // The mailbox being searched - omitted, the server searches the caller's *own* mailbox, which is the
+        // wrong one whenever a shared mailbox's folder is being viewed (or several mailboxes are searched at once).
         mailboxUid,
         types: parsed.entityTypes ?? ["message"],
         cursor,
-        limit: MESSAGE_PAGE_SIZE,
+        limit,
         from: parsed.from,
         to: parsed.to,
         cc: parsed.cc,
@@ -228,7 +208,7 @@ function tier1SearchParams(parsed: ParsedSearchQuery, cursor: string | undefined
  * orchestration). */
 const SKELETON_CAP = Math.round(MESSAGE_PAGE_SIZE * 1.5);
 
-function capSkeletons(tier1Hits: SearchResult[]): SearchResult[] {
+function capSkeletons(tier1Hits: MailboxHit[]): MailboxHit[] {
     let skeletonsSeen = 0;
     return tier1Hits.filter((hit) => {
         if (!hit.metadataOnly) {
@@ -309,9 +289,15 @@ function tier3Windows(parsed: ParsedSearchQuery, coverage: Coverage | undefined,
 
 /** Runs Tier 3 over each window and merges the candidates (a uid can't match in two disjoint windows, but a
  * message whose date sits exactly on a boundary may come back from both). */
-async function searchTier3Windows(windows: ParsedSearchQuery[], unlocked: UnlockedKeys | undefined, mailboxUid: string): Promise<SearchResult[]> {
-    // Loaded on first use, with the S/MIME code it decrypts through (see `decryptEncryptedRows()`).
-    const { searchEncryptedCandidates } = await import("@rapidmx/react-shared/search/searchTier3.js");
+async function searchTier3Windows(
+    windows: ParsedSearchQuery[],
+    unlocked: UnlockedKeys | undefined,
+    mailboxUid: string,
+    loadTier3: () => Promise<typeof import("@rapidmx/react-shared/search/searchTier3.js")>,
+): Promise<SearchResult[]> {
+    // Loaded on first use, with the S/MIME code it decrypts through (see `decryptEncryptedRows()`) - once for however many mailboxes a search
+    // covers: `loadTier3` hands every one of them the same import.
+    const { searchEncryptedCandidates } = await loadTier3();
     const pages = await Promise.all(
         windows.map((window) => searchEncryptedCandidates(window, unlocked, TIER3_CANDIDATE_LIMIT, { mailboxUid })),
     );
@@ -333,15 +319,53 @@ interface CompositeCursor {
     tier1Cursor?: string;
     tier2Offset: number;
     tier3Offset: number;
+    /** How many candidates the `Tier3Cache` entry holds - 0 for a mailbox whose Tier 3 pass failed, which has nothing to slice. */
+    tier3Total: number;
     /** The `Tier3Cache` entry the first page was sliced from - later pages keep slicing the same one. */
     tier3Key: string;
+    /** Whether any of the three tiers still has more to give for this mailbox. */
+    more: boolean;
+}
+
+/** The paging state of one search across every mailbox it covers: one composite cursor per mailbox, each advancing on its own (a mailbox with
+ * nothing more to give is simply left out of the next round), under one query fingerprint. A search of one mailbox has one entry. */
+interface SearchCursor {
     fingerprint: string;
+    /** How many results each mailbox was asked for per page - fixed for the search, from the number of mailboxes it covers. */
+    pageSize: number;
+    perMailbox: Map<string, CompositeCursor>;
 }
 
 /** `undefined` for a missing, corrupted, or foreign-query cursor - every caller already treats "no
  * cursor" as "start this tier from the beginning," so there's no separate error path needed here. */
-function decodeCursor(raw: CompositeCursor | undefined, fingerprint: string): CompositeCursor | undefined {
+function decodeCursor(raw: SearchCursor | undefined, fingerprint: string): SearchCursor | undefined {
     return raw?.fingerprint === fingerprint ? raw : undefined;
+}
+
+/** One mailbox's part of a search that is running: what each of its tiers has reported so far. */
+interface MailboxRun {
+    mailboxUid: string;
+    /** The mailbox's keys as they were when the search started - none means Tier 2 and Tier 3 have nothing to contribute for it. */
+    unlocked: UnlockedKeys | undefined;
+    tier1: MailboxHit[];
+    tier1Cursor?: string;
+    tier2: MailboxHit[];
+    tier2More: boolean;
+    coverage?: Coverage;
+    /** The first page of Tier 3's candidates, out of `tier3Total` (cached under `tier3Key`). */
+    tier3: MailboxHit[];
+    tier3Total: number;
+    tier3Key: string;
+    /** Tier 1 and Tier 2 have answered (or the mailbox failed); a failed mailbox takes no part in the rest. */
+    tier1Settled: boolean;
+    /** Tier 3 has answered, or failed - from then on this mailbox's unconfirmed metadata-only hits are pruned rather than shown as skeletons. */
+    tier3Settled: boolean;
+    failed: boolean;
+}
+
+/** The mailboxes a search's `cursor` can still be paged for. */
+function mailboxesWithMore(cursor: SearchCursor): string[] {
+    return [...cursor.perMailbox].filter(([, mailboxCursor]) => mailboxCursor.more).map(([uid]) => uid);
 }
 
 /** Resolves every hit's `entityUid` to a full `Message` via `getMessage()`, reusing `cache` across
@@ -483,20 +507,23 @@ async function fetchAggregateMessages(
 interface ResultGroup {
     /** The conversation's id - a message that belongs to no thread is its own conversation. */
     id: string;
+    /** The mailbox the conversation is in: the same id in two mailboxes (a message sent to both) is two conversations. */
+    mailboxUid: string;
     /** Only the messages of the conversation that are among the results, in the order they were ranked. */
     messages: Message[];
 }
 
-/** Groups search results by the conversation each message belongs to, the groups in the order of their first result. */
+/** Groups search results by the conversation each message belongs to - within its own mailbox - the groups in the order of their first result. */
 function groupByConversation(results: Message[]): ResultGroup[] {
     const groups = new Map<string, ResultGroup>();
     for (const message of results) {
         const id = message.conversationId ?? message.uid;
-        const group = groups.get(id);
+        const key = `${message.mailboxUid}\u0000${id}`;
+        const group = groups.get(key);
         if (group) {
             group.messages.push(message);
         } else {
-            groups.set(id, { id, messages: [message] });
+            groups.set(key, { id, mailboxUid: message.mailboxUid, messages: [message] });
         }
     }
     return [...groups.values()];
@@ -535,7 +562,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const [selectedUid, setSelectedUid] = useState<string | null>(null);
     // The thread the conversation list opened, and which of its messages was picked - the reading pane
     // shows the whole conversation, positioned at that message (see `ConversationThreadPane`).
-    const [openThread, setOpenThread] = useState<{ conversation: ConversationThreadHead; uid: string } | null>(null);
+    // The mailbox is the open thread's own: a search over several mailboxes can open one that is not the page's mailbox.
+    const [openThread, setOpenThread] = useState<{ conversation: ConversationThreadHead; uid: string; mailboxUid: string } | null>(null);
     // Messages the page has a newer copy of than `ConversationList` fetched (so far only the one the reading
     // pane just marked read), applied over its own child rows so they don't stay bold after being read.
     const [conversationPatches, setConversationPatches] = useState<Record<string, Message>>({});
@@ -567,9 +595,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // search and aggregate views it can be, and its labels must not be offered as a filter for this one.
     // Empty (and never fetched) otherwise - see `labels` below.
     const [otherMailboxLabels, setOtherMailboxLabels] = useState<Label[]>([]);
-    // Tier 2's own reported window coverage for the current search - undefined outside a search, or
-    // before Tier 2 has resolved yet for this search pass.
-    const [coverage, setCoverage] = useState<Coverage | undefined>(undefined);
+    // Tier 2's own reported window coverage for each mailbox the current search covers - empty outside a search, and
+    // holding nothing for a mailbox until Tier 2 has resolved for it in this search pass (or at all, for one without a local index).
+    const [coverages, setCoverages] = useState<Record<string, Coverage | undefined>>({});
+    // The mailboxes the current search could not (fully) search, and why - only a search over several mailboxes carries on past a
+    // failed one (a search of one mailbox fails as a whole, as it always has).
+    const [searchFailures, setSearchFailures] = useState<MailboxFailure[]>([]);
+    // "Search all mailboxes" from a mailbox's own folder: the search is widened to every mailbox the reader can read. Reset with the search
+    // (see the effects below), and by leaving the folder.
+    const [searchAllMailboxes, setSearchAllMailboxes] = useState(false);
     // Keyed by message uid - see decryptEncryptedRows(). Never cleared on folder/search switches (a
     // decrypted row stays decrypted while its keys stay unlocked; re-decrypting on every navigation would
     // waste work for no benefit) - only cleared when the mailbox's keys are locked (see the
@@ -619,14 +653,32 @@ function InboxContent({ userUid }: { userUid?: string }) {
         setPreferencesByMailbox((prev) => ({ ...prev, [activeMailboxUid]: next }));
         setMailListPreferences(activeMailboxUid, next);
     }
-    // Search stays real-folder-only - Tier 1/2/3 are all deeply mailbox/folder-scoped, and extending them
-    // to span an arbitrary number of mailboxes is out of scope for this pass (see the aggregate-fetch
-    // branch below, which the search effect never reaches while `folderUid` is unset).
+    // What a search covers. In a mailbox's own folder it is that mailbox (all of its folders, as it always was); in an "All mailboxes" view - or
+    // once the reader has widened it from a folder - it is every mailbox they can read, the very set those views aggregate: the ones whose
+    // folders could be listed (a mailbox whose listing failed, say a delegate grant without mail access, is not readable). Tier 1/2/3 are all
+    // mailbox-scoped, so a search over several is the same per-mailbox search once for each, merged (see the search effect below). Own
+    // mailboxes come first, so the cap on how many are searched at once leaves out shared ones before the reader's own.
+    const readableMailboxes = mailboxFolders.filter((mf) => !mf.error).map((mf) => mf.mailbox);
+    const crossMailbox = !!aggregateFolderType || searchAllMailboxes;
+    // `in:<folder>` names a folder, and a folder belongs to one mailbox: only that mailbox can have results, so only it is searched (a folder none of
+    // them has is left to the server to say so of every mailbox).
+    const inFolderUid = crossMailbox ? parseSearchQuery(searchQuery).folderUid : undefined;
+    const mailboxesWithFolder = inFolderUid
+        ? mailboxFolders.filter((mf) => !mf.error && mf.folders.some((f) => f.uid === inFolderUid)).map((mf) => mf.mailbox)
+        : [];
+    const searchableMailboxes = mailboxesWithFolder.length > 0 ? mailboxesWithFolder : readableMailboxes;
+    const searchedMailboxes = crossMailbox ? orderMailboxes(searchableMailboxes, userUid).slice(0, SEARCH_LIMITS.maxMailboxes) : [];
+    // A single mailbox's own folder always has one; a cross-mailbox search has whichever it covers.
+    const searchTargetUids = crossMailbox ? searchedMailboxes.map((mb) => mb.uid) : [mailboxUid!];
+    // A dependency of the search effect, which can't take the array itself.
+    const searchTargetKey = searchTargetUids.join(",");
     // Search works whichever way the list is arranged. Its results are messages, so while a query is held the list is fetched as
     // messages (`asConversations` is about the list's data and is false then), and when the reader arranges by conversation they are
     // shown grouped under their conversation - only the messages that match - with the whole thread in the reading pane
     // (`threadPane`, which follows the arrangement the reader chose and not the query).
-    const isSearching = searchQuery.length > 0 && !aggregateFolderType;
+    const isSearching = searchQuery.length > 0;
+    /** How many rows the list on screen keeps: the same 500 for a search as for a listing (`SEARCH_LIMITS.maxRows`, which a test can shrink). */
+    const rowCap = isSearching ? SEARCH_LIMITS.maxRows : MAX_LOADED_ROWS;
     const asConversations = preferences.showAsConversations && !isSearching;
     const threadPane = preferences.showAsConversations;
     const groupedResults = isSearching && preferences.showAsConversations;
@@ -635,7 +687,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // search results are ranked across folders rather than listed from one, so neither tab is offered
     // there. Not offered for an aggregate view either (each mailbox classifies independently; merging
     // that is out of scope).
-    const currentFolders = mailboxFolders.find((mf) => mf.mailbox.uid === activeMailboxUid)?.folders ?? [];
+    const foldersOf = (ofMailbox: string) => mailboxFolders.find((mf) => mf.mailbox.uid === ofMailbox)?.folders ?? [];
+    const currentFolders = foldersOf(activeMailboxUid);
     const currentFolderIsInbox = currentFolders.find((f) => f.uid === folderUid)?.type === "inbox";
     const offerClassificationFilters = currentFolderIsInbox && !isSearching && !aggregateFolderType;
     // A remembered Focused/Other filter must not silently narrow a folder that has no Focused Inbox to
@@ -705,10 +758,10 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const resolvedMessageCacheRef = useRef<Map<string, Message | null>>(new Map());
     // Session-scoped, never explicitly cleared - see Tier3Cache's own doc comment above.
     const tier3CacheRef = useRef<Tier3Cache>(new Map());
-    // The latest composite cursor this search pass has reached - read by loadMore(), written at the end
+    // The latest cursor this search pass has reached (one composite cursor per mailbox searched) - read by loadMore(), written at the end
     // of both the fresh-search orchestration and loadMore() itself. Not React state: it never drives a
     // render on its own, only what loadMore() does with it later.
-    const compositeCursorRef = useRef<CompositeCursor | undefined>(undefined);
+    const compositeCursorRef = useRef<SearchCursor | undefined>(undefined);
     // Guards every async load below - each search stage, the plain folder/conversation/aggregate listings,
     // and `loadMore()` - against a stale, still-in-flight pass clobbering state for a newer one that started
     // after it (the query, folder, or view changed) - the same `loadSeq`-style monotonic-id pattern already used elsewhere in this codebase (e.g.
@@ -723,37 +776,35 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // state update elsewhere). New rows (a fresh page load, load-more, or a completed search) each
     // re-trigger this the normal way, by changing `messages` itself.
     //
-    // Scoped to `activeMailboxUid`'s own rows only - in aggregate mode `messages` can span several
-    // mailboxes, but only one mailbox's keys are ever being unlocked/tracked here (see `activeMailboxUid`'s
-    // own doc comment above); an encrypted row from any other mailbox simply isn't a candidate for this
-    // auto-decrypt or the manual unlock banner below.
-    const undecryptedEncryptedUids = messages
-        .filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && !decryptedRows[m.uid] && m.mailboxUid === activeMailboxUid)
-        .map((m) => m.uid);
+    // The auto-decrypt below covers every mailbox whose keys are unlocked - in aggregate mode and in a search over several mailboxes `messages`
+    // spans them, and a mailbox unlocked from the search's own banner has rows to show. The manual unlock banner (`handleUnlockList()`) is
+    // still about `activeMailboxUid` only (see its own doc comment above): a row of a locked mailbox stays "Encrypted message".
+    const undecryptedEncrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && !decryptedRows[m.uid]);
+    const undecryptedEncryptedUids = undecryptedEncrypted.filter((m) => m.mailboxUid === activeMailboxUid).map((m) => m.uid);
 
     // Once unlocked, silently decrypt this page's own encrypted rows to show their real subject/preview -
     // no prompt needed here, the same way searchEncryptedCandidates() already auto-includes decrypted
     // matches once unlocked without asking again. Only the *first* unlock (or a fresh page of messages
     // arriving) needs this; `handleUnlockList()` below covers the not-yet-unlocked case explicitly.
     useEffect(() => {
-        if (undecryptedEncryptedUids.length === 0 || !activeMailboxUid) {
-            return;
-        }
-        const unlocked = getUnlockedKeys(activeMailboxUid);
-        if (!unlocked) {
-            return;
-        }
         let cancelled = false;
         const lockGeneration = lockGenerationRef.current;
-        void decryptEncryptedRows(
-            messages.filter((m) => undecryptedEncryptedUids.includes(m.uid)),
-            unlocked,
-        ).then((decrypted) => {
-            // A lock while this was in flight already cleared `decryptedRows` - never put them back.
-            if (!cancelled && lockGeneration === lockGenerationRef.current && Object.keys(decrypted).length > 0) {
-                setDecryptedRows((prev) => ({ ...prev, ...decrypted }));
+        const rowsByMailbox = new Map<string, Message[]>();
+        for (const message of undecryptedEncrypted) {
+            rowsByMailbox.set(message.mailboxUid, [...(rowsByMailbox.get(message.mailboxUid) ?? []), message]);
+        }
+        for (const [rowsMailboxUid, rows] of rowsByMailbox) {
+            const unlocked = getUnlockedKeys(rowsMailboxUid);
+            if (!unlocked) {
+                continue;
             }
-        });
+            void decryptEncryptedRows(rows, unlocked).then((decrypted) => {
+                // A lock while this was in flight already cleared `decryptedRows` - never put them back.
+                if (!cancelled && lockGeneration === lockGenerationRef.current && Object.keys(decrypted).length > 0) {
+                    setDecryptedRows((prev) => ({ ...prev, ...decrypted }));
+                }
+            });
+        }
         return () => {
             cancelled = true;
         };
@@ -764,13 +815,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // snippets (Tier 2/3 snippets are decrypted content), and the already-decrypted Tier 3 candidates. A
     // live search re-runs, so Tier 2/3 contribute nothing again until the user unlocks. Read through a ref
     // so the subscription itself doesn't churn on every render.
-    const keyLockStateRef = useRef({ activeMailboxUid, isSearching });
-    keyLockStateRef.current = { activeMailboxUid, isSearching };
+    const keyLockStateRef = useRef({ activeMailboxUid, isSearching, searchTargetUids });
+    keyLockStateRef.current = { activeMailboxUid, isSearching, searchTargetUids };
     useEffect(
         () =>
             subscribeKeySession(({ mailboxUid: changedMailboxUid, state }) => {
                 const current = keyLockStateRef.current;
-                if (state !== "locked" || changedMailboxUid !== current.activeMailboxUid) {
+                // The open mailbox's, or - while searching - any mailbox the search covers: their decrypted hits are on screen too.
+                const relevant = changedMailboxUid === current.activeMailboxUid || (current.isSearching && current.searchTargetUids.includes(changedMailboxUid));
+                if (state !== "locked" || !relevant) {
                     return;
                 }
                 lockGenerationRef.current += 1;
@@ -800,8 +853,31 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
     }
 
+    /** The mailboxes a search over several could include encrypted mail from if they were unlocked: the ones with keys that are locked right now.
+     * `unlockable` are the reader's own - a shared mailbox's keys belong to its owner, and unlocking them is not something this page can ask for. */
+    const lockedSearchMailboxes = crossMailbox ? searchedMailboxes.filter((mb) => (mb.keys?.length ?? 0) > 0 && !getUnlockedKeys(mb.uid)) : [];
+    const unlockableSearchMailboxes = lockedSearchMailboxes.filter((mb) => isOwnMailbox(mb, userUid));
+    const sharedLockedSearchMailboxes = lockedSearchMailboxes.filter((mb) => !isOwnMailbox(mb, userUid));
+    /** Unlocked mailboxes with encrypted mail to search that have no local index on this device (the index is only built for the open mailbox), so
+     * only Tier 3 - server-narrowed, bounded - reaches their encrypted mail. */
+    const serverOnlyMailboxes = crossMailbox
+        ? searchedMailboxes.filter((mb) => (mb.keys?.length ?? 0) > 0 && !!getUnlockedKeys(mb.uid) && !coverages[mb.uid]?.indexedFrom)
+        : [];
+    /** The one mailbox's own coverage, for a search of one. */
+    const coverage = coverages[mailboxUid ?? ""];
+    /** A folder's search can be widened to every mailbox, when there is more than one to widen it to. */
+    const widenable = !aggregateFolderType && readableMailboxes.length > 1;
+
     async function handleUnlockSearch() {
         try {
+            if (crossMailbox) {
+                // One prompt per locked mailbox of the reader's own, in turn; a dismissed one stops the rest.
+                for (const mailbox of unlockableSearchMailboxes) {
+                    await requestUnlock(mailbox.uid, mailbox.keys!);
+                    setUnlockRefresh((n) => n + 1);
+                }
+                return;
+            }
             await requestUnlock(activeMailboxUid, mailboxKeys);
             setUnlockRefresh((n) => n + 1);
         } catch {
@@ -816,7 +892,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // `activeMailboxUid`, and offering that mailbox's labels would let a label from the wrong mailbox be
     // applied. The conversation view stays scoped to `activeMailboxUid`, the mailbox its threads come from.
     const selectedMessageMailboxUid = messages.find((m) => m.uid === selectedUid)?.mailboxUid;
-    const labelsMailboxUid = threadPane ? activeMailboxUid : (selectedMessageMailboxUid ?? activeMailboxUid);
+    const labelsMailboxUid = threadPane ? (openThread?.mailboxUid ?? activeMailboxUid) : (selectedMessageMailboxUid ?? activeMailboxUid);
     // Almost always the open mailbox's own labels, already fetched below - so `labels` reuses that list
     // rather than asking for the identical one a second time (which is what this page did on every single
     // view). Only a selected message from *another* mailbox - a search hit or an aggregate-view row - needs
@@ -875,11 +951,24 @@ function InboxContent({ userUid }: { userUid?: string }) {
         if (shown !== null && shown !== selectionKey) {
             setSearchInput("");
             setSearchQuery("");
+            setSearchAllMailboxes(false);
         }
         if (folderUid || aggregateFolderType) {
             shownSelectionRef.current = selectionKey;
         }
     }, [selectionKey]);
+    // A search widened to every mailbox lasts for that search: once the box is emptied the next one starts in the open folder's mailbox again.
+    useEffect(() => {
+        if (searchQuery === "") {
+            setSearchAllMailboxes(false);
+        }
+    }, [searchQuery]);
+    // Rows can be ticked in the results of a search over every mailbox, but not in the listing they came out of: clearing the search leaves select mode.
+    useEffect(() => {
+        if (aggregateFolderType && !isSearching) {
+            setSelectMode(false);
+        }
+    }, [aggregateFolderType, isSearching]);
 
     // Which listing this is, for the short-lived snapshot of each folder that makes going back to one instant (see
     // `listSnapshots.ts`). A search, an aggregate view and a folder that hasn't resolved have no snapshot.
@@ -1004,7 +1093,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return invalidate;
         }
 
-        if (aggregateFolderType) {
+        if (aggregateFolderType && !isSearching) {
             setLoading(true);
             setError(null);
             // hasMore stays false (set above) - see fetchAggregateMessages()'s own pagination scope trim.
@@ -1026,86 +1115,201 @@ function InboxContent({ userUid }: { userUid?: string }) {
         setError(null);
 
         if (isSearching) {
-            setCoverage(undefined);
+            setCoverages({});
+            setSearchFailures([]);
             setPendingUids(new Set());
             setTier1Done(false);
             setTier2Done(false);
             setTier3Done(false);
             resolvedMessageCacheRef.current = new Map();
             const parsed = parseSearchQuery(searchQuery);
-            const unlocked = getUnlockedKeys(mailboxUid!);
             const fingerprint = queryFingerprint(parsed);
+            // What each mailbox is asked for per page: the whole page for one mailbox, a share of it for several.
+            const pageSize = searchPageSize(searchTargetUids.length, MESSAGE_PAGE_SIZE);
+            // Only a search over several mailboxes gives up on a slow one - a search of one is left to take as long as it takes.
+            const tier1TimeoutMs = crossMailbox ? SEARCH_LIMITS.tier1TimeoutMs : Infinity;
+            const tier3TimeoutMs = crossMailbox ? SEARCH_LIMITS.tier3TimeoutMs : Infinity;
+            const mailboxNames = new Map(searchedMailboxes.map((mb) => [mb.uid, mb.displayName]));
+            const isSuperseded = () => searchRunIdRef.current !== myRunId;
+            // Tier 3's code, imported when the first mailbox needs it and shared by the rest.
+            let tier3Module: Promise<typeof import("@rapidmx/react-shared/search/searchTier3.js")> | undefined;
+            const loadTier3 = () => (tier3Module ??= import("@rapidmx/react-shared/search/searchTier3.js"));
+            const failures: MailboxFailure[] = [];
+            /** The failed mailbox's notice entry. A search of one mailbox has none: its failure fails the search. */
+            const noteFailure = (uid: string, encrypted: boolean, err: unknown) => {
+                failures.push({ mailboxUid: uid, mailboxName: mailboxNames.get(uid)!, encrypted, reason: classifyFailure(err) });
+            };
+            // One entry per mailbox searched, in the order they are shown in - which is also the order ties are ranked in.
+            const runs = new Map<string, MailboxRun>(
+                searchTargetUids.map((uid): [string, MailboxRun] => [
+                    uid,
+                    {
+                        mailboxUid: uid,
+                        unlocked: getUnlockedKeys(uid),
+                        tier1: [],
+                        tier2: [],
+                        tier2More: false,
+                        tier3: [],
+                        tier3Total: 0,
+                        tier3Key: "",
+                        tier1Settled: false,
+                        tier3Settled: false,
+                        failed: false,
+                    },
+                ]),
+            );
+            const runList = [...runs.values()];
 
-            // Recomputes and re-renders the merged list from whatever tiers have reported so far -
+            // A reveal that started before another one but finished after it must not put its older, smaller picture back.
+            let revealsStarted = 0;
+            let revealsApplied = 0;
+            // Recomputes and re-renders the merged list from whatever tiers have reported so far, across every mailbox -
             // called once after Tier 1+2 (interim: unconfirmed Tier 1 metadataOnly hits render as
             // skeletons) and again after Tier 3 (final: anything still unconfirmed is pruned instead -
-            // §_Progressive Results_' "Skeletons resolve or disappear"). Bails out via `myRunId` if a
+            // §_Progressive Results_' "Skeletons resolve or disappear"); a search over several mailboxes also calls it as each one
+            // reports, and a mailbox is "final" for its own hits as soon as its own Tier 3 has. Bails out if a
             // newer search pass has since started.
-            async function reveal(tier1Hits: SearchResult[], tier2Hits: SearchResult[], tier3Hits: SearchResult[], final: boolean) {
-                const capped = capSkeletons(tier1Hits);
-                const confirmed = new Set([...tier2Hits, ...tier3Hits].map((r) => r.entityUid));
-                const effectiveTier1 = final ? capped.filter((hit) => !hit.metadataOnly || confirmed.has(hit.entityUid)) : capped;
-                const merged = mergeSearchResults(effectiveTier1, tier2Hits, tier3Hits);
+            async function reveal() {
+                const revealId = ++revealsStarted;
+                const capped = capSkeletons(runList.flatMap((run) => run.tier1));
+                const tier2Hits = runList.flatMap((run) => run.tier2);
+                const tier3Hits = runList.flatMap((run) => run.tier3);
+                const confirmed = new Set([...tier2Hits, ...tier3Hits].map(hitKey));
+                const isUnconfirmed = (hit: MailboxHit) => !!hit.metadataOnly && !confirmed.has(hitKey(hit));
+                const effectiveTier1 = capped.filter((hit) => !runs.get(hit.mailboxUid)!.tier3Settled || !isUnconfirmed(hit));
+                const merged = mergeSearchResults(effectiveTier1, tier2Hits, tier3Hits).slice(0, rowCap);
                 const { messages: resolved, snippets: resolvedSnippets } = await resolveHitsToMessages(
                     merged,
                     resolvedMessageCacheRef.current,
                 );
-                if (searchRunIdRef.current !== myRunId) {
+                if (isSuperseded() || revealId < revealsApplied) {
                     return;
                 }
+                revealsApplied = revealId;
                 setMessages(resolved);
                 setSnippets(resolvedSnippets);
-                if (final) {
-                    setPendingUids(new Set());
-                } else {
-                    const pending = new Set<string>();
-                    for (const hit of capped) {
-                        if (hit.metadataOnly && !confirmed.has(hit.entityUid)) {
-                            pending.add(hit.entityUid);
-                        }
-                    }
-                    setPendingUids(pending);
+                if (resolved.length > 0) {
+                    // The first mailbox to answer with anything replaces the loading skeleton.
+                    setLoading(false);
                 }
+                const pending = new Set<string>();
+                for (const hit of capped) {
+                    if (!runs.get(hit.mailboxUid)!.tier3Settled && isUnconfirmed(hit)) {
+                        pending.add(hit.entityUid);
+                    }
+                }
+                setPendingUids(pending);
             }
 
             void (async () => {
                 try {
-                    const [tier1Page, tier2Page] = await Promise.all([
-                        searchMailbox(parsed.text, tier1SearchParams(parsed, undefined, mailboxUid!)),
-                        searchLocalIndex(mailboxUid!, parsed, unlocked, MESSAGE_PAGE_SIZE, 0),
-                    ]);
-                    if (searchRunIdRef.current !== myRunId) {
+                    // Tier 1 (server) and Tier 2 (local index) of every mailbox, a few at a time.
+                    await runLimited(
+                        searchTargetUids,
+                        SEARCH_LIMITS.concurrency,
+                        async (uid) => {
+                            const run = runs.get(uid)!;
+                            try {
+                                const [tier1Page, tier2Page] = await Promise.all([
+                                    withTimeout(searchMailbox(parsed.text, tier1SearchParams(parsed, undefined, uid, pageSize)), tier1TimeoutMs),
+                                    searchLocalIndex(uid, parsed, run.unlocked, pageSize, 0),
+                                ]);
+                                if (isSuperseded()) {
+                                    return;
+                                }
+                                run.tier1 = tagHits(uid, tier1Page.results);
+                                run.tier1Cursor = tier1Page.nextCursor;
+                                run.tier2 = tagHits(uid, tier2Page.results);
+                                run.tier2More = tier2Page.hasMore;
+                                run.coverage = tier2Page.coverage;
+                            } catch (err) {
+                                if (!crossMailbox) {
+                                    throw err;
+                                }
+                                run.failed = true;
+                                noteFailure(uid, false, err);
+                            }
+                            run.tier1Settled = true;
+                            if (crossMailbox && runList.some((other) => !other.tier1Settled)) {
+                                void reveal();
+                            }
+                        },
+                        isSuperseded,
+                    );
+                    if (isSuperseded()) {
                         return;
                     }
                     setTier1Done(true);
                     setTier2Done(true);
-                    setCoverage(tier2Page.coverage);
+                    setCoverages(Object.fromEntries(runList.map((run) => [run.mailboxUid, run.coverage])));
+                    setSearchFailures([...failures]);
                     setLoading(false);
-                    await reveal(tier1Page.results, tier2Page.results, [], false);
-
-                    const windows = tier3Windows(parsed, tier2Page.coverage, searchAllMail);
-                    const cacheKey = tier3CacheKey(mailboxUid!, windows, !!unlocked);
-                    let tier3Full = tier3CacheRef.current.get(cacheKey);
-                    if (!tier3Full) {
-                        tier3Full = await searchTier3Windows(windows, unlocked, mailboxUid!);
-                        if (searchRunIdRef.current !== myRunId) {
-                            return;
-                        }
-                        tier3CacheRef.current.set(cacheKey, tier3Full);
+                    if (failures.length === runList.length) {
+                        // Not one mailbox could be searched (or there were none to search): that is a failed search, not missing results.
+                        setError("Search failed.");
+                        return;
                     }
-                    const tier3Page = tier3Full.slice(0, MESSAGE_PAGE_SIZE);
+                    await reveal();
+
+                    // Tier 3 (server-narrowed encrypted candidates) of every mailbox that answered, each over the window its own local index
+                    // leaves uncovered - a mailbox with no local index is searched over the query's whole range.
+                    await runLimited(
+                        runList.filter((run) => !run.failed),
+                        SEARCH_LIMITS.concurrency,
+                        async (run) => {
+                            try {
+                                const windows = tier3Windows(parsed, run.coverage, searchAllMail);
+                                const cacheKey = tier3CacheKey(run.mailboxUid, windows, !!run.unlocked);
+                                let tier3Full = tier3CacheRef.current.get(cacheKey);
+                                if (!tier3Full) {
+                                    tier3Full = await withTimeout(
+                                        searchTier3Windows(windows, run.unlocked, run.mailboxUid, loadTier3),
+                                        tier3TimeoutMs,
+                                    );
+                                    if (isSuperseded()) {
+                                        return;
+                                    }
+                                    tier3CacheRef.current.set(cacheKey, tier3Full);
+                                }
+                                run.tier3 = tagHits(run.mailboxUid, tier3Full.slice(0, pageSize));
+                                run.tier3Total = tier3Full.length;
+                                run.tier3Key = cacheKey;
+                            } catch (err) {
+                                if (!crossMailbox) {
+                                    throw err;
+                                }
+                                noteFailure(run.mailboxUid, true, err);
+                            }
+                            run.tier3Settled = true;
+                            if (crossMailbox && runList.some((other) => !other.failed && !other.tier3Settled)) {
+                                void reveal();
+                            }
+                        },
+                        isSuperseded,
+                    );
+                    if (isSuperseded()) {
+                        return;
+                    }
                     setTier3Done(true);
-                    compositeCursorRef.current = {
-                        tier1Cursor: tier1Page.nextCursor,
-                        tier2Offset: tier2Page.results.length,
-                        tier3Offset: tier3Page.length,
-                        tier3Key: cacheKey,
-                        fingerprint,
-                    };
-                    setHasMore(!!tier1Page.nextCursor || tier2Page.hasMore || tier3Page.length < tier3Full.length);
-                    await reveal(tier1Page.results, tier2Page.results, tier3Page, true);
+                    setSearchFailures([...failures]);
+                    const cursor: SearchCursor = { fingerprint, pageSize, perMailbox: new Map() };
+                    for (const run of runList) {
+                        if (!run.failed) {
+                            cursor.perMailbox.set(run.mailboxUid, {
+                                tier1Cursor: run.tier1Cursor,
+                                tier2Offset: run.tier2.length,
+                                tier3Offset: run.tier3.length,
+                                tier3Total: run.tier3Total,
+                                tier3Key: run.tier3Key,
+                                more: !!run.tier1Cursor || run.tier2More || run.tier3.length < run.tier3Total,
+                            });
+                        }
+                    }
+                    compositeCursorRef.current = cursor;
+                    setHasMore(mailboxesWithMore(cursor).length > 0);
+                    await reveal();
                 } catch (err) {
-                    if (searchRunIdRef.current === myRunId) {
+                    if (!isSuperseded()) {
                         setError(err instanceof ApiRequestError ? err.message : "Search failed.");
                         setLoading(false);
                     }
@@ -1177,9 +1381,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
         unlockRefresh,
         searchAllMail,
         aggregateFolderType,
-        // Only a merged view is built from the folder tree; for a single folder a folder appearing in the sidebar (the Outbox, Sent Items) must not reload
-        // the list on screen and forget its selection.
-        aggregateFolderType ? mailboxFolders : null,
+        // Only a merged listing is built from the folder tree; for a single folder a folder appearing in the sidebar (the Outbox, Sent Items) must not reload
+        // the list on screen and forget its selection. A search over several mailboxes is built from the *mailboxes* instead (`searchTargetKey`), so a
+        // folder appearing while it runs does not restart it either.
+        aggregateFolderType && !isSearching ? mailboxFolders : null,
+        crossMailbox,
+        searchTargetKey,
         activeMailboxUid,
     ]);
 
@@ -1266,13 +1473,14 @@ function InboxContent({ userUid }: { userUid?: string }) {
         // Reads the ref, not `conversations`/`messages` state, so this callback (and the observer effect
         // watching it) don't need to be recreated every time a page lands - the same reason every other
         // check below reads a ref rather than closing over state.
-        const atRowCap = (asConversations ? conversationsRef.current.length : messagesRef.current.length) >= MAX_LOADED_ROWS;
+        const atRowCap = (asConversations ? conversationsRef.current.length : messagesRef.current.length) >= rowCap;
         if (
             loadMoreInFlightRef.current ||
             !hasMore ||
             loading ||
             atRowCap ||
-            (!asConversations && !folderUid) ||
+            // A search over every mailbox has no folder of its own (nor does a listing that has not resolved one).
+            (!asConversations && !folderUid && !isSearching) ||
             (isSearching && !searchCursor)
         ) {
             return;
@@ -1310,22 +1518,66 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     return;
                 }
                 const addedRows = hasUnseenRows(conversationsRef.current, more, conversationKey);
-                setConversations((prev) => appendUnseenRows(prev, more, conversationKey, MAX_LOADED_ROWS));
+                setConversations((prev) => appendUnseenRows(prev, more, conversationKey, rowCap));
                 setHasMore(more.length === MESSAGE_PAGE_SIZE);
                 listedOffsetRef.current = page * MESSAGE_PAGE_SIZE + more.length;
                 notePageLanded(addedRows, more.length === MESSAGE_PAGE_SIZE);
             } else if (isSearching) {
-                const unlocked = getUnlockedKeys(mailboxUid!);
                 const cursor = searchCursor!;
-
-                const [tier1Page, tier2Page] = await Promise.all([
-                    searchMailbox(parsed.text, tier1SearchParams(parsed, cursor.tier1Cursor, mailboxUid!)),
-                    searchLocalIndex(mailboxUid!, parsed, unlocked, MESSAGE_PAGE_SIZE, cursor.tier2Offset),
-                ]);
-                // The first page cached this pass under `tier3Key` before it created the cursor.
-                const tier3Full = tier3CacheRef.current.get(cursor.tier3Key)!;
-                const tier3Offset = cursor.tier3Offset;
-                const tier3Page = tier3Full.slice(tier3Offset, tier3Offset + MESSAGE_PAGE_SIZE);
+                const tier1TimeoutMs = crossMailbox ? SEARCH_LIMITS.tier1TimeoutMs : Infinity;
+                // Every mailbox with more to give is asked for its own next page - the others (exhausted, or given up on) stay as they are.
+                const attempted = mailboxesWithMore(cursor);
+                const pages = new Map<string, { tier1: MailboxHit[]; tier1Cursor?: string; tier2: MailboxHit[]; tier2More: boolean; tier3: MailboxHit[] }>();
+                const failedMailboxes: MailboxFailure[] = [];
+                const failedErrors: unknown[] = [];
+                await runLimited(
+                    attempted,
+                    SEARCH_LIMITS.concurrency,
+                    async (uid) => {
+                        const mailboxCursor = cursor.perMailbox.get(uid)!;
+                        try {
+                            const [tier1Page, tier2Page] = await Promise.all([
+                                withTimeout(
+                                    searchMailbox(parsed.text, tier1SearchParams(parsed, mailboxCursor.tier1Cursor, uid, cursor.pageSize)),
+                                    tier1TimeoutMs,
+                                ),
+                                searchLocalIndex(uid, parsed, getUnlockedKeys(uid), cursor.pageSize, mailboxCursor.tier2Offset),
+                            ]);
+                            // The first page cached this pass under `tier3Key` before it created the cursor - unless Tier 3 had nothing to give.
+                            const tier3Page =
+                                mailboxCursor.tier3Offset < mailboxCursor.tier3Total
+                                    ? tier3CacheRef.current
+                                          .get(mailboxCursor.tier3Key)!
+                                          .slice(mailboxCursor.tier3Offset, mailboxCursor.tier3Offset + cursor.pageSize)
+                                    : [];
+                            pages.set(uid, {
+                                tier1: tagHits(uid, tier1Page.results),
+                                tier1Cursor: tier1Page.nextCursor,
+                                tier2: tagHits(uid, tier2Page.results),
+                                tier2More: tier2Page.hasMore,
+                                tier3: tagHits(uid, tier3Page),
+                            });
+                        } catch (err) {
+                            // One mailbox failing to give its next page must not stop the others' (a search of one has nothing else to show).
+                            if (!crossMailbox) {
+                                throw err;
+                            }
+                            failedErrors.push(err);
+                            failedMailboxes.push({
+                                mailboxUid: uid,
+                                mailboxName: searchedMailboxes.find((mb) => mb.uid === uid)!.displayName,
+                                encrypted: false,
+                                reason: classifyFailure(err),
+                            });
+                        }
+                    },
+                    () => !isCurrentRun(),
+                );
+                if (failedErrors.length === attempted.length) {
+                    // No mailbox answered: that is a failed page (with Retry), not a page with fewer rows.
+                    throw failedErrors[0];
+                }
+                const answered = [...pages.values()];
 
                 // Unlike the fresh-search pass above, a load-more page is resolved and appended in one
                 // shot rather than progressively revealed - rows already on screen shouldn't reorder or
@@ -1333,24 +1585,42 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 // metadataOnly hit this page that neither Tier 2 nor Tier 3 (both already awaited above)
                 // confirms simply keeps showing its existing placeholder text rather than a live skeleton
                 // - a deliberate, documented scope trim of progressive reveal to the first page only.
-                const merged = mergeSearchResults(capSkeletons(tier1Page.results), tier2Page.results, tier3Page);
+                const merged = mergeSearchResults(
+                    capSkeletons(answered.flatMap((page) => page.tier1)),
+                    answered.flatMap((page) => page.tier2),
+                    answered.flatMap((page) => page.tier3),
+                );
                 const { messages: more, snippets: moreSnippets } = await resolveHitsToMessages(merged, resolvedMessageCacheRef.current);
                 if (!isCurrentRun()) {
                     return;
                 }
                 const addedRows = hasUnseenRows(messagesRef.current, more, messageUid);
-                setMessages((prev) => appendUnseenRows(prev, more, messageUid, MAX_LOADED_ROWS));
+                setMessages((prev) => appendUnseenRows(prev, more, messageUid, rowCap));
                 setSnippets((prev) => ({ ...prev, ...moreSnippets }));
+                setSearchFailures((prev) => [...prev, ...failedMailboxes]);
 
-                const nextTier3Offset = tier3Offset + tier3Page.length;
-                compositeCursorRef.current = {
-                    tier1Cursor: tier1Page.nextCursor,
-                    tier2Offset: cursor.tier2Offset + tier2Page.results.length,
-                    tier3Offset: nextTier3Offset,
-                    tier3Key: cursor.tier3Key,
-                    fingerprint,
-                };
-                const moreRemain = !!tier1Page.nextCursor || tier2Page.hasMore || nextTier3Offset < tier3Full.length;
+                const perMailbox = new Map(cursor.perMailbox);
+                for (const uid of attempted) {
+                    const previous = cursor.perMailbox.get(uid)!;
+                    const page = pages.get(uid);
+                    if (!page) {
+                        // Failed just now: given up on for the rest of this search (the notice says so).
+                        perMailbox.set(uid, { ...previous, more: false });
+                        continue;
+                    }
+                    const nextTier3Offset = previous.tier3Offset + page.tier3.length;
+                    perMailbox.set(uid, {
+                        tier1Cursor: page.tier1Cursor,
+                        tier2Offset: previous.tier2Offset + page.tier2.length,
+                        tier3Offset: nextTier3Offset,
+                        tier3Total: previous.tier3Total,
+                        tier3Key: previous.tier3Key,
+                        more: !!page.tier1Cursor || page.tier2More || nextTier3Offset < previous.tier3Total,
+                    });
+                }
+                const nextCursor: SearchCursor = { ...cursor, perMailbox };
+                compositeCursorRef.current = nextCursor;
+                const moreRemain = mailboxesWithMore(nextCursor).length > 0;
                 setHasMore(moreRemain);
                 notePageLanded(addedRows, moreRemain);
             } else {
@@ -1363,7 +1633,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     return;
                 }
                 const addedRows = hasUnseenRows(messagesRef.current, more, messageUid);
-                setMessages((prev) => appendUnseenRows(prev, more, messageUid, MAX_LOADED_ROWS));
+                setMessages((prev) => appendUnseenRows(prev, more, messageUid, rowCap));
                 setHasMore(more.length === MESSAGE_PAGE_SIZE);
                 listedOffsetRef.current = page * MESSAGE_PAGE_SIZE + more.length;
                 notePageLanded(addedRows, more.length === MESSAGE_PAGE_SIZE);
@@ -1390,6 +1660,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
         searchQuery,
         mailboxUid,
         activeMailboxUid,
+        crossMailbox,
+        searchTargetKey,
     ]);
 
     // Always calls the latest `loadMore` closure so the effect below doesn't need `loadMore` itself in its
@@ -1527,7 +1799,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * mailbox/search whose true size lands at or near the cap can have its very last page be a partial one,
      * which correctly turns `hasMore` false - without checking it here, the banner would still claim rows
      * are being hidden even though every one of them is already on screen. */
-    const rowCapReached = hasMore && (asConversations ? conversations.length : messages.length) >= MAX_LOADED_ROWS;
+    const rowCapReached = hasMore && (asConversations ? conversations.length : messages.length) >= rowCap;
 
     function leaveSelectMode() {
         setSelectMode(false);
@@ -1660,13 +1932,28 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * first single-message archive, so that call both creates the folder and archives the first message,
      * and the rest of the selection is then moved into the folder it reports. */
     async function bulkArchive(chosen: Message[]): Promise<Message[]> {
-        const archiveFolderUid = currentFolders.find((f) => f.type === "archive")?.uid;
-        if (archiveFolderUid) {
-            return moveMessages(chosen, archiveFolderUid);
+        return inEachMailbox(chosen, async (ofMailbox, group) => {
+            const archiveFolderUid = foldersOf(ofMailbox).find((f) => f.type === "archive")?.uid;
+            if (archiveFolderUid) {
+                return moveMessages(group, archiveFolderUid);
+            }
+            const first = await archiveMessage(group[0].uid);
+            const rest = group.slice(1);
+            return rest.length === 0 ? [first] : [first, ...(await moveMessages(rest, first.folderUid))];
+        });
+    }
+
+    /**
+     * Runs `action` once for every mailbox `chosen` has messages in and gathers what each returns. Folders belong to a mailbox, so anything that
+     * moves messages into "the" Archive or Deleted Items has to do so per mailbox: a search over several mailboxes lists hits from more than one, while
+     * every other list holds one mailbox's messages and this is one call, as it always was.
+     */
+    async function inEachMailbox(chosen: Message[], action: (ofMailbox: string, group: Message[]) => Promise<Message[]>): Promise<Message[]> {
+        const groups = new Map<string, Message[]>();
+        for (const message of chosen) {
+            groups.set(message.mailboxUid, [...(groups.get(message.mailboxUid) ?? []), message]);
         }
-        const first = await archiveMessage(chosen[0].uid);
-        const rest = chosen.slice(1);
-        return rest.length === 0 ? [first] : [first, ...(await moveMessages(rest, first.folderUid))];
+        return (await Promise.all([...groups].map(([ofMailbox, group]) => action(ofMailbox, group)))).flat();
     }
 
     /**
@@ -1678,21 +1965,26 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * A folder found or created here may not be in `mailboxFolders` yet, so it is filed there and remembered per mailbox and type until the page
      * reloads; otherwise a second Delete would ask again.
      */
-    async function resolveFolderOfType(type: Folder["type"], name: string): Promise<string> {
-        const key = `${activeMailboxUid}:${type}`;
-        const known = currentFolders.find((f) => f.type === type)?.uid ?? lazyFoldersRef.current.get(key);
+    async function resolveFolderOfType(type: Folder["type"], name: string, ofMailbox: string): Promise<string> {
+        const key = `${ofMailbox}:${type}`;
+        const known = foldersOf(ofMailbox).find((f) => f.type === type)?.uid ?? lazyFoldersRef.current.get(key);
         if (known) {
             return known;
         }
-        const listed = (await listFolders(activeMailboxUid)).find((f) => f.type === type);
+        const listed = (await listFolders(ofMailbox)).find((f) => f.type === type);
         if (listed) {
             onFolderCreated(listed);
             lazyFoldersRef.current.set(key, listed.uid);
             return listed.uid;
         }
-        const created = await createFolder({ mailboxUid: activeMailboxUid, name, type });
+        const created = await createFolder({ mailboxUid: ofMailbox, name, type });
         lazyFoldersRef.current.set(key, created.uid);
         return created.uid;
+    }
+
+    /** Moves `chosen` into each of its mailbox's own folder of `type` (Deleted Items, Junk), making it where the server has none yet. */
+    function moveToFolderOfType(chosen: Message[], type: Folder["type"], name: string): Promise<Message[]> {
+        return inEachMailbox(chosen, async (ofMailbox, group) => moveMessages(group, await resolveFolderOfType(type, name, ofMailbox)));
     }
 
     /**
@@ -1719,7 +2011,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     function moveSelectionToType(type: Folder["type"], name: string, chosen?: Message[]) {
-        return runBulkAction(async (moving) => moveMessages(moving, await resolveFolderOfType(type, name)), true, chosen);
+        return runBulkAction((moving) => moveToFolderOfType(moving, type, name), true, chosen);
     }
 
     // ---- Swiping a row on a phone (see `SwipeRow`): right to left archives, left to right asks for a folder. Both go through the same
@@ -1825,8 +2117,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                 {new Date(message.receivedDate).toLocaleDateString()}
                             </span>
                         </div>
-                        {aggregateFolderType && (
-                            // The one view where a row needs to say which mailbox it came from.
+                        {crossMailbox && (
+                            // The views where a row needs to say which mailbox it came from: an "All mailboxes" listing and a search over several.
                             <div className="text-xs text-text-muted truncate font-normal">
                                 {mailboxes.find((mb) => mb.uid === message.mailboxUid)?.displayName}
                             </div>
@@ -1879,10 +2171,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
             type="search"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            placeholder={aggregateFolderType ? "Open a mailbox's own folder to search" : "Search all mail…"}
+            placeholder="Search all mail…"
             aria-label="Search all mail"
-            disabled={!!aggregateFolderType}
-            className={["w-full text-sm px-3 rounded-md border border-border bg-surface disabled:opacity-55", isMobile ? "py-2" : "py-1.5"].join(" ")}
+            className={["w-full text-sm px-3 rounded-md border border-border bg-surface", isMobile ? "py-2" : "py-1.5"].join(" ")}
         />
     );
 
@@ -1919,7 +2210,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
         removedAnchorRef.current = null;
         setSelectedUid(message.uid);
-        setOpenThread({ conversation, uid: message.uid });
+        setOpenThread({ conversation, uid: message.uid, mailboxUid: message.mailboxUid });
     }
 
     /** Opens a conversation in the reading pane, positioned at one of its messages: the one a child row
@@ -1938,7 +2229,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
         removedAnchorRef.current = null;
         setSelectedUid(uid);
-        setOpenThread({ conversation, uid });
+        setOpenThread({ conversation, uid, mailboxUid: activeMailboxUid });
     }
 
     // ---- Keyboard shortcuts (see `shared/keyboard`). Each is registered only while this view can do it, and calls what the toolbar and
@@ -1946,15 +2237,17 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // ---- the same lazily created Deleted Items folder), never a second implementation. Reply, Reply all, Forward, Archive and Move to are
     // ---- registered by the reading pane itself (`MessageDetailPane`'s `shortcuts`), which owns those handlers.
     const inConversations = asConversations;
-    /** The selection bar isn't offered in the aggregate view (its rows belong to several mailboxes), and neither are these. */
-    const keyboardActions = !aggregateFolderType;
+    /** The selection bar isn't offered in the aggregate listing (its rows belong to several mailboxes), and neither are these - but the results of a
+     * search over them are, each hit acted on in its own mailbox (see `inEachMailbox()`). */
+    const keyboardActions = !aggregateFolderType || isSearching;
     /** What the keyboard acts on exists: the ticked rows in select mode, else the message (or conversation) open in the reading pane. */
     const keyboardTargetExists = selectMode ? selectedMessages.length > 0 : threadPane ? openThread !== null : selected !== null;
     const rowCount = inConversations ? listedConversations.length : messages.length;
     const canMoveSelection = !selectMode && !isMobile && !loading && rowCount > 0;
 
+    /** The type of a message's folder - looked for in every mailbox's, as a search over several has messages from each. */
     function folderTypeOf(folderUidOfMessage: string): Folder["type"] | undefined {
-        return currentFolders.find((f) => f.uid === folderUidOfMessage)?.type;
+        return mailboxFolders.flatMap((mf) => mf.folders).find((f) => f.uid === folderUidOfMessage)?.type;
     }
 
     /** Moves the keyboard's focus to a row - and scrolls it into view - once the selection has moved to it. */
@@ -2005,16 +2298,19 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
     }
 
-    /** The messages of the open conversation that are in the folder being listed - fetched (once) like a ticked conversation's. */
-    async function loadOpenConversation(conversation: ConversationThreadHead): Promise<Message[]> {
+    /** The messages of the open conversation that are in the folder being listed - fetched (once) like a ticked conversation's. `ofMailbox` is the
+     * conversation's mailbox: a search over several mailboxes can open one that is not the page's, and the same conversation id can exist in two. */
+    async function loadOpenConversation(conversation: ConversationThreadHead, ofMailbox = activeMailboxUid): Promise<Message[]> {
         const id = conversation.conversationId;
-        let all = conversationMessagesById[id];
+        const cacheKey = ofMailbox === activeMailboxUid ? id : `${ofMailbox}\u0000${id}`;
+        let all = conversationMessagesById[cacheKey];
         if (!all) {
-            all = await listConversationMessages(activeMailboxUid, id);
+            all = await listConversationMessages(ofMailbox, id);
             const loaded = all;
-            setConversationMessagesById((prev) => ({ ...prev, [id]: loaded }));
+            setConversationMessagesById((prev) => ({ ...prev, [cacheKey]: loaded }));
         }
-        return all.filter((m) => !folderUid || m.folderUid === folderUid);
+        // What a search over several mailboxes finds is in every folder of them, not just the one open.
+        return all.filter((m) => !folderUid || crossMailbox || m.folderUid === folderUid);
     }
 
     /**
@@ -2032,7 +2328,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
         let chosen: Message[];
         try {
-            chosen = selectMode ? selectedMessages : threadPane ? await loadOpenConversation(openThread!.conversation) : [selected!];
+            chosen = selectMode
+                ? selectedMessages
+                : threadPane
+                  ? await loadOpenConversation(openThread!.conversation, openThread!.mailboxUid)
+                  : [selected!];
         } catch (err) {
             notifyApiError(err, "Couldn't load the messages in that conversation");
             return;
@@ -2056,7 +2356,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         SHORTCUTS.mail.delete,
         () =>
             void runOnKeyboardTargets(
-                async (chosen) => moveMessages(chosen, await resolveFolderOfType("deleted_items", "Deleted Items")),
+                (chosen) => moveToFolderOfType(chosen, "deleted_items", "Deleted Items"),
                 true,
                 (message) => folderTypeOf(message.folderUid) !== "deleted_items",
             ),
@@ -2116,14 +2416,22 @@ function InboxContent({ userUid }: { userUid?: string }) {
         },
         { enabled: selectMode || selectedUid !== null || openThread !== null || searchInput !== "" },
     );
-    useShortcut(
-        SHORTCUTS.mail.search,
-        () => {
-            searchInputRef.current?.focus();
-            searchInputRef.current?.select();
-        },
-        { enabled: !aggregateFolderType },
-    );
+    useShortcut(SHORTCUTS.mail.search, () => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+    });
+
+    // Folders and labels belong to one mailbox. A search over several mailboxes can have a selection in more than one: Move to needs it to be in one
+    // (and offers that mailbox's folders), and Apply label needs it to be in the open mailbox, whose labels are the ones loaded. Archive, Delete and
+    // Report junk go to each hit's own mailbox's folders (`inEachMailbox()`), so they need nothing of the sort.
+    const selectedMailboxUids = new Set(selectedMessages.map((m) => m.mailboxUid));
+    const selectionMailboxUid = crossMailbox && selectedMailboxUids.size === 1 ? [...selectedMailboxUids][0] : activeMailboxUid;
+    const moveDisabledReason =
+        crossMailbox && selectedMailboxUids.size > 1 ? "The selected messages are in different mailboxes - select messages from one mailbox to move them" : undefined;
+    const labelsDisabledReason =
+        crossMailbox && selectedMessages.some((m) => m.mailboxUid !== activeMailboxUid)
+            ? "Labels can only be applied here to messages in the open mailbox"
+            : undefined;
 
     if (!folderUid && !aggregateFolderType) {
         // `MailShell` never renders this component at all until a mailbox is resolved (see its own
@@ -2161,10 +2469,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             asConversations ? setSelectedConversationIds(new Set()) : setSelectedUids(new Set())
                         }
                         onCancel={leaveSelectMode}
-                        folders={currentFolders}
+                        folders={foldersOf(selectionMailboxUid)}
                         currentFolderUid={folderUid}
                         labels={mailboxLabels}
-                        mailboxUid={activeMailboxUid}
+                        mailboxUid={selectionMailboxUid}
+                        moveDisabledReason={moveDisabledReason}
+                        labelsDisabledReason={labelsDisabledReason}
                         onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
                         onFolderCreated={onFolderCreated}
                         onApplyLabels={applyLabelsToSelection}
@@ -2217,9 +2527,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                     ? CONVERSATION_SORT_NOTE
                                     : undefined
                         }
-                        selectDisabled={!!aggregateFolderType || loading || listedRowCount === 0}
+                        selectDisabled={(!!aggregateFolderType && !isSearching) || loading || listedRowCount === 0}
                         selectDisabledReason={
-                            aggregateFolderType
+                            aggregateFolderType && !isSearching
                                 ? "Open a mailbox's own folder to select messages"
                                 : loading
                                   ? "Wait for this folder to finish loading"
@@ -2261,23 +2571,53 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         {/* §_Progressive Results_: "Never show a hard count until every tier has reported.
                             Display n of ??, or omit the count. A settled count is the signal that ordering
                             is final." */}
-                        <span>
-                            {tier1Done && tier2Done && tier3Done
-                                ? `${messages.length} result${messages.length === 1 ? "" : "s"}`
-                                : `${messages.length} of ??`}
+                        <span className="flex flex-col">
+                            <span>
+                                {tier1Done && tier2Done && tier3Done
+                                    ? `${messages.length} result${messages.length === 1 ? "" : "s"}`
+                                    : `${messages.length} of ??`}
+                            </span>
+                            {crossMailbox && <span data-testid="search-scope">All mailboxes</span>}
                         </span>
-                        {tier2Done && !searchAllMail && (
-                            <button
-                                type="button"
-                                onClick={handleSearchAllMail}
-                                className="text-primary-dark hover:underline font-medium shrink-0"
-                            >
-                                Search all mail
-                            </button>
-                        )}
+                        <span className="flex flex-col items-end gap-0.5">
+                            {tier2Done && !searchAllMail && (
+                                <button
+                                    type="button"
+                                    onClick={handleSearchAllMail}
+                                    title={
+                                        crossMailbox
+                                            ? "Also search encrypted mail from before each mailbox's local index begins"
+                                            : undefined
+                                    }
+                                    className="text-primary-dark hover:underline font-medium shrink-0"
+                                >
+                                    {/* "All mail" already means every mailbox here, so this says what it adds. */}
+                                    {crossMailbox ? "Search older encrypted mail" : "Search all mail"}
+                                </button>
+                            )}
+                            {widenable && (
+                                <button
+                                    type="button"
+                                    onClick={() => setSearchAllMailboxes(!searchAllMailboxes)}
+                                    className="text-primary-dark hover:underline font-medium shrink-0"
+                                >
+                                    {searchAllMailboxes ? "Search this mailbox only" : "Search all mailboxes"}
+                                </button>
+                            )}
+                        </span>
                     </div>
                 )}
-                {isSearching && coverage?.indexedFrom && (
+                {crossMailbox && isSearching && searchableMailboxes.length > searchedMailboxes.length && (
+                    <div role="status" className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
+                        Searched {searchedMailboxes.length} of {searchableMailboxes.length} mailboxes - the most that are searched at once.
+                    </div>
+                )}
+                {crossMailbox && isSearching && searchFailures.length > 0 && (
+                    <div role="status" className="px-4 py-1.5 text-xs text-text-muted border-b border-border bg-surface-alt">
+                        Some results may be missing: {describeFailures(searchFailures)}
+                    </div>
+                )}
+                {isSearching && !crossMailbox && coverage?.indexedFrom && (
                     <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
                         Local search covers messages back to {new Date(coverage.indexedFrom).toLocaleDateString()}
                         {coverage.building ? " (still building)" : ""}
@@ -2286,7 +2626,33 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             : " - older encrypted mail is still searched, just slower."}
                     </div>
                 )}
-                {isSearching && !getUnlockedKeys(mailboxUid!) && (
+                {isSearching && crossMailbox && tier2Done && serverOnlyMailboxes.length > 0 && (
+                    <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
+                        There is no local index on this device for {serverOnlyMailboxes.map((mb) => mb.displayName).join(", ")}: its encrypted mail is searched
+                        through the server instead, which is slower and looks at a limited number of messages.
+                    </div>
+                )}
+                {isSearching && crossMailbox && lockedSearchMailboxes.length > 0 && (
+                    <div className="px-4 py-2 border-b border-border bg-surface-alt flex flex-col gap-1">
+                        {unlockableSearchMailboxes.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={handleUnlockSearch}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
+                            >
+                                <HiOutlineLockClosed size={12} aria-hidden="true" />
+                                Unlock to include encrypted messages from {unlockableSearchMailboxes.map((mb) => mb.displayName).join(", ")}
+                            </button>
+                        )}
+                        {sharedLockedSearchMailboxes.length > 0 && (
+                            <p className="text-xs text-text-muted">
+                                Encrypted messages in {sharedLockedSearchMailboxes.map((mb) => mb.displayName).join(", ")} are not included: only the
+                                mailbox&rsquo;s owner can unlock them.
+                            </p>
+                        )}
+                    </div>
+                )}
+                {isSearching && !crossMailbox && !getUnlockedKeys(mailboxUid!) && (
                     <div className="px-4 py-2 border-b border-border bg-surface-alt">
                         <button
                             type="button"
@@ -2350,7 +2716,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         )}
                         {rowCapReached && (
                             <p className="p-4 text-center text-xs text-text-muted">
-                                Showing the most recent {MAX_LOADED_ROWS} conversations &mdash; refine your search or filters to see more.
+                                Showing the most recent {rowCap} conversations &mdash; refine your search or filters to see more.
                             </p>
                         )}
                     </>
@@ -2376,7 +2742,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         <ul className={swipeEnabled ? "overflow-x-clip" : undefined}>
                             {resultGroups
                                 ? resultGroups.map((group) => (
-                                      <li key={group.id} data-search-group={group.id}>
+                                      <li key={`${group.mailboxUid}\u0000${group.id}`} data-search-group={group.id}>
                                           <div className="px-4 py-1.5 bg-surface-alt border-b border-border text-xs text-text-muted flex items-center justify-between gap-2">
                                               <span className="truncate font-semibold">{rowSubject(group.messages[0])}</span>
                                               <span className="shrink-0">
@@ -2395,10 +2761,10 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         )}
                         {rowCapReached && (
                             <p className="p-4 text-center text-xs text-text-muted">
-                                Showing the most recent {MAX_LOADED_ROWS} messages &mdash; refine your search or filters to see more.
+                                Showing the most recent {rowCap} messages &mdash; refine your search or filters to see more.
                             </p>
                         )}
-                        {aggregateFolderType && (
+                        {aggregateFolderType && !isSearching && (
                             <p className="p-4 text-center text-xs text-text-muted">
                                 Showing the most recent mail from each mailbox. Open a specific mailbox&rsquo;s folder to
                                 see older mail.
@@ -2418,13 +2784,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     <LazyConversationThreadPane
                         conversation={openThread?.conversation ?? null}
                         selectedUid={openThread?.uid ?? null}
-                        mailboxUid={activeMailboxUid}
-                        folders={currentFolders}
-                        labels={mailboxLabels}
+                        mailboxUid={labelsMailboxUid}
+                        folders={foldersOf(labelsMailboxUid)}
+                        labels={labels}
                         shortcuts={!selectMode}
                         onMessagePatched={patchListedMessage}
                         onMessageRemoved={(updated) => removeListedMessage(updated.uid)}
-                        onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
+                        onLabelCreated={(label) => (otherMailbox ? setOtherMailboxLabels : setMailboxLabels)((prev) => [...prev, label])}
                         onFolderCreated={onFolderCreated}
                     />
                 ) : (
