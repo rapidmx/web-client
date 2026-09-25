@@ -95,7 +95,7 @@ describe("quick create", () => {
         expect(screen.getByRole("button", { name: /Wednesday, June 10(, 2026)?\s+9:00am – 10:00am/ })).toBeInTheDocument();
         expect(screen.getByText(/UTC\s+•\s+Does not repeat/)).toBeInTheDocument();
         expect(screen.getByText("Work")).toBeInTheDocument();
-        expect(screen.getByText(/Busy\s+•\s+No notification/)).toBeInTheDocument();
+        expect(screen.getByText(/Busy\s+•\s+Default visibility\s+•\s+No notification/)).toBeInTheDocument();
     });
 
     it("opens the date, time, zone and repeat controls in place when the when row is clicked, and closes them again", async () => {
@@ -483,7 +483,7 @@ describe("More options", () => {
         expect(screen.queryByRole("button", { name: "More options" })).not.toBeInTheDocument();
     });
 
-    it("has the full form's fields, in two columns' worth of rows, and no tabs, description or visibility", async () => {
+    it("has the full form's fields, in two columns' worth of rows, with its Event details and Find a time tabs, a description and a visibility", async () => {
         const user = userEvent.setup();
         renderNew();
         await openMoreOptions(user);
@@ -499,9 +499,11 @@ describe("More options", () => {
         expect(screen.getByRole("checkbox", { name: "Send an automatic reply while this event is happening" })).toBeInTheDocument();
         expect(screen.getByRole("heading", { name: "Guests" })).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "+ Add room/equipment" })).toBeInTheDocument();
-        expect(screen.queryByRole("tab")).not.toBeInTheDocument();
-        expect(screen.queryByText("Find a time")).not.toBeInTheDocument();
-        expect(screen.queryByLabelText(/description/i)).not.toBeInTheDocument();
+        expect(screen.getByRole("tab", { name: "Event details" })).toHaveAttribute("aria-selected", "true");
+        expect(screen.getByRole("tab", { name: "Find a time" })).toHaveAttribute("aria-selected", "false");
+        expect(screen.getByLabelText("Visibility")).toHaveValue("default");
+        expect(screen.getByRole("group", { name: "Guest permissions" })).toBeInTheDocument();
+        expect(await screen.findByRole("toolbar", { name: "Description formatting" })).toBeInTheDocument();
     });
 
     it("saves from the top right with everything typed in either face", async () => {

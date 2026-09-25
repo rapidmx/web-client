@@ -262,6 +262,28 @@ describe("CalendarPage", () => {
         expect(dialog.style.top).toBe("84px");
     });
 
+    it("offers an Appointment schedule tab in the new event popover only when the booking plugin's Settings section is there", async () => {
+        mockShellAndEvents([]);
+        const user = userEvent.setup();
+        const { unmount } = render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("heading", { name: "June 2026" });
+        await user.click(screen.getByRole("button", { name: "+ New event" }));
+        expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Event", "Task"]);
+        unmount();
+
+        render(
+            <CalendarPage
+                userUid="u1"
+                pluginNav={{ settingsSections: [{ id: "booking-types", label: "Booking Links", href: "/settings/booking-types" }] }}
+            />,
+        );
+        await screen.findByRole("heading", { name: "June 2026" });
+        await user.click(screen.getByRole("button", { name: "+ New event" }));
+        expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Event", "Task", "Appointment schedule"]);
+        await user.click(screen.getByRole("tab", { name: "Appointment schedule" }));
+        expect(screen.getByRole("link", { name: "More options" })).toHaveAttribute("href", "/settings/booking-types/new?mailboxUid=mb1");
+    });
+
     it("clicking an empty slot in Week view opens the quick-create popover beside that slot", async () => {
         mockShellAndEvents([]);
         const user = userEvent.setup();

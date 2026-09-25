@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { FormEvent } from "react";
-import { Attendee, BusyStatus, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { Attendee, BusyStatus, EventVisibility, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 
@@ -32,6 +32,14 @@ export interface EventFormValues {
     /** Minutes before the start, as typed; blank means no reminder. */
     reminderMinutes: string;
     busyStatus: BusyStatus;
+    /** Who may see the event's details. */
+    visibility: EventVisibility;
+    /** The description as the editor last wrote it: HTML, `""` when there is none (an emptied editor writes `<p></p>`, which counts as none). */
+    descriptionHtml: string;
+    /** What guests may do: ask for the event to change, ask for guests to be added, see who else is invited. */
+    guestsCanModify: boolean;
+    guestsCanInviteOthers: boolean;
+    guestsCanSeeGuestList: boolean;
     autoReplyEnabled: boolean;
     autoReplyMessage: string;
     videoEnabled: boolean;
@@ -55,6 +63,11 @@ export interface EventFormController {
     startWeekday: WeekdayCode | undefined;
     /** "This event only" of a recurring event: the copy it detaches has no rule of its own. */
     editingSingleOccurrence: boolean;
+
+    // Find a time: whose calendar the grid shows as "you", and the zone the device's own clock is in.
+    /** The address the event is organized from (the chosen mailbox's, for a new event). */
+    organizerAddress: string;
+    deviceZone: string;
 
     // Guests.
     /** Adds the addresses in `text`; returns the ones that are not valid addresses. */

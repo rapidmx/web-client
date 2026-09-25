@@ -174,7 +174,8 @@ describe("EventModal details", () => {
         it("has Accept, Tentative and Decline, marks the one already given, and has no Modify", () => {
             renderDetails(invited("tentative"), { organizerAddress: "bob@example.com" });
 
-            expect(screen.getByText("You were invited to this event. Only the organizer can change its details.")).toBeInTheDocument();
+            // Guests may invite others unless the organizer turned that off, so the reader is told they can ask.
+            expect(screen.getByText("You were invited to this event. Only the organizer can change its details, but you can ask them to.")).toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Modify" })).not.toBeInTheDocument();
             expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
             expect(screen.getByRole("button", { name: "Tentative" })).toHaveAttribute("aria-pressed", "true");

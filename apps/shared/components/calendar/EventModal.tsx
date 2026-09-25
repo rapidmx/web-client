@@ -11,6 +11,7 @@ import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
 import EventDetails from "./EventDetails.js";
 import EventEditor from "./EventEditor.js";
 import EventShell, { EventAnchor, EventShellVariant } from "./EventShell.js";
+import { QuickTab } from "./QuickCreateTabs.js";
 
 export { VIDEO_LOCATION_PLACEHOLDER } from "./EventEditor.js";
 export type { EventAnchor } from "./EventShell.js";
@@ -47,6 +48,9 @@ export interface EventModalProps {
     /** Create mode: what was clicked (a slot, a day, the New event button), which the quick-create popover opens beside. Without one it
      * opens centered near the top of the window. */
     anchor?: EventAnchor;
+    /** Where the booking plugin's Settings pages are (`/settings/booking-types`) when it is running: a new event then has an Appointment
+     * schedule tab, and its More options opens the plugin's own new-link page. Without it there are only the Event and Task tabs. */
+    bookingHref?: string;
     onSaved: () => void;
     onDeleted: () => void;
 }
@@ -55,12 +59,16 @@ export interface EventModalProps {
 const QUICK_WIDTH = 450;
 const DETAILS_WIDTH = 480;
 const FORM_WIDTH = 880;
+const TASK_FORM_WIDTH = 560;
 
 /**
  * The calendar's event dialog, in three faces drawn through one frame (`EventShell`):
  *
  * - **A new event** opens as a quick-create popover (`EventQuickForm`, beside what was clicked; a bottom sheet on a phone). "More options"
  * grows it into the full card (`EventExpandedForm`) with everything typed so far still in it.
+ * The popover has tabs (`QuickCreateTabs`): Event, Task, and - when the booking plugin is running (`bookingHref`) - Appointment schedule.
+ * The Task and Appointment faces are drawn by `QuickCreateFaces`, share the Event tab's title, mailbox and calendar, and only ever
+ * create a task or a booking type; the Event tab is the form it always was.
  * - **An existing event** opens read-only (`EventDetails`): what the event says, the invited reader's Accept / Tentative / Decline,
  * and Delete. The reader who organized it also gets Modify, which turns the same card into the full form; closing that form returns
  * to the details, discarding the edits (a save closes everything, as it always did).
@@ -83,6 +91,7 @@ export default function EventModal({
     initialEnd,
     initialAllDay,
     anchor,
+    bookingHref,
     onSaved,
     onDeleted,
 }: EventModalProps) {
@@ -90,6 +99,8 @@ export default function EventModal({
     // An existing event: Modify was pressed. A new event: More options was.
     const [editing, setEditing] = useState(false);
     const [expanded, setExpanded] = useState(false);
+    // A new event: what the popover creates (an event, a task or an appointment schedule). More options only ever grows the tab it was pressed on.
+    const [tab, setTab] = useState<QuickTab>("event");
     const [syncWarning, setSyncWarning] = useState(false);
     // Whether the form holds anything a click on the backdrop would throw away (kept up to date by the editor).
     const dirtyRef = useRef(false);
@@ -131,7 +142,7 @@ export default function EventModal({
     const isForm = !occurrence || editing;
     const layout = occurrence || expanded ? "expanded" : "quick";
     const variant: EventShellVariant = !isForm || layout === "expanded" ? "card" : isMobile ? "sheet" : "popover";
-    const width = !isForm ? DETAILS_WIDTH : layout === "expanded" ? FORM_WIDTH : QUICK_WIDTH;
+    const width = !isForm ? DETAILS_WIDTH : layout === "expanded" ? (tab === "event" || occurrence ? FORM_WIDTH : TASK_FORM_WIDTH) : QUICK_WIDTH;
     // Leaving the form: an existing event goes back to its details, a new one is done.
     const leaveForm = occurrence ? () => setEditing(false) : onClose;
 
@@ -163,12 +174,25 @@ export default function EventModal({
                     initialStart={initialStart}
                     initialEnd={initialEnd}
                     initialAllDay={initialAllDay}
+                    quickCreate={
+                        occurrence
+                            ? undefined
+                            : {
+                                  tab,
+                                  onTabChange: (next) => {
+                                      setTab(next);
+                                      setExpanded(false);
+                                  },
+                                  bookingHref,
+                              }
+                    }
                 />
             ) : (
                 <EventDetails
                     occurrence={occurrence}
                     isInvited={isInvited}
                     myResponse={canRespond ? myAttendee.responseStatus : undefined}
+                    isOwnAddress={isOwnAddress}
                     calendarName={calendars?.find((cal) => cal.uid === occurrence.folderUid)?.name}
                     calendarColor={folderColors?.[occurrence.folderUid]}
                     onClose={onClose}

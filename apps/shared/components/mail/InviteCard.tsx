@@ -14,8 +14,12 @@ import {
     removeMessageInvite,
     respondToMessageInvite,
 } from "@rapidmx/react-shared/calendar/inviteApi.js";
+import { guestPermissionsOf } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import EventDescriptionView from "../calendar/EventDescriptionView.js";
+import RequestChangeForm from "../calendar/RequestChangeForm.js";
+import { VISIBILITY_LABEL, describeGuestPermissions } from "../calendar/eventFormat.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import { calendarHref, conflictSummary, formatInviteWhen } from "./invite/inviteFormat.js";
 import { useMessageInvite } from "./invite/inviteStore.js";
@@ -29,6 +33,9 @@ const HEADINGS: Record<string, string> = {
     REPLY: "Meeting response",
     COUNTER: "New time proposed",
 };
+
+/** The heading of a `COUNTER` that is a guest's request for a change (rather than a different time). */
+const CHANGE_REQUEST_HEADING = "Change requested";
 
 /** How an answer reads in "Bob accepted." (a REPLY) - a participant who has not answered has not answered. */
 const REPLY_VERBS: Partial<Record<NonNullable<InviteParticipant["responseStatus"]>, string>> = {
@@ -94,6 +101,9 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
     const [proposing, setProposing] = useState(false);
     // Said once after a proposal went out: the invitation itself doesn't change.
     const [proposed, setProposed] = useState(false);
+    // A guest's request for a change (or for guests to be added): the form is open, and once it went out.
+    const [requesting, setRequesting] = useState(false);
+    const [requested, setRequested] = useState(false);
     const headingId = useId();
 
     if (!invite) {
@@ -126,21 +136,34 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
     const method = invite.method.toUpperCase();
     const isReply = method === "REPLY";
     const isCounter = method === "COUNTER";
+    // A `COUNTER` a guest sent to change the event (not just its time): whether the organizer's server applied it already.
+    const changeRequest = isCounter ? invite.changeRequest : undefined;
+    const permissions = guestPermissionsOf(invite.guestPermissions ?? {});
+    const hiddenList = !invite.isOrganizer && !permissions.guestsCanSeeGuestList;
+    const canRequest = !!invite.calendarEventUid && (!!invite.canRequestChange || !!invite.canRequestInvite);
     const title = invite.summary?.trim() || "(no title)";
     const when = formatInviteWhen(invite);
-    const attendees = attendeeSummary(invite.attendees);
+    const attendees = hiddenList ? "The organizer has hidden the guest list" : attendeeSummary(invite.attendees);
+    const hasDescription = !!(invite.descriptionHtml?.trim() || invite.description?.trim());
+    const visibility = invite.visibility && invite.visibility !== "default" ? VISIBILITY_LABEL[invite.visibility] : undefined;
     const sender = invite.reply ?? invite.attendees[0];
     const senderName = sender ? sender.displayName || sender.address : "Someone";
     const showResponses = invite.canRespond && !invite.isOrganizer;
     const conflicts = !isReply && !isCounter && method !== "CANCEL" && invite.conflicts.length > 0 ? conflictSummary(invite.conflicts) : undefined;
     const hasActions =
-        showResponses || invite.canPropose || invite.canAcceptProposal || invite.canAdd || invite.canRemove || (invite.onCalendar && !!invite.calendarEventUid);
+        showResponses ||
+        invite.canPropose ||
+        invite.canAcceptProposal ||
+        invite.canAdd ||
+        invite.canRemove ||
+        canRequest ||
+        (invite.onCalendar && !!invite.calendarEventUid);
 
     return (
         <section aria-labelledby={headingId} className="rounded-sm border border-border bg-surface-alt px-3 py-3 flex flex-col gap-2 text-sm text-text">
             <Heading id={headingId} className="flex items-center gap-2 text-sm font-semibold">
                 <HiOutlineCalendarDays size={16} aria-hidden="true" className="shrink-0" />
-                {HEADINGS[method] ?? "Calendar event"}
+                {changeRequest ? CHANGE_REQUEST_HEADING : (HEADINGS[method] ?? "Calendar event")}
             </Heading>
             {isReply && (
                 // Someone answering the reader's own invitation: a line of news, nothing to do.
@@ -148,15 +171,28 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                     <span className="font-semibold">{senderName}</span> {(sender?.responseStatus && REPLY_VERBS[sender.responseStatus]) ?? "responded"}.
                 </p>
             )}
-            {isCounter && (
+            {isCounter && !changeRequest && (
                 <p className="break-words">
                     <span className="font-semibold">{senderName}</span> proposed a new time{when ? <>: {when}</> : "."}
+                </p>
+            )}
+            {changeRequest && (
+                <p className="break-words">
+                    {changeRequest.applied ? (
+                        <>
+                            <span className="font-semibold">{senderName}</span>&rsquo;s change was applied.
+                        </>
+                    ) : (
+                        <>
+                            <span className="font-semibold">{senderName}</span> requested a change.
+                        </>
+                    )}
                 </p>
             )}
             <p className="font-medium break-words">{title}</p>
             {!isReply && (
                 <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-                    {when && !isCounter && (
+                    {when && (!isCounter || !!changeRequest) && (
                         <>
                             <dt className="text-text-muted">When</dt>
                             <dd className="break-words">
@@ -171,16 +207,30 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                             <dd className="break-words">{invite.location}</dd>
                         </>
                     )}
+                    {hasDescription && (!isCounter || !!changeRequest) && (
+                        <>
+                            <dt className="text-text-muted">Description</dt>
+                            <dd className="break-words">
+                                <EventDescriptionView html={invite.descriptionHtml} text={invite.description} />
+                            </dd>
+                        </>
+                    )}
                     {invite.organizer && !isCounter && (
                         <>
                             <dt className="text-text-muted">Organizer</dt>
                             <dd className="break-words">{formatMailAddress(invite.organizer)}</dd>
                         </>
                     )}
-                    {attendees && !isCounter && (
+                    {attendees && (!isCounter || !!changeRequest) && (
                         <>
                             <dt className="text-text-muted">Attendees</dt>
                             <dd className="break-words">{attendees}</dd>
+                        </>
+                    )}
+                    {visibility && !isCounter && (
+                        <>
+                            <dt className="text-text-muted">Visibility</dt>
+                            <dd className="break-words">{visibility}</dd>
                         </>
                     )}
                 </dl>
@@ -191,6 +241,9 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                     <span className="font-medium">Conflicts with:</span> {conflicts}
                 </p>
             )}
+            {invite.guestPermissions && !isReply && !isCounter && method !== "CANCEL" && (
+                <p className="text-xs text-text-muted break-words">{describeGuestPermissions(permissions)}</p>
+            )}
             {invite.isOrganizer && !isReply && !isCounter && <p className="text-text-muted">You are the organizer of this meeting.</p>}
             {method === "CANCEL" && <p className="font-medium text-danger">This meeting was canceled.</p>}
             {invite.response && !invite.isOrganizer && !isReply && !isCounter && (
@@ -198,7 +251,7 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                     {ANSWER_TEXT[invite.response]}
                 </p>
             )}
-            {isCounter && invite.response === "accepted" && (
+            {isCounter && invite.response === "accepted" && !changeRequest?.applied && (
                 <p role="status" className="font-medium text-success">
                     You accepted the proposed time.
                 </p>
@@ -206,6 +259,11 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
             {proposed && (
                 <p role="status" className="font-medium text-text">
                     Your proposed time was sent to the organizer.
+                </p>
+            )}
+            {requested && (
+                <p role="status" className="font-medium text-text">
+                    Your change was sent to the organizer.
                 </p>
             )}
             {invite.outdated && <p className="text-xs text-text-muted">A newer version of this meeting is already on your calendar.</p>}
@@ -237,6 +295,11 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                     {invite.canPropose && !proposing && (
                         <Button type="button" variant="text" disabled={busy} onClick={() => setProposing(true)}>
                             Propose new time
+                        </Button>
+                    )}
+                    {canRequest && !requesting && (
+                        <Button type="button" variant="secondary" className="!w-auto" disabled={busy} onClick={() => setRequesting(true)}>
+                            {invite.canRequestChange ? "Request a change" : "Add guests"}
                         </Button>
                     )}
                     {invite.canAcceptProposal && invite.response !== "accepted" && (
@@ -284,6 +347,31 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                             Open in Calendar
                         </a>
                     )}
+                </div>
+            )}
+            {requesting && (
+                <div className="rounded-md bg-surface p-3">
+                    <RequestChangeForm
+                        subject={{
+                            uid: invite.calendarEventUid as string,
+                            title: invite.summary ?? "",
+                            location: invite.location,
+                            startDate: invite.startDate,
+                            endDate: invite.endDate,
+                            allDay: invite.allDay,
+                            recurring: invite.recurring,
+                            description: invite.description,
+                            descriptionHtml: invite.descriptionHtml,
+                            guestAddresses: invite.attendees.map((attendee) => attendee.address),
+                        }}
+                        canChange={!!invite.canRequestChange}
+                        canInvite={!!invite.canRequestInvite}
+                        onSent={() => {
+                            setRequesting(false);
+                            setRequested(true);
+                        }}
+                        onCancel={() => setRequesting(false)}
+                    />
                 </div>
             )}
             {proposing && (

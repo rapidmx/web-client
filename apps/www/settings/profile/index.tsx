@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { routedPage } from "../../_routedPage.js";
 import React, { FormEvent, useMemo, useState } from "react";
-import { updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { FreeBusyVisibility, freeBusyVisibilityOf, isSharedWithMe, updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import { DEFAULT_TIME_ZONE, deviceTimeZone, timeZoneOptions } from "@rapidmx/react-shared/util/timeZone.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -17,6 +17,14 @@ const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 const SELECT_CLASS =
     "text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
+
+/** Who may see when this mailbox is busy, as the Profile page words it: the label of each choice and the one line that says what it means. */
+const FREE_BUSY_CHOICES: { value: FreeBusyVisibility; label: string; help: string }[] = [
+    { value: "domain", label: "Everyone on my domain", help: "People with a mailbox on your domain can see when you are busy." },
+    { value: "shared", label: "Only people I've shared my calendar with", help: "Only people you have given access to this mailbox or its calendars can see when you are busy." },
+    { value: "nobody", label: "Nobody", help: "Nobody else can see when you are busy; people looking for a time see your availability as hidden." },
+    { value: "everyone", label: "Everyone on this server", help: "Anyone signed in to this server can see when you are busy." },
+];
 
 /** The longest display name the server accepts. */
 const MAX_DISPLAY_NAME_LENGTH = 255;
@@ -63,6 +71,10 @@ function ProfileContent() {
     const [timezone, setTimezone] = useState(() =>
         mailbox.timezone === DEFAULT_TIME_ZONE && deviceZone !== DEFAULT_TIME_ZONE ? deviceZone : mailbox.timezone,
     );
+    const [savedFreeBusy, setSavedFreeBusy] = useState(freeBusyVisibilityOf(mailbox));
+    const [freeBusy, setFreeBusy] = useState(savedFreeBusy);
+    // Only the mailbox's owner may change who sees its free/busy: on one shared with you the setting is shown, not offered.
+    const canChangeFreeBusy = !isSharedWithMe(mailbox);
     const [nameError, setNameError] = useState<string | null>(null);
     // See auto-reply/index.tsx's identical note - later saves must carry the version the previous save returned.
     const [version, setVersion] = useState(mailbox.version);
@@ -87,7 +99,8 @@ function ProfileContent() {
 
         const nameChanged = name !== savedName;
         const zoneChanged = timezone !== savedZone;
-        if (!nameChanged && !zoneChanged) {
+        const freeBusyChanged = canChangeFreeBusy && freeBusy !== savedFreeBusy;
+        if (!nameChanged && !zoneChanged && !freeBusyChanged) {
             setSaved(true);
             return;
         }
@@ -99,10 +112,12 @@ function ProfileContent() {
                 version,
                 ...(nameChanged && { displayName: name }),
                 ...(zoneChanged && { timezone }),
+                ...(freeBusyChanged && { freeBusyVisibility: freeBusy }),
             });
             setVersion(updated.version);
             setSavedName(name);
             setSavedZone(timezone);
+            setSavedFreeBusy(freeBusy);
             setSaved(true);
         } catch (err) {
             notifyApiError(err, "Couldn't save your profile");
@@ -188,6 +203,35 @@ function ProfileContent() {
                             How calendar times and reminders are shown and scheduled for this mailbox, such as when an
                             event or a reminder falls.
                         </p>
+                    </FormField>
+
+                    <FormField label="Free/busy visibility" htmlFor="profile-free-busy">
+                        <select
+                            id="profile-free-busy"
+                            className={SELECT_CLASS}
+                            value={freeBusy}
+                            disabled={!canChangeFreeBusy}
+                            onChange={(e) => {
+                                setFreeBusy(e.target.value as FreeBusyVisibility);
+                                setSaved(false);
+                            }}
+                            aria-describedby="profile-free-busy-help"
+                        >
+                            {FREE_BUSY_CHOICES.map((choice) => (
+                                <option key={choice.value} value={choice.value}>
+                                    {choice.label}
+                                </option>
+                            ))}
+                        </select>
+                        <p id="profile-free-busy-help" className="mt-1 text-xs text-text-muted">
+                            {FREE_BUSY_CHOICES.find((choice) => choice.value === freeBusy)!.help}
+                        </p>
+                        <p className="mt-1 text-xs text-text-muted">
+                            Who can see the hours you are busy when they look for a time to meet - never the title, place or guests of an event.
+                        </p>
+                        {!canChangeFreeBusy && (
+                            <p className="mt-1 text-xs text-text-muted">This mailbox is shared with you: only its owner can change who sees its free/busy times.</p>
+                        )}
                     </FormField>
 
                     <div>

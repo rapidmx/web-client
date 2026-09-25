@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useEffect, useState } from "react";
 import {
+    HiOutlineBars3BottomLeft,
     HiOutlineBell,
     HiOutlineBriefcase,
     HiOutlineCheck,
@@ -15,7 +16,8 @@ import {
     HiOutlineXMark,
 } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { AttendeeResponseInput, respondToEvent } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { AttendeeResponseInput, guestPermissionsOf, respondToEvent, visibilityOf } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { htmlToPlainText } from "@rapidmx/react-shared/calendar/eventDescription.js";
 import { deleteEventOccurrence, deleteEventSeries } from "@rapidmx/react-shared/calendar/calendarMutations.js";
 import { CalendarOccurrence, describeRecurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 import { getVideoMeeting } from "@rapidmx/react-shared/videoconf/videoMeetingsApi.js";
@@ -23,7 +25,9 @@ import { deviceTimeZone } from "@rapidmx/react-shared/util/timeZone.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
-import { BUSY_STATUS_LABEL, RESPONSE_STATUS_LABEL, describeReminder, formatStoredWhen } from "./eventFormat.js";
+import EventDescriptionView from "./EventDescriptionView.js";
+import RequestChangeForm from "./RequestChangeForm.js";
+import { BUSY_STATUS_LABEL, RESPONSE_STATUS_LABEL, VISIBILITY_LABEL, describeGuestPermissions, describeReminder, formatStoredWhen } from "./eventFormat.js";
 
 const ROLE_LABEL = { required: "", optional: "Optional", resource: "Room/equipment" } as const;
 
@@ -46,6 +50,9 @@ export interface EventDetailsProps {
     /** Set only when this mailbox is an invited attendee (one of the attendees, and not the organizer): the answer it has given so far, which
      * also switches on the Accept / Tentative / Decline block. */
     myResponse?: AttendeeResponseInput | "needsAction";
+    /** Whether an address is one of this mailbox's own (its primary address or an alias): tells the reader's own entry from the other guests when the organizer
+     * has hidden the guest list. */
+    isOwnAddress?: (address: string) => boolean;
     calendarName?: string;
     calendarColor?: string;
     onClose: () => void;
@@ -58,12 +65,29 @@ export interface EventDetailsProps {
 /**
  * What clicking an existing event shows first: everything the event says, read-only. The reader who organized it (or whose event has no
  * other organizer) can Modify or Delete it; one who was invited can answer (Accept, Tentative, Decline) or remove it from their own
- * calendar, but not change it - the organizer's next update would overwrite that anyway.
+ * calendar, but not change it - the organizer's next update would overwrite that anyway. When the organizer allows guests to ask for changes (or for
+ * guests to be added) the invited reader can "Request a change" / "Add guests": the request goes to the organizer (`RequestChangeForm`) and nothing here
+ * changes until their update arrives. When the organizer hides the guest list the reader sees only themselves and is told so.
+ *
+ * An event this reader may only see as a busy block (`occurrence.redacted`: a private or confidential event on a shared calendar) is drawn as just that -
+ * its time and that it is busy - with nothing to change, delete or answer.
  */
-export default function EventDetails({ occurrence, isInvited, myResponse, calendarName, calendarColor, onClose, onModify, onSaved, onDeleted }: EventDetailsProps) {
+export default function EventDetails({
+    occurrence,
+    isInvited,
+    myResponse,
+    isOwnAddress,
+    calendarName,
+    calendarColor,
+    onClose,
+    onModify,
+    onSaved,
+    onDeleted,
+}: EventDetailsProps) {
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
+    const [requesting, setRequesting] = useState(false);
     // The organizer's own join link for the event's video meeting: `undefined` while it is fetched, `null` once known to be none.
     const [organizerJoinUrl, setOrganizerJoinUrl] = useState<string | null | undefined>(undefined);
     const videoMeetingUid = occurrence.videoMeetingUid;
@@ -126,7 +150,47 @@ export default function EventDetails({ occurrence, isInvited, myResponse, calend
         }
     }
 
-    const guests = occurrence.attendees.filter((a) => !a.isOrganizer);
+    if (occurrence.redacted) {
+        return (
+            <div className="flex flex-col">
+                <div className="flex items-start gap-3 px-5 pt-4">
+                    <span aria-hidden="true" className="w-3.5 h-3.5 rounded-full shrink-0 mt-2" style={{ backgroundColor: calendarColor }} />
+                    <h2 className="flex-1 min-w-0 text-xl font-semibold break-words">Busy</h2>
+                    <button
+                        type="button"
+                        aria-label="Close details"
+                        onClick={onClose}
+                        className="w-8 h-8 shrink-0 flex items-center justify-center rounded-full text-text-muted hover:bg-surface-alt hover:text-text"
+                    >
+                        <HiOutlineXMark size={20} aria-hidden="true" />
+                    </button>
+                </div>
+                <div className="flex flex-col gap-3 px-5 pt-3 pb-4 text-sm">
+                    <DetailRow icon={<HiOutlineClock size={18} />}>
+                        <div>{formatStoredWhen(occurrence.startDate, occurrence.endDate, occurrence.allDay)}</div>
+                        {occurrence.recurrenceRule && <div className="text-text-muted">Repeats {describeRecurrence(occurrence.recurrenceRule)}</div>}
+                    </DetailRow>
+                    <p className="text-xs text-text-muted">This time is busy. The event&rsquo;s details are private, so only its time is shown.</p>
+                </div>
+                <div className="flex px-5 pb-4">
+                    <Button type="button" variant="secondary" className="!w-auto ml-auto" onClick={onClose}>
+                        Close
+                    </Button>
+                </div>
+            </div>
+        );
+    }
+
+    const permissions = guestPermissionsOf(occurrence);
+    // The organizer hid the guest list: this mailbox's own copy lists only itself (the server sends nothing more), and that is all that is shown.
+    const hiddenList = isInvited && !permissions.guestsCanSeeGuestList;
+    const allGuests = occurrence.attendees.filter((a) => !a.isOrganizer);
+    const guests = hiddenList ? allGuests.filter((a) => !!isOwnAddress?.(a.address)) : allGuests;
+    const hasDescription = htmlToPlainText(occurrence.descriptionHtml) !== "" || !!occurrence.description?.trim();
+    // An invited reader may ask the organizer for what the organizer allows.
+    const askable = isInvited && myResponse !== undefined;
+    const canChange = askable && permissions.guestsCanModify;
+    const canInvite = askable && permissions.guestsCanInviteOthers;
     const organizerName = occurrence.organizer.displayName;
     const eventZone = occurrence.timezone;
     const answers: { response: AttendeeResponseInput; label: string }[] = [
@@ -167,6 +231,12 @@ export default function EventDetails({ occurrence, isInvited, myResponse, calend
                     </DetailRow>
                 )}
 
+                {hasDescription && (
+                    <DetailRow icon={<HiOutlineBars3BottomLeft size={18} />}>
+                        <EventDescriptionView html={occurrence.descriptionHtml} text={occurrence.description} />
+                    </DetailRow>
+                )}
+
                 {videoMeetingUid && (
                     <DetailRow icon={<HiOutlineVideoCamera size={18} />}>
                         <div className="flex items-center gap-3 flex-wrap">
@@ -195,9 +265,11 @@ export default function EventDetails({ occurrence, isInvited, myResponse, calend
                     </div>
                 </DetailRow>
 
-                {guests.length > 0 && (
+                {(guests.length > 0 || hiddenList) && (
                     <DetailRow icon={<HiOutlineUserGroup size={18} />}>
-                        <div className="font-medium mb-1">{guests.length === 1 ? "1 guest" : `${guests.length} guests`}</div>
+                        <div className="font-medium mb-1">
+                            {hiddenList ? "The organizer has hidden the guest list" : guests.length === 1 ? "1 guest" : `${guests.length} guests`}
+                        </div>
                         <ul className="flex flex-col gap-1">
                             {guests.map((guest, i) => (
                                 <li key={i} className="flex items-baseline justify-between gap-3">
@@ -209,11 +281,13 @@ export default function EventDetails({ occurrence, isInvited, myResponse, calend
                                 </li>
                             ))}
                         </ul>
+                        {!isInvited && <div className="text-xs text-text-muted mt-1">{describeGuestPermissions(permissions)}</div>}
                     </DetailRow>
                 )}
 
                 <DetailRow icon={<HiOutlineBriefcase size={18} />}>
                     <div>{BUSY_STATUS_LABEL[occurrence.busyStatus]}</div>
+                    <div className="text-text-muted">{VISIBILITY_LABEL[visibilityOf(occurrence)]}</div>
                     {occurrence.autoReplyEnabled && (
                         <div className="text-text-muted">Sends an automatic reply while this event is happening</div>
                     )}
@@ -231,9 +305,35 @@ export default function EventDetails({ occurrence, isInvited, myResponse, calend
                 )}
 
                 {isInvited && (
-                    <p className="text-xs text-text-muted">You were invited to this event. Only the organizer can change its details.</p>
+                    <p className="text-xs text-text-muted">
+                        You were invited to this event. Only the organizer can change its details
+                        {canChange || canInvite ? ", but you can ask them to." : "."}
+                    </p>
                 )}
             </div>
+
+            {requesting && (
+                <div className="mx-5 mb-3 p-3 rounded-md bg-surface-alt">
+                    <RequestChangeForm
+                        subject={{
+                            uid: occurrence.uid,
+                            title: occurrence.title,
+                            location: occurrence.location,
+                            startDate: occurrence.startDate,
+                            endDate: occurrence.endDate,
+                            allDay: occurrence.allDay,
+                            recurring: occurrence.isRecurringOccurrence,
+                            description: occurrence.description,
+                            descriptionHtml: occurrence.descriptionHtml,
+                            guestAddresses: occurrence.attendees.map((a) => a.address),
+                        }}
+                        canChange={canChange}
+                        canInvite={canInvite}
+                        onSent={() => setRequesting(false)}
+                        onCancel={() => setRequesting(false)}
+                    />
+                </div>
+            )}
 
             {myResponse !== undefined && (
                 <div className="flex flex-col gap-2 mx-5 mb-3 p-3 rounded-md bg-surface-alt">
@@ -267,6 +367,11 @@ export default function EventDetails({ occurrence, isInvited, myResponse, calend
                 {!isInvited && (
                     <Button type="button" className="!w-auto" disabled={busy} onClick={onModify}>
                         Modify
+                    </Button>
+                )}
+                {(canChange || canInvite) && !requesting && (
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={busy} onClick={() => setRequesting(true)}>
+                        {canChange ? "Request a change" : "Add guests"}
                     </Button>
                 )}
                 {!occurrence.isRecurringOccurrence ? (

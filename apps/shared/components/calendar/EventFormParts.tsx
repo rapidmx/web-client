@@ -3,13 +3,23 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useRef, useState } from "react";
-import { HiOutlineBell, HiOutlineMapPin, HiOutlineUserGroup, HiOutlineVideoCamera, HiOutlineXMark } from "react-icons/hi2";
-import { AttendeeRole, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { HiOutlineBars3BottomLeft, HiOutlineBell, HiOutlineMapPin, HiOutlineUserGroup, HiOutlineVideoCamera, HiOutlineXMark } from "react-icons/hi2";
+import { AttendeeRole, EventVisibility, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import LazyDescriptionEditor from "./LazyDescriptionEditor.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
 import ResourcePicker from "./ResourcePicker.js";
 import { EventFormController } from "./eventForm.js";
-import { REMINDER_UNITS, ReminderUnit, RESPONSE_STATUS_LABEL, bestReminderUnit } from "./eventFormat.js";
+import { hasDescriptionText } from "./eventDialogFields.js";
+import {
+    REMINDER_UNITS,
+    ReminderUnit,
+    RESPONSE_STATUS_LABEL,
+    VISIBILITIES,
+    VISIBILITY_HELP,
+    VISIBILITY_LABEL,
+    bestReminderUnit,
+} from "./eventFormat.js";
 
 export const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-md bg-surface text-text focus:outline-none focus:border-primary";
@@ -517,6 +527,96 @@ export function CalendarField({ c }: { c: EventFormController }) {
                 )}
             </div>
         </div>
+    );
+}
+
+/**
+ * The description row: the rich-text box (`DescriptionEditor`). In the full card it is always there; in the quick-create popover (`collapsible`) it is an
+ * "Add description" row that opens the same box in place, as Google Calendar does - and stays open once there is text in it.
+ */
+export function DescriptionRow({ c, collapsible }: { c: EventFormController; collapsible: boolean }) {
+    const [opened, setOpened] = useState(false);
+    if (collapsible && !opened && !hasDescriptionText(c.values.descriptionHtml)) {
+        return (
+            <IconRow icon={<HiOutlineBars3BottomLeft size={20} />}>
+                <button type="button" className="text-sm text-text-muted hover:text-text py-1.5" onClick={() => setOpened(true)}>
+                    Add description
+                </button>
+            </IconRow>
+        );
+    }
+    return (
+        <IconRow icon={<HiOutlineBars3BottomLeft size={20} />}>
+            <LazyDescriptionEditor value={c.values.descriptionHtml} onChange={(html) => c.update({ descriptionHtml: html })} autoFocus={collapsible && opened} />
+        </IconRow>
+    );
+}
+
+/** Who may see the event's details, with what each choice means underneath. */
+export function VisibilitySelect({ c }: { c: EventFormController }) {
+    const { visibility } = c.values;
+    return (
+        <div className="flex flex-col gap-1">
+            <select
+                aria-label="Visibility"
+                aria-describedby="event-visibility-help"
+                className={`${SELECT_CLASS} !w-auto self-start`}
+                value={visibility}
+                onChange={(e) => c.update({ visibility: e.target.value as EventVisibility })}
+            >
+                {VISIBILITIES.map((option) => (
+                    <option key={option} value={option}>
+                        {VISIBILITY_LABEL[option]}
+                    </option>
+                ))}
+            </select>
+            <p id="event-visibility-help" className="text-xs text-text-muted">
+                {VISIBILITY_HELP[visibility]}
+            </p>
+        </div>
+    );
+}
+
+const GUEST_PERMISSIONS = [
+    {
+        key: "guestsCanModify",
+        label: "Modify event",
+        help: "Guests can ask you to change the title, location, description or time. What they ask for is sent to you and applied automatically when this is on.",
+    },
+    {
+        key: "guestsCanInviteOthers",
+        label: "Invite others",
+        help: "Guests can ask you to add more guests; those are added automatically when this is on.",
+    },
+    {
+        key: "guestsCanSeeGuestList",
+        label: "See guest list",
+        help: "When this is off, each guest is sent an invitation that names only themselves and you.",
+    },
+] as const;
+
+/** What guests may do with the event: ask for it to change, ask for guests to be added, see who else is invited. Only the organizer sets these. */
+export function GuestPermissions({ c }: { c: EventFormController }) {
+    return (
+        <fieldset className="flex flex-col gap-2 min-w-0">
+            <legend className="text-sm font-semibold mb-1">Guest permissions</legend>
+            {GUEST_PERMISSIONS.map(({ key, label, help }) => (
+                <div key={key}>
+                    <label className="flex items-center gap-2 text-sm">
+                        <input
+                            type="checkbox"
+                            aria-describedby={`event-${key}-help`}
+                            checked={c.values[key]}
+                            onChange={(e) => c.update({ [key]: e.target.checked })}
+                        />
+                        {label}
+                    </label>
+                    <p id={`event-${key}-help`} className="text-xs text-text-muted pl-6">
+                        {help}
+                    </p>
+                </div>
+            ))}
+        </fieldset>
     );
 }
 

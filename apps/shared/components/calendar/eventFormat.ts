@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { format } from "date-fns";
-import { Attendee, AttendeeResponseStatus, BusyStatus } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { Attendee, AttendeeResponseStatus, BusyStatus, EventVisibility, GuestPermissions } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import { fromEventWallClock, toEventWallClock } from "@rapidmx/react-shared/calendar/recurrence.js";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import { addDaysToKey, allDayDateKey } from "./allDay.js";
@@ -11,6 +11,36 @@ import { addDaysToKey, allDayDateKey } from "./allDay.js";
 /** What the event form and the read-only event view both need to say about a busy status / an answer. */
 export const BUSY_STATUSES: BusyStatus[] = ["busy", "free", "tentative", "oof"];
 export const BUSY_STATUS_LABEL: Record<BusyStatus, string> = { busy: "Busy", free: "Free", tentative: "Tentative", oof: "Out of office" };
+/** Who may see an event's details, in the order the form lists them. */
+export const VISIBILITIES: EventVisibility[] = ["default", "public", "private", "confidential"];
+export const VISIBILITY_LABEL: Record<EventVisibility, string> = {
+    default: "Default visibility",
+    public: "Public",
+    private: "Private",
+    confidential: "Confidential",
+};
+/** What each visibility means here, where a reader of a shared calendar sees only a busy block for a private or confidential event. */
+export const VISIBILITY_HELP: Record<EventVisibility, string> = {
+    default: "People who can see this calendar see the event's details, as the calendar's sharing allows.",
+    public: "Everyone who can see this calendar sees the event's details.",
+    private: "Only you and people who can edit this calendar see the details. Everyone else who can see the calendar sees a busy block.",
+    confidential:
+        "Shown like a private event on your calendar: only you and people who can edit it see the details. The invitation marks the event confidential for other calendar programs.",
+};
+
+/** What guests may do, as a sentence: "Guests can modify the event, invite others and see the guest list." (or, when they can do none of it, what they cannot). */
+export function describeGuestPermissions(permissions: GuestPermissions): string {
+    const can = [
+        permissions.guestsCanModify && "modify the event",
+        permissions.guestsCanInviteOthers && "invite others",
+        permissions.guestsCanSeeGuestList && "see the guest list",
+    ].filter((text): text is string => !!text);
+    if (can.length === 0) {
+        return "Guests can't modify the event, invite others or see the guest list.";
+    }
+    return `Guests can ${can.length === 1 ? can[0] : `${can.slice(0, -1).join(", ")} and ${can[can.length - 1]}`}.`;
+}
+
 export const RESPONSE_STATUS_LABEL: Record<AttendeeResponseStatus, string> = {
     needsAction: "Awaiting response",
     accepted: "Accepted",

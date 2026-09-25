@@ -11,7 +11,9 @@ import {
     CalendarEventInput,
     createCalendarEvent,
     getCalendarEvent,
+    guestPermissionsOf,
     updateCalendarEvent,
+    visibilityOf,
 } from "@rapidmx/react-shared/calendar/calendarApi.js";
 import {
     VideoMeetingInvitee,
@@ -27,8 +29,9 @@ import { CalendarOccurrence, fromEventWallClock, toEventWallClock } from "@rapid
 import { addDaysToKey, allDayDateKey, allDayInstant, recurrenceUntilDateKey, recurrenceUntilInstant, startWeekdayCode } from "./allDay.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
 import EventExpandedForm from "./EventExpandedForm.js";
-import EventQuickForm from "./EventQuickForm.js";
+import QuickCreateFaces, { QuickCreateConfig } from "./QuickCreateFaces.js";
 import { EditScope, EventFormController, EventFormValues } from "./eventForm.js";
+import { descriptionProblem, dialogFields, hasDescriptionText, initialDescriptionHtml } from "./eventDialogFields.js";
 import { mergeGuests, msToWallString, wallStringToMs } from "./eventFormat.js";
 
 /**
@@ -116,7 +119,7 @@ async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventField
 }
 
 export interface EventEditorProps {
-    /** The quick-create popover's face of the form, or the full form's. Both show the same values. */
+    /** The quick-create popover's face of the form, or the full form's (only a new event, which has `quickCreate`, has the quick one). Both show the same values. */
     layout: "quick" | "expanded";
     /** "More options": the quick face asks to become the full one. */
     onExpand: () => void;
@@ -141,6 +144,8 @@ export interface EventEditorProps {
     initialEnd?: Date;
     /** A new event starting as an all-day one (a day cell of the month view was clicked). */
     initialAllDay?: boolean;
+    /** A new event's tabs (Event, Task, Appointment schedule): with it the form is drawn by `QuickCreateFaces`; without it, as the full card. */
+    quickCreate?: QuickCreateConfig;
 }
 
 /**
@@ -166,6 +171,7 @@ export default function EventEditor({
     initialStart,
     initialEnd,
     initialAllDay,
+    quickCreate,
 }: EventEditorProps) {
     const [deviceZone] = useState(() => deviceTimeZone());
     const [values, setValues] = useState<EventFormValues>(() => {
@@ -198,6 +204,9 @@ export default function EventEditor({
             recurrenceRule: occurrence?.recurrenceRule ?? null,
             reminderMinutes: occurrence?.reminderMinutesBeforeStart?.toString() ?? "",
             busyStatus: occurrence?.busyStatus ?? "busy",
+            visibility: occurrence ? visibilityOf(occurrence) : "default",
+            descriptionHtml: initialDescriptionHtml(occurrence),
+            ...guestPermissionsOf(occurrence ?? {}),
             autoReplyEnabled: occurrence?.autoReplyEnabled ?? false,
             autoReplyMessage: occurrence?.autoReplyMessage ?? "",
             videoEnabled: !!occurrence?.videoMeetingUid,
@@ -262,7 +271,7 @@ export default function EventEditor({
     // "This event only" detaches a standalone, non-repeating copy - the series' rule doesn't apply to it.
     const editingSingleOccurrence = !!occurrence?.isRecurringOccurrence && editScope === "occurrence";
 
-    dirtyRef.current = !!(values.title.trim() || values.location.trim() || values.attendees.length > 0 || values.guestDraft.trim());
+    dirtyRef.current = !!(values.title.trim() || values.location.trim() || values.attendees.length > 0 || values.guestDraft.trim() || hasDescriptionText(values.descriptionHtml));
 
     function addGuests(text: string): string[] {
         const merged = mergeGuests(values.attendees, text);
@@ -463,6 +472,11 @@ export default function EventEditor({
             setError(`“${merged.invalid[0]}” isn’t a valid email address.`);
             return;
         }
+        const tooLong = descriptionProblem(values.descriptionHtml);
+        if (tooLong) {
+            setError(tooLong);
+            return;
+        }
         if (values.guestDraft) {
             update({ attendees: merged.attendees, guestDraft: "" });
         }
@@ -512,6 +526,7 @@ export default function EventEditor({
             recurrenceRule: editingSingleOccurrence ? undefined : (values.recurrenceRule ?? cleared),
             reminderMinutesBeforeStart: values.reminderMinutes.trim() ? Number(values.reminderMinutes) : cleared,
             busyStatus: values.busyStatus,
+            ...dialogFields(values, occurrence),
             autoReplyEnabled: values.autoReplyEnabled,
             autoReplyMessage: values.autoReplyEnabled ? values.autoReplyMessage : cleared,
         };
@@ -584,6 +599,8 @@ export default function EventEditor({
         onAllDayChange: handleAllDayChange,
         onTimeZoneChange: handleTimeZoneChange,
         timeZones,
+        organizerAddress: effectiveOrganizerAddress,
+        deviceZone,
         startWeekday: startWeekdayCode(
             values.allDay ? values.start : Number.isNaN(startMs) ? "" : new Date(startMs).toISOString(),
             values.allDay,
@@ -614,5 +631,10 @@ export default function EventEditor({
         onCancel: () => (savedEvent ? onSaved() : onCancel()),
     };
 
-    return layout === "quick" ? <EventQuickForm c={controller} onExpand={onExpand} /> : <EventExpandedForm c={controller} />;
+    // A new event has the tabs, whose Event face is the quick popover or the full card; an existing event is always the full card.
+    return quickCreate ? (
+        <QuickCreateFaces c={controller} layout={layout} onExpand={onExpand} config={quickCreate} dirtyRef={dirtyRef} organizerAddress={effectiveOrganizerAddress} />
+    ) : (
+        <EventExpandedForm c={controller} />
+    );
 }

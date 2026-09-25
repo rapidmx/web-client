@@ -2,28 +2,33 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useContext, useState } from "react";
+import React, { HTMLAttributes, ReactNode, useContext, useState } from "react";
 import { HiOutlineBars2, HiOutlineCalendarDays, HiOutlineClock, HiOutlineXMark } from "react-icons/hi2";
 import { describeRecurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import { EventShellContext } from "./EventShell.js";
-import { CalendarField, DateTimeControls, GuestsRow, IconRow, LocationRow, VideoConferencingRow } from "./EventFormParts.js";
+import { CalendarField, DateTimeControls, DescriptionRow, GuestsRow, IconRow, LocationRow, VideoConferencingRow } from "./EventFormParts.js";
 import { EventFormController } from "./eventForm.js";
-import { BUSY_STATUS_LABEL, describeReminder, formatFormWhen, reminderOf } from "./eventFormat.js";
+import { BUSY_STATUS_LABEL, VISIBILITY_LABEL, describeReminder, formatFormWhen, reminderOf } from "./eventFormat.js";
 
 export interface EventQuickFormProps {
     c: EventFormController;
     /** "More options": the same form, larger. */
     onExpand: () => void;
+    /** A new event's tab strip (Event, Task, Appointment schedule), drawn under the header, and the attributes that make the rows below it
+     * the selected tab's panel. */
+    tabs?: ReactNode;
+    tabPanelProps?: HTMLAttributes<HTMLDivElement>;
 }
 
 /**
  * The quick-create popover: a title, when (a click opens the date, time, zone and repeat controls in place), guests, video conferencing,
- * a location and which calendar - with the busy status and reminder it will have written under it - then "More options" and Save. Its
+ * a location, an "Add description" row (which opens the rich-text box in place) and which calendar - with the busy status, visibility and reminder it will have
+ * written under it - then "More options" and Save. Its
  * values are `EventEditor`'s, shared with the full form.
  */
-export default function EventQuickForm({ c, onExpand }: EventQuickFormProps) {
+export default function EventQuickForm({ c, onExpand, tabs, tabPanelProps }: EventQuickFormProps) {
     const { values } = c;
     const { dragHandleProps } = useContext(EventShellContext);
     const [timeOpen, setTimeOpen] = useState(false);
@@ -48,7 +53,9 @@ export default function EventQuickForm({ c, onExpand }: EventQuickFormProps) {
                 </button>
             </div>
 
-            <div className="flex flex-col gap-3 px-5 pb-3">
+            {tabs}
+
+            <div {...tabPanelProps} className="flex flex-col gap-3 px-5 pb-3">
                 {c.error && <Alert>{c.error}</Alert>}
 
                 <div className="pl-8">
@@ -86,11 +93,12 @@ export default function EventQuickForm({ c, onExpand }: EventQuickFormProps) {
                 <GuestsRow c={c} />
                 <VideoConferencingRow c={c} />
                 <LocationRow c={c} />
+                <DescriptionRow c={c} collapsible />
 
                 <IconRow icon={<HiOutlineCalendarDays size={20} />}>
                     <CalendarField c={c} />
                     <p className="text-xs text-text-muted mt-0.5">
-                        {BUSY_STATUS_LABEL[values.busyStatus]} &bull; {describeReminder(reminderOf(values.reminderMinutes))}
+                        {BUSY_STATUS_LABEL[values.busyStatus]} &bull; {VISIBILITY_LABEL[values.visibility]} &bull; {describeReminder(reminderOf(values.reminderMinutes))}
                     </p>
                 </IconRow>
             </div>

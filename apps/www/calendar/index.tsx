@@ -22,7 +22,8 @@ import {
 } from "date-fns";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
-import { CalendarEvent, listCalendarEvents } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { CalendarEvent, getCalendarEvent, listCalendarEvents } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { getPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
 import { moveOccurrence, resizeOccurrenceEnd } from "@rapidmx/react-shared/calendar/calendarMutations.js";
 import { resolveDragAction } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
 import { createFolder } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -47,11 +48,13 @@ import { SHORTCUTS, ShortcutDef } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
+import { bookingSettingsHref } from "../../shared/calendar/bookingPlugin.js";
+import { redactedEventUidOf } from "../../shared/calendar/calendarLiveUpdates.js";
 
 function CalendarPage(props: CalendarShellProps) {
     return (
         <CalendarShell {...props}>
-            <CalendarContent userUid={props.userUid} />
+            <CalendarContent userUid={props.userUid} bookingHref={bookingSettingsHref(props.pluginNav)} />
         </CalendarShell>
     );
 }
@@ -102,7 +105,7 @@ interface ModalState {
     initialAllDay?: boolean;
 }
 
-function CalendarContent({ userUid }: { userUid?: string }) {
+function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHref?: string }) {
     const { mailboxUid, folderUid, calendarFolders, mailboxCalendars, mailboxes, reloadFolders, colorFor } = useCalendarShell();
     // `PointerSensor` alone activates a drag on the very first touch-move, indistinguishable from a
     // scroll gesture on a touch device. `MouseSensor` (a small `distance` — desktop drags still start
@@ -246,6 +249,39 @@ function CalendarContent({ userUid }: { userUid?: string }) {
     const calendarFolderUidsKey = calendarFolders.map((f) => f.uid).sort().join(",");
     const checkedFolderUidsKey = Array.from(checkedFolderUids).sort().join(",");
     useEffect(reload, [calendarFolderUidsKey, checkedFolderUidsKey]);
+
+    // A private or confidential event that somebody creates or changes is announced on the push connection as its busy block, whatever the reader may
+    // see (see `redactedEventUidOf()`): that payload is never stored here. The event is fetched again by its uid, which comes back as much as this
+    // reader may see - all of it for the owner - and replaces (or joins) what the calendar holds; one that is gone (a 404) leaves it. A failed fetch
+    // changes nothing: the next load shows the event as it is.
+    const checkedFolderUidsRef = useRef(checkedFolderUids);
+    checkedFolderUidsRef.current = checkedFolderUids;
+    useEffect(
+        () =>
+            getPushClient().onEvent((event) => {
+                const uid = redactedEventUidOf(event);
+                if (!uid) {
+                    return;
+                }
+                void getCalendarEvent(uid).then(
+                    (fresh) => {
+                        if (checkedFolderUidsRef.current.has(fresh.folderUid)) {
+                            setEvents((previous) =>
+                                previous.some((existing) => existing.uid === fresh.uid)
+                                    ? previous.map((existing) => (existing.uid === fresh.uid ? fresh : existing))
+                                    : [...previous, fresh],
+                            );
+                        }
+                    },
+                    (err: unknown) => {
+                        if (err instanceof ApiRequestError && err.status === 404) {
+                            setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
+                        }
+                    },
+                );
+            }),
+        [],
+    );
 
     const occurrences = useMemo(
         () => expandAllOccurrences(events, rangeStart, rangeEnd),
@@ -522,6 +558,7 @@ function CalendarContent({ userUid }: { userUid?: string }) {
                         initialEnd={modal.initialEnd}
                         initialAllDay={modal.initialAllDay}
                         anchor={modal.anchor}
+                        bookingHref={bookingHref}
                         onSaved={handleSaved}
                         onDeleted={handleDeleted}
                     />

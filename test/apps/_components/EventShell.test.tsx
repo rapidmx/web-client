@@ -162,6 +162,25 @@ describe("EventShell", () => {
             expect(disconnect).toHaveBeenCalled();
         });
 
+        it("ignores a resize reported after it has gone, as happens when saving closes it (which crashed the calendar page)", () => {
+            stubSize(450, 300);
+            let notify: () => void = () => undefined;
+            vi.stubGlobal(
+                "ResizeObserver",
+                class {
+                    constructor(callback: () => void) {
+                        notify = callback;
+                    }
+                    observe = vi.fn();
+                    disconnect = vi.fn();
+                },
+            );
+            const { unmount } = render(shell({ variant: "popover", width: 450, anchor: { left: 100, top: 300, right: 220, bottom: 324 } }));
+            unmount();
+
+            expect(() => notify()).not.toThrow();
+        });
+
         it("can be dragged by a grip, and stays inside the window while it is", () => {
             stubSize(450, 300);
             function Grip() {

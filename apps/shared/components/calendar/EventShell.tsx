@@ -103,7 +103,11 @@ export default function EventShell({ variant, label, onClose, onBackdropPress, a
     const dragStart = useRef<{ x: number; y: number; from: { x: number; y: number } } | null>(null);
 
     const place = useCallback(() => {
-        const dialog = dialogRef.current!;
+        const dialog = dialogRef.current;
+        // A resize reported after the dialog has gone (the popover closes as soon as its event is saved) has nothing left to place.
+        if (!dialog) {
+            return;
+        }
         if (variant !== "popover") {
             dialog.style.left = "";
             dialog.style.top = "";

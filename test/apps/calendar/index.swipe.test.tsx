@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
@@ -12,10 +12,20 @@ import { SWIPE_PERIOD_SHIFT } from "../../../apps/shared/components/calendar/swi
 
 const CalendarPage = CalendarPageRouted.page;
 
+// The page's own drag callbacks, kept so a test can start and cancel a drag the (mocked-out) sensors can't.
+let capturedDnd: { onDragStart?: (event: never) => void; onDragCancel?: (event: never) => void } | undefined;
+
 // See index.test.tsx: the real dnd-kit sensors can't be driven from jsdom, and the swipe under test is a plain touch handler.
 vi.mock("@dnd-kit/core", async () => {
     const actual = await vi.importActual<typeof import("@dnd-kit/core")>("@dnd-kit/core");
-    return { ...actual, useSensors: () => [] };
+    return {
+        ...actual,
+        useSensors: () => [],
+        DndContext: (props: React.ComponentProps<typeof actual.DndContext>) => {
+            capturedDnd = props;
+            return <actual.DndContext {...props} />;
+        },
+    };
 });
 
 const mailbox = {
@@ -309,6 +319,18 @@ describe("CalendarPage swipe navigation", () => {
 
             drag(screen.getByRole("heading", { name: "June 2026" }), dxFor(-1));
             expect(screen.getByRole("heading", { name: "June 2026" })).toBeInTheDocument();
+        });
+
+        it("ignores swipes while an event is being dragged, and swipes again once the drag is cancelled", async () => {
+            await renderCalendar("month", "June 2026");
+
+            act(() => capturedDnd!.onDragStart!({} as never));
+            drag(body("month"), dxFor(-1));
+            expect(screen.getByRole("heading", { name: "June 2026" })).toBeInTheDocument();
+
+            act(() => capturedDnd!.onDragCancel!({} as never));
+            drag(body("month"), dxFor(-1));
+            expect(await screen.findByRole("heading", { name: "May 2026" })).toBeInTheDocument();
         });
 
         it("ignores swipes while the event editor is open", async () => {
