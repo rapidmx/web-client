@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-09-25
+
+### Changed
+- Raise the test timeout to 30 seconds and the findBy and waitFor timeout to 10 seconds, since a CI runner renders the 500-row pages several times slower than a developer machine, and put back the window location, size and history each test replaced so a test no longer depends on the one before it
+- Make the logout, contacts import, Sent Items folder, Labels menu, compose, thread pane, search and body HTML tests wait for the state they assert on instead of racing it
+- Enable corepack in the validate job of the build workflow, so yarn 4 runs the license check and the production audit instead of the runner's yarn 1 refusing the packageManager field
+- Make the inbox keyboard shortcut tests wait for the detail pane to show the selection instead of reading it a render early, which failed on a slow CI runner when three arrow keys pressed back to back acted on the selection as it was before the first
+- Make the Search all mail reset test wait for the new query's bounded search calls, and the locked message test wait for the focus to reach the decrypted message, since both read their state on the same tick the page changed and failed on a slow CI runner
+- Document the appearance page fix and the CI fixes in the release notes
+
+### Fixed
+- Fixed the appearance page putting the old background kind back when a choice was made right after it appeared, by following only later changes of the stored kind
+
 ## [0.15.0] - 2026-09-25
 
 ### Added
@@ -929,7 +942,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/rapidmx/web-client/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/rapidmx/web-client/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rapidmx/web-client/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rapidmx/web-client/compare/v0.13.0...v0.14.0

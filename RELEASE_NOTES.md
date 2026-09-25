@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.15.1
+
 ### Fixes
 
 - **The Appearance page put the old background kind back when a choice was made right after the page appeared**; it now follows only later changes of the stored kind.
