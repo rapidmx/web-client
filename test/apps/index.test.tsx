@@ -4256,10 +4256,11 @@ describe("InboxPage", () => {
                 await user.type(screen.getByPlaceholderText("Search all mail…"), "x");
 
                 expect(await screen.findByText("Search all mail")).toBeInTheDocument();
+                // The button comes back with the new query; the search for it starts a little later (it is debounced), so wait for its calls.
+                await waitFor(() => expect(tier3Windows().slice(3).length).toBeGreaterThan(0));
                 const later = tier3Windows().slice(3);
                 // Every Tier 3 call after the unbounded one is bounded by coverage again - never a second
                 // unbounded pass for the new query.
-                expect(later.length).toBeGreaterThan(0);
                 expect(later.every((w) => w.before !== undefined || w.after !== undefined)).toBe(true);
             });
 

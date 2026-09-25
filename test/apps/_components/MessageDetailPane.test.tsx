@@ -2428,7 +2428,8 @@ describe("MessageDetailPane", () => {
             expect(screen.queryByText("This message is encrypted")).not.toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Unlock to view this message" })).not.toBeInTheDocument();
             expect(screen.getByText("Encrypted & verified")).toBeInTheDocument();
-            expect(document.activeElement).toBe(screen.getByTitle("Hello there").closest("[tabindex='-1']"));
+            // The focus moves in an effect after the frame appears, so on a slow runner it is not there on the same tick.
+            await waitFor(() => expect(document.activeElement).toBe(screen.getByTitle("Hello there").closest("[tabindex='-1']")));
         });
 
         it("waits on the unlock prompt with the button disabled, and stays locked - the button back, the focus left alone - when it is dismissed", async () => {
