@@ -57,6 +57,8 @@ const hello = { ...base, uid: "mb-hello", displayName: "Hello", primarySmtpAddre
 const alpha = { ...base, uid: "mb-alpha", displayName: "Alpha", primarySmtpAddress: "alpha@example.com", ownerUserUid: "u1", accessRole: "owner" };
 
 const INBOX_UNREAD: Record<string, number> = { "mb-jp": 0, "mb-hello": 0, "mb-alpha": 0 };
+/** Folders a test adds to a mailbox besides its Inbox and Drafts: an Archive, a user's own folder, Junk Email or Deleted Items, with their unread counts. */
+const EXTRA_FOLDERS: Record<string, { type: string; name: string; unread: number }[]> = {};
 /** What the server says of a mailbox's folders: an Inbox with the unread count set in `INBOX_UNREAD`, and Drafts holding two messages. */
 function foldersOf(mailboxUid: string) {
     const folder = (type: string, name: string, unreadCount: number, totalCount: number) => ({
@@ -68,7 +70,11 @@ function foldersOf(mailboxUid: string) {
         unreadCount,
         totalCount,
     });
-    return [folder("inbox", "Inbox", INBOX_UNREAD[mailboxUid] ?? 0, 10), folder("drafts", "Drafts", 0, 2)];
+    return [
+        folder("inbox", "Inbox", INBOX_UNREAD[mailboxUid] ?? 0, 10),
+        folder("drafts", "Drafts", 0, 2),
+        ...(EXTRA_FOLDERS[mailboxUid] ?? []).map((extra) => folder(extra.type, extra.name, extra.unread, 6)),
+    ];
 }
 
 function mockServer(mailboxes: unknown[]) {
@@ -127,6 +133,7 @@ const inboxHref = (uid: string) => `/?mailboxUid=${uid}&folderUid=f-inbox-${uid}
 
 beforeEach(() => {
     Object.assign(INBOX_UNREAD, { "mb-jp": 0, "mb-hello": 0, "mb-alpha": 0 });
+    for (const uid of Object.keys(EXTRA_FOLDERS)) delete EXTRA_FOLDERS[uid];
     window.history.replaceState(null, "", "/");
     mockServer([hello, own, alpha]);
 });
@@ -187,29 +194,23 @@ describe("MailShell's collapsible sidebar sections", () => {
 
     it("toggles with the mouse, remembers the choice for this user, and keeps it across a remount", async () => {
         const user = userEvent.setup();
-        // Alpha's folder is the open one (its section is locked), which leaves the primary mailbox free to be collapsed.
-        window.history.replaceState(null, "", "/?mailboxUid=mb-alpha");
         const first = renderShell();
         await user.click(await screen.findByRole("button", { name: /^Hello/ }));
+        // The primary mailbox holds the selected folder, and collapses like any other section.
         await user.click(heading(/^Jean-Philippe/));
 
         expect(heading(/^Hello/)).toHaveAttribute("aria-expanded", "true");
         expect(heading(/^Jean-Philippe/)).toHaveAttribute("aria-expanded", "false");
-        expect(visibleFolderHrefs()).toEqual([
-            inboxHref("mb-alpha"),
-            "/?mailboxUid=mb-alpha&folderUid=f-drafts-mb-alpha",
-            inboxHref("mb-hello"),
-            "/?mailboxUid=mb-hello&folderUid=f-drafts-mb-hello",
-        ]);
+        expect(visibleFolderHrefs()).toEqual([inboxHref("mb-hello"), "/?mailboxUid=mb-hello&folderUid=f-drafts-mb-hello"]);
         expect(stored()).toEqual({ "mb-hello": false, "mb-jp": true });
         first.unmount();
 
         renderShell();
         await screen.findByRole("button", { name: /^Hello/ });
         expect(heading(/^Hello/)).toHaveAttribute("aria-expanded", "true");
-        // The primary mailbox's own choice is remembered too, though it is the one that is open by default.
         expect(heading(/^Jean-Philippe/)).toHaveAttribute("aria-expanded", "false");
         expect(heading(/All Mailboxes/)).toHaveAttribute("aria-expanded", "true");
+        expect(heading(/^Alpha/)).toHaveAttribute("aria-expanded", "false");
     });
 
     it("toggles from the keyboard with Enter and with Space", async () => {
@@ -324,95 +325,181 @@ describe("MailShell's collapsible sidebar sections", () => {
     });
 
     describe("the section of the open folder", () => {
-        it("shows a collapsed mailbox's section when the open folder is in it, without making that a choice", async () => {
-            window.history.replaceState(null, "", "/?mailboxUid=mb-hello");
-            renderShell();
-            const hello = await screen.findByRole("button", { name: /^Hello/ });
-
-            expect(hello).toHaveAttribute("aria-expanded", "true");
-            const inbox = screen.getAllByRole("link").find((el) => el.getAttribute("href") === inboxHref("mb-hello"))!;
-            expect(inbox.className).toContain("bg-primary/10");
-            // The primary mailbox, open by default, stays open beside it.
+        it("opens on All Mailboxes > Inbox, and that section can be collapsed with its Inbox still the selected view", async () => {
+            const user = userEvent.setup();
+            const first = renderShell();
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("undefined|undefined|inbox"));
+            const all = await screen.findByRole("button", { name: /All Mailboxes/ });
+            expect(all).toHaveAttribute("aria-expanded", "true");
+            // The primary mailbox is open only by default, not because the open view is in it.
             expect(heading(/^Jean-Philippe/)).toHaveAttribute("aria-expanded", "true");
-            expect(localStorage.getItem(collapsedSectionsKey("u1"))).toBeNull();
+            expect(heading(/^Jean-Philippe/)).not.toHaveAttribute("aria-disabled");
+
+            await user.click(all);
+            expect(all).toHaveAttribute("aria-expanded", "false");
+            expect(screen.getByTestId("probe")).toHaveTextContent("undefined|undefined|inbox");
+            expect(stored()).toEqual({ all: true });
+            first.unmount();
+
+            renderShell();
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("undefined|undefined|inbox"));
+            expect(await screen.findByRole("button", { name: /All Mailboxes/ })).toHaveAttribute("aria-expanded", "false");
         });
 
-        it("overrides a stored choice to collapse it, and cannot be collapsed - the button says so and the click changes nothing", async () => {
+        it("can be collapsed, the primary mailbox's included, without changing the selection - and stays collapsed after a reload", async () => {
             const user = userEvent.setup();
-            localStorage.setItem(collapsedSectionsKey("u1"), JSON.stringify({ "mb-hello": true }));
+            window.history.replaceState(null, "", "/?mailboxUid=mb-jp");
+            const first = renderShell();
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("mb-jp|f-inbox-mb-jp|undefined"));
+            const primary = await screen.findByRole("button", { name: /^Jean-Philippe/ });
+            expect(primary).toHaveAttribute("aria-expanded", "true");
+            expect(primary).not.toHaveAttribute("aria-disabled");
+            expect(primary).not.toHaveAttribute("title");
+
+            await user.click(primary);
+            expect(primary).toHaveAttribute("aria-expanded", "false");
+            expect(visibleFolderHrefs()).toEqual([]);
+            expect(screen.getByTestId("probe")).toHaveTextContent("mb-jp|f-inbox-mb-jp|undefined");
+            expect(stored()).toEqual({ "mb-jp": true });
+            first.unmount();
+
+            // The Inbox is still the selected folder after a reload, and its section is still collapsed.
+            renderShell();
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("mb-jp|f-inbox-mb-jp|undefined"));
+            expect(await screen.findByRole("button", { name: /^Jean-Philippe/ })).toHaveAttribute("aria-expanded", "false");
+            expect(visibleFolderHrefs()).toEqual([]);
+            const hiddenInbox = screen.getAllByRole("link", { hidden: true }).find((el) => el.getAttribute("href") === inboxHref("mb-jp"))!;
+            expect(hiddenInbox.className).toContain("bg-primary/10");
+        });
+
+        it("stays collapsed when the page loads on a folder in it, whether by choice or by default", async () => {
+            localStorage.setItem(collapsedSectionsKey("u1"), JSON.stringify({ "mb-alpha": true }));
+            window.history.replaceState(null, "", "/?mailboxUid=mb-alpha");
+            const first = renderShell();
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("mb-alpha|f-inbox-mb-alpha|undefined"));
+            expect(await screen.findByRole("button", { name: /^Alpha/ })).toHaveAttribute("aria-expanded", "false");
+            first.unmount();
+
             window.history.replaceState(null, "", "/?mailboxUid=mb-hello&folderUid=f-drafts-mb-hello");
             renderShell();
-            const hello = await screen.findByRole("button", { name: /^Hello/ });
-
-            expect(hello).toHaveAttribute("aria-expanded", "true");
-            expect(hello).toHaveAttribute("aria-disabled", "true");
-            expect(hello).toHaveAttribute("title", "Holds the open folder");
-            await user.click(hello);
-            expect(hello).toHaveAttribute("aria-expanded", "true");
-            expect(visibleFolderHrefs()).toContain("/?mailboxUid=mb-hello&folderUid=f-drafts-mb-hello");
-            expect(stored()).toEqual({ "mb-hello": true });
-            // The other sections are ordinary toggles.
-            expect(heading(/^Alpha/)).not.toHaveAttribute("aria-disabled");
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("mb-hello|f-drafts-mb-hello|undefined"));
+            expect(await screen.findByRole("button", { name: /^Hello/ })).toHaveAttribute("aria-expanded", "false");
+            expect(localStorage.getItem(collapsedSectionsKey("u1"))).toBe(JSON.stringify({ "mb-alpha": true }));
         });
 
-        it("keeps All Mailboxes open while an all-mailboxes view is open, whatever was chosen", async () => {
-            localStorage.setItem(collapsedSectionsKey("u1"), JSON.stringify({ all: true }));
-            window.history.replaceState(null, "", "/?aggregate=inbox");
+        it("opens a collapsed section when the open folder moves into it, without making that a choice, and closes it again when it moves on", async () => {
             renderShell();
-            const all = await screen.findByRole("button", { name: /All Mailboxes/ });
+            const hello = await screen.findByRole("button", { name: /^Hello/ });
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("undefined|undefined|inbox"));
+            expect(hello).toHaveAttribute("aria-expanded", "false");
 
-            expect(all).toHaveAttribute("aria-expanded", "true");
-            expect(all).toHaveAttribute("aria-disabled", "true");
-            const inbox = screen.getAllByRole("link").find((el) => el.getAttribute("href") === "/?aggregate=inbox")!;
+            act(() => go("/?mailboxUid=mb-hello"));
+            await waitFor(() => expect(hello).toHaveAttribute("aria-expanded", "true"));
+            const inbox = screen.getAllByRole("link").find((el) => el.getAttribute("href") === inboxHref("mb-hello"))!;
             expect(inbox.className).toContain("bg-primary/10");
-            // No mailbox is the open one then, so the primary mailbox is only open by default.
             expect(heading(/^Jean-Philippe/)).toHaveAttribute("aria-expanded", "true");
-        });
+            expect(localStorage.getItem(collapsedSectionsKey("u1"))).toBeNull();
 
-        it("goes back to the reader's own choice, or the default, once another folder is open", async () => {
-            window.history.replaceState(null, "", "/?mailboxUid=mb-hello");
-            renderShell();
-            const hello = await screen.findByRole("button", { name: /^Hello/ });
-            expect(hello).toHaveAttribute("aria-expanded", "true");
-
+            // A folder chosen in the sidebar itself, back in the primary mailbox.
             fireEvent.click(screen.getAllByRole("link").find((el) => el.getAttribute("href") === inboxHref("mb-jp"))!);
             await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("mb-jp|f-inbox-mb-jp|undefined"));
             await waitFor(() => expect(hello).toHaveAttribute("aria-expanded", "false"));
-            expect(hello).not.toHaveAttribute("aria-disabled");
             expect(localStorage.getItem(collapsedSectionsKey("u1"))).toBeNull();
+        });
 
-            // ... and the primary mailbox is now the locked one.
-            expect(heading(/^Jean-Philippe/)).toHaveAttribute("aria-disabled", "true");
-            act(() => go("/?mailboxUid=mb-alpha"));
-            await waitFor(() => expect(heading(/^Alpha/)).toHaveAttribute("aria-expanded", "true"));
-            expect(heading(/^Jean-Philippe/)).toHaveAttribute("aria-expanded", "true");
+        it("opens the section over a stored choice to collapse it, and All Mailboxes when an all-mailboxes view is opened", async () => {
+            localStorage.setItem(collapsedSectionsKey("u1"), JSON.stringify({ all: true, "mb-hello": true }));
+            renderShell();
+            const all = await screen.findByRole("button", { name: /All Mailboxes/ });
+            const hello = heading(/^Hello/);
+            // The page opens on All Mailboxes > Inbox, and its section stays collapsed as chosen: a load is not a navigation.
+            expect(all).toHaveAttribute("aria-expanded", "false");
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("undefined|undefined|inbox"));
+
+            act(() => go("/?mailboxUid=mb-jp"));
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("mb-jp|f-inbox-mb-jp|undefined"));
+            expect(all).toHaveAttribute("aria-expanded", "false");
+
+            act(() => go("/?aggregate=inbox"));
+            await waitFor(() => expect(all).toHaveAttribute("aria-expanded", "true"));
+            const aggregateInbox = screen.getAllByRole("link").find((el) => el.getAttribute("href") === "/?aggregate=inbox")!;
+            expect(aggregateInbox.className).toContain("bg-primary/10");
+
+            act(() => go("/?mailboxUid=mb-hello"));
+            await waitFor(() => expect(hello).toHaveAttribute("aria-expanded", "true"));
+            await waitFor(() => expect(all).toHaveAttribute("aria-expanded", "false"));
+            expect(stored()).toEqual({ all: true, "mb-hello": true });
+        });
+
+        it("makes the reader's own choice, the opposite of what shows, when the section it opened is toggled", async () => {
+            const user = userEvent.setup();
+            renderShell();
+            const hello = await screen.findByRole("button", { name: /^Hello/ });
+            await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("undefined|undefined|inbox"));
+            act(() => go("/?mailboxUid=mb-hello"));
+            await waitFor(() => expect(hello).toHaveAttribute("aria-expanded", "true"));
+
+            await user.click(hello);
+            expect(hello).toHaveAttribute("aria-expanded", "false");
+            expect(stored()).toEqual({ "mb-hello": true });
+            // The selection did not move, and the folder is simply hidden by the reader's choice.
+            expect(screen.getByTestId("probe")).toHaveTextContent("mb-hello|f-inbox-mb-hello|undefined");
+
+            await user.click(hello);
+            expect(hello).toHaveAttribute("aria-expanded", "true");
+            expect(stored()).toEqual({ "mb-hello": false });
         });
     });
 
     describe("the unread badge on a collapsed heading", () => {
-        it("sums the unread mail in a collapsed mailbox's folders, and goes away when it is opened", async () => {
+        it("sums the unread mail in the folders of a collapsed mailbox that carry an unread count, and goes away when it is opened", async () => {
             const user = userEvent.setup();
             INBOX_UNREAD["mb-hello"] = 5;
-            INBOX_UNREAD["mb-alpha"] = 0;
+            EXTRA_FOLDERS["mb-hello"] = [
+                { type: "archive", name: "Archive", unread: 2 },
+                { type: "user", name: "Projects", unread: 1 },
+            ];
             renderShell();
             const hello = await screen.findByRole("button", { name: /^Hello/ });
 
             // Drafts' two messages are a total, not unread mail, so they are not part of it.
-            expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 5));
-            expect(within(hello).getByText("5")).toBeInTheDocument();
+            expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 8));
+            expect(within(hello).getByText("8")).toBeInTheDocument();
             expect(heading(/^Alpha/)).toHaveAccessibleName("Alpha");
 
             await user.click(hello);
             expect(hello).toHaveAccessibleName("Hello (shared)");
-            // The Inbox row inside still carries its own.
+            // The rows inside still carry their own.
             const list = document.getElementById(hello.getAttribute("aria-controls")!)!;
             expect(within(list).getByRole("link", { name: /^Inbox\s*5 unread/ })).toBeInTheDocument();
+            expect(within(list).getByRole("link", { name: /^Archive\s*2 unread/ })).toBeInTheDocument();
 
             await user.click(hello);
-            expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 5));
+            expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 8));
         });
 
-        it("shows no badge on an open section, however much is unread in it", async () => {
+        it("shows the chip for unread mail in Archive alone, or in a user's own folder alone", async () => {
+            EXTRA_FOLDERS["mb-hello"] = [{ type: "archive", name: "Archive", unread: 3 }];
+            EXTRA_FOLDERS["mb-alpha"] = [{ type: "user", name: "Projects", unread: 4 }];
+            renderShell();
+            expect(await screen.findByRole("button", { name: /^Hello/ })).toHaveAccessibleName(unreadName("Hello (shared)", 3));
+            expect(heading(/^Alpha/)).toHaveAccessibleName(unreadName("Alpha", 4));
+        });
+
+        it("shows no chip for unread mail in Junk Email, Deleted Items or Sent Items alone, or when there is none", async () => {
+            EXTRA_FOLDERS["mb-hello"] = [
+                { type: "junk", name: "Junk Email", unread: 7 },
+                { type: "deleted_items", name: "Deleted Items", unread: 3 },
+                { type: "sent_items", name: "Sent Items", unread: 2 },
+            ];
+            renderShell();
+            const hello = await screen.findByRole("button", { name: /^Hello/ });
+            expect(hello).toHaveAccessibleName("Hello (shared)");
+            expect(heading(/^Alpha/)).toHaveAccessibleName("Alpha");
+            expect(within(hello).queryByText(/\d/)).not.toBeInTheDocument();
+        });
+
+        it("shows no chip on an open section, however much is unread in it", async () => {
             INBOX_UNREAD["mb-jp"] = 4;
             renderShell();
             const primary = await screen.findByRole("button", { name: /^Jean-Philippe/ });
@@ -420,21 +507,24 @@ describe("MailShell's collapsible sidebar sections", () => {
             expect(within(primary).queryByText("4")).not.toBeInTheDocument();
         });
 
-        it("sums the Inboxes of every mailbox on All Mailboxes while it is collapsed", async () => {
+        it("sums the same folders of every mailbox on All Mailboxes while it is collapsed, and shows none while it is open", async () => {
             const user = userEvent.setup();
             INBOX_UNREAD["mb-jp"] = 2;
             INBOX_UNREAD["mb-hello"] = 5;
             INBOX_UNREAD["mb-alpha"] = 1;
+            EXTRA_FOLDERS["mb-hello"] = [{ type: "archive", name: "Archive", unread: 2 }];
+            EXTRA_FOLDERS["mb-alpha"] = [{ type: "junk", name: "Junk Email", unread: 9 }];
             renderShell();
             const all = await screen.findByRole("button", { name: /All Mailboxes/ });
             expect(all).toHaveAccessibleName("All Mailboxes");
 
             await user.click(all);
-            expect(all).toHaveAccessibleName(unreadName("All Mailboxes", 8));
+            expect(all).toHaveAccessibleName(unreadName("All Mailboxes", 10));
         });
 
         it("follows the counts as they change, so new mail in a hidden mailbox is noticed", async () => {
             INBOX_UNREAD["mb-hello"] = 1;
+            EXTRA_FOLDERS["mb-hello"] = [{ type: "archive", name: "Archive", unread: 0 }];
             renderShell();
             const hello = await screen.findByRole("button", { name: /^Hello/ });
             expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 1));
@@ -447,6 +537,17 @@ describe("MailShell's collapsible sidebar sections", () => {
             await waitFor(() => expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 2)));
             act(() => {
                 track(arrived, { ...arrived, flags: { read: true } });
+            });
+            await waitFor(() => expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 1)));
+
+            // ... and one that a rule filed into the Archive counts too.
+            const filed = { uid: "m2", folderUid: "f-archive-mb-hello", mailboxUid: "mb-hello", flags: {} } as any;
+            act(() => {
+                track(null, filed);
+            });
+            await waitFor(() => expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 2)));
+            act(() => {
+                track(filed, { ...filed, flags: { read: true } });
             });
             await waitFor(() => expect(hello).toHaveAccessibleName(unreadName("Hello (shared)", 1)));
         });

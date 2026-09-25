@@ -326,6 +326,16 @@ nav[aria-label="Mobile navigation"] {
     --color-surface-alt: var(--rr-color-surface-alt);
 }
 
+/* The pop-up list of a native `<select>` (the compose From picker, the mailbox switchers) is drawn by the browser, not the page: with the select's own
+ * background transparent (`bg-transparent`) the browser fills the pop-up white while the options inherit the page's light text, so on a dark theme
+ * the unselected options were unreadable. Give the options the opaque theme colours themselves (`--rr-color-*`, not `--color-*`, which are translucent panels
+ * over a background image); the highlighted option keeps the browser's own selection colours. */
+select option,
+select optgroup {
+    background-color: var(--rr-color-surface);
+    color: var(--rr-color-text);
+}
+
 /* The slot a branding header or footer's `{USER_MENU}` becomes (`BrandingChrome.tsx`): the account menu's button sits in the line of text
  * the variable was written in. */
 [data-rr-slot="user-menu"] {

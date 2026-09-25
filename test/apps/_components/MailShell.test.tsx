@@ -526,20 +526,57 @@ describe("MailShell", () => {
         render(<MailShell userUid="u1">content</MailShell>);
 
         await screen.findByText("All Mailboxes");
-        const linkFor = (href: string) => screen.getAllByRole("link").find((el) => el.getAttribute("href") === href)!;
+        // The page loads on that mailbox's folder, and its section (collapsed by default) is not opened for it: hidden links included.
+        const linkFor = (href: string) => screen.getAllByRole("link", { hidden: true }).find((el) => el.getAttribute("href") === href)!;
         expect(linkFor("/?mailboxUid=mb-b&folderUid=f-inbox-mb-b").className).toContain("bg-primary/10");
         expect(linkFor("/?mailboxUid=mb-a&folderUid=f-inbox-mb-a").className).not.toContain("bg-primary/10");
     });
 
-    it("ignores a ?mailboxUid= query param that isn't one of the caller's accessible mailboxes", async () => {
+    it("ignores a ?mailboxUid= query param that isn't one of the caller's accessible mailboxes, opening the default view", async () => {
         const location = mockLocation();
         (location as any).search = "?mailboxUid=not-mine";
         mockPerMailboxFolders([mailboxA, mailboxB]);
         render(<MailShell userUid="u1">content</MailShell>);
 
         await screen.findByText("All Mailboxes");
-        const linkFor = (href: string) => screen.getAllByRole("link").find((el) => el.getAttribute("href") === href)!;
-        expect(linkFor("/?mailboxUid=mb-a&folderUid=f-inbox-mb-a").className).toContain("bg-primary/10");
+        const linkFor = (href: string) => screen.getAllByRole("link", { hidden: true }).find((el) => el.getAttribute("href") === href)!;
+        expect(linkFor("/?aggregate=inbox").className).toContain("bg-primary/10");
+        expect(linkFor("/?mailboxUid=mb-a&folderUid=f-inbox-mb-a").className).not.toContain("bg-primary/10");
+    });
+
+    it("opens All Mailboxes > Inbox when the address names nothing and there is more than one mailbox", async () => {
+        function Probe() {
+            const { mailboxUid, folderUid, aggregateFolderType } = useMailShell();
+            return <span>{`${mailboxUid}/${folderUid}/${aggregateFolderType}`}</span>;
+        }
+        mockPerMailboxFolders([mailboxA, mailboxB]);
+        render(
+            <MailShell userUid="u1">
+                <Probe />
+            </MailShell>,
+        );
+
+        expect(await screen.findByText("undefined/undefined/inbox")).toBeInTheDocument();
+        await screen.findByText("All Mailboxes");
+        // (The app rail's own Mail link is highlighted too; it is not a folder.)
+        const links = screen.getAllByRole("link", { hidden: true }).filter((el) => /aggregate=|folderUid=/.test(el.getAttribute("href") ?? ""));
+        expect(links.filter((el) => el.className.includes("bg-primary/10")).map((el) => el.getAttribute("href"))).toEqual(["/?aggregate=inbox"]);
+    });
+
+    it("opens a lone mailbox's own Inbox, there being no All Mailboxes section", async () => {
+        function Probe() {
+            const { mailboxUid, folderUid, aggregateFolderType } = useMailShell();
+            return <span>{`${mailboxUid}/${folderUid}/${aggregateFolderType}`}</span>;
+        }
+        mockPerMailboxFolders([mailboxA]);
+        render(
+            <MailShell userUid="u1">
+                <Probe />
+            </MailShell>,
+        );
+
+        expect(await screen.findByText("mb-a/f-inbox-mb-a/undefined")).toBeInTheDocument();
+        expect(screen.queryByText("All Mailboxes")).not.toBeInTheDocument();
     });
 
     describe("primary mailbox", () => {
@@ -563,13 +600,57 @@ describe("MailShell", () => {
             expect(headings).toEqual(["Jean-Philippe", "Alpha", "Hello (shared)"]);
         });
 
-        it("opens the caller's own Inbox, not a shared mailbox's that the server lists first", async () => {
+        it("opens All Mailboxes > Inbox by default, whatever order the server lists the mailboxes in", async () => {
+            mockPerMailboxFolders([shared, own]);
+            render(<MailShell userUid="u1">content</MailShell>);
+
+            await screen.findByText("All Mailboxes");
+            expect(linkFor("/?aggregate=inbox").className).toContain("bg-primary/10");
+            expect(linkFor(inboxHref("mb-jp")).className).not.toContain("bg-primary/10");
+            expect(linkFor(inboxHref("mb-hello")).className).not.toContain("bg-primary/10");
+        });
+
+        it("looks for a folder the address names alone in the caller's own mailbox, not a shared one that the server lists first", async () => {
+            const location = mockLocation();
+            (location as any).search = "?folderUid=f-inbox-mb-jp";
             mockPerMailboxFolders([shared, own]);
             render(<MailShell userUid="u1">content</MailShell>);
 
             await screen.findByText("All Mailboxes");
             expect(linkFor(inboxHref("mb-jp")).className).toContain("bg-primary/10");
             expect(linkFor(inboxHref("mb-hello")).className).not.toContain("bg-primary/10");
+            expect(linkFor("/?aggregate=inbox").className).not.toContain("bg-primary/10");
+        });
+
+        it("keeps the caller's own mailbox as the one to compose from while All Mailboxes is open", async () => {
+            const posts: any[] = [];
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url === "/api/mail/mailboxes/mb-jp") return jsonResponse(200, own);
+                if (url === "/api/mail/mailboxes/mb-hello") return jsonResponse(200, shared);
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [shared, own]);
+                if (url.startsWith("/api/mail/folders")) {
+                    const uid = url.includes("mailboxUid=mb-hello") ? "mb-hello" : "mb-jp";
+                    return jsonResponse(200, [
+                        { ...inboxFolder, uid: `f-inbox-${uid}`, mailboxUid: uid },
+                        { ...draftsFolder, uid: `f-drafts-${uid}`, mailboxUid: uid },
+                    ]);
+                }
+                if (url === "/api/mail/messages" && (init?.method ?? "GET") === "POST") {
+                    posts.push(JSON.parse(String(init.body)));
+                    return jsonResponse(200, { ...inboxFolder, uid: "m1", mailboxUid: "mb-jp", folderUid: "f-drafts-mb-jp", subject: "", flags: {}, recipients: [] });
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<MailShell userUid="u1">content</MailShell>);
+            await screen.findByText("All Mailboxes");
+            expect(linkFor("/?aggregate=inbox").className).toContain("bg-primary/10");
+
+            await user.click(screen.getByRole("button", { name: "Compose" }));
+            await waitFor(() => expect(posts).toHaveLength(1));
+            expect(JSON.stringify(posts[0])).toContain("mb-jp");
+            expect(JSON.stringify(posts[0])).not.toContain("mb-hello");
         });
 
         it("still opens the mailbox the URL names, even a shared one", async () => {

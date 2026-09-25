@@ -12,6 +12,7 @@ import {
     badgeLabel,
     countDeltas,
     countOfFolder,
+    UNREAD_BADGE_EXCLUDED_FOLDER_TYPES,
     inboxUnreadTotal,
     unreadBadgeTotal,
     useFolderCounts,
@@ -110,21 +111,28 @@ describe("inboxUnreadTotal", () => {
 });
 
 describe("unreadBadgeTotal", () => {
-    it("sums the unread of the folders whose badge shows an unread count, using the overlay where there is one", () => {
-        const folders = [
-            folder("inbox", "a", "inbox", 2),
-            folder("archive", "a", "archive", 1),
-            folder("mine", "a", "user", 4),
-            // Drafts and Outbox badge a total, Sent, Deleted and Junk badge nothing: none of these is unread mail to notice.
-            folder("drafts", "a", "drafts", 9, 9),
-            folder("outbox", "a", "outbox", 9, 9),
-            folder("sent", "a", "sent_items", 9),
-            folder("trash", "a", "deleted_items", 9),
-            folder("junk", "a", "junk", 9),
-        ];
+    it("sums the unread of every folder that carries an unread count - Inbox, Archive and the user's own - using the overlay where there is one", () => {
+        const folders = [folder("inbox", "a", "inbox", 2), folder("archive", "a", "archive", 1), folder("mine", "a", "user", 4)];
         expect(unreadBadgeTotal(folders, {})).toBe(7);
         expect(unreadBadgeTotal(folders, { inbox: { unread: 10, total: 10 }, mine: { unread: 0, total: 3 } })).toBe(11);
         expect(unreadBadgeTotal([], {})).toBe(0);
+    });
+
+    it("leaves out Drafts, Outbox, Sent Items, Deleted Items and Junk Email", () => {
+        const excluded = ["drafts", "outbox", "sent_items", "deleted_items", "junk"].map((type) => folder(type, "a", type, 9, 9));
+        expect([...UNREAD_BADGE_EXCLUDED_FOLDER_TYPES].sort()).toEqual(["deleted_items", "drafts", "junk", "outbox", "sent_items"]);
+        expect(unreadBadgeTotal(excluded, {})).toBe(0);
+        expect(unreadBadgeTotal([...excluded, folder("inbox", "a", "inbox", 1)], {})).toBe(1);
+    });
+
+    it("agrees with the folder rows' own badges about which folders show an unread count", () => {
+        for (const type of UNREAD_BADGE_EXCLUDED_FOLDER_TYPES) {
+            expect(badgeFor(type, { unread: 3, total: 0 })?.kind).not.toBe("unread");
+        }
+        for (const type of ["inbox", "archive", "user"] as const) {
+            expect(UNREAD_BADGE_EXCLUDED_FOLDER_TYPES).not.toContain(type);
+            expect(badgeFor(type, { unread: 3, total: 0 })?.kind).toBe("unread");
+        }
     });
 });
 

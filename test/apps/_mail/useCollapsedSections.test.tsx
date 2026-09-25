@@ -209,45 +209,114 @@ describe("useSidebarSections", () => {
     });
 
     describe("the section of the open folder", () => {
-        it("is open whatever was chosen or defaulted, and says it is locked", () => {
-            localStorage.setItem(KEY, JSON.stringify({ "mb-own": true }));
-            const { result } = renderHook(() => useSidebarSections(options({ activeId: "mb-shared" })));
-            expect(result.current.isExpanded("mb-shared")).toBe(true);
-            expect(result.current.isLocked("mb-shared")).toBe(true);
-            expect(result.current.isLocked("mb-own")).toBe(false);
-            expect(result.current.isExpanded("mb-own")).toBe(false);
+        const hook = (activeId: string | undefined) =>
+            renderHook((props: SidebarSectionsOptions) => useSidebarSections(props), { initialProps: options({ activeId }) });
+
+        it("can be collapsed like any other, and the choice is remembered - even for the primary mailbox holding the selected folder", () => {
+            const first = hook("mb-own");
+            expect(first.result.current.isExpanded("mb-own")).toBe(true);
+            act(() => first.result.current.toggle("mb-own"));
+            expect(first.result.current.isExpanded("mb-own")).toBe(false);
+            expect(stored()).toEqual({ "mb-own": true });
+            first.unmount();
+
+            // A reload lands on the same folder, and its section is still collapsed.
+            const second = hook("mb-own");
+            expect(second.result.current.isExpanded("mb-own")).toBe(false);
+            act(() => second.result.current.toggle("mb-own"));
+            expect(second.result.current.isExpanded("mb-own")).toBe(true);
+            expect(stored()).toEqual({ "mb-own": false });
         });
 
-        it("can be All mailboxes, for an aggregate view", () => {
-            localStorage.setItem(KEY, JSON.stringify({ all: true }));
-            const { result } = renderHook(() => useSidebarSections(options({ activeId: ALL_MAILBOXES_SECTION })));
-            expect(result.current.isExpanded(ALL_MAILBOXES_SECTION)).toBe(true);
-            expect(result.current.isLocked(ALL_MAILBOXES_SECTION)).toBe(true);
+        it("stays collapsed when the page starts on a folder in it: the first section is where a reload lands, not a navigation", () => {
+            localStorage.setItem(KEY, JSON.stringify({ "mb-shared": true }));
+            expect(hook("mb-shared").result.current.isExpanded("mb-shared")).toBe(false);
+            // Likewise when the selection only becomes known after the first render (the address read, the mailboxes loaded).
+            const late = hook(undefined);
+            late.rerender(options({ activeId: "mb-shared" }));
+            expect(late.result.current.isExpanded("mb-shared")).toBe(false);
+            const lateAll = hook(undefined);
+            lateAll.rerender(options({ activeId: ALL_MAILBOXES_SECTION }));
+            expect(lateAll.result.current.isExpanded("mb-shared")).toBe(false);
         });
 
-        it("is not written as a choice, and goes back to the default once another folder is open", () => {
-            const { result, rerender } = renderHook((props: SidebarSectionsOptions) => useSidebarSections(props), {
-                initialProps: options({ activeId: "mb-shared" }),
-            });
+        it("opens a collapsed section the open folder moves into, without making that a choice, until it moves on", () => {
+            const { result, rerender } = hook("mb-own");
+            expect(result.current.isExpanded("mb-shared")).toBe(false);
+
+            rerender(options({ activeId: "mb-shared" }));
             expect(result.current.isExpanded("mb-shared")).toBe(true);
+            // What was open stays open, and nothing is written.
+            expect(result.current.isExpanded("mb-own")).toBe(true);
             expect(localStorage.getItem(KEY)).toBeNull();
 
             rerender(options({ activeId: "mb-own" }));
             expect(result.current.isExpanded("mb-shared")).toBe(false);
-            expect(result.current.isLocked("mb-shared")).toBe(false);
+            expect(localStorage.getItem(KEY)).toBeNull();
         });
 
-        it("cannot be collapsed, and the attempt is not remembered", () => {
-            const { result, rerender } = renderHook((props: SidebarSectionsOptions) => useSidebarSections(props), {
-                initialProps: options({ activeId: "mb-own" }),
-            });
-            act(() => result.current.toggle("mb-own"));
-            expect(result.current.isExpanded("mb-own")).toBe(true);
-            expect(localStorage.getItem(KEY)).toBeNull();
+        it("opens the section over a stored choice to collapse it, for the aggregate view too, and leaves the stored choice alone", () => {
+            localStorage.setItem(KEY, JSON.stringify({ "mb-shared": true, all: true }));
+            const { result, rerender } = hook("mb-own");
+            expect(result.current.isExpanded(ALL_MAILBOXES_SECTION)).toBe(false);
 
-            // Not even once the folder is somewhere else.
+            rerender(options({ activeId: ALL_MAILBOXES_SECTION }));
+            expect(result.current.isExpanded(ALL_MAILBOXES_SECTION)).toBe(true);
             rerender(options({ activeId: "mb-shared" }));
-            expect(result.current.isExpanded("mb-own")).toBe(true);
+            expect(result.current.isExpanded("mb-shared")).toBe(true);
+            // Only the section it is in now is opened: the last one goes back to what was chosen.
+            expect(result.current.isExpanded(ALL_MAILBOXES_SECTION)).toBe(false);
+            expect(stored()).toEqual({ "mb-shared": true, all: true });
+        });
+
+        it("makes the reader's own choice, the opposite of what shows, when the section it opened is toggled - and only that section's", () => {
+            const { result, rerender } = hook("mb-own");
+            rerender(options({ activeId: "mb-shared" }));
+            act(() => result.current.toggle("mb-alpha"));
+            expect(result.current.isExpanded("mb-shared")).toBe(true);
+            expect(stored()).toEqual({ "mb-alpha": false });
+
+            act(() => result.current.toggle("mb-shared"));
+            expect(result.current.isExpanded("mb-shared")).toBe(false);
+            expect(stored()).toEqual({ "mb-alpha": false, "mb-shared": true });
+
+            // The override is gone: it can be opened by hand, and it stays what the reader chose.
+            act(() => result.current.toggle("mb-shared"));
+            expect(result.current.isExpanded("mb-shared")).toBe(true);
+            expect(stored()).toEqual({ "mb-alpha": false, "mb-shared": false });
+            act(() => result.current.toggle("mb-shared"));
+            expect(result.current.isExpanded("mb-shared")).toBe(false);
+        });
+
+        it("counts two toggles of the opened section made before the next render", () => {
+            const { result, rerender } = hook("mb-own");
+            rerender(options({ activeId: "mb-shared" }));
+            act(() => {
+                result.current.toggle("mb-shared");
+                result.current.toggle("mb-shared");
+            });
+            expect(result.current.isExpanded("mb-shared")).toBe(true);
+            expect(stored()).toEqual({ "mb-shared": false });
+        });
+
+        it("opens the section again when the open folder comes back into it after a collapse", () => {
+            const { result, rerender } = hook("mb-own");
+            rerender(options({ activeId: "mb-shared" }));
+            act(() => result.current.toggle("mb-shared"));
+            expect(result.current.isExpanded("mb-shared")).toBe(false);
+
+            rerender(options({ activeId: "mb-own" }));
+            rerender(options({ activeId: "mb-shared" }));
+            expect(result.current.isExpanded("mb-shared")).toBe(true);
+            // The reader's choice is still to have it collapsed.
+            expect(stored()).toEqual({ "mb-shared": true });
+        });
+
+        it("does not open anything when the selection is lost and found again", () => {
+            const { result, rerender } = hook("mb-own");
+            rerender(options({ activeId: undefined }));
+            rerender(options({ activeId: "mb-shared" }));
+            expect(result.current.isExpanded("mb-shared")).toBe(false);
         });
     });
 });

@@ -14,10 +14,8 @@ export interface SidebarSectionProps {
     /** Whether the heading is a toggle at all. Not for a lone mailbox, whose section has nothing to be hidden for. */
     collapsible: boolean;
     expanded: boolean;
-    /** The section holds the folder that is open: it stays open, and its toggle says so and does nothing. */
-    locked?: boolean;
     onToggle: () => void;
-    /** The unread mail in the section's folders, shown on the heading while it is collapsed so new mail in a hidden section is still noticed. */
+    /** The unread mail in the section's folders that carry an unread count (see `unreadBadgeTotal()`), shown on the heading while it is collapsed (and only when there is some) so new mail in a hidden section is still noticed. */
     unread?: number;
     /** Shown between the heading and the folders, collapsed or not: a failure to load the section's folders is not something to hide. */
     notice?: ReactNode;
@@ -30,7 +28,7 @@ export interface SidebarSectionProps {
  * disclosure button (`aria-expanded`, `aria-controls` the list, a chevron that turns) and the list is `hidden` while it is collapsed -
  * kept in the document, so the button's `aria-controls` always names something and nothing is fetched or rebuilt on opening it.
  */
-export default function SidebarSection({ domId, label, collapsible, expanded, locked, onToggle, unread = 0, notice, children }: SidebarSectionProps) {
+export default function SidebarSection({ domId, label, collapsible, expanded, onToggle, unread = 0, notice, children }: SidebarSectionProps) {
     const shown = !collapsible || expanded;
     return (
         <div>
@@ -40,13 +38,11 @@ export default function SidebarSection({ domId, label, collapsible, expanded, lo
                         type="button"
                         aria-expanded={expanded}
                         aria-controls={domId}
-                        aria-disabled={locked || undefined}
-                        title={locked ? "Holds the open folder" : undefined}
                         onClick={onToggle}
                         className={[
                             "flex w-full items-center gap-1 rounded-sm px-2.5 py-0.5 text-left text-xs font-bold uppercase tracking-wide text-text-muted",
                             "focus-visible:outline-2 focus-visible:outline-primary",
-                            locked ? "cursor-default" : "hover:bg-surface-alt hover:text-text",
+                            "hover:bg-surface-alt hover:text-text",
                         ].join(" ")}
                     >
                         <HiChevronDown

@@ -2518,6 +2518,8 @@ describe("InboxPage", () => {
                 throw new Error(`unexpected ${url}`);
             });
             const user = userEvent.setup();
+            // Two mailboxes open on All Mailboxes; this is about the primary mailbox's own Inbox, where a hit from the other one can be selected.
+            (mockLocation() as any).search = "?mailboxUid=mb1";
             render(<InboxPage userUid="u1" />);
             await screen.findByText("Shared hit");
 
@@ -2548,6 +2550,8 @@ describe("InboxPage", () => {
                 throw new Error(`unexpected ${url}`);
             });
             const user = userEvent.setup();
+            // Two mailboxes open on All Mailboxes; this is about the primary mailbox's own Inbox, where a hit from the other one can be selected.
+            (mockLocation() as any).search = "?mailboxUid=mb1";
             render(<InboxPage userUid="u1" />);
             await user.click(await screen.findByText("Shared hit"));
             await waitFor(() => expect(screen.getByTestId("detail-pane")).toHaveTextContent("labels:Shared label"));
@@ -2582,6 +2586,8 @@ describe("InboxPage", () => {
                 throw new Error(`unexpected ${url}`);
             });
             const user = userEvent.setup();
+            // Two mailboxes open on All Mailboxes; this is about the primary mailbox's own Inbox, where a hit from the other one can be selected.
+            (mockLocation() as any).search = "?mailboxUid=mb1";
             render(<InboxPage userUid="u1" />);
             await user.click(await screen.findByText("Support hit"));
             await waitFor(() => expect(fetchMock.mock.calls.some(([url]: any[]) => String(url).includes("mailboxUid=mb2") && String(url).startsWith("/api/mail/labels"))).toBe(true));
@@ -2612,6 +2618,8 @@ describe("InboxPage", () => {
                 throw new Error(`unexpected ${url}`);
             });
             const user = userEvent.setup();
+            // Two mailboxes open on All Mailboxes; this is about the primary mailbox's own Inbox, where a hit from the other one can be selected.
+            (mockLocation() as any).search = "?mailboxUid=mb1";
             render(<InboxPage userUid="u1" />);
             await screen.findByText("Shared hit");
 

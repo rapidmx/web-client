@@ -96,13 +96,21 @@ export function inboxUnreadTotal(mailboxFolders: { folders: Folder[] }[], counts
     );
 }
 
-/** The unread messages behind the badges of `folders` that show an unread count (see `badgeFor()`: Inbox, Archive and the user's own
- * folders - not Drafts, Outbox, Sent Items, Deleted Items or Junk Email) - what a collapsed sidebar section shows on its heading. */
+/**
+ * The folder types whose unread count is left out of a collapsed sidebar section's heading badge: Drafts and Outbox (their badges
+ * count messages held, not unread mail), and Sent Items, Deleted Items and Junk Email (an unread count there is noise, not mail
+ * to notice). It matches the folders `badgeFor()` shows no unread badge for; every other type - Inbox, Archive, the user's own
+ * folders - counts, so mail that a rule filed out of the Inbox is not overlooked in a hidden section. Change it here to change that.
+ */
+export const UNREAD_BADGE_EXCLUDED_FOLDER_TYPES: readonly FolderType[] = ["drafts", "outbox", "sent_items", "deleted_items", "junk"];
+
+/** The unread messages in the `folders` that carry an unread count (all but `UNREAD_BADGE_EXCLUDED_FOLDER_TYPES`) - what a collapsed
+ * sidebar section shows on its heading, so new mail in a hidden section is still noticed. */
 export function unreadBadgeTotal(folders: readonly Folder[], counts: Record<string, FolderCount>): number {
-    return folders.reduce((total, folder) => {
-        const badge = badgeFor(folder.type, countOfFolder(folder, counts));
-        return badge?.kind === "unread" ? total + badge.value : total;
-    }, 0);
+    return folders.reduce(
+        (total, folder) => (UNREAD_BADGE_EXCLUDED_FOLDER_TYPES.includes(folder.type) ? total : total + countOfFolder(folder, counts).unread),
+        0,
+    );
 }
 
 /** How long after the last change of this page's own has finished a server-published count is trusted again: one published

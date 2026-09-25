@@ -9,10 +9,14 @@
  * (`primaryMailboxUid()`) are open, every other mailbox is collapsed - so a mailbox that is newly shared with them arrives closed.
  * Once they toggle a section the choice is remembered for that section, replacing the default, whatever the default later says.
  *
- * The section holding the folder that is open (`activeId`) is **never collapsed**: it shows open, and its toggle does nothing, so a
- * highlighted folder is never inside a hidden section. That is derived - it is not written as the reader's choice - so once they
- * move on to another folder the section goes back to what they chose (or the default). The price is that the section of the folder
- * being read cannot be collapsed (its toggle is `aria-disabled`); the reader collapses it after opening a folder elsewhere.
+ * **Every** section can be collapsed, the one holding the open folder and the primary mailbox included, and a collapsed one stays collapsed
+ * across reloads even while its own folder is the selected one: the toggle always toggles and always remembers.
+ *
+ * The one exception is *navigation*: when the section holding the open folder (`activeId`) **changes** - the reader picks a folder in
+ * another section, or a search result or a link lands in one - that section is shown open, so the folder just highlighted is not hidden
+ * from them. That is an in-memory override of this page view, never written as the reader's choice: it does not apply to the first
+ * section the page resolves (a reload lands on whatever was chosen), and it ends when they navigate to yet another section. Toggling
+ * the section it opened forgets the override and remembers the reader's new choice (the opposite of what was showing).
  *
  * The choices are kept per signed-in user, per device, in `localStorage` (`rapidmx:mail-sidebar-collapsed:<userUid>`), the way
  * `listPreferences.ts` keeps the list arrangement: `{ "<section id>": <collapsed> }`. Every read tolerates a missing, corrupt or
@@ -65,7 +69,7 @@ export function writeSectionChoices(userUid: string | undefined, choices: Sectio
     }
 }
 
-/** Whether a section is open by the reader's choice, or by the default rule where they have made none (`activeId` not considered). */
+/** Whether a section is open by the reader's choice, or by the default rule where they have made none (a navigation's override not considered). */
 export function sectionChosenOpen(id: string, choices: SectionChoices, primaryUid: string | undefined): boolean {
     const collapsed = choices[id];
     return collapsed === undefined ? id === ALL_MAILBOXES_SECTION || id === primaryUid : !collapsed;
@@ -76,16 +80,18 @@ export interface SidebarSectionsOptions {
     userUid: string | undefined;
     /** The user's primary mailbox, which - with "All mailboxes" - is open until they choose otherwise. */
     primaryUid: string | undefined;
-    /** The section holding the folder that is open: `ALL_MAILBOXES_SECTION` for an aggregate view, else that mailbox's uid. Never collapsed. */
+    /**
+     * The section holding the folder that is open: `ALL_MAILBOXES_SECTION` for an aggregate view, else that mailbox's uid; `undefined`
+     * while that is not known yet (the address not read, the mailboxes not loaded). Moving from one section to another opens the new one
+     * (see this module's doc comment); the first section that becomes known does not.
+     */
     activeId: string | undefined;
 }
 
 export interface SidebarSections {
     /** Whether the section shows its folders. */
     isExpanded: (id: string) => boolean;
-    /** Whether the section holds the open folder, so it is open whatever was chosen and cannot be collapsed. */
-    isLocked: (id: string) => boolean;
-    /** Opens a collapsed section, collapses an open one, and remembers it; does nothing for the locked section. */
+    /** Opens a collapsed section, collapses an open one, and remembers it as the reader's choice. */
     toggle: (id: string) => void;
 }
 
@@ -98,30 +104,43 @@ export function useSidebarSections({ userUid, primaryUid, activeId }: SidebarSec
         current = { userUid, choices: readSectionChoices(userUid) };
         setLoaded(current);
     }
+    // The section the last navigation opened, if any: derived while rendering from the change of `activeId` (no effect, so the section is
+    // already open in the render that highlights its folder). A first `activeId` (from undefined) is not a navigation.
+    const [nav, setNav] = useState<{ activeId: string | undefined; opened: string | undefined }>({ activeId, opened: undefined });
+    let currentNav = nav;
+    if (nav.activeId !== activeId) {
+        currentNav = { activeId, opened: nav.activeId === undefined ? undefined : activeId };
+        setNav(currentNav);
+    }
     // Kept in step with what was last rendered, and moved on by a toggle at once, so two toggles before a re-render both count.
     const choicesRef = useRef(current.choices);
     choicesRef.current = current.choices;
+    const openedRef = useRef(currentNav.opened);
+    openedRef.current = currentNav.opened;
 
     const toggle = useCallback(
         (id: string) => {
-            if (id === activeId) {
-                return;
-            }
-            const next = { ...choicesRef.current, [id]: sectionChosenOpen(id, choicesRef.current, primaryUid) };
+            const expanded = openedRef.current === id || sectionChosenOpen(id, choicesRef.current, primaryUid);
+            const next = { ...choicesRef.current, [id]: expanded };
             choicesRef.current = next;
             setLoaded({ userUid, choices: next });
             writeSectionChoices(userUid, next);
+            if (openedRef.current === id) {
+                // The reader's own choice replaces the override that had opened it.
+                openedRef.current = undefined;
+                setNav({ activeId, opened: undefined });
+            }
         },
         [activeId, primaryUid, userUid],
     );
 
     const choices = current.choices;
+    const opened = currentNav.opened;
     return useMemo(
         () => ({
-            isExpanded: (id: string) => id === activeId || sectionChosenOpen(id, choices, primaryUid),
-            isLocked: (id: string) => id === activeId,
+            isExpanded: (id: string) => id === opened || sectionChosenOpen(id, choices, primaryUid),
             toggle,
         }),
-        [activeId, choices, primaryUid, toggle],
+        [opened, choices, primaryUid, toggle],
     );
 }

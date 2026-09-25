@@ -226,6 +226,11 @@ function MailShortcuts({ mailboxUid }: { mailboxUid?: string }) {
  * behavior change from before this, and a multi-mailbox user sees every mailbox's folders (and the new
  * aggregate section) simultaneously, matching the shared-mailbox feature's own "display as a separate set
  * of folders" requirement.
+ *
+ * An address that names nothing opens "All Mailboxes > Inbox" when there is more than one mailbox (that is when the section exists), and
+ * the one mailbox's own Inbox otherwise; a `?mailboxUid=`, `?folderUid=` or `?aggregate=` always wins. Nothing is selected until the address
+ * has been read. What needs a single mailbox while an all-mailboxes view is open (Compose, the new-message shortcut, key unlocking) uses the
+ * primary mailbox.
  */
 export default function MailShell({
     userUid,
@@ -250,6 +255,8 @@ export default function MailShell({
     const [requestedFolderUid, setRequestedFolderUid] = useState<string | null>(null);
     const [requestedAggregateType, setRequestedAggregateType] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
+    // Whether the URL has been read yet (see below): until then the selection is not known, and the sidebar sections have nothing to open for.
+    const [selectionRead, setSelectionRead] = useState(false);
 
     // The selection lives in the URL, and the router (`AppRouter`) changes the URL without a page load when a folder link is
     // clicked - so it is read from the router's location, which updates, rather than once from `window.location`. Still read
@@ -260,6 +267,7 @@ export default function MailShell({
         setRequestedMailboxUid(params.get("mailboxUid"));
         setRequestedFolderUid(params.get("folderUid"));
         setRequestedAggregateType(params.get("aggregate"));
+        setSelectionRead(true);
     }, [search]);
     // Choosing a folder (or mailbox) changes the URL without a page load now, so the drawer that held the choice - which used to go
     // with the page - is closed here.
@@ -267,16 +275,23 @@ export default function MailShell({
         setDrawerOpen(false);
     }, [search]);
 
-    const aggregateFolderType: AggregateFolderType | undefined = isAggregateFolderType(requestedAggregateType)
-        ? requestedAggregateType
-        : undefined;
+    // What the address asks for. Nothing is selected until it has been read (the first render, before the effect above): choosing a
+    // default then would list a folder - the most expensive being every mailbox's - only to throw it away for the one the address names.
+    const requestedAggregate: AggregateFolderType | undefined =
+        selectionRead && isAggregateFolderType(requestedAggregateType) ? requestedAggregateType : undefined;
+    const requestedMailbox: string | undefined =
+        selectionRead && requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined;
 
-    // The mailbox the caller has not chosen: their own, never a shared one that merely sorts first.
+    // The mailbox the caller has not chosen: their own, never a shared one that merely sorts first. It is what compose, the new-message
+    // shortcut and everything else that needs a single mailbox use while an all-mailboxes view (which has none) is open.
     const defaultMailboxUid = primaryMailboxUid(mailboxes, userUid);
-    const mailboxUid: string | undefined = aggregateFolderType
-        ? undefined
-        : (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
-          defaultMailboxUid;
+
+    // With several mailboxes the address that names nothing opens "All Mailboxes > Inbox", the merged Inbox; with one there is no such
+    // section, so it opens that mailbox's own Inbox. A mailbox, a folder or an all-mailboxes view in the address wins over either.
+    const aggregateByDefault =
+        selectionRead && !requestedAggregate && !requestedMailbox && requestedFolderUid === null && mailboxes.length > 1;
+    const aggregateFolderType: AggregateFolderType | undefined = requestedAggregate ?? (aggregateByDefault ? "inbox" : undefined);
+    const mailboxUid: string | undefined = aggregateFolderType || !selectionRead ? undefined : (requestedMailbox ?? defaultMailboxUid);
 
     const selectedMailboxFolders = mailboxFolders.find((mf) => mf.mailbox.uid === mailboxUid)?.folders ?? [];
     const folderUid: string | undefined = aggregateFolderType
@@ -290,8 +305,9 @@ export default function MailShell({
     // mailbox may still need that mailbox's own folder view opened directly to unlock/decrypt it.
     const activeMailboxUid = mailboxUid ?? defaultMailboxUid;
 
-    // Which sidebar sections are open: "All mailboxes" and the primary mailbox unless the reader chose otherwise, the section of the open
-    // folder always (see `useSidebarSections()`). A lone mailbox has nothing to collapse, so its section is never a toggle.
+    // Which sidebar sections are open: "All mailboxes" and the primary mailbox unless the reader chose otherwise. Any of them can be collapsed;
+    // a change of the open folder into another section opens that one (see `useSidebarSections()`); the first selection, once the address has been read
+    // and the mailboxes are here, is where a load lands, not a navigation. A lone mailbox has nothing to collapse, so its section is never a toggle.
     const sections = useSidebarSections({
         userUid,
         primaryUid: defaultMailboxUid,
@@ -359,12 +375,8 @@ export default function MailShell({
                                 label="All Mailboxes"
                                 collapsible={collapsible}
                                 expanded={sections.isExpanded(ALL_MAILBOXES_SECTION)}
-                                locked={sections.isLocked(ALL_MAILBOXES_SECTION)}
                                 onToggle={() => sections.toggle(ALL_MAILBOXES_SECTION)}
-                                unread={unreadBadgeTotal(
-                                    mailboxFolders.flatMap((mf) => mf.folders.filter((f) => (AGGREGATE_FOLDER_TYPES as readonly string[]).includes(f.type))),
-                                    counts,
-                                )}
+                                unread={unreadBadgeTotal(mailboxFolders.flatMap((mf) => mf.folders), counts)}
                             >
                                 {AGGREGATE_FOLDER_TYPES.map((type) => {
                                     const badge = aggregateBadge(mailboxFolders, type, counts);
@@ -398,7 +410,6 @@ export default function MailShell({
                                 }
                                 collapsible={collapsible}
                                 expanded={sections.isExpanded(mailbox.uid)}
-                                locked={sections.isLocked(mailbox.uid)}
                                 onToggle={() => sections.toggle(mailbox.uid)}
                                 unread={unreadBadgeTotal(folders, counts)}
                                 notice={
