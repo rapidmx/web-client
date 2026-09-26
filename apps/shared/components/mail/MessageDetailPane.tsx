@@ -10,6 +10,7 @@ import {
     HiOutlineCheck,
     HiOutlineExclamationTriangle,
     HiOutlineFolderArrowDown,
+    HiOutlineInboxArrowDown,
     HiOutlineLockClosed,
     HiOutlineMoon,
     HiOutlineNoSymbol,
@@ -961,8 +962,11 @@ function MessageDetailContent({
         latestLabelsMessageRef.current = updated;
         setLabelsMessage(updated);
     };
+    // Every address the reader owns, in any of their mailboxes: a sender among them is not blocked.
+    const readerOwnAddresses = mailboxes.flatMap((mb) => [mb.primarySmtpAddress, ...(mb.aliasAddresses ?? [])]).filter((address) => !!address).map((address) => address.toLowerCase());
     const messageActions = useMessageActions({
         message,
+        ownAddresses: readerOwnAddresses,
         newest: () => (message.version >= latestLabelsMessageRef.current.version ? message : latestLabelsMessageRef.current),
         remember,
         folders,
@@ -1175,6 +1179,8 @@ function MessageDetailContent({
         toggleFlag: () => void messageActions.toggleFlag(),
         reportJunk: () => void messageActions.reportJunk(),
         reportPhishing: () => void messageActions.reportPhishing(),
+        notJunk: () => void messageActions.notJunk(),
+        notJunkAndTrust: () => void messageActions.notJunkAndTrust(),
         blockSender: () => void messageActions.blockSender(),
         neverBlockSender: () => void messageActions.neverBlockSender(),
         print: () => void handlePrint(),
@@ -1193,7 +1199,8 @@ function MessageDetailContent({
             : lockedRef.current
               ? "Unlock this message to print it"
               : "This message can't be read, so it can't be printed";
-    const reportReason = !writable ? "View-only mailbox" : inJunk ? "Already in Junk Email" : undefined;
+    // In Junk Email the card's button is the way back (Not junk), which only needs the right to change the message.
+    const reportReason = !writable ? "View-only mailbox" : undefined;
 
     const card = (
         <CardShell unread={cardUnread}>
@@ -1310,12 +1317,12 @@ function MessageDetailContent({
                     )}
                     {reportable && (
                         <IconAction
-                            icon={<HiOutlineNoSymbol size={16} aria-hidden="true" />}
-                            label="Report junk"
+                            icon={inJunk ? <HiOutlineInboxArrowDown size={16} aria-hidden="true" /> : <HiOutlineNoSymbol size={16} aria-hidden="true" />}
+                            label={inJunk ? "Not junk" : "Report junk"}
                             busy={messageActions.busy}
                             disabled={messageActions.busy || reportReason !== undefined}
                             reason={reportReason}
-                            onClick={() => void messageActions.reportJunk()}
+                            onClick={() => void (inJunk ? messageActions.notJunk() : messageActions.reportJunk())}
                         />
                     )}
                     {labels && labels.length > 0 && (
@@ -1346,7 +1353,8 @@ function MessageDetailContent({
                             inJunk={inJunk}
                             inDeletedItems={inDeletedItems}
                             sent={!!isSentItems}
-                            ownSender={readerAddressesKey.toLowerCase().split(" ").includes(message.from.address.toLowerCase())}
+                            ownSender={readerOwnAddresses.includes(message.from.address.toLowerCase())}
+                            canTrustSender={writable}
                             printReason={printReason}
                             composing={preparingCompose}
                             triggerClassName={ICON_BUTTON_CLASS}

@@ -22,6 +22,7 @@ export const wwwRoutes: readonly RouteDefinition[] = [
     { path: "/tasks", active: "tasks", load: () => import("./tasks/index.js"), idlePrefetch: true },
     { path: "/settings/appearance", active: "settings", load: () => import("./settings/appearance/index.js") },
     { path: "/settings/auto-reply", active: "settings", load: () => import("./settings/auto-reply/index.js") },
+    { path: "/settings/blocked-senders", active: "settings", load: () => import("./settings/blocked-senders/index.js") },
     { path: "/settings/encryption", active: "settings", load: () => import("./settings/encryption/index.js") },
     { path: "/settings/filters", active: "settings", load: () => import("./settings/filters/index.js") },
     { path: "/settings/filters/new", active: "settings", load: () => import("./settings/filters/new/index.js") },

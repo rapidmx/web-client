@@ -105,21 +105,18 @@ describe("a message card in a thread", () => {
     });
 
     it("takes the card out of the thread and tells the caller when it is reported as junk, leaving the other cards", async () => {
-        const moved = { ...message("m1", "Alice"), version: 1, folderUid: "f-junk" };
         const { fetchMock, onMessageRemoved } = renderThread(THREAD, (url, init) =>
-            url === "/api/mail/messages/m1" && init?.method === "PUT" ? jsonResponse(200, moved) : undefined,
+            url === "/api/mail/messages/m1/report" && init?.method === "POST"
+                ? jsonResponse(200, { uid: "m1", kind: "junk", moved: true, folderUid: "f-junk", learned: true })
+                : undefined,
         );
         const user = userEvent.setup();
         const card = await cardOf("m1");
 
         await user.click(card.getByRole("button", { name: "Report junk" }));
 
-        await waitFor(() => expect(onMessageRemoved).toHaveBeenCalledWith(moved));
-        expect(JSON.parse(fetchMock.mock.calls.find(([url, init]) => url === "/api/mail/messages/m1" && init?.method === "PUT")![1].body as string)).toEqual({
-            uid: "m1",
-            version: 0,
-            folderUid: "f-junk",
-        });
+        await waitFor(() => expect(onMessageRemoved).toHaveBeenCalledWith(expect.objectContaining({ uid: "m1", folderUid: "f-junk" })));
+        expect(JSON.parse(fetchMock.mock.calls.find(([url, init]) => url === "/api/mail/messages/m1/report" && init?.method === "POST")![1].body as string)).toEqual({ kind: "junk" });
         await waitFor(() => expect(screen.queryByText("body of m1")).not.toBeInTheDocument());
         expect(screen.getByText("body of m2")).toBeInTheDocument();
         expect(getNotificationsSnapshot().visible).toEqual([expect.objectContaining({ kind: "success", title: "Reported as junk" })]);
@@ -171,12 +168,30 @@ describe("a message card in a thread", () => {
         expect(received.getByRole("button", { name: "Report junk" })).toBeInTheDocument();
     });
 
-    it("moves a message found by a search over several mailboxes into ITS mailbox's Junk, not the open mailbox's", async () => {
+    it("reports a message found by a search over several mailboxes by its uid alone: the server files it in ITS mailbox's Junk, not the open mailbox's", async () => {
+        const other = message("m1", "Alice", { mailboxUid: "mb2", folderUid: "g1" });
+        const { fetchMock, onMessageRemoved } = renderThread(
+            [other],
+            (url, init) =>
+                url === "/api/mail/messages/m1/report" && init?.method === "POST"
+                    ? jsonResponse(200, { uid: "m1", kind: "junk", moved: true, folderUid: "g-junk", learned: false, learnSkipped: "disabled" })
+                    : undefined,
+            { conversation: { conversationId: "c1", subject: "Project Zeus", messageCount: 1 } },
+        );
+        const user = userEvent.setup();
+        const card = await cardOf("m1");
+        await user.click(card.getByRole("button", { name: "Report junk" }));
+        await waitFor(() => expect(onMessageRemoved).toHaveBeenCalledWith(expect.objectContaining({ uid: "m1", mailboxUid: "mb2", folderUid: "g-junk" })));
+        expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/mail/folders"))).toBe(false);
+    });
+
+    it("moves a message found by a search over several mailboxes into ITS mailbox's Junk, not the open mailbox's, on a server without the report route", async () => {
         const other = message("m1", "Alice", { mailboxUid: "mb2", folderUid: "g1" });
         const moved = { ...other, version: 1, folderUid: "g-junk" };
         const { fetchMock, onMessageRemoved } = renderThread(
             [other],
             (url, init) => {
+                if (url === "/api/mail/messages/m1/report") return jsonResponse(404, { message: "Not found" });
                 if (url === "/api/mail/folders?limit=200&page=0&mailboxUid=mb2") return jsonResponse(200, [folder("g1", "inbox", "mb2"), folder("g-junk", "junk", "mb2")]);
                 if (url === "/api/mail/messages/m1" && init?.method === "PUT") return jsonResponse(200, moved);
                 return undefined;

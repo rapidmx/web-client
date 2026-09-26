@@ -17,6 +17,7 @@ import {
     HiOutlineFlag,
     HiOutlineFunnel,
     HiOutlineHandRaised,
+    HiOutlineInboxArrowDown,
     HiOutlineInformationCircle,
     HiOutlineNoSymbol,
     HiOutlinePrinter,
@@ -35,6 +36,8 @@ export interface MessageMenuActions {
     toggleFlag: () => void;
     reportJunk: () => void;
     reportPhishing: () => void;
+    notJunk: () => void;
+    notJunkAndTrust: () => void;
     blockSender: () => void;
     neverBlockSender: () => void;
     print: () => void;
@@ -61,6 +64,8 @@ export interface MessageMoreMenuProps {
     sent: boolean;
     /** The sender is one of the reader's own addresses, which is not blocked. */
     ownSender: boolean;
+    /** The reader may add a sender to this mailbox's Safe Senders: they have full access, or the server has not said which access they have (it then refuses, with its reason). */
+    canTrustSender: boolean;
     /** Why the message cannot be printed right now (an encrypted one that is locked or still opening), or `undefined`. */
     printReason: string | undefined;
     /** The compose window is opening for a reply or forward: Reply all and Forward wait for it. */
@@ -84,6 +89,7 @@ export function buildMessageMenu(props: MessageMoreMenuProps): MenuSectionSpec[]
     const junkReason = changeReason ?? (sent ? "Not available for mail you sent" : inJunk ? "Already in Junk Email" : undefined);
     const blockReason = changeReason ?? (sent ? "Not available for mail you sent" : ownSender ? "This is your own address" : undefined);
     const waiting = (reason: string | undefined) => reason ?? (busy ? "Working on this message" : undefined);
+    const trustLabel = `Not junk, and always trust ${props.senderAddress}`;
     const blockLabel = `Block ${props.senderAddress}`;
     const neverBlockLabel = `Never block ${props.senderAddress}`;
     return [
@@ -135,6 +141,19 @@ export function buildMessageMenu(props: MessageMoreMenuProps): MenuSectionSpec[]
                             items: [
                                 row("report-junk", "Report junk", <HiOutlineNoSymbol size={16} />, actions.reportJunk, waiting(junkReason)),
                                 row("report-phishing", "Report phishing", <HiOutlineShieldExclamation size={16} />, actions.reportPhishing, waiting(junkReason)),
+                                // In Junk Email the way back: to the Inbox, telling the spam filter it was wrong - and, when the reader may, trusting the sender.
+                                ...(inJunk
+                                    ? [
+                                          row("not-junk", "Not junk", <HiOutlineInboxArrowDown size={16} />, actions.notJunk, waiting(changeReason)),
+                                          ...(props.canTrustSender && !ownSender
+                                              ? [
+                                                    row("not-junk-trust", trustLabel, <HiOutlineShieldCheck size={16} />, actions.notJunkAndTrust, waiting(changeReason), {
+                                                        title: trustLabel,
+                                                    }),
+                                                ]
+                                              : []),
+                                      ]
+                                    : []),
                             ],
                         },
                     ],

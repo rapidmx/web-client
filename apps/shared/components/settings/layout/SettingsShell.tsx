@@ -27,6 +27,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     { id: "appearance", href: "/settings/appearance", label: "Appearance" },
     { id: "auto-reply", href: "/settings/auto-reply", label: "Automatic Replies" },
     { id: "filters", href: "/settings/filters", label: "Mail Filters" },
+    { id: "blocked-senders", href: "/settings/blocked-senders", label: "Blocked & Safe Senders" },
     { id: "signatures", href: "/settings/signatures", label: "Signatures" },
     { id: "labels", href: "/settings/labels", label: "Labels" },
     { id: "read-receipts", href: "/settings/read-receipts", label: "Read Receipts" },

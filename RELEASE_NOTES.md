@@ -2,12 +2,21 @@
 
 ## Unreleased
 
+### Changed
+
+- **Report junk and Report phishing on the message card are done by the server**: it moves the message, trains the spam filter and audits phishing, and the pop-up says whether the filter learned from it. An older server falls back to the client-side move.
+- **Block and Never block use the mailbox's blocked and safe senders lists**, not filter rules. This fixes blocking `ann@x.com` also matching `joann@x.com` and works on mail the spam filter judged junk. Block also moves the message to Junk; both have Undo and a link to Settings. An older server falls back to filter rules.
+
+
 ### Fixes
 
 - **Delete did nothing in Deleted Items.**
 
 
 ### Added
+
+- **Not junk** in Junk Email (the card button and the Report menu), and **Not junk, and always trust <address>**, which adds the sender to Safe Senders (the server refuses without full access to the mailbox).
+- **Settings > Blocked & Safe Senders**: add and remove addresses or domains per mailbox, with validation and the 1,000-entry cap, and read-only for view-only readers.
 
 - **Message cards have a Report junk button and a "More actions" menu.** Report junk moves the message to its own mailbox's Junk Email folder, in a thread as well as on its own. The menu, at the end of the icon row, has Delete, Mark as read or unread, Flag or Unflag, Report (junk or phishing - phishing reports are not passed on to anyone yet), Block or Never block the sender (as mail filters), Print, View source and message details, Save as .eml or PDF, and Create rule (opens a new filter filled in from the message), plus Reply all and Forward. Actions that can't be used say why, and none of it shows on a draft or an outgoing message.
 - **Delete permanently.** Delete on messages already in Deleted Items now deletes them for good, after a confirmation, from the toolbar and selection bar, the Delete and Ctrl+D keys, the message card's menu and search results, in each message's own mailbox; the notification says how many were deleted, or which could not be and why, such as a legal hold. Emptying Deleted Items and Junk Email is offered at the top of the folder's list, after a confirmation that states how many items it will delete. Needs `@rapidmx/react-shared` 0.19.0 or later.

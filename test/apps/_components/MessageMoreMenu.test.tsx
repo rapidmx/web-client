@@ -18,6 +18,8 @@ function actionsFixture(): MessageMenuActions {
         toggleFlag: vi.fn(),
         reportJunk: vi.fn(),
         reportPhishing: vi.fn(),
+        notJunk: vi.fn(),
+        notJunkAndTrust: vi.fn(),
         blockSender: vi.fn(),
         neverBlockSender: vi.fn(),
         print: vi.fn(),
@@ -45,6 +47,7 @@ function setup(overrides: Partial<MessageMoreMenuProps> = {}) {
                 inDeletedItems={false}
                 sent={false}
                 ownSender={false}
+                canTrustSender
                 printReason={undefined}
                 composing={false}
                 triggerClassName="icon-button"
@@ -236,6 +239,60 @@ describe("the More actions menu", () => {
             // Blocking the sender of a message that is already in Junk is still right.
             await submenu("Block", user);
             expect(screen.getByRole("menuitem", { name: /^Block sender/ })).toBeEnabled();
+        });
+
+        it("adds Not junk, and Not junk and always trust, to Report for a message in Junk Email, and runs them", async () => {
+            const { actions, user, trigger } = await open({ inJunk: true });
+            await submenu("Report", user);
+            expect(screen.getByRole("menuitem", { name: "Not junk" })).toBeEnabled();
+            expect(screen.getByRole("menuitem", { name: "Not junk, and always trust sender@example.com" })).toHaveAttribute(
+                "title",
+                "Not junk, and always trust sender@example.com",
+            );
+            await user.click(screen.getByRole("menuitem", { name: "Not junk" }));
+            expect(actions.notJunk).toHaveBeenCalledTimes(1);
+            await user.click(trigger);
+            await submenu("Report", user);
+            await user.click(screen.getByRole("menuitem", { name: /^Not junk, and always trust/ }));
+            expect(actions.notJunkAndTrust).toHaveBeenCalledTimes(1);
+        });
+
+        it("has no Not junk rows for a message that is not in Junk Email", async () => {
+            const { user } = await open({ inJunk: false });
+            await submenu("Report", user);
+            expect(screen.queryByRole("menuitem", { name: /^Not junk/ })).not.toBeInTheDocument();
+        });
+
+        it("leaves out the always-trust row when the reader cannot trust senders", async () => {
+            const first = await open({ inJunk: true, canTrustSender: false });
+            await submenu("Report", first.user);
+            expect(screen.getByRole("menuitem", { name: "Not junk" })).toBeEnabled();
+            expect(screen.queryByRole("menuitem", { name: /^Not junk, and always trust/ })).not.toBeInTheDocument();
+        });
+
+        it("leaves out the always-trust row for the reader's own address", async () => {
+            const { user } = await open({ inJunk: true, ownSender: true });
+            await submenu("Report", user);
+            expect(screen.getByRole("menuitem", { name: "Not junk" })).toBeEnabled();
+            expect(screen.queryByRole("menuitem", { name: /^Not junk, and always trust/ })).not.toBeInTheDocument();
+        });
+
+        it("holds Not junk in a view-only mailbox, saying why", async () => {
+            const { user } = await open({ inJunk: true, writable: false });
+            await submenu("Report", user);
+            const rows = screen.getAllByRole("menuitem", { name: /^Not junk/ });
+            expect(rows).toHaveLength(2);
+            for (const row of rows) {
+                expect(row).toHaveTextContent("View-only mailbox");
+                expect(row).toBeDisabled();
+            }
+        });
+
+        it("holds both Not junk rows while something is being done to the message", async () => {
+            const { user } = await open({ inJunk: true, busy: true });
+            await submenu("Report", user);
+            expect(screen.getByRole("menuitem", { name: /^Not junk, and always trust/ })).toBeDisabled();
+            expect(screen.getByRole("menuitem", { name: /^Not junk, and always trust/ })).toHaveTextContent("Working on this message");
         });
 
         it("reads Delete permanently, and stays usable, for a message already in Deleted Items", async () => {
