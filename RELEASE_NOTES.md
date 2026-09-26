@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.17.1
+
 ### Fixes
 
 - **A page a plugin renders lost the mailbox in its address.** The shells read `?mailboxUid=` from the router's location, which is empty on a page with no router (plugin pages set `router = false`), so the booking types settings pages, for one, always showed the first mailbox. `useLocation()` from `shared/navigation` is the router's location under a router and the browser's address without one.
