@@ -21,9 +21,15 @@ import SettingsShell from "@rapidmx/web-client/shared/components/settings/layout
 
 ## Navigation without page loads
 
-`@rapidrest/react` has no router: every page is a server-rendered document that hydrates only its own page component. The
-`www` pages (Mail, Calendar, Contacts, Tasks, Settings and their subpages) therefore render a small client-side router
-themselves, and go between one another - and between the folders of Mail - without a page load:
+`@rapidrest/react` 2.0 has a client-side router of its own (`router = true` on the server's route, and the client built with
+`createViteConfig({ router: true })`), and the **admin and escrow consoles use it**: their pages did not change - every ordinary
+`<a href>` between two of a console's pages is taken over, back and forward work, and the server still renders every URL. That router
+replaces the whole page on each navigation (each page is its own hydration root, and `_layout.tsx` is not rendered again), so it
+cannot keep an app frame mounted. `www` needs exactly that - the compose windows in progress, the unlock prompt, the idle-key timer and
+the user menu must survive a page change, and a folder switch must keep the page's state - so the `www` pages keep the router
+described below (all of it in `shared/navigation/`, and `www/_routedPage.tsx`, `www/_routes.ts`). The `www` pages (Mail, Calendar,
+Contacts, Tasks, Settings and their subpages) render a small client-side router themselves, and go between one another - and between
+the folders of Mail - without a page load:
 
 - each `apps/www` page's default export is `routedPage("/its/route", Page)` (`apps/www/_routedPage.tsx`). The server
   renders and the browser hydrates exactly what it did before; the first load is unchanged. `apps/www/_routes.ts` lists the

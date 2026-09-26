@@ -6,10 +6,15 @@
  * The web client's client-side router: what lets Mail, Calendar, Contacts, Tasks and Settings replace one another - and a
  * folder replace a folder - without a page load.
  *
- * `@rapidrest/react` has no router of its own: every page is a server-rendered document with its own hydration entry, and
- * hydrates only the page component (never `_layout.tsx`). So the router is a component the pages render themselves - each
- * page's default export is `routedPage(path, Page)` (see `apps/www/_routedPage.tsx`), which renders `AppRouter` with the page
- * as its first content. The first load is unchanged: the server renders the same tree, the browser hydrates it.
+ * Why this is ours and not `@rapidrest/react`'s: since 2.0 the library has a router (`router = true` on the route, `Link`,
+ * `useRouter()`), and the admin and escrow consoles use it. But it swaps the whole page on every navigation - a page is its own
+ * hydration root, remounted (keyed) for each navigation, and `_layout.tsx` is server-only and never rendered again - so it cannot
+ * keep an app frame mounted, and it also remounts the page when only the query string changes. `www` needs both (the frame holds
+ * compose windows in progress, the unlock prompt, the idle-key timer and the user menu; a folder switch must keep the page's
+ * state), so the router is a component the pages render themselves - each page's default export is `routedPage(path, Page)`
+ * (see `apps/www/_routedPage.tsx`), which renders `AppRouter` with the page as its first content. The first load is unchanged: the
+ * server renders the same tree, the browser hydrates it. Everything in `apps/shared/navigation/` (and `apps/www/_routedPage.tsx`,
+ * `_routes.ts`) exists only because the library has no persistent frame; delete it when it gains one.
  *
  * `AppRouter` keeps ONE `AppChrome` (the icon rail, header, user menu, impersonation banner, compose windows, unlock prompt,
  * idle-key timer, sign-out listener) mounted and swaps only what is inside it. A page's own shell (`MailShell`,
