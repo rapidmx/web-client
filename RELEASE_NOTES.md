@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.17.2
+
 ## v0.17.1
 
 ### Fixes
