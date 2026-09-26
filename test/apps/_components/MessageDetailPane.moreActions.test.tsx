@@ -425,6 +425,16 @@ describe("Report junk on a server without the report route", () => {
         await waitFor(() => expect(popups()).toHaveLength(1));
         expect(popups()[0].message).toBe("“Re: Hello there” was moved to the Inbox.");
     });
+
+    it("moves a message in Junk Email to the Inbox for the Report menu's plain Not junk too", async () => {
+        const original = message({ folderUid: "f-junk" }) as Record<string, any>;
+        serve(noReportRoute, putTo("m1", () => next(original, { folderUid: "f1" })));
+        const user = userEvent.setup();
+        render(<MessageDetailPane message={original as never} attachments={[]} folders={FOLDERS as never} />);
+        await choose(user, ["Report"], /^Not junk$/);
+        await waitFor(() => expect(popups()).toHaveLength(1));
+        expect(popups()[0].message).toBe("“Re: Hello there” was moved to the Inbox.");
+    });
 });
 
 describe("Report > Report phishing", () => {
