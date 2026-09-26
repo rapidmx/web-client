@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-26
+
+### Added
+- Added a Reset button to the plugin Settings dialog that puts every field back to the deployment's value or the plugin's default, and drops the saved values when saved
+
+### Changed
+- Show what the deployment's configuration sets for a plugin's setting in its Settings dialog while nothing is saved, with a secret only as set, and never save a copy of it
+- Test showing, saving and resetting settings the deployment configures
+- Document the change in the release notes and NOTES
+- Upgraded react-shared
+
 ## [0.18.0] - 2026-09-26
 
 ### Added
@@ -1029,7 +1040,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/rapidmx/web-client/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rapidmx/web-client/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/rapidmx/web-client/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/rapidmx/web-client/compare/v0.17.0...v0.17.1
