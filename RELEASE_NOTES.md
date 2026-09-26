@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.18.0
+
 ### Added
 
 - **A Diagnostics page in the admin console (`/admin/diagnostics`)** for support, and for checking an install without shell access. **Versions** shows the server (Node.js, the deployed package, host, uptime), the installed plugins (the configured version next to the version the running servers loaded, with any load error), the install's other containers (postfix, postfix-bridge, mongodb, postgresql, redis, coturn, rspamd, clamav: status, image tag, image, digest, restarts, node, and each pod) and a filterable, paged list of every installed package. **Runtime** shows the Kubernetes version and distribution and the nodes that run the install's pods. **System** samples the server every 5 seconds while the tab is open and the page visible (with Pause and Resume) and draws the last 5 minutes as sparklines: the node the server runs on (CPU, memory, load, disks), the server process, the namespace and its pods, and the persistent volumes, with usage bars that say High above 80% and Critical above 90% in words as well as colour. **Logs** tails the server's log over a WebSocket with a level filter, a search box, Clear and Pause scrolling, and can record a capture of every line (up to 50,000) and download it, or the buffer, as `.log` or `.ndjson`. Outside Kubernetes (Docker Compose, for one) the Kubernetes parts say so plainly and the rest keeps working. **Download diagnostics report** saves the versions, runtime and a metrics sample as one JSON file (no logs, no plugin settings). Needs a server that serves `/api/admin/diagnostics/*` (the `@rapidmx/server` release after 1.0.0-beta.18) and the `/api/admin/logs` WebSocket.
