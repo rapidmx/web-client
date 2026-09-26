@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Delete did nothing in Deleted Items.**
+
+
+### Added
+
+- **Message cards have a Report junk button and a "More actions" menu.** Report junk moves the message to its own mailbox's Junk Email folder, in a thread as well as on its own. The menu, at the end of the icon row, has Delete, Mark as read or unread, Flag or Unflag, Report (junk or phishing - phishing reports are not passed on to anyone yet), Block or Never block the sender (as mail filters), Print, View source and message details, Save as .eml or PDF, and Create rule (opens a new filter filled in from the message), plus Reply all and Forward. Actions that can't be used say why, and none of it shows on a draft or an outgoing message.
+- **Delete permanently.** Delete on messages already in Deleted Items now deletes them for good, after a confirmation, from the toolbar and selection bar, the Delete and Ctrl+D keys, the message card's menu and search results, in each message's own mailbox; the notification says how many were deleted, or which could not be and why, such as a legal hold. Emptying Deleted Items and Junk Email is offered at the top of the folder's list, after a confirmation that states how many items it will delete. Needs `@rapidmx/react-shared` 0.19.0 or later.
+
+
 ## v0.16.0
 
 ### Changed

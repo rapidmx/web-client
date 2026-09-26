@@ -308,4 +308,53 @@ describe("MenuButton", () => {
         // Half the width fits half as much, so the same note needs twice the lines.
         expect(menuHeight(sections, 136)).toBe(8 + 36 + 6 * 16 + 4);
     });
+
+    describe("as an icon button with icon rows", () => {
+        it("draws only the icon, with no label and no chevron, and takes the caller's classes whole", async () => {
+            const user = userEvent.setup();
+            render(
+                <MenuButton
+                    iconOnly
+                    label="More actions"
+                    aria-label="More actions"
+                    icon={<svg data-testid="dots" />}
+                    className="round-button"
+                    sections={[{ key: "a", items: [{ key: "1", label: "One", icon: <svg data-testid="row-icon" />, title: "One, in full", onSelect: vi.fn() }] }]}
+                />,
+            );
+            const trigger = screen.getByRole("button", { name: "More actions" });
+            expect(trigger.className).toBe("round-button");
+            expect(trigger.textContent).toBe("");
+            expect(trigger.querySelectorAll("svg")).toHaveLength(1);
+            await user.click(trigger);
+            const row = screen.getByRole("menuitem", { name: "One" });
+            // The row's icon is decoration, and its title is the tooltip.
+            expect(row).toHaveAttribute("title", "One, in full");
+            expect(screen.getByTestId("row-icon").parentElement).toHaveAttribute("aria-hidden", "true");
+        });
+
+        it("puts the focus on the Back row of a submenu none of whose rows can be used, so Escape still leaves it", async () => {
+            const user = userEvent.setup();
+            render(
+                <MenuButton
+                    label="Actions"
+                    aria-label="Actions"
+                    sections={[
+                        {
+                            key: "a",
+                            items: [
+                                { key: "sub", label: "Report", submenu: [{ key: "s", items: [{ key: "x", label: "Nothing now", disabled: true, onSelect: vi.fn() }] }] },
+                                { key: "other", label: "Other", onSelect: vi.fn() },
+                            ],
+                        },
+                    ]}
+                />,
+            );
+            await user.click(screen.getByRole("button", { name: "Actions" }));
+            await user.click(screen.getByRole("menuitem", { name: "Report" }));
+            expect(screen.getByRole("menuitem", { name: "Back to Actions" })).toHaveFocus();
+            await user.keyboard("{Escape}");
+            expect(screen.getByRole("menuitem", { name: "Report" })).toHaveFocus();
+        });
+    });
 });

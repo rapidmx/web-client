@@ -125,6 +125,7 @@ function MessageDetailContent({ uid }: { uid: string }) {
             onFolderCreated={onFolderCreated}
             onScheduledSendCanceled={setMessage}
             onArchived={setMessage}
+            onChanged={setMessage}
             labels={labels}
             onLabelsChanged={setMessage}
             onLabelCreated={(label) => setLabels((prev) => [...prev, label])}

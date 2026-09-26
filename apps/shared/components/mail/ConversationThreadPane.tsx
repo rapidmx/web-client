@@ -577,6 +577,7 @@ export default function ConversationThreadPane({
                                     onReceiptHandled={patchMessage}
                                     onScheduledSendCanceled={removeMessage}
                                     onArchived={removeMessage}
+                                    onChanged={patchMessage}
                                     labels={labels}
                                     onLabelsChanged={patchMessage}
                                     onLabelCreated={onLabelCreated}

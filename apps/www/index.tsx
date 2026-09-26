@@ -76,6 +76,10 @@ import MoveToFolderDialog from "../shared/components/mail/MoveToFolderDialog.js"
 import { EncryptedPreview } from "../shared/components/mail/reading/EncryptedPreview.js";
 import MailListToolbar from "../shared/components/mail/MailListToolbar.js";
 import MailSelectionBar from "../shared/components/mail/MailSelectionBar.js";
+import EmptyFolderBar from "../shared/components/mail/EmptyFolderBar.js";
+import { EMPTIABLE_FOLDER_TYPES } from "../shared/mail/permanentDelete.js";
+import { usePermanentDelete } from "../shared/mail/usePermanentDelete.js";
+import { useMailboxUpdateAccess } from "../shared/mail/useMailboxUpdateAccess.js";
 import {
     CONVERSATION_SORT_NOTE,
     CONVERSATION_SORT_UNAVAILABLE,
@@ -538,7 +542,7 @@ function InboxPage(props: MailShellProps) {
 }
 
 function InboxContent({ userUid }: { userUid?: string }) {
-    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, noteFolderUids, live, trackMessageChange, mobileSearchSlot } = useMailShell();
+    const { folderUid, mailboxUid, mailboxes, mailboxFolders, aggregateFolderType, onFolderCreated, noteFolderUids, live, trackMessageChange, folderCountOf, mobileSearchSlot } = useMailShell();
     const isMobile = useIsMobile();
     const navigate = useNavigate();
     const { requestUnlock } = useUnlockPrompt();
@@ -581,6 +585,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // or it would act on a selection that is still arriving.
     const [resolvingSelection, setResolvingSelection] = useState(0);
     const [bulkBusy, setBulkBusy] = useState(false);
+    // Delete on what is already in Deleted Items, and Empty folder: confirmed, then done for good (see `usePermanentDelete()`).
+    const permanent = usePermanentDelete();
     // Bumped to force the list effect below to re-run - a bulk update is deliberately neither atomic nor
     // all-or-nothing (see `bulkUpdateMessages()`), so a rejection means refetching rather than guessing
     // which half of the selection actually landed.
@@ -640,6 +646,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // Always set once this page renders: a caller with no mailbox at all gets `MailboxProvisioning` from the shell instead.
     const activeMailboxUid = (mailboxUid ?? primaryMailboxUid(mailboxes, userUid))!;
     const mailboxKeys = mailboxes.find((mb) => mb.uid === activeMailboxUid)?.keys ?? [];
+    // False for a mailbox shared with the reader view-only: Empty folder is not offered there (the server would refuse it).
+    const mailboxWritable = useMailboxUpdateAccess(mailboxes.find((mb) => mb.uid === activeMailboxUid));
     // The Sort/Filter menus' and "Show as conversations"' current settings, remembered per mailbox across
     // reloads (`listPreferences.ts`). Read during render, not in an effect, so the very first listing
     // already uses the remembered arrangement rather than fetching the default one and immediately
@@ -2014,6 +2022,50 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return runBulkAction((moving) => moveToFolderOfType(moving, type, name), true, chosen);
     }
 
+    /**
+     * Permanently deletes `chosen` - messages that are already in Deleted Items - once the reader has confirmed it (`usePermanentDelete()`
+     * asks, deletes, tells the badges and says what happened). The rows that went leave the list, and selection and advance behave as for
+     * Archive; a conversation list is reloaded, as after every bulk action on it, and so is a flat one when the server refused some
+     * (those stay listed, and the reload shows what is really there). Resolves whether anything was deleted.
+     */
+    async function purgeChosen(chosen: Message[]): Promise<boolean> {
+        const outcome = await permanent.requestPermanentDelete(chosen);
+        if (!outcome) {
+            return false;
+        }
+        if (asConversations) {
+            setSelectedConversationIds(new Set());
+            setConversationMessagesById({});
+            setRefreshKey((n) => n + 1);
+        } else {
+            removeListedMessages(new Set(outcome.deleted.map((m) => m.uid)));
+            if (outcome.failed.length > 0) {
+                setRefreshKey((n) => n + 1);
+            }
+        }
+        setSelectedUids(new Set());
+        return outcome.deleted.length > 0;
+    }
+
+    /** Empty folder: permanently deletes everything in the folder being listed (Deleted Items or Junk Email) after the reader has confirmed. */
+    async function emptyListedFolder(folder: Folder, count: number | undefined) {
+        const outcome = await permanent.requestEmptyFolder({ uid: folder.uid, name: folder.name }, count);
+        if (!outcome) {
+            return;
+        }
+        if (outcome.emptied) {
+            setMessages([]);
+            setConversations([]);
+        }
+        setSelectedUid(null);
+        setOpenThread(null);
+        setSelectedUids(new Set());
+        setSelectedConversationIds(new Set());
+        setConversationMessagesById({});
+        // What is really left - after a partial delete, or one that failed outright - is whatever the server lists.
+        setRefreshKey((n) => n + 1);
+    }
+
     // ---- Swiping a row on a phone (see `SwipeRow`): right to left archives, left to right asks for a folder. Both go through the same
     // ---- bulk path as the selection bar's Archive and Move to, so the badges, the optimistic bookkeeping and the failure pop-up are one
     // ---- implementation. Not offered where the actions aren't (an aggregate view spans mailboxes, search results are a mixed bag, the
@@ -2250,6 +2302,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return mailboxFolders.flatMap((mf) => mf.folders).find((f) => f.uid === folderUidOfMessage)?.type;
     }
 
+    /** Whether a message is in its mailbox's Deleted Items - where Delete is the permanent one. */
+    function inDeletedItems(message: Message): boolean {
+        return folderTypeOf(message.folderUid) === "deleted_items";
+    }
+
     /** Moves the keyboard's focus to a row - and scrolls it into view - once the selection has moved to it. */
     function focusRow(uid: string) {
         // Only called from a key press, when the list is on screen.
@@ -2314,17 +2371,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     /**
-     * Runs a bulk action on what the keyboard acts on - the ticked rows in select mode, else the open message or conversation - keeping only
-     * the messages `applies` accepts (Delete leaves out what is already in Deleted Items, Mark read what is already read: nothing to do
-     * then). Held while another bulk action is on the wire, like the bar's buttons. Closes the open thread after a move away from it.
+     * What the keyboard acts on - the ticked rows in select mode, else the open message or conversation - keeping only the messages `applies`
+     * accepts (Mark read leaves out what is already read: nothing to do then). Nothing (an empty list) while another bulk action or a
+     * permanent delete is on the wire, like the bar's buttons, or when the open conversation could not be loaded.
      */
-    async function runOnKeyboardTargets(
-        action: (chosen: Message[]) => Promise<Message[]>,
-        removesRows: boolean,
-        applies: (message: Message) => boolean = () => true,
-    ) {
-        if (bulkBusy || resolvingSelection > 0) {
-            return;
+    async function keyboardTargets(applies: (message: Message) => boolean = () => true): Promise<Message[]> {
+        if (bulkBusy || resolvingSelection > 0 || permanent.busy) {
+            return [];
         }
         let chosen: Message[];
         try {
@@ -2335,33 +2388,61 @@ function InboxContent({ userUid }: { userUid?: string }) {
                   : [selected!];
         } catch (err) {
             notifyApiError(err, "Couldn't load the messages in that conversation");
-            return;
+            return [];
         }
-        chosen = chosen.filter(applies);
+        return chosen.filter(applies);
+    }
+
+    /** Closes the open thread (and the selection in it) - what a delete of the whole conversation leaves nothing to show of. */
+    function closeOpenThread() {
+        setOpenThread(null);
+        setSelectedUid(null);
+    }
+
+    /** Runs a bulk action on `chosen` (from `keyboardTargets()`), closing the open thread after a move away from it. */
+    async function actOnKeyboardTargets(chosen: Message[], action: (chosen: Message[]) => Promise<Message[]>, removesRows: boolean) {
         if (chosen.length === 0) {
             return;
         }
         const succeeded = await runBulkAction(action, removesRows, chosen);
         if (succeeded && removesRows && threadPane && !selectMode) {
-            setOpenThread(null);
-            setSelectedUid(null);
+            closeOpenThread();
         }
+    }
+
+    /** Runs a bulk action on what the keyboard acts on (`keyboardTargets()`). */
+    async function runOnKeyboardTargets(
+        action: (chosen: Message[]) => Promise<Message[]>,
+        removesRows: boolean,
+        applies: (message: Message) => boolean = () => true,
+    ) {
+        await actOnKeyboardTargets(await keyboardTargets(applies), action, removesRows);
+    }
+
+    /**
+     * Delete, from the keyboard: what is in Deleted Items is permanently deleted (after a confirmation), anything else moves to its mailbox's
+     * Deleted Items - as the selection bar's Delete does. A mix (search results from several folders) moves only what is not in Deleted Items yet.
+     */
+    async function deleteFromKeyboard() {
+        const targets = await keyboardTargets();
+        if (targets.length > 0 && targets.every(inDeletedItems)) {
+            if ((await purgeChosen(targets)) && threadPane && !selectMode) {
+                closeOpenThread();
+            }
+            return;
+        }
+        await actOnKeyboardTargets(
+            targets.filter((message) => !inDeletedItems(message)),
+            (chosen) => moveToFolderOfType(chosen, "deleted_items", "Deleted Items"),
+            true,
+        );
     }
 
     useShortcut(SHORTCUTS.mail.next, () => selectNeighbour(1), { enabled: canMoveSelection });
     useShortcut(SHORTCUTS.mail.previous, () => selectNeighbour(-1), { enabled: canMoveSelection });
     useShortcut(SHORTCUTS.mail.nextUnread, () => selectNextUnread(1), { enabled: canMoveSelection });
     useShortcut(SHORTCUTS.mail.previousUnread, () => selectNextUnread(-1), { enabled: canMoveSelection });
-    useShortcut(
-        SHORTCUTS.mail.delete,
-        () =>
-            void runOnKeyboardTargets(
-                (chosen) => moveToFolderOfType(chosen, "deleted_items", "Deleted Items"),
-                true,
-                (message) => folderTypeOf(message.folderUid) !== "deleted_items",
-            ),
-        { enabled: keyboardActions && keyboardTargetExists },
-    );
+    useShortcut(SHORTCUTS.mail.delete, () => void deleteFromKeyboard(), { enabled: keyboardActions && keyboardTargetExists });
     useShortcut(
         SHORTCUTS.mail.markRead,
         () =>
@@ -2432,6 +2513,20 @@ function InboxContent({ userUid }: { userUid?: string }) {
         crossMailbox && selectedMessages.some((m) => m.mailboxUid !== activeMailboxUid)
             ? "Labels can only be applied here to messages in the open mailbox"
             : undefined;
+    // Delete is the permanent one for what is in Deleted Items: for the selection when there is one (search results can come from any folder),
+    // else for the folder being viewed, so the button says so before anything is ticked.
+    const deletesPermanently =
+        selectedMessages.length > 0 ? selectedMessages.every(inDeletedItems) : currentFolders.find((f) => f.uid === folderUid)?.type === "deleted_items";
+    // Empty folder is offered at the top of the list of a mailbox's own Deleted Items or Junk Email - not for search results, nor for the "All
+    // mailboxes" views, which have no one folder to empty.
+    const emptiableFolder = !isSearching && !aggregateFolderType ? currentFolders.find((f) => f.uid === folderUid && EMPTIABLE_FOLDER_TYPES.includes(f.type)) : undefined;
+    // How many it holds as the sidebar's counts have it (kept right as messages leave), unless that says none while the list shows some.
+    const emptiableCount = emptiableFolder && folderCountOf(emptiableFolder).total > 0 ? folderCountOf(emptiableFolder).total : undefined;
+    const emptyDisabledReason = !mailboxWritable
+        ? "This mailbox is shared with you view-only"
+        : listedRowCount === 0 && emptiableCount === undefined
+          ? "This folder is already empty"
+          : undefined;
 
     if (!folderUid && !aggregateFolderType) {
         // `MailShell` never renders this component at all until a mailbox is resolved (see its own
@@ -2492,8 +2587,14 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             await runBulkAction((chosen) => moveMessages(chosen, targetFolderUid), true);
                         }}
                         onReportJunk={() => void moveSelectionToType("junk", "Junk Email")}
-                        onDelete={() => void moveSelectionToType("deleted_items", "Deleted Items")}
-                        busy={bulkBusy || resolvingSelection > 0}
+                        onDelete={() =>
+                            void (deletesPermanently
+                                ? purgeChosen(selectedMessages)
+                                : // A mix (search results from several folders) moves only what is not in Deleted Items yet.
+                                  moveSelectionToType("deleted_items", "Deleted Items", selectedMessages.filter((m) => !inDeletedItems(m))))
+                        }
+                        deletesPermanently={deletesPermanently}
+                        busy={bulkBusy || resolvingSelection > 0 || permanent.busy}
                     />
                 ) : (
                     <MailListToolbar
@@ -2539,6 +2640,16 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 )}
                 {!isMobile && <div className="p-2 border-b border-border">{searchField}</div>}
                 {isMobile && mobileSearchSlot && createPortal(searchField, mobileSearchSlot)}
+                {emptiableFolder && !selectMode && (
+                    <EmptyFolderBar
+                        folderName={emptiableFolder.name}
+                        count={emptiableCount}
+                        disabled={!!emptyDisabledReason || permanent.busy || bulkBusy}
+                        disabledReason={emptyDisabledReason}
+                        onEmpty={() => void emptyListedFolder(emptiableFolder, emptiableCount)}
+                    />
+                )}
+                {permanent.dialog}
                 {/* Two tabs, as Outlook has: Focused and Other. There is no "All" tab - the whole Inbox is
                     still one pick away, in the Filter menu, which is where every other named filter lives
                     and the only place that can show which of them is really in force. A stored `all` (or
@@ -2822,6 +2933,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         // from the list rather than patched in place.
                         removeListedMessage(updated.uid);
                     }}
+                    onChanged={patchListedMessage}
                     labels={labels}
                     onLabelsChanged={patchListedMessage}
                     onLabelCreated={(label) =>

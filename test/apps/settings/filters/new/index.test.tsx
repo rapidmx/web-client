@@ -264,6 +264,50 @@ describe("NewMailFilterPage", () => {
         expect(posted).toBe(false);
     });
 
+    describe("started from a message (Create rule in the reading pane's More actions menu)", () => {
+        it("begins with the sender and subject as the filter's conditions, and a name that says whose mail it is", async () => {
+            window.history.pushState({}, "", "/settings/filters/new?mailboxUid=mb1&from=ann%40x.com&subject=Q3+plan");
+            mockShell();
+            render(<NewMailFilterPage userUid="u1" />);
+
+            expect(await screen.findByLabelText("Name")).toHaveValue("Messages from ann@x.com");
+            expect(await screen.findByText("ann@x.com")).toBeInTheDocument();
+            expect(screen.getByText("Q3 plan")).toBeInTheDocument();
+        });
+
+        it("creates the filter with those conditions as they stand, so the reader can change them first", async () => {
+            window.history.pushState({}, "", "/settings/filters/new?mailboxUid=mb1&from=ann%40x.com");
+            let body: Record<string, unknown> | undefined;
+            mockShell((url, init) => {
+                if (url === "/api/mail/mail-filter-rules" && init?.method === "POST") {
+                    body = JSON.parse(init.body as string);
+                    return jsonResponse(200, { uid: "r1", version: 0, ...body });
+                }
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<NewMailFilterPage userUid="u1" />);
+            await screen.findByLabelText("Name");
+            // After the form has read where it was opened from: saving navigates to the new filter's page.
+            mockLocation();
+            await user.click(screen.getByRole("button", { name: "Add action" }));
+            await user.selectOptions(screen.getByLabelText("Destination folder"), "f2");
+            await user.click(screen.getByRole("button", { name: "Create filter" }));
+
+            await waitFor(() => expect(body).toBeDefined());
+            expect(body).toMatchObject({ name: "Messages from ann@x.com", conditions: { fromContains: ["ann@x.com"] } });
+            expect((body!.conditions as Record<string, unknown>).subjectContains).toBeUndefined();
+        });
+
+        it("starts empty when no sender or subject was asked for, or blank ones", async () => {
+            window.history.pushState({}, "", "/settings/filters/new?mailboxUid=mb1&from=%20&subject=");
+            mockShell();
+            render(<NewMailFilterPage userUid="u1" />);
+            expect(await screen.findByLabelText("Name")).toHaveValue("");
+            expect(screen.queryByText("ann@x.com")).not.toBeInTheDocument();
+        });
+    });
+
     it("the Cancel link returns to the mail filters list", async () => {
         mockShell();
         render(<NewMailFilterPage userUid="u1" />);

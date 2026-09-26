@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, PropsWithChildren, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3, HiOutlinePencilSquare } from "react-icons/hi2";
 import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
 import { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -102,6 +102,13 @@ export interface MailShellContextValue {
      */
     trackMessageChange: (previous: Message, next: Message | null) => CountTracker;
     /**
+     * Reads every mailbox's real folder counts back and shows them (after `delayMs`, 600 ms by default) - for a change too big to track message by
+     * message, such as emptying a folder. A no-op on the default context value, which is only ever read outside a real shell.
+     */
+    refreshFolderCounts: (delayMs?: number) => void;
+    /** A folder's counts as the sidebar shows them: what the shell has worked out or been told since it loaded, else what the folder was listed with. */
+    folderCountOf: (folder: Folder) => FolderCount;
+    /**
      * The phone layout's header row beside the folders button, for the page to put its search box in (`createPortal()`): the shell
      * owns the row, the page owns the search state. `null` until the row has rendered, and on the default context value.
      */
@@ -117,6 +124,8 @@ const MailShellContext = createContext<MailShellContextValue>({
     noteFolderUids: () => undefined,
     live: NO_LIVE_UPDATES,
     trackMessageChange: () => NO_TRACKER,
+    refreshFolderCounts: () => undefined,
+    folderCountOf: (folder) => ({ unread: folder.unreadCount, total: folder.totalCount }),
     mobileSearchSlot: null,
 });
 
@@ -317,14 +326,16 @@ export default function MailShell({
 
     const counts = folderCounts.counts;
     const trackMessageChange = folderCounts.track;
+    const refreshFolderCounts = folderCounts.refresh;
+    const folderCountOf = useCallback((folder: Folder) => countOfFolder(folder, counts), [counts]);
     // `(3) Acme: Mail` in the tab strip while there is unread mail in an Inbox - kept by the frame when there is one.
     useUnreadTitle(inboxUnreadTotal(mailboxFolders, counts), { enabled: !hosted });
 
     // A state rather than a ref: the page reads it during its render, so it has to re-render once the row it names is in the document.
     const [mobileSearchSlot, setMobileSearchSlot] = useState<HTMLElement | null>(null);
     const contextValue = useMemo<MailShellContextValue>(
-        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange, mobileSearchSlot }),
-        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange, mobileSearchSlot],
+        () => ({ mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange, refreshFolderCounts, folderCountOf, mobileSearchSlot }),
+        [mailboxUid, folderUid, aggregateFolderType, mailboxes, mailboxFolders, onFolderCreated, noteFolderUids, live, trackMessageChange, refreshFolderCounts, folderCountOf, mobileSearchSlot],
     );
 
     // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else for a

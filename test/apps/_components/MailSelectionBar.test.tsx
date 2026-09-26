@@ -251,11 +251,37 @@ describe("MailSelectionBar", () => {
         expect(screen.getByRole("button", { name: /New folder/ })).toBeInTheDocument();
     });
 
-    it("disables the actions whose target folder is the one already being viewed", () => {
-        renderBar({ currentFolderUid: "f3" });
-        const remove = screen.getByRole("button", { name: "Delete" });
-        expect(remove).toBeDisabled();
-        expect(remove).toHaveAttribute("title", "These messages are already in Deleted Items");
+    it("offers Delete, moving to Deleted Items, unless told the selection is already there", async () => {
+        const user = userEvent.setup();
+        const handlers = renderBar({ currentFolderUid: "f1" });
+
+        expect(screen.queryByRole("button", { name: "Delete permanently" })).not.toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+
+        expect(handlers.onDelete).toHaveBeenCalledTimes(1);
+    });
+
+    it("says Delete permanently, enabled and styled as destructive, when the selection is in Deleted Items", async () => {
+        const user = userEvent.setup();
+        const handlers = renderBar({ currentFolderUid: "f3", deletesPermanently: true });
+
+        const remove = screen.getByRole("button", { name: "Delete permanently" });
+        expect(remove).toBeEnabled();
+        expect(remove).toHaveClass("text-danger");
+        expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+        await user.click(remove);
+
+        expect(handlers.onDelete).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds Delete permanently with nothing selected", () => {
+        renderBar({ selected: [], deletesPermanently: true });
+        expect(screen.getByRole("button", { name: "Delete permanently" })).toBeDisabled();
+    });
+
+    it("holds Delete permanently while a bulk action is in flight", () => {
+        renderBar({ deletesPermanently: true, busy: true });
+        expect(screen.getByRole("button", { name: "Delete permanently" })).toBeDisabled();
     });
 
     it("says so when Archive or Junk is the folder being viewed", () => {
@@ -355,16 +381,16 @@ describe("MailSelectionBar keyboard shortcut hints", () => {
         expect(screen.getByRole("button", { name: "Archive" })).not.toHaveAttribute("aria-keyshortcuts");
     });
 
-    it("says nothing about shortcuts without them, and lets the reason a button is disabled be its tooltip", () => {
-        renderBar({ currentFolderUid: "f3" });
+    it("says nothing about shortcuts without them", () => {
+        renderBar();
         expect(screen.getByRole("button", { name: "Mark read" })).not.toHaveAttribute("aria-keyshortcuts");
-        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("title", "These messages are already in Deleted Items");
         expect(screen.getByRole("button", { name: "Delete" })).not.toHaveAttribute("aria-keyshortcuts");
+        expect(screen.getByRole("button", { name: "Delete" })).not.toHaveAttribute("title");
     });
 
-    it("prefers the reason to the hint when Delete is disabled", () => {
-        renderBar({ currentFolderUid: "f3", shortcuts: true });
-        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("title", "These messages are already in Deleted Items");
-        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("aria-keyshortcuts", "Control+D Delete");
+    it("names the shortcut on Delete permanently too, since the same keys do it", () => {
+        renderBar({ currentFolderUid: "f3", deletesPermanently: true, shortcuts: true });
+        expect(screen.getByRole("button", { name: "Delete permanently" })).toHaveAttribute("title", "Delete permanently (Ctrl+D)");
+        expect(screen.getByRole("button", { name: "Delete permanently" })).toHaveAttribute("aria-keyshortcuts", "Control+D Delete");
     });
 });

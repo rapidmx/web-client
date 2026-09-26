@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { createPortal } from "react-dom";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
@@ -1425,5 +1425,14 @@ describe("MailShell keyboard shortcuts", () => {
         await screen.findByText("No mailbox available");
 
         expect(press("n", { altKey: true })).toBe(true);
+    });
+});
+
+describe("useMailShell outside a shell", () => {
+    it("has nothing to refresh, and reads a folder's counts from the folder itself", () => {
+        const { result } = renderHook(() => useMailShell());
+
+        expect(result.current.refreshFolderCounts()).toBeUndefined();
+        expect(result.current.folderCountOf({ unreadCount: 2, totalCount: 5 } as never)).toEqual({ unread: 2, total: 5 });
     });
 });

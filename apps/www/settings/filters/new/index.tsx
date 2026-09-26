@@ -33,17 +33,39 @@ function NewMailFilterPage(props: NewMailFilterPageProps) {
     );
 }
 
+/**
+ * What "Create rule" on a message (the reading pane's More actions menu) asks this page to start with: `?from=` and `?subject=` become the
+ * filter's "From contains" and "Subject contains" conditions, and the name says whose mail it is. The reader keeps, changes or removes them.
+ */
+function prefillFromSearch(search: string): { name: string; conditions: MailFilterConditions } {
+    const params = new URLSearchParams(search);
+    const from = params.get("from")?.trim();
+    const subject = params.get("subject")?.trim();
+    const conditions: MailFilterConditions = {};
+    if (from) {
+        conditions.fromContains = [from];
+    }
+    if (subject) {
+        conditions.subjectContains = [subject];
+    }
+    return { name: from ? `Messages from ${from}` : "", conditions };
+}
+
 function NewMailFilterForm() {
     const navigate = useNavigate();
     const { mailboxUid } = useSettingsShell();
+    // Read once, when the form opens, and what the reader then edits is theirs. From the browser's own location rather than `useLocationSearch()`,
+    // which is empty until an effect has run: this form is only mounted once the shell has fetched the mailbox, in the browser, so there is no
+    // server render for the two to disagree with.
+    const [prefill] = useState(() => prefillFromSearch(window.location.search));
     const [folders, setFolders] = useState<Folder[] | null>(null);
     const [folderError, setFolderError] = useState<string | null>(null);
-    const [name, setName] = useState("");
+    const [name, setName] = useState(prefill.name);
     const [rule, setRule] = useState<RuleBuilderValue<MailFilterConditions, MailFilterAction>>({
         enabled: true,
         sequence: 0,
         stopProcessingRules: false,
-        conditions: {},
+        conditions: prefill.conditions,
         actions: [],
     });
     const [error, setError] = useState<string | null>(null);

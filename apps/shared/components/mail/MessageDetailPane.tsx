@@ -12,6 +12,7 @@ import {
     HiOutlineFolderArrowDown,
     HiOutlineLockClosed,
     HiOutlineMoon,
+    HiOutlineNoSymbol,
     HiOutlineSun,
 } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
@@ -68,6 +69,10 @@ import { useKeyEnvironment } from "../../keyboard/ShortcutProvider.js";
 import { useShortcut } from "../../keyboard/useShortcut.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
 import { moveLocalEntity } from "../../search/localIndexRpcClient.js";
+import { useNavigate } from "../../navigation/routerContext.js";
+import { notify } from "../../notifications/store.js";
+import { notifyApiError } from "../../notifications/apiErrors.js";
+import { useMailboxUpdateAccess } from "../../mail/useMailboxUpdateAccess.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import LabelMenuButton from "./labelMenu.js";
@@ -76,7 +81,12 @@ import EncryptedBody from "./reading/EncryptedBody.js";
 import { displaySubject } from "./reading/EncryptedPreview.js";
 import MessageBody, { BodySkeleton } from "./reading/MessageBody.js";
 import { BODY_FONT_STYLE, CardShell, SenderAvatar, SubjectCard } from "./reading/MessageCard.js";
-import type { BodyContent } from "./reading/bodyContent.js";
+import MessageMoreMenu, { MessageMenuActions } from "./reading/MessageMoreMenu.js";
+import MessageSourceDialog, { SourceMode, SourceState } from "./reading/MessageSourceDialog.js";
+import { useMessageActions } from "./reading/useMessageActions.js";
+import { saveAsEml } from "./reading/messageExport.js";
+import { buildPrintDocument, printDocument } from "./reading/printMessage.js";
+import { type BodyContent, fetchBodyContent } from "./reading/bodyContent.js";
 import { useViewOriginal } from "./reading/viewOriginal.js";
 import { ROW_FOCUS_CLASS, UnreadLabel, dateClass, senderClass } from "./unreadStyle.js";
 
@@ -198,11 +208,16 @@ function downloadMimeAttachment(attachment: MimeAttachment): void {
  * A plain `<button>` rather than react-shared's `Button`, whose padding and minimum width are sized for a
  * text label. Ordinary DOM order, so the keyboard reaches these in the order they are read.
  */
+/** The look of the card's round icon buttons, shared with the "More actions" trigger. */
+const ICON_BUTTON_CLASS =
+    "inline-flex items-center justify-center p-1.5 rounded-md border border-border text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent";
+
 function IconAction({
     icon,
     label,
     onClick,
     disabled,
+    reason,
     busy,
     onPrefetch,
     shortcut,
@@ -211,6 +226,8 @@ function IconAction({
     label: string;
     onClick: () => void;
     disabled?: boolean;
+    /** Why the button is disabled, when it is: the tooltip says so instead of naming the action. */
+    reason?: string;
     busy?: boolean;
     /** Called when the pointer or keyboard reaches the button - the moment to start fetching what a click will need. */
     onPrefetch?: () => void;
@@ -223,14 +240,14 @@ function IconAction({
         <button
             type="button"
             aria-label={label}
-            title={shortcut ? withHint(label, shortcut, env) : label}
+            title={reason ?? (shortcut ? withHint(label, shortcut, env) : label)}
             aria-keyshortcuts={shortcut ? ariaKeyShortcuts(shortcut, env) : undefined}
             aria-busy={busy || undefined}
             disabled={disabled}
             onClick={onClick}
             onPointerEnter={onPrefetch}
             onFocus={onPrefetch}
-            className="inline-flex items-center justify-center p-1.5 rounded-md border border-border text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent"
+            className={ICON_BUTTON_CLASS}
         >
             {icon}
         </button>
@@ -333,6 +350,11 @@ export interface MessageDetailPaneProps {
      * server-side 400 guard); Drafts is detected via `draftsFolderUid` (already passed by every caller
      * for the Outbox-cancel flow) rather than a new prop. */
     onArchived?: (updated: Message) => void;
+    /** Called with the server's updated copy (and the copy it replaces) after the card's More actions menu marked the message read or unread, or
+     * flagged or unflagged it - it stays where it is, so a caller patches it in place, as it does for `onLabelsChanged`. The menu's Delete, Report
+     * junk and Block move the message out of its folder and are reported through `onMoved`, which is what makes a thread's card leave it and the
+     * pane advance, exactly as after Archive. */
+    onChanged?: (updated: Message, previous?: Message) => void;
     /** Every label defined in this message's mailbox, for the label-assignment popover below — each
      * caller fetches its own mailbox's labels the same way it already resolves `draftsFolderUid`
      * (`listLabels()`). Absent/empty simply hides the Labels control - there's nothing to assign. */
@@ -369,9 +391,14 @@ export interface MessageDetailPaneProps {
     shortcuts?: boolean;
 }
 
+/** A subject without its \`Re:\`/\`Fwd:\` prefixes. */
+function withoutSubjectPrefixes(subject: string | undefined): string {
+    return (subject ?? "").replace(/^(\s*(re|fw|fwd|aw|sv)\s*:)+/i, "").trim();
+}
+
 /** A subject without its \`Re:\`/\`Fwd:\` prefixes, lower-cased - what makes two messages of one thread the same subject. */
 function subjectCore(subject: string | undefined): string {
-    return (subject ?? "").replace(/^(\s*(re|fw|fwd|aw|sv)\s*:)+/i, "").trim().toLowerCase();
+    return withoutSubjectPrefixes(subject).toLowerCase();
 }
 
 /** Whether a message's subject says nothing its thread's subject doesn't. */
@@ -425,6 +452,7 @@ function MessageDetailContent({
     onFolderCreated,
     onReceiptHandled,
     onArchived,
+    onChanged,
     labels,
     onLabelsChanged,
     onLabelCreated,
@@ -922,6 +950,34 @@ function MessageDetailContent({
     useShortcut(SHORTCUTS.mail.archive, () => void (!archiving && handleArchive()), { enabled: keyboard && archivable });
     useShortcut(SHORTCUTS.mail.move, () => setMovePrompt(true), { enabled: keyboard && movable });
 
+    // The card's Report junk button and "More actions" menu: they act on this message, in the mailbox it is in. Nothing of them applies to a message
+    // being written or sent (Drafts, Outbox), and Report junk and Block are not for mail the reader sent.
+    const folderType = folders?.find((folder) => folder.uid === message.folderUid)?.type;
+    const inJunk = folderType === "junk";
+    const inDeletedItems = folderType === "deleted_items";
+    const reportable = archivable && !isSentItems;
+    const writable = useMailboxUpdateAccess(readerMailbox);
+    const remember = (updated: Message) => {
+        latestLabelsMessageRef.current = updated;
+        setLabelsMessage(updated);
+    };
+    const messageActions = useMessageActions({
+        message,
+        newest: () => (message.version >= latestLabelsMessageRef.current.version ? message : latestLabelsMessageRef.current),
+        remember,
+        folders,
+        inJunk,
+        inDeletedItems,
+        trackMessageChange,
+        onMoved,
+        onChanged,
+        onFolderCreated,
+    });
+    const navigate = useNavigate();
+    const [sourceView, setSourceView] = useState<{ mode: SourceMode; source: SourceState } | null>(null);
+    // Which "View source" request the dialog is waiting for: one answering after the dialog was closed (or another was opened) is not shown.
+    const sourceRequestRef = useRef(0);
+
     // Only ever invoked from the pending-receipt banner below, which itself only renders once `message`
     // is loaded — same real invariant as every other handler above.
     async function handleReceipt(type: ReceiptType, action: "approve" | "decline") {
@@ -1040,6 +1096,105 @@ function MessageDetailContent({
         </>
     );
 
+    // ---- The "More actions" menu's own rows (Print, View, Save as, Create rule); the rest are `messageActions`. ----
+
+    /** Prints this one message: its header lines and the body the pane shows (what was decrypted or verified here, else the server's sanitized
+     * body), in a frame of its own - see `printMessage.ts`. */
+    async function handlePrint() {
+        try {
+            const content = bodyContent ?? (await fetchBodyContent(message.uid, message.version));
+            const format = (list: Recipient[]) => list.map((r) => formatMailAddress(r)).join(", ");
+            const printable = buildPrintDocument({
+                subject: shownSubject,
+                headers: [
+                    { name: "From", value: senderLabel },
+                    { name: "To", value: format(message.recipients.filter((r) => r.type !== "cc" && r.type !== "bcc")) },
+                    { name: "Cc", value: format(message.recipients.filter((r) => r.type === "cc")) },
+                    { name: "Date", value: new Date(message.receivedDate).toLocaleString() },
+                ],
+                content,
+                attachments,
+                inlineParts: innerAttachments,
+            });
+            if (printable === undefined) {
+                notify({ kind: "warning", title: "This message is too large to print here" });
+                return;
+            }
+            printDocument(printable);
+        } catch (err) {
+            notifyApiError(err, "Couldn't print this message");
+        }
+    }
+
+    /** Opens the source (or just the headers) of the message as the server has it - for an encrypted message, its ciphertext. */
+    function openSource(mode: SourceMode) {
+        const request = ++sourceRequestRef.current;
+        setSourceView({ mode, source: { status: "loading" } });
+        getMessageRawContent(message.uid).then(
+            (raw) => {
+                if (sourceRequestRef.current === request) {
+                    setSourceView({ mode, source: { status: "ready", raw } });
+                }
+            },
+            (err) => {
+                if (sourceRequestRef.current === request) {
+                    setSourceView({ mode, source: { status: "error", message: err instanceof ApiRequestError ? err.message : "Could not load this message's source." } });
+                }
+            },
+        );
+    }
+
+    function closeSource() {
+        sourceRequestRef.current++;
+        setSourceView(null);
+    }
+
+    async function handleSaveAsEml() {
+        try {
+            saveAsEml(await getMessageRawContent(message.uid), protectedSubject ?? displaySubject(message.subject));
+        } catch (err) {
+            notifyApiError(err, "Couldn't save this message");
+        }
+    }
+
+    /** The rules page's "New mail filter", started from this message: its sender and (for a message the server can read) its subject. */
+    function handleCreateRule() {
+        const params = new URLSearchParams({ mailboxUid: message.mailboxUid, from: message.from.address });
+        const subject = message.encrypted ? "" : withoutSubjectPrefixes(message.subject);
+        if (subject) {
+            params.set("subject", subject);
+        }
+        navigate(`/settings/filters/new?${params.toString()}`);
+    }
+
+    const menuActions: MessageMenuActions = {
+        replyAll: () => void handleReplyOrForward("replyAll"),
+        forward: () => void handleReplyOrForward("forward"),
+        deleteMessage: () => void messageActions.deleteMessage(),
+        toggleRead: () => void messageActions.toggleRead(),
+        toggleFlag: () => void messageActions.toggleFlag(),
+        reportJunk: () => void messageActions.reportJunk(),
+        reportPhishing: () => void messageActions.reportPhishing(),
+        blockSender: () => void messageActions.blockSender(),
+        neverBlockSender: () => void messageActions.neverBlockSender(),
+        print: () => void handlePrint(),
+        viewSource: () => openSource("source"),
+        viewDetails: () => openSource("headers"),
+        saveAsEml: () => void handleSaveAsEml(),
+        createRule: handleCreateRule,
+    };
+    // An encrypted message can be printed once it has been opened here: while it is still opening, or when it can't be, there is nothing to print.
+    const printReason = !message.encrypted
+        ? undefined
+        : security === null
+          ? "Still opening this message"
+          : security.decryptError === undefined
+            ? undefined
+            : lockedRef.current
+              ? "Unlock this message to print it"
+              : "This message can't be read, so it can't be printed";
+    const reportReason = !writable ? "View-only mailbox" : inJunk ? "Already in Junk Email" : undefined;
+
     const card = (
         <CardShell unread={cardUnread}>
             {/* Header row: who it is from, when, and what can be done with it. Wraps: on a phone the actions drop under the sender. */}
@@ -1153,6 +1308,16 @@ function MessageDetailContent({
                             onClick={() => setMovePrompt(true)}
                         />
                     )}
+                    {reportable && (
+                        <IconAction
+                            icon={<HiOutlineNoSymbol size={16} aria-hidden="true" />}
+                            label="Report junk"
+                            busy={messageActions.busy}
+                            disabled={messageActions.busy || reportReason !== undefined}
+                            reason={reportReason}
+                            onClick={() => void messageActions.reportJunk()}
+                        />
+                    )}
                     {labels && labels.length > 0 && (
                         <LabelMenuButton
                             aria-label="Labels"
@@ -1168,6 +1333,23 @@ function MessageDetailContent({
                             emptyNote="This mailbox has no labels yet."
                             commit={{ label: "Apply" }}
                             clear={{ label: "Remove all labels" }}
+                        />
+                    )}
+                    {archivable && (
+                        <MessageMoreMenu
+                            actions={menuActions}
+                            senderAddress={message.from.address}
+                            read={currentLabelsMessage.flags.read === true}
+                            flagged={currentLabelsMessage.flags.flagged === true}
+                            writable={writable}
+                            busy={messageActions.busy}
+                            inJunk={inJunk}
+                            inDeletedItems={inDeletedItems}
+                            sent={!!isSentItems}
+                            ownSender={readerAddressesKey.toLowerCase().split(" ").includes(message.from.address.toLowerCase())}
+                            printReason={printReason}
+                            composing={preparingCompose}
+                            triggerClassName={ICON_BUTTON_CLASS}
                         />
                     )}
                 </div>
@@ -1486,6 +1668,14 @@ function MessageDetailContent({
                 currentFolderUid={message.folderUid}
                 onMove={handleMove}
                 onFolderCreated={onFolderCreated}
+            />
+            {messageActions.dialog}
+            <MessageSourceDialog
+                open={sourceView !== null}
+                onClose={closeSource}
+                mode={sourceView?.mode ?? "source"}
+                source={sourceView?.source ?? { status: "loading" }}
+                encrypted={!!message.encrypted}
             />
             <Modal open={confirming} onClose={() => setConfirming(false)} title="Recall this message?">
                 <p className="text-sm text-text-muted mb-4">

@@ -19,6 +19,10 @@ interface MenuItemBase {
     checked?: boolean | "mixed";
     /** A colour swatch before the label - a label's own colour. */
     swatchColor?: string;
+    /** An icon before the label, for a menu whose rows are commands (the reading pane's "More actions"). */
+    icon?: ReactNode;
+    /** A tooltip for the row - the full text of a label the row truncates. */
+    title?: string;
     disabled?: boolean;
     /** Leaves the menu open after choosing this row, for a multi-select list where several rows are ticked
      * before one command commits them all. */
@@ -97,8 +101,11 @@ export function menuHeight(sections: MenuSectionSpec[], width: number = DEFAULT_
 }
 
 export interface MenuButtonProps {
-    /** The trigger's visible label. */
+    /** The trigger's visible label. Not drawn (nor is the chevron) with `iconOnly`, where `aria-label` is all the trigger says. */
     label: ReactNode;
+    /** The trigger is just its `icon` - a round icon button like the reading pane's own command row, whose `className` it takes over
+     * completely. `aria-label` (and `title`) name it. */
+    iconOnly?: boolean;
     /** The trigger's accessible name, which also names the menu itself - includes the current selection
      * where there is one ("Filter: Unread"), so the button says what it's set to, not just what it does. */
     "aria-label": string;
@@ -127,6 +134,7 @@ export interface MenuButtonProps {
  */
 export default function MenuButton({
     label,
+    iconOnly = false,
     icon,
     disabled,
     title,
@@ -190,8 +198,10 @@ export default function MenuButton({
 
     function enterSubmenu(item: MenuSubmenuSpec) {
         setSubmenuKey(item.key);
-        // Past the Back row, onto the first row of the submenu itself.
-        setActiveIndex(1 + initialActiveIndex(item.submenu.flatMap((section) => section.items)));
+        const rows = item.submenu.flatMap((section) => section.items);
+        // Past the Back row, onto the first row of the submenu itself - or, when none of them can take focus (every row is unavailable right now), onto
+        // the Back row, so the keyboard still has a place to be.
+        setActiveIndex(rows.some((row) => !row.disabled) ? 1 + initialActiveIndex(rows) : 0);
     }
 
     function leaveSubmenu() {
@@ -285,16 +295,20 @@ export default function MenuButton({
                 disabled={disabled}
                 onClick={() => (open ? closeMenu(false) : openMenu())}
                 onKeyDown={handleTriggerKeyDown}
-                className={[
-                    // `min-w-0` so a long label ("Filter: Has attachments") truncates instead of pushing
-                    // whatever sits beside it in the toolbar off the edge of a 384px list column.
-                    "inline-flex min-w-0 items-center gap-1 px-2 py-1 rounded-md text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent",
-                    className,
-                ].join(" ")}
+                className={
+                    iconOnly
+                        ? className
+                        : [
+                              // `min-w-0` so a long label ("Filter: Has attachments") truncates instead of pushing
+                              // whatever sits beside it in the toolbar off the edge of a 384px list column.
+                              "inline-flex min-w-0 items-center gap-1 px-2 py-1 rounded-md text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent",
+                              className,
+                          ].join(" ")
+                }
             >
                 {icon}
-                <span className="truncate">{label}</span>
-                <HiChevronDown size={14} aria-hidden="true" className="shrink-0 text-text-muted" />
+                {!iconOnly && <span className="truncate">{label}</span>}
+                {!iconOnly && <HiChevronDown size={14} aria-hidden="true" className="shrink-0 text-text-muted" />}
             </button>
             {open && (
                 <PopoverPortal
@@ -332,6 +346,7 @@ export default function MenuButton({
                                             type="button"
                                             role={role}
                                             disabled={item.disabled}
+                                            title={item.title}
                                             tabIndex={index === activeIndex ? 0 : -1}
                                             {...(role === "menuitem"
                                                 ? {}
@@ -352,6 +367,11 @@ export default function MenuButton({
                                             </span>
                                             <span className="min-w-0 flex-1">
                                                 <span className="flex h-5 items-center gap-1.5">
+                                                    {item.icon && (
+                                                        <span aria-hidden="true" className="shrink-0 text-text-muted">
+                                                            {item.icon}
+                                                        </span>
+                                                    )}
                                                     {item.swatchColor && (
                                                         <span
                                                             aria-hidden="true"

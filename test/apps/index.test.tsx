@@ -3428,6 +3428,8 @@ describe("InboxPage", () => {
                 fetchMock.mock.calls
                     .filter(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT")
                     .map(([, init]: [string, RequestInit]) => JSON.parse(init.body as string));
+            const deleteRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
+                fetchMock.mock.calls.filter(([, init]: [string, RequestInit]) => init?.method === "DELETE").map(([url]: [string]) => url);
             const rowButton = (subject: string) => screen.getByText(subject).closest("button") as HTMLElement;
             const detail = () => screen.getByTestId("detail-pane");
 
@@ -3565,10 +3567,13 @@ describe("InboxPage", () => {
                 expect(puts(fetchMock)).toEqual([]);
             });
 
-            it("does not delete what is already in Deleted Items - the key is taken and nothing is sent", async () => {
+            it("permanently deletes what is already in Deleted Items with the same key - only after a confirmation, and never as a move", async () => {
                 mockLocation();
                 (window.location as any).search = "?mailboxUid=mb1&folderUid=f6";
-                const fetchMock = mockSelectable([messageFixture({ uid: "m9", subject: "Gone already", folderUid: "f6" })]);
+                const fetchMock = mockSelectable([messageFixture({ uid: "m9", subject: "Gone already", folderUid: "f6" })], undefined, (url, init) =>
+                    init?.method === "DELETE" ? new Response(null, { status: 204 }) : undefined,
+                );
+                const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("Gone already");
                 press("ArrowDown");
@@ -3576,6 +3581,36 @@ describe("InboxPage", () => {
 
                 expect(press("d", CTRL)).toBe(false);
 
+                // The key only asks: nothing is sent, and the row stays, until the reader confirms.
+                const dialog = await screen.findByRole("dialog", { name: "Delete permanently" });
+                expect(within(dialog).getByText("Permanently delete 1 message? This can't be undone.")).toBeInTheDocument();
+                expect(deleteRequests(fetchMock)).toEqual([]);
+                expect(screen.getByText("Gone already")).toBeInTheDocument();
+
+                await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+
+                await waitFor(() => expect(screen.queryByText("Gone already")).not.toBeInTheDocument());
+                expect(deleteRequests(fetchMock)).toEqual(["/api/mail/messages/m9?purge=true"]);
+                expect(puts(fetchMock)).toEqual([]);
+                await waitFor(() => expect(getNotificationsSnapshot().visible.map((n) => n.title)).toContain("1 message permanently deleted"));
+                await waitFor(() => expect(detail()).toHaveTextContent("no-message"));
+            });
+
+            it("sends nothing when the confirmation of a permanent delete is cancelled", async () => {
+                mockLocation();
+                (window.location as any).search = "?mailboxUid=mb1&folderUid=f6";
+                const fetchMock = mockSelectable([messageFixture({ uid: "m9", subject: "Gone already", folderUid: "f6" })]);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("Gone already");
+                press("ArrowDown");
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m9"));
+                expect(press("Delete")).toBe(false);
+
+                await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+
+                await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+                expect(deleteRequests(fetchMock)).toEqual([]);
                 expect(puts(fetchMock)).toEqual([]);
                 expect(screen.getByText("Gone already")).toBeInTheDocument();
             });

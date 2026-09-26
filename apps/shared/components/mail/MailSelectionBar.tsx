@@ -46,7 +46,12 @@ export interface MailSelectionBarProps {
      * prompt, which would be claiming the move simply didn't happen. */
     onMoveTo: (folderUid: string) => Promise<void>;
     onReportJunk: () => void;
+    /** Delete: moves the selection to Deleted Items - or, when `deletesPermanently`, permanently deletes it (the page asks first). */
     onDelete: () => void;
+    /** The selection is in Deleted Items, so Delete is the permanent one: the button says "Delete permanently" and is styled as the destructive
+     * action it is. The page decides (a search over several mailboxes lists messages from more than one folder, so the folder being viewed is not
+     * always the answer). */
+    deletesPermanently?: boolean;
     /** A bulk action is in flight - every action is held until it settles, since the next one would send
      * `version`s the first has already superseded. */
     busy: boolean;
@@ -60,8 +65,8 @@ export interface MailSelectionBarProps {
     labelsDisabledReason?: string;
 }
 
-function actionClassName(): string {
-    return "px-2 py-1 rounded-md text-sm text-text hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent";
+function actionClassName(destructive = false): string {
+    return `px-2 py-1 rounded-md text-sm ${destructive ? "text-danger font-semibold" : "text-text"} hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent`;
 }
 
 /**
@@ -69,9 +74,9 @@ function actionClassName(): string {
  * select-all/clear, and the bulk actions Outlook offers for a multi-selection - mark read/unread, flag,
  * archive, move, report junk and delete.
  *
- * "Delete" means *move to Deleted Items*, never a permanent erase: there is no bulk permanent-delete API,
- * and the collection-level DELETE truncates the folder rather than removing a selection. An action whose
- * target folder is the one already being viewed is disabled with a reason rather than hidden, so the set
+ * "Delete" means *move to Deleted Items* - except on messages that are already in Deleted Items (`deletesPermanently`),
+ * where it is "Delete permanently": the page confirms, then erases them for good, as Outlook's Delete does there. An
+ * action whose target folder is the one already being viewed is disabled with a reason rather than hidden, so the set
  * of actions doesn't shift around between folders.
  */
 export default function MailSelectionBar({
@@ -94,17 +99,16 @@ export default function MailSelectionBar({
     onMoveTo,
     onReportJunk,
     onDelete,
+    deletesPermanently = false,
     busy,
     shortcuts,
     moveDisabledReason,
     labelsDisabledReason,
 }: MailSelectionBarProps) {
     const env = useKeyEnvironment();
-    /** `title` and `aria-keyshortcuts` for an action the keyboard also does; `reason` (why it is disabled) wins the tooltip. */
-    const hint = (label: string, shortcut: ShortcutDef, reason?: string) =>
-        shortcuts
-            ? { title: reason ?? withHint(label, shortcut, env), "aria-keyshortcuts": ariaKeyShortcuts(shortcut, env) }
-            : { title: reason };
+    /** `title` and `aria-keyshortcuts` for an action the keyboard also does. */
+    const hint = (label: string, shortcut: ShortcutDef) =>
+        shortcuts ? { title: withHint(label, shortcut, env), "aria-keyshortcuts": ariaKeyShortcuts(shortcut, env) } : {};
     const selectedCount = totals?.selected ?? selected.length;
     const listedCount = totals?.listed ?? listed.length;
     // Counted on the rows that were ticked, but *emptied* on the messages: a ticked conversation whose
@@ -122,7 +126,7 @@ export default function MailSelectionBar({
     // them is already being in the folder they would move to.
     const archiveReason = currentType === "archive" ? "These messages are already in Archive" : undefined;
     const junkReason = currentType === "junk" ? "These messages are already in Junk" : undefined;
-    const deleteReason = currentType === "deleted_items" ? "These messages are already in Deleted Items" : undefined;
+    const deleteLabel = deletesPermanently ? "Delete permanently" : "Delete";
 
     // A label every selected message already carries starts ticked; one only some of them carry starts
     // partially applied, and is left exactly as it is unless the reader touches that row.
@@ -224,11 +228,11 @@ export default function MailSelectionBar({
                 <button
                     type="button"
                     onClick={onDelete}
-                    disabled={none || busy || !!deleteReason}
-                    className={actionClassName()}
-                    {...hint("Delete", SHORTCUTS.mail.delete, deleteReason)}
+                    disabled={none || busy}
+                    className={actionClassName(deletesPermanently)}
+                    {...hint(deleteLabel, SHORTCUTS.mail.delete)}
                 >
-                    Delete
+                    {deleteLabel}
                 </button>
             </div>
         </div>

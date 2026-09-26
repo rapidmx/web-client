@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation } from "./testUtils.js";
 import { SEARCH_LIMITS } from "../../apps/shared/search/crossMailboxSearch.js";
+import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.js";
 import InboxPageRouted from "../../apps/www/index.js";
 
 // Search over several mailboxes (the "All mailboxes" views, and a folder's search widened to every mailbox): the same per-mailbox Tier 1 / 2 / 3
@@ -156,6 +157,8 @@ interface MailOptions {
     onMessage?: (uid: string, call: number) => Response | Promise<Response> | undefined;
     /** Where the bulk update (a move) goes. */
     onBulkUpdate?: (updates: Record<string, unknown>[]) => void;
+    /** Where a permanent delete (`DELETE /messages/:uid?purge=true`) goes; answers 204 unless it returns a response of its own. */
+    onPurge?: (uid: string, purge: string | null) => Response | undefined;
     labels?: Record<string, unknown[]>;
 }
 
@@ -183,6 +186,9 @@ function mockMail(options: MailOptions = {}) {
         if (single) {
             const uid = single[1];
             if (single[2]) return new Response("raw-mime-placeholder", { status: 200 });
+            if (init?.method === "DELETE") {
+                return options.onPurge?.(uid, parsed.searchParams.get("purge")) ?? new Response(null, { status: 204 });
+            }
             calls[uid] = (calls[uid] ?? 0) + 1;
             const custom = options.onMessage?.(uid, calls[uid]);
             if (custom) return custom;
@@ -976,6 +982,111 @@ describe("searching all mailboxes", () => {
 
             await waitFor(() => expect(updates).toHaveLength(2));
             expect(Object.fromEntries(updates.map((u) => [u.uid, u.folderUid]))).toEqual({ a: "mb1-deleted_items", c: "mb2-deleted_items" });
+        });
+
+        describe("in Deleted Items", () => {
+            const trashed = [
+                messageFixture("a", "mb1", { subject: "Alpha", folderUid: "mb1-deleted_items" }),
+                messageFixture("c", "mb2", { subject: "Charlie", folderUid: "mb2-deleted_items" }),
+            ];
+            const purges = (fetchMock: ReturnType<typeof mockFetch>) =>
+                fetchMock.mock.calls.filter(([, init]: [string, RequestInit]) => init?.method === "DELETE").map(([url]: [string]) => url);
+
+            it("permanently deletes each ticked hit from Deleted Items in its own mailbox, after a confirmation", async () => {
+                at("?aggregate=inbox");
+                const { updates, onBulkUpdate } = bulkUpdates();
+                const fetchMock = mockMail({ messages: trashed, search: twoHits, onBulkUpdate });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await searchFor(user, "budget");
+                await screen.findByText("2 results");
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                await user.click(await screen.findByRole("button", { name: "Select all" }));
+
+                await user.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+                const dialog = await screen.findByRole("dialog", { name: "Delete permanently" });
+                expect(within(dialog).getByText("Permanently delete 2 messages? This can't be undone.")).toBeInTheDocument();
+                expect(purges(fetchMock)).toEqual([]);
+                await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+
+                await waitFor(() => expect(purges(fetchMock).sort()).toEqual(["/api/mail/messages/a?purge=true", "/api/mail/messages/c?purge=true"]));
+                await waitFor(() => expect(screen.queryByText("Charlie")).not.toBeInTheDocument());
+                expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+                expect(updates).toEqual([]);
+            });
+
+            it("moves only what is not in Deleted Items when the ticked hits are a mix, as Delete always did", async () => {
+                at("?aggregate=inbox");
+                const { updates, onBulkUpdate } = bulkUpdates();
+                const fetchMock = mockMail({
+                    messages: [trashed[0], messageFixture("c", "mb2", { subject: "Charlie" })],
+                    search: twoHits,
+                    onBulkUpdate,
+                });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await searchFor(user, "budget");
+                await screen.findByText("2 results");
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                await user.click(await screen.findByRole("button", { name: "Select all" }));
+
+                expect(screen.queryByRole("button", { name: "Delete permanently" })).not.toBeInTheDocument();
+                await user.click(screen.getByRole("button", { name: "Delete" }));
+
+                await waitFor(() => expect(updates).toEqual([expect.objectContaining({ uid: "c", folderUid: "mb2-deleted_items" })]));
+                expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+                expect(purges(fetchMock)).toEqual([]);
+            });
+
+            it("permanently deletes the open hit from the keyboard in the mailbox it is in", async () => {
+                at("?aggregate=inbox");
+                const fetchMock = mockMail({ messages: trashed, search: twoHits });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await searchFor(user, "budget");
+                await user.click(await screen.findByText("Charlie"));
+                expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:c mailbox:mb2");
+
+                fireEvent.keyDown(document.body, { key: "Delete" });
+                await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete permanently" }));
+
+                await waitFor(() => expect(purges(fetchMock)).toEqual(["/api/mail/messages/c?purge=true"]));
+                await waitFor(() => expect(screen.queryByText("Charlie")).not.toBeInTheDocument());
+                expect(screen.getByText("Alpha")).toBeInTheDocument();
+            });
+
+            it("says which hits the server refused, and keeps them listed", async () => {
+                at("?aggregate=inbox");
+                // A server that keeps the held message and really forgets the rest, so the reload after a partial failure shows what is left.
+                const server = [...trashed];
+                const fetchMock = mockMail({
+                    messages: server,
+                    search: twoHits,
+                    onPurge: (uid) => {
+                        if (uid === "a") {
+                            return jsonResponse(409, { message: "This action is blocked by an active legal hold: matter-1." });
+                        }
+                        server.splice(server.findIndex((m) => m.uid === uid), 1);
+                        return undefined;
+                    },
+                });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await searchFor(user, "budget");
+                await screen.findByText("2 results");
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                await user.click(await screen.findByRole("button", { name: "Select all" }));
+                await user.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+                await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete permanently" }));
+
+                await waitFor(() => expect(getNotificationsSnapshot().visible.map((n) => n.title)).toContain("1 deleted, 1 could not be deleted"));
+                expect(getNotificationsSnapshot().visible[0].message).toContain("legal hold");
+                expect(purges(fetchMock)).toHaveLength(2);
+                await waitFor(() => expect(screen.queryByText("Charlie")).not.toBeInTheDocument());
+                expect(screen.getByText("Alpha")).toBeInTheDocument();
+            });
         });
 
         it("marks rows read across mailboxes from the selection bar", async () => {
