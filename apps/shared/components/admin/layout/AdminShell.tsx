@@ -8,6 +8,7 @@ import { useRouter } from "@rapidrest/react/client";
 import {
     HiOutlineClipboardDocumentList,
     HiOutlineClock,
+    HiOutlineCpuChip,
     HiOutlineDocumentArrowDown,
     HiOutlineDocumentCheck,
     HiOutlineGlobeAlt,
@@ -61,6 +62,7 @@ export type AdminSection =
     | "setup"
     | "dataRequests"
     | "plugins"
+    | "diagnostics"
     | "branding"
     | "signingCertificates";
 
@@ -144,6 +146,7 @@ const NAV_ITEMS: NavItem[] = [
         icon: HiOutlineDocumentCheck,
     },
     { id: "plugins", href: "/admin/plugins", label: "Plugins", icon: HiOutlinePuzzlePiece },
+    { id: "diagnostics", href: "/admin/diagnostics", label: "Diagnostics", icon: HiOutlineCpuChip },
     { id: "branding", href: "/admin/branding", label: "Branding", icon: HiOutlinePaintBrush },
 ];
 
