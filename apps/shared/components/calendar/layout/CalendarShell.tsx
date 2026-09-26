@@ -9,7 +9,7 @@ import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shar
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
-import { useLocationSearch } from "../../../navigation/AppRouter.js";
+import { useLocation } from "@rapidrest/react/client";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { orderMailboxes, primaryMailboxUid } from "../../../mail/primaryMailbox.js";
 
@@ -84,7 +84,7 @@ export default function CalendarShell({
 
     // Read from the router's location, so a mailbox change (a link, or `navigate()`) takes effect without a page load - and in an
     // effect, not during render, so the server render and the hydrating render agree.
-    const search = useLocationSearch();
+    const { search } = useLocation();
     useEffect(() => {
         setRequestedMailboxUid(new URLSearchParams(search).get("mailboxUid"));
     }, [search]);

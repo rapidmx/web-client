@@ -6,11 +6,12 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewSignaturePageRouted from "../../../../../apps/www/settings/signatures/new/index.js";
+import { jsonResponse, mockFetch } from "../../../testUtils.js";
+import NewSignaturePageBase from "../../../../../apps/www/settings/signatures/new/index.js";
+import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const NewSignaturePage = NewSignaturePageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const NewSignaturePage = withTestRouter(NewSignaturePageBase);
 
 vi.mock("../../../../../apps/shared/components/mail/compose/RichTextEditor.js", () => ({
     default: ({
@@ -82,7 +83,6 @@ describe("NewSignaturePage", () => {
             }
             return undefined;
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewSignaturePage userUid="u1" />);
         await screen.findByLabelText("Name");
@@ -91,7 +91,7 @@ describe("NewSignaturePage", () => {
         await user.type(screen.getByTestId("html-editor"), "<p>Best</p>");
         await user.click(screen.getByRole("button", { name: "Create signature" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/settings/signatures/sig1?mailboxUid=mb1"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/settings/signatures/sig1?mailboxUid=mb1"));
         expect(requestBody.mailboxUid).toBe("mb1");
         expect(requestBody.name).toBe("Work signature");
         expect(requestBody.contentHtml).toBe("<p>Best</p>");

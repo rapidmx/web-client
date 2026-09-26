@@ -18,10 +18,11 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { dayDropId, resizeDragId, slotDropId } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
-import CalendarPageRouted from "../../../apps/www/calendar/index.js";
+import CalendarPageBase from "../../../apps/www/calendar/index.js";
+import { withTestRouter } from "../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const CalendarPage = CalendarPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const CalendarPage = withTestRouter(CalendarPageBase);
 
 let capturedOnDragEnd: ((event: { active: { id: string }; over: { id: string } | null }) => Promise<void>) | undefined;
 const capturedSensorCalls: { sensor: unknown; options: unknown }[] = [];

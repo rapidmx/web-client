@@ -7,10 +7,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewMailFilterPageRouted from "../../../../../apps/www/settings/filters/new/index.js";
+import NewMailFilterPageBase from "../../../../../apps/www/settings/filters/new/index.js";
+import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const NewMailFilterPage = NewMailFilterPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const NewMailFilterPage = withTestRouter(NewMailFilterPageBase);
 
 const mailbox = {
     uid: "mb1",
@@ -108,7 +109,6 @@ describe("NewMailFilterPage", () => {
             }
             return undefined;
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewMailFilterPage userUid="u1" />);
         await screen.findByLabelText("Name");
@@ -120,7 +120,7 @@ describe("NewMailFilterPage", () => {
         await user.selectOptions(screen.getByLabelText("Destination folder"), "f2");
         await user.click(screen.getByRole("button", { name: "Create filter" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/settings/filters/mfr1?mailboxUid=mb1"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/settings/filters/mfr1?mailboxUid=mb1"));
         expect(requestBody.mailboxUid).toBe("mb1");
         expect(requestBody.name).toBe("File newsletters");
         expect(requestBody.conditions).toEqual({ hasAttachment: true });

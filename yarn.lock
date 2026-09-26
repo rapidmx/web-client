@@ -950,6 +950,7 @@ __metadata:
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
     "@rapidmx/react-shared": "npm:^0.18.0"
+    "@rapidrest/react": "npm:^2.1.0"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"
     "@testing-library/jest-dom": "npm:^7.0.1"
@@ -995,10 +996,40 @@ __metadata:
     vite: "npm:^8.2.2"
     vitest: "npm:^5.0.0"
   peerDependencies:
+    "@rapidrest/react": ">=2.1.0 <3"
     react: 19.x
     react-dom: 19.x
   languageName: unknown
   linkType: soft
+
+"@rapidrest/react@npm:^2.1.0":
+  version: 2.1.0
+  resolution: "@rapidrest/react@npm:2.1.0"
+  dependencies:
+    cross-spawn: "npm:^7.0.6"
+  peerDependencies:
+    "@rapidrest/core": 5.x
+    "@rapidrest/service-core": 1.x
+    "@vitejs/plugin-react": ">=4.0.0"
+    nodemon: ">=3.0.0"
+    react: 19.x
+    react-dom: 19.x
+    tsx: ">=4.0.0"
+    vite: ">=5.0.0"
+  peerDependenciesMeta:
+    "@vitejs/plugin-react":
+      optional: true
+    nodemon:
+      optional: true
+    tsx:
+      optional: true
+    vite:
+      optional: true
+  bin:
+    rapidreact: dist/cli/cli.js
+  checksum: 10c0/f23d52c30dbcf5922760b142c2e5eefbf95cb65ee3a6d735406adf8ca827f77ab1f40ff0812bd9680a8667ad1296b04f5095abb952693399808ad9eadb63e6ef
+  languageName: node
+  linkType: hard
 
 "@rolldown/binding-android-arm-eabi@npm:1.2.8":
   version: 1.2.8

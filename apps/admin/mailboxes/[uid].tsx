@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { deleteMailbox, getMailbox, impersonateUser, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
@@ -34,6 +35,7 @@ function MailboxDetailContent({
     currentUserUid,
 }: { uid: string; currentUserUid?: string } & Pick<AdminShellProps, "impersonationBaseUrl">) {
     const [mailbox, setMailbox] = useState<Mailbox | null>(null);
+    const { navigate } = useRouter();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [confirmingAccess, setConfirmingAccess] = useState(false);
@@ -84,7 +86,7 @@ function MailboxDetailContent({
         try {
             await deleteMailbox(mailbox!.uid, mailbox!.version, { erase: eraseData });
             // The Mailboxes page it goes to lists what a delete without `erase` kept, and how far an erasure has got.
-            window.location.href = "/admin";
+            void navigate("/admin");
         } catch (err) {
             // Most commonly a 409 if this mailbox is a custodian on an open legal hold (restapi's own
             // `assertNotOnLegalHold()`, naming the blocking Matter uid(s)) - surfaced as-is, same as

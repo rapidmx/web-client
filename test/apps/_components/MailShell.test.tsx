@@ -8,7 +8,11 @@ import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@te
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import MailShell, { MAILBOX_LIST_LIMIT, useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
+import MailShellBase, { MAILBOX_LIST_LIMIT, useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
+import { withTestRouter } from "../routerTestUtils.js";
+
+// Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
+const MailShell = withTestRouter(MailShellBase);
 import { getKeyVault } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
 import { resetPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
 import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";

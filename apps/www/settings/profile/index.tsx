@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useMemo, useState } from "react";
 import { FreeBusyVisibility, freeBusyVisibilityOf, isSharedWithMe, updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import { DEFAULT_TIME_ZONE, deviceTimeZone, timeZoneOptions } from "@rapidmx/react-shared/util/timeZone.js";
@@ -245,4 +245,7 @@ function ProfileContent() {
     );
 }
 
-export default routedPage("/settings/profile", SettingsProfilePage);
+export default SettingsProfilePage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

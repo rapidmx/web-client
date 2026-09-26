@@ -6,11 +6,12 @@ import React from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emptyResponse, jsonResponse, mockFetch, mockLocation, mockMatchMedia } from "../testUtils.js";
-import ContactsPageRouted from "../../../apps/www/contacts/index.js";
+import { emptyResponse, jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
+import ContactsPageBase from "../../../apps/www/contacts/index.js";
+import { latestRouter, withTestRouter } from "../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const ContactsPage = ContactsPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const ContactsPage = withTestRouter(ContactsPageBase);
 
 // The "Email" toolbar action opens a real `ComposeWindow` overlay — mocked here the same way every
 // compose-related test file mocks it, to avoid mounting real TipTap/ProseMirror (which needs DOM APIs
@@ -1396,13 +1397,12 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         it("navigates to the contact detail route instead of selecting in place when a row is tapped", async () => {
             mockMatchMedia(true);
             mockShellAndContacts([jane]);
-            const location = mockLocation();
             const user = userEvent.setup();
             render(<ContactsPage userUid="u1" />);
 
             await user.click(await screen.findByText("Jane Doe"));
 
-            expect(location.href).toBe("/contacts/c1");
+            expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/contacts/c1");
             expect(screen.queryByRole("region", { name: "Contact details" })).not.toBeInTheDocument();
         });
 

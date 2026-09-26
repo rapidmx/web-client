@@ -8,10 +8,11 @@ import userEvent from "@testing-library/user-event";
 import { format } from "date-fns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
-import CalendarPageRouted from "../../../apps/www/calendar/index.js";
+import CalendarPageBase from "../../../apps/www/calendar/index.js";
+import { withTestRouter } from "../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const CalendarPage = CalendarPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const CalendarPage = withTestRouter(CalendarPageBase);
 
 // `@dnd-kit/core`'s real sensors can't be driven from jsdom (they call `setPointerCapture`, which
 // jsdom doesn't implement, and that breaks the rest of synthetic event dispatch — see

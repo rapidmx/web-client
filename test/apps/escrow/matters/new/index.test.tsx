@@ -6,8 +6,12 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewMatterPage from "../../../../../apps/escrow/matters/new/index.js";
+import { jsonResponse, mockFetch } from "../../../testUtils.js";
+import NewMatterPageBase from "../../../../../apps/escrow/matters/new/index.js";
+import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const NewMatterPage = withTestRouter(NewMatterPageBase);
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -83,7 +87,6 @@ describe("NewMatterPage", () => {
             if (url.startsWith("/api/escrow/matters") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewMatterPage userUid="u1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New matter");
@@ -91,7 +94,7 @@ describe("NewMatterPage", () => {
         await fillMinimalRequiredFields(user);
         await user.click(screen.getByRole("button", { name: "Create matter" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/escrow/matters/m1"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/escrow/matters/m1"));
         expect(requestBody.name).toBe("Smith v. Acme");
         expect(requestBody.escrowScopeId).toBe("es1");
         expect(requestBody.custodianMailboxUids).toEqual(["mb1"]);

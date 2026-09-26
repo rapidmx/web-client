@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -173,4 +173,7 @@ function MailFilterDetailContent({ uid }: { uid: string }) {
     );
 }
 
-export default routedPage("/settings/filters/:uid", MailFilterDetailPage);
+export default MailFilterDetailPage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

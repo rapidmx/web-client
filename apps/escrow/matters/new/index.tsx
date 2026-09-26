@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import { createMatter } from "@rapidmx/react-shared/admin/mattersApi.js";
@@ -24,6 +25,7 @@ export default function NewMatterPage(props: Omit<EscrowShellProps, "active">) {
 }
 
 function NewMatterForm() {
+    const { navigate } = useRouter();
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
     // No dropdown here: `EscrowScope` (BaseEscrowScopeRoute) is trusted-admin-only end to end, so this
@@ -72,7 +74,7 @@ function NewMatterForm() {
                 dateRangeStart: new Date(dateRangeStart).toISOString(),
                 dateRangeEnd: new Date(dateRangeEnd).toISOString(),
             });
-            window.location.href = `/escrow/matters/${encodeURIComponent(created.uid)}`;
+            void navigate(`/escrow/matters/${encodeURIComponent(created.uid)}`);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create the matter.");
         } finally {

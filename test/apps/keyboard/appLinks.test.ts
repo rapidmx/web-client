@@ -5,11 +5,11 @@
 import { describe, expect, it } from "vitest";
 import { accountUrlOf } from "../../../apps/shared/auth/accountUrl.js";
 import { APP_HREFS, SETTINGS_HREF, isSettingsPath } from "../../../apps/shared/navigation/appHrefs.js";
-import { wwwRoutes } from "../../../apps/www/_routes.js";
+import { wwwRouteTemplates } from "../wwwPageFiles.js";
 
 describe("appHrefs", () => {
-    it("points each rail app and Settings at a route of the client-side router", () => {
-        const paths = wwwRoutes.map((route) => route.path);
+    it("points each rail app and Settings at a page of the webmail, which the client-side router serves", () => {
+        const paths = wwwRouteTemplates();
         for (const href of [...Object.values(APP_HREFS), SETTINGS_HREF]) {
             expect(paths, href).toContain(href);
         }

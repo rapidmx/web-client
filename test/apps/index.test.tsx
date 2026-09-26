@@ -9,10 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
 import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.js";
 import { clearInviteCache } from "../../apps/shared/components/mail/invite/inviteStore.js";
-import InboxPageRouted from "../../apps/www/index.js";
+import InboxPageBase from "../../apps/www/index.js";
+import { latestRouter, TestRouter, withTestRouter } from "./routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const InboxPage = InboxPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const InboxPage = withTestRouter(InboxPageBase);
 
 // Tier 3 (`searchTier3.ts#searchEncryptedCandidates()`) does real WebCrypto decryption against real
 // unlocked keys - already exercised end to end with real crypto in react-shared's own
@@ -1034,13 +1035,12 @@ describe("InboxPage", () => {
             mockMatchMedia(true);
             const msg = messageFixture();
             const fetchMock = mockShellAndInbox([msg]);
-            const location = mockLocation();
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
 
             await user.click(await screen.findByText("Hello there"));
 
-            expect(location.href).toBe("/messages/m1");
+            expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/messages/m1");
             expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message");
             expect(fetchMock.mock.calls.some((call) => (call[1] as RequestInit)?.method === "PUT")).toBe(false);
         });
@@ -1465,14 +1465,13 @@ describe("InboxPage", () => {
         it("navigates to the message's page with its conversation, which shows the whole thread, instead of opening it in place on mobile", async () => {
             mockMatchMedia(true);
             mockShellAndInbox([], undefined, [thread()]);
-            const location = mockLocation();
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
             await toggleConversations(user);
 
             await user.click(await screen.findByText("Thread subject"));
 
-            expect(location.href).toBe("/messages/m2?conversation=c1");
+            expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/messages/m2?conversation=c1");
         });
 
         describe("swiping a conversation row on a phone", () => {
@@ -1820,7 +1819,6 @@ describe("InboxPage", () => {
             it("opens the thread on the phone's message page, with the conversation", async () => {
                 mockMatchMedia(true);
                 mockSearching();
-                const location = mockLocation();
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await toggleConversations(user);
@@ -1829,7 +1827,7 @@ describe("InboxPage", () => {
 
                 await user.click(await screen.findByText("Second budget note"));
 
-                expect(location.href).toBe("/messages/m3?conversation=c1");
+                expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/messages/m3?conversation=c1");
             });
         });
 
@@ -2210,14 +2208,21 @@ describe("InboxPage", () => {
             });
 
             it("closes the conversation with Escape and opens the selected message on its own page with Enter", async () => {
-                const location = mockLocation();
                 mockThreads();
-                const user = await renderConversations();
+                const user = userEvent.setup();
+                // The page stays on screen after the navigation, so that Escape can be tried on it too.
+                render(
+                    <TestRouter remount={false}>
+                        <InboxPageBase userUid="u1" />
+                    </TestRouter>,
+                );
+                await toggleConversations(user);
+                await screen.findByText("Thread subject");
                 await user.click(screen.getByText("Thread subject"));
                 await openConversation("Thread subject");
 
                 expect(press("Enter")).toBe(false);
-                expect(location.href).toBe("/messages/m2");
+                expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/messages/m2");
 
                 expect(press("Escape")).toBe(false);
                 expect(await screen.findByText("Select a conversation to read it.")).toBeInTheDocument();
@@ -3740,25 +3745,28 @@ describe("InboxPage", () => {
             });
 
             it("opens the selected message on its own page with Enter - from the row, or from anywhere - and leaves other buttons to Enter", async () => {
-                const location = mockLocation();
                 mockSelectable(threeMessages());
                 const user = userEvent.setup();
-                render(<InboxPage userUid="u1" />);
+                // The page stays on screen after each navigation, so that Enter can be tried on it again.
+                render(
+                    <TestRouter remount={false}>
+                        <InboxPageBase userUid="u1" />
+                    </TestRouter>,
+                );
                 await user.click(await screen.findByText("First"));
+                const navigations = () => latestRouter().navigate.mock.calls.map(([to]) => to);
 
                 // On the selected row's own button, Enter opens it...
                 expect(press("Enter", {}, rowButton("First"))).toBe(false);
-                expect(location.href).toBe("/messages/m1");
-                location.href = "";
+                expect(navigations()).toEqual(["/messages/m1"]);
                 // ...and with the focus nowhere in particular.
                 expect(press("Enter")).toBe(false);
-                expect(location.href).toBe("/messages/m1");
-                location.href = "";
+                expect(navigations()).toEqual(["/messages/m1", "/messages/m1"]);
                 // On a row that is not selected yet, Enter is the button's own click, which selects it.
                 expect(press("Enter", {}, rowButton("Second"))).toBe(true);
                 // And a button that is not a row keeps its Enter.
                 expect(press("Enter", {}, screen.getByRole("button", { name: "Select" }))).toBe(true);
-                expect(location.href).toBe("");
+                expect(navigations()).toHaveLength(2);
             });
 
             it("clears the selection with Escape, and takes no Escape when nothing is selected", async () => {

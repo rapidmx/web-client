@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import "../../../styles/app.css";
 import React, { PropsWithChildren, ReactNode, useEffect, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import {
     HiOutlineClipboardDocumentList,
     HiOutlineClock,
@@ -184,6 +185,7 @@ export function adminNavItems(pluginNav?: PluginNav): NavItem[] {
  * 403 `api-103` (elevated, but not an administrator), any other 403, and 401 mean "no administrator access".
  */
 export default function AdminShell({ active, userUid, authServerUrl, pluginNav, children }: PropsWithChildren<AdminShellProps>) {
+    const { navigate } = useRouter();
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
@@ -207,7 +209,8 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                 if (active !== "setup") {
                     try {
                         if ((await getSetupStatus()).required) {
-                            window.location.href = SETUP_ITEM.href;
+                            // Replacing this page in the history, which would otherwise send the back button round again.
+                            void navigate(SETUP_ITEM.href, { replace: true });
                             return;
                         }
                     } catch {

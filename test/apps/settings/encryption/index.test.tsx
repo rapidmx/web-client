@@ -9,10 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { resetEnrollmentTracker } from "../../../../apps/shared/signing/enrollmentTracker.js";
-import SettingsEncryptionPageRouted from "../../../../apps/www/settings/encryption/index.js";
+import SettingsEncryptionPageBase from "../../../../apps/www/settings/encryption/index.js";
+import { withTestRouter } from "../../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const SettingsEncryptionPage = SettingsEncryptionPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const SettingsEncryptionPage = withTestRouter(SettingsEncryptionPageBase);
 
 const {
     getKeyVault,

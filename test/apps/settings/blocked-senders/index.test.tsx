@@ -7,12 +7,13 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsBlockedSendersPageRouted from "../../../../apps/www/settings/blocked-senders/index.js";
+import SettingsBlockedSendersPageBase from "../../../../apps/www/settings/blocked-senders/index.js";
+import { withTestRouter } from "../../routerTestUtils.js";
 import { clearMailboxUpdateAccessCache } from "../../../../apps/shared/mail/useMailboxUpdateAccess.js";
 import { getNotificationsSnapshot } from "../../../../apps/shared/notifications/store.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const SettingsBlockedSendersPage = SettingsBlockedSendersPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const SettingsBlockedSendersPage = withTestRouter(SettingsBlockedSendersPageBase);
 
 const mailbox = {
     uid: "mb1",

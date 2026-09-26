@@ -32,6 +32,7 @@
     "trailingComma": "es5"
   },
   "peerDependencies": {
+    "@rapidrest/react": ">=2.1.0 <3",
     "react": "19.x",
     "react-dom": "19.x"
   },
@@ -60,6 +61,7 @@
     "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {
+    "@rapidrest/react": "^2.1.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.1",

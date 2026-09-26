@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **The webmail, admin and escrow apps all use the client-side router of `@rapidrest/react` 2.1.0.** The webmail's own router (`shared/navigation`, `www/_routedPage.tsx`, `www/_routes.ts`) is gone: `www/_shell.tsx` is the library's persistent shell, which keeps the app frame (compose windows, unlock prompt, idle timer) mounted while only the page changes, and pages use `Link`, `useRouter()` and the shallow navigation for folder and search changes. The admin and escrow consoles go to their next page after a save without loading a document. `@rapidrest/react` `>=2.1.0 <3` is a peer dependency, and the server must build with `router` on for `www`.
 - **Report junk and Report phishing on the message card are done by the server**: it moves the message, trains the spam filter and audits phishing, and the pop-up says whether the filter learned from it. An older server falls back to the client-side move.
 - **Block and Never block use the mailbox's blocked and safe senders lists**, not filter rules. This fixes blocking `ann@x.com` also matching `joann@x.com` and works on mail the spam filter judged junk. Block also moves the message to Junk; both have Undo and a link to Settings. An older server falls back to filter rules.
 

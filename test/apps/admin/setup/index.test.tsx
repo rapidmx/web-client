@@ -7,7 +7,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
-import SetupPage from "../../../../apps/admin/setup/index.js";
+import SetupPageBase from "../../../../apps/admin/setup/index.js";
+import { latestRouter, withTestRouter } from "../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const SetupPage = withTestRouter(SetupPageBase);
 
 const domain = {
     uid: "example.com",
@@ -242,7 +246,6 @@ describe("SetupPage", () => {
     });
 
     it("creates the admin's own mailbox first, then more, and finishes setup", async () => {
-        const location = mockLocation();
         const created: unknown[] = [];
         const fetchMock = mockSetup({
             currentStep: "mailboxes",
@@ -280,7 +283,7 @@ describe("SetupPage", () => {
         expect(screen.getByLabelText("Local part")).toHaveValue("");
 
         await user.click(screen.getByRole("button", { name: "Finish setup" }));
-        await waitFor(() => expect(location.href).toBe("/admin"));
+        await waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin"));
         expect(calls(fetchMock, "/api/system/setup/complete", "POST")).toHaveLength(1);
     });
 

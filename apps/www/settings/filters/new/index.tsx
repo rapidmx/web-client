@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../../_routedPage.js";
-import { useNavigate } from "../../../../shared/navigation/AppRouter.js";
+import { pageTitle } from "../../../../shared/navigation/pageTitle.js";
+import { useNavigate } from "../../../../shared/navigation/index.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -54,8 +54,8 @@ function prefillFromSearch(search: string): { name: string; conditions: MailFilt
 function NewMailFilterForm() {
     const navigate = useNavigate();
     const { mailboxUid } = useSettingsShell();
-    // Read once, when the form opens, and what the reader then edits is theirs. From the browser's own location rather than `useLocationSearch()`,
-    // which is empty until an effect has run: this form is only mounted once the shell has fetched the mailbox, in the browser, so there is no
+    // Read once, when the form opens, and what the reader then edits is theirs. From the browser's own location rather than the router's (which a shallow
+    // navigation could change under the form): this form is only mounted once the shell has fetched the mailbox, in the browser, so there is no
     // server render for the two to disagree with.
     const [prefill] = useState(() => prefillFromSearch(window.location.search));
     const [folders, setFolders] = useState<Folder[] | null>(null);
@@ -159,4 +159,7 @@ function NewMailFilterForm() {
     );
 }
 
-export default routedPage("/settings/filters/new", NewMailFilterPage);
+export default NewMailFilterPage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

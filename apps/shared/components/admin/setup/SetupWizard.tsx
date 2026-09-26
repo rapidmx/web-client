@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useRef, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { HiCheck } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { getRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
@@ -61,6 +62,7 @@ export interface SetupWizardProps {
  * except the domain can be passed over and configured later from the admin console.
  */
 export default function SetupWizard({ userUid }: SetupWizardProps) {
+    const { navigate } = useRouter();
     const [step, setStep] = useState<SetupStepId | null>(null);
     const [status, setStatus] = useState<SetupStatus | undefined>();
     const [domains, setDomains] = useState<Domain[]>([]);
@@ -162,7 +164,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
             // Let a step still being recorded land first, so it can't arrive after setup is marked finished.
             await progress.current.running;
             await completeSetup();
-            window.location.href = "/admin";
+            void navigate("/admin");
         } catch (err) {
             setError(errorMessage(err, "Could not finish setup."));
             setFinishing(false);

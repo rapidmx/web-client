@@ -8,10 +8,11 @@ import userEvent from "@testing-library/user-event";
 import { addDays, endOfWeek, subDays } from "date-fns";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
-import TasksPageRouted from "../../../apps/www/tasks/index.js";
+import TasksPageBase from "../../../apps/www/tasks/index.js";
+import { withTestRouter } from "../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const TasksPage = TasksPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const TasksPage = withTestRouter(TasksPageBase);
 
 // Lets a test mark specific `listAllPages()` results as truncated (one entry per call, in call order)
 // without fetching 20,000 fixtures; every other call passes through to the real implementation.

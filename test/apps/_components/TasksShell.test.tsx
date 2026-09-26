@@ -7,7 +7,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import TasksShell, { useTasksShell } from "../../../apps/shared/components/tasks/layout/TasksShell.js";
+import TasksShellBase, { useTasksShell } from "../../../apps/shared/components/tasks/layout/TasksShell.js";
+import { latestRouter, withTestRouter } from "../routerTestUtils.js";
+
+// Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
+const TasksShell = withTestRouter(TasksShellBase);
 
 const mailboxA = {
     uid: "mb-a",
@@ -144,14 +148,13 @@ describe("TasksShell", () => {
 
     it("navigates to the chosen mailbox when the switcher's selection changes", async () => {
         mockMailboxesAndFolders([mailboxA, mailboxB], [tasksFolder]);
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<TasksShell userUid="u1">content</TasksShell>);
 
         const select = await screen.findByLabelText("Mailbox");
         await user.selectOptions(select, "mb-b");
 
-        expect(location.href).toBe("/tasks?mailboxUid=mb-b");
+        expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/tasks?mailboxUid=mb-b");
     });
 
     it("shows an error message when loading folders fails", async () => {

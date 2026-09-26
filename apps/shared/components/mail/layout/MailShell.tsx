@@ -10,7 +10,8 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import FloatingActionButton from "../../layout/FloatingActionButton.js";
-import { useLocationSearch, useNavigate } from "../../../navigation/AppRouter.js";
+import { useLocation } from "@rapidrest/react/client";
+import { useNavigate } from "../../../navigation/index.js";
 import KeyEnrollmentGate from "../../layout/KeyEnrollmentGate.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { prefetchComposeWindow, useCompose } from "../compose/ComposeContext.js";
@@ -223,12 +224,10 @@ function MailShortcuts({ mailboxUid }: { mailboxUid?: string }) {
 /**
  * Mail's own contextual sidebar (every accessible mailbox's own folder tree, plus a merged "All Mailboxes"
  * aggregate section) + content area, rendered inside the shared `AppShell` chrome (icon rail, header,
- * impersonation banner — see that component). There is no client-side router in this framework (see
- * `ReactRoute`'s file-convention resolver) — the selected mailbox/folder (or aggregate pseudo-folder) live
- * in the URL's `?mailboxUid=`/`?folderUid=`/`?aggregate=` query params, read once on mount (never during
- * the initial render itself, matching every other query-param reader in this codebase — e.g.
- * `apps/admin/quarantine`'s `readMailboxUid()` — so the server-rendered and just-hydrated client markup
- * match).
+ * impersonation banner — see that component). The selected mailbox/folder (or aggregate pseudo-folder) live
+ * in the URL's `?mailboxUid=`/`?folderUid=`/`?aggregate=` query params, read from the router's location
+ * (`@rapidrest/react`), which is the request's on the server and while hydrating and follows a shallow
+ * navigation (a folder link) without remounting the page.
  *
  * Every accessible mailbox's folder tree renders at once - there is no "switch mailbox" affordance
  * anymore (the mailbox `<select>` this shell used to have is gone) - so a single-mailbox user sees zero
@@ -237,8 +236,7 @@ function MailShortcuts({ mailboxUid }: { mailboxUid?: string }) {
  * of folders" requirement.
  *
  * An address that names nothing opens "All Mailboxes > Inbox" when there is more than one mailbox (that is when the section exists), and
- * the one mailbox's own Inbox otherwise; a `?mailboxUid=`, `?folderUid=` or `?aggregate=` always wins. Nothing is selected until the address
- * has been read. What needs a single mailbox while an all-mailboxes view is open (Compose, the new-message shortcut, key unlocking) uses the
+ * the one mailbox's own Inbox otherwise; a `?mailboxUid=`, `?folderUid=` or `?aggregate=` always wins. What needs a single mailbox while an all-mailboxes view is open (Compose, the new-message shortcut, key unlocking) uses the
  * primary mailbox.
  */
 export default function MailShell({
@@ -260,23 +258,16 @@ export default function MailShell({
     const { status, error, mailboxes, mailboxFolders, foldersLoading, onFolderCreated, noteFolderUids, live, folderCounts, outbox: outboxStatuses } = hosted ?? own;
     // The messages this tab is still handing to the server: the Outbox pill counts them at once.
     const pendingSends = usePendingSends();
-    const [requestedMailboxUid, setRequestedMailboxUid] = useState<string | null>(null);
-    const [requestedFolderUid, setRequestedFolderUid] = useState<string | null>(null);
-    const [requestedAggregateType, setRequestedAggregateType] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
-    // Whether the URL has been read yet (see below): until then the selection is not known, and the sidebar sections have nothing to open for.
-    const [selectionRead, setSelectionRead] = useState(false);
 
-    // The selection lives in the URL, and the router (`AppRouter`) changes the URL without a page load when a folder link is
-    // clicked - so it is read from the router's location, which updates, rather than once from `window.location`. Still read
-    // in an effect, never during the first render, so the server render and the hydrating render agree.
-    const search = useLocationSearch();
-    useEffect(() => {
+    // The selection lives in the URL, and the router (`@rapidrest/react`) changes the URL without a page load when a folder link is
+    // clicked - a shallow navigation, which keeps this page and its state - so it is read from the router's location, which updates,
+    // rather than once from `window.location`. The location is the request's on the server and while hydrating (its `#fragment` is not
+    // sent, and no one here reads it), so the server render and the hydrating render agree and the selection is known from the first render.
+    const { search } = useLocation();
+    const { requestedMailboxUid, requestedFolderUid, requestedAggregateType } = useMemo(() => {
         const params = new URLSearchParams(search);
-        setRequestedMailboxUid(params.get("mailboxUid"));
-        setRequestedFolderUid(params.get("folderUid"));
-        setRequestedAggregateType(params.get("aggregate"));
-        setSelectionRead(true);
+        return { requestedMailboxUid: params.get("mailboxUid"), requestedFolderUid: params.get("folderUid"), requestedAggregateType: params.get("aggregate") };
     }, [search]);
     // Choosing a folder (or mailbox) changes the URL without a page load now, so the drawer that held the choice - which used to go
     // with the page - is closed here.
@@ -284,12 +275,10 @@ export default function MailShell({
         setDrawerOpen(false);
     }, [search]);
 
-    // What the address asks for. Nothing is selected until it has been read (the first render, before the effect above): choosing a
-    // default then would list a folder - the most expensive being every mailbox's - only to throw it away for the one the address names.
-    const requestedAggregate: AggregateFolderType | undefined =
-        selectionRead && isAggregateFolderType(requestedAggregateType) ? requestedAggregateType : undefined;
+    // What the address asks for.
+    const requestedAggregate: AggregateFolderType | undefined = isAggregateFolderType(requestedAggregateType) ? requestedAggregateType : undefined;
     const requestedMailbox: string | undefined =
-        selectionRead && requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined;
+        requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined;
 
     // The mailbox the caller has not chosen: their own, never a shared one that merely sorts first. It is what compose, the new-message
     // shortcut and everything else that needs a single mailbox use while an all-mailboxes view (which has none) is open.
@@ -297,10 +286,9 @@ export default function MailShell({
 
     // With several mailboxes the address that names nothing opens "All Mailboxes > Inbox", the merged Inbox; with one there is no such
     // section, so it opens that mailbox's own Inbox. A mailbox, a folder or an all-mailboxes view in the address wins over either.
-    const aggregateByDefault =
-        selectionRead && !requestedAggregate && !requestedMailbox && requestedFolderUid === null && mailboxes.length > 1;
+    const aggregateByDefault = !requestedAggregate && !requestedMailbox && requestedFolderUid === null && mailboxes.length > 1;
     const aggregateFolderType: AggregateFolderType | undefined = requestedAggregate ?? (aggregateByDefault ? "inbox" : undefined);
-    const mailboxUid: string | undefined = aggregateFolderType || !selectionRead ? undefined : (requestedMailbox ?? defaultMailboxUid);
+    const mailboxUid: string | undefined = aggregateFolderType ? undefined : (requestedMailbox ?? defaultMailboxUid);
 
     const selectedMailboxFolders = mailboxFolders.find((mf) => mf.mailbox.uid === mailboxUid)?.folders ?? [];
     const folderUid: string | undefined = aggregateFolderType
@@ -395,6 +383,8 @@ export default function MailShell({
                                         <a
                                             key={type}
                                             href={`/?aggregate=${encodeURIComponent(type)}`}
+                                            data-router-shallow=""
+                                            data-router-prefetch="false"
                                             className={[
                                                 "flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5",
                                                 aggregateFolderType === type
@@ -453,6 +443,8 @@ export default function MailShell({
                                     <a
                                         key={folder.uid}
                                         href={`/?mailboxUid=${encodeURIComponent(mailbox.uid)}&folderUid=${encodeURIComponent(folder.uid)}`}
+                                        data-router-shallow=""
+                                        data-router-prefetch="false"
                                         className={[
                                             "flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5",
                                             folder.uid === folderUid

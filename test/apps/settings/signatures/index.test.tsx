@@ -6,10 +6,11 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsSignaturesPageRouted from "../../../../apps/www/settings/signatures/index.js";
+import SettingsSignaturesPageBase from "../../../../apps/www/settings/signatures/index.js";
+import { withTestRouter } from "../../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const SettingsSignaturesPage = SettingsSignaturesPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const SettingsSignaturesPage = withTestRouter(SettingsSignaturesPageBase);
 
 const mailbox = {
     uid: "mb1",

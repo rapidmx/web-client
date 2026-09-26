@@ -13,6 +13,7 @@ import {
     ELEVATION_RETRY_WINDOW_MS,
     elevationUrl,
 } from "../../../../apps/shared/components/admin/elevation.js";
+import { latestRouter, TestRouter } from "../../routerTestUtils.js";
 
 const AUTH_SERVER_URL = "https://auth.example.com";
 const ADMIN_URL = "https://mail.example.com/admin/domains?tab=dns";
@@ -242,19 +243,20 @@ describe("AdminShell", () => {
         expect(await screen.findByText("Could not verify administrator access.")).toBeInTheDocument();
     });
 
-    it("sends an administrator to the setup wizard while first-run setup is required", async () => {
-        const location = mockLocation();
+    it("sends an administrator to the setup wizard while first-run setup is required, replacing the page in the history", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
             if (url === "/api/system/setup") return jsonResponse(200, { required: true });
             throw new Error(`unexpected ${url}`);
         });
         render(
-            <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
-                content
-            </AdminShell>,
+            <TestRouter>
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>
+            </TestRouter>,
         );
-        await waitFor(() => expect(location.href).toBe("/admin/setup"));
+        await waitFor(() => expect(latestRouter().navigate).toHaveBeenCalledWith("/admin/setup", { replace: true }));
         expect(screen.queryByText("content")).not.toBeInTheDocument();
     });
 

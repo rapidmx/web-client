@@ -9,12 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "./testUtils.js";
 import { clearMailboxUpdateAccessCache } from "../../apps/shared/mail/useMailboxUpdateAccess.js";
 import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.js";
-import InboxPageRouted from "../../apps/www/index.js";
+import InboxPageBase from "../../apps/www/index.js";
+import { withTestRouter } from "./routerTestUtils.js";
 
 // Delete permanently (Delete on what is already in Deleted Items) and Empty folder, through the mail page: the confirmations, what is sent, what
 // the list and the folder's count do afterwards, and what a server that refuses part of it looks like. The server is a stateful stand-in, so a
 // reload after a delete shows what is really left. Search, decryption and the reading panes are stood in for as in the other page tests.
-const InboxPage = InboxPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const InboxPage = withTestRouter(InboxPageBase);
 
 const { searchEncryptedCandidates, getUnlockedKeys, unlockWithPassword, subscribeKeySession, searchLocalIndex, evaluateMessageSecurity } = vi.hoisted(() => ({
     searchEncryptedCandidates: vi.fn(),

@@ -7,7 +7,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsProfilePageRouted from "../../../../apps/www/settings/profile/index.js";
+import SettingsProfilePageBase from "../../../../apps/www/settings/profile/index.js";
+import { withTestRouter } from "../../routerTestUtils.js";
 
 // The device's zone, fixed so the tests don't depend on the machine they run on.
 const device = vi.hoisted(() => ({ zone: "Asia/Tokyo" }));
@@ -16,8 +17,8 @@ vi.mock("@rapidmx/react-shared/util/timeZone.js", async (importOriginal) => ({
     deviceTimeZone: () => device.zone,
 }));
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const SettingsProfilePage = SettingsProfilePageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const SettingsProfilePage = withTestRouter(SettingsProfilePageBase);
 
 const mailbox = {
     uid: "mb1",

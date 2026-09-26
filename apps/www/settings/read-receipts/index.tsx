@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useState } from "react";
 import { updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
@@ -144,4 +144,7 @@ function ReadReceiptsContent() {
     );
 }
 
-export default routedPage("/settings/read-receipts", SettingsReadReceiptsPage);
+export default SettingsReadReceiptsPage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

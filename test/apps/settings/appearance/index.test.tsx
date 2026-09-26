@@ -7,14 +7,15 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsAppearancePageRouted from "../../../../apps/www/settings/appearance/index.js";
+import SettingsAppearancePageBase from "../../../../apps/www/settings/appearance/index.js";
+import { withTestRouter } from "../../routerTestUtils.js";
 import { APPEARANCE_SAVE_DELAY_MS } from "../../../../apps/shared/appearance/AppearanceProvider.js";
 import { writeAppearanceCache } from "../../../../apps/shared/appearance/appearanceCache.js";
 import { APPEARANCE_STYLE_ID } from "../../../../apps/shared/appearance/theme.js";
 import { BACKGROUND_MAX_BYTES } from "@rapidmx/react-shared/appearance/preferencesApi.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const SettingsAppearancePage = SettingsAppearancePageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const SettingsAppearancePage = withTestRouter(SettingsAppearancePageBase);
 
 const measureImage = vi.hoisted(() => vi.fn());
 vi.mock("../../../../apps/shared/appearance/photo.js", async (importOriginal) => ({

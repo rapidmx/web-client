@@ -6,8 +6,12 @@ import React from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import MailboxesListPage from "../../../apps/admin/index.js";
+import { jsonResponse, mockFetch } from "../testUtils.js";
+import MailboxesListPageBase from "../../../apps/admin/index.js";
+import { latestRouter, withTestRouter } from "../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const MailboxesListPage = withTestRouter(MailboxesListPageBase);
 
 const mailbox = (n: number) => ({
     uid: `mb${n}`,
@@ -141,7 +145,6 @@ describe("MailboxesListPage", () => {
     });
 
     it("reopens setup after confirming and goes to the wizard, or shows why it couldn't", async () => {
-        const location = mockLocation();
         let fail = true;
         const fetchMock = mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
@@ -170,7 +173,7 @@ describe("MailboxesListPage", () => {
         fail = false;
         await user.click(screen.getByRole("button", { name: "Run setup again" }));
         await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Run setup" }));
-        await vi.waitFor(() => expect(location.href).toBe("/admin/setup"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/setup"));
         expect(reopenCalls()).toBe(2);
     });
 

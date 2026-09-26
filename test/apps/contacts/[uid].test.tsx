@@ -6,11 +6,12 @@ import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import ContactDetailPageRouted from "../../../apps/www/contacts/[uid].js";
+import { jsonResponse, mockFetch } from "../testUtils.js";
+import ContactDetailPageBase from "../../../apps/www/contacts/[uid].js";
+import { latestRouter, withTestRouter } from "../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const ContactDetailPage = ContactDetailPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const ContactDetailPage = withTestRouter(ContactDetailPageBase);
 
 // Round 6: a saved or deleted contact drops the trusted-signer pins cached from contacts.
 const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));
@@ -253,8 +254,6 @@ describe("ContactDetailPage", () => {
         expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
     });
 
-    // Mocks window.location wholesale (see testUtils.mockLocation), which isn't undone between tests
-    // (unlike vi.stubGlobal) — must run last in this file.
     it("deletes the contact and navigates back to the contacts list", async () => {
         mockShell((url, init) => {
             if (url === "/api/mail/contacts/c1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, jane);
@@ -265,10 +264,9 @@ describe("ContactDetailPage", () => {
         render(<ContactDetailPage userUid="u1" params={{ uid: "c1" }} />);
 
         const button = await screen.findByRole("button", { name: "Delete" });
-        const location = mockLocation();
         await user.click(button);
 
-        await waitFor(() => expect(location.href).toBe("/contacts"));
+        await waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/contacts"));
         expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
     });
 });

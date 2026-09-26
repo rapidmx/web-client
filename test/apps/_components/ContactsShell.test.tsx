@@ -7,7 +7,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import ContactsShell, { useContactsShell } from "../../../apps/shared/components/contacts/layout/ContactsShell.js";
+import ContactsShellBase, { useContactsShell } from "../../../apps/shared/components/contacts/layout/ContactsShell.js";
+import { latestRouter, withTestRouter } from "../routerTestUtils.js";
+
+// Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
+const ContactsShell = withTestRouter(ContactsShellBase);
 
 const mailboxA = {
     uid: "mb-a",
@@ -144,14 +148,13 @@ describe("ContactsShell", () => {
 
     it("navigates to the chosen mailbox when the switcher's selection changes", async () => {
         mockMailboxesAndFolders([mailboxA, mailboxB], [contactsFolder]);
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<ContactsShell userUid="u1">content</ContactsShell>);
 
         const select = await screen.findByLabelText("Mailbox");
         await user.selectOptions(select, "mb-b");
 
-        expect(location.href).toBe("/contacts?mailboxUid=mb-b");
+        expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/contacts?mailboxUid=mb-b");
     });
 
     it("shows an error message when loading folders fails", async () => {

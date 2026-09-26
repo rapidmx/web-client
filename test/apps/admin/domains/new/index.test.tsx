@@ -6,8 +6,12 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewDomainPage from "../../../../../apps/admin/domains/new/index.js";
+import { jsonResponse, mockFetch } from "../../../testUtils.js";
+import NewDomainPageBase from "../../../../../apps/admin/domains/new/index.js";
+import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const NewDomainPage = withTestRouter(NewDomainPageBase);
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -34,7 +38,6 @@ describe("NewDomainPage", () => {
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewDomainPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New domain");
@@ -42,7 +45,7 @@ describe("NewDomainPage", () => {
         await user.type(screen.getByLabelText("Domain name"), "example.com");
         await user.click(screen.getByRole("button", { name: "Create domain" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/domains/example.com"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/domains/example.com"));
         expect(requestBody).toEqual({ enabled: true, name: "example.com" });
     });
 
@@ -92,7 +95,6 @@ describe("NewDomainPage", () => {
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewDomainPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New domain");
@@ -105,7 +107,7 @@ describe("NewDomainPage", () => {
         await user.selectOptions(select, "powerlevel.gg");
         await user.click(screen.getByRole("button", { name: "Create domain" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/domains/alias2.gg"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/domains/alias2.gg"));
         expect(requestBody).toEqual({ enabled: true, name: "alias2.gg", aliasOf: "powerlevel.gg" });
     });
 

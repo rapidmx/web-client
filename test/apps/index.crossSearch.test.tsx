@@ -9,12 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation } from "./testUtils.js";
 import { SEARCH_LIMITS } from "../../apps/shared/search/crossMailboxSearch.js";
 import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.js";
-import InboxPageRouted from "../../apps/www/index.js";
+import InboxPageBase from "../../apps/www/index.js";
+import { withTestRouter } from "./routerTestUtils.js";
 
 // Search over several mailboxes (the "All mailboxes" views, and a folder's search widened to every mailbox): the same per-mailbox Tier 1 / 2 / 3
 // pipeline `index.test.tsx` covers for one mailbox, fanned out and merged. The tiers' own workings are mocked at the module boundary for the reason
 // given there; what is under test is the fan-out, the merge, the notices and the per-mailbox actions.
-const InboxPage = InboxPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const InboxPage = withTestRouter(InboxPageBase);
 
 const { searchEncryptedCandidates, getUnlockedKeys, unlockWithPassword, subscribeKeySession, keySessionListeners, searchLocalIndex, evaluateMessageSecurity } =
     vi.hoisted(() => {

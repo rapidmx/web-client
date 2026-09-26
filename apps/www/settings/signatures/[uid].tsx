@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { MailSignature, getMailSignature, listMailSignatures, updateMailSignature } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
@@ -169,4 +169,7 @@ function SignatureDetailContent({ uid }: { uid: string }) {
     );
 }
 
-export default routedPage("/settings/signatures/:uid", SignatureDetailPage);
+export default SignatureDetailPage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

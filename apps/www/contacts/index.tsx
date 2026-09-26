@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../_routedPage.js";
-import { useNavigate } from "../../shared/navigation/AppRouter.js";
+import { pageTitle } from "../../shared/navigation/pageTitle.js";
+import { useNavigate } from "../../shared/navigation/index.js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -536,6 +536,8 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                         {mailboxes.find((mb) => mb.uid === savedElsewhere.mailboxUid)?.displayName ?? "another mailbox"}.{" "}
                         <a
                             href={`/contacts?mailboxUid=${encodeURIComponent(savedElsewhere.mailboxUid)}`}
+                            data-router-shallow=""
+                            data-router-prefetch="false"
                             className="font-medium text-primary-dark hover:underline"
                         >
                             View that mailbox&rsquo;s contacts
@@ -590,4 +592,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     );
 }
 
-export default routedPage("/contacts", ContactsPage);
+export default ContactsPage;
+
+/** The tab's title: `Brand: Contacts` (see `pageTitle()`). */
+export const title = pageTitle("Contacts");

@@ -2,7 +2,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-// MailShell inside the client-side router: which mailbox and folder it shows follows the URL as the router changes it, without the
+// MailShell inside a (test) client-side router: which mailbox and folder it shows follows the URL as the router changes it, without the
 // page (or the shell) being reloaded - and its Compose button fetches the compose window's code as the pointer or keyboard
 // reaches it.
 import React, { useEffect } from "react";
@@ -11,7 +11,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MailShell, { useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
-import AppRouter, { useNavigate } from "../../../apps/shared/navigation/AppRouter.js";
+import { useNavigate } from "../../../apps/shared/navigation/index.js";
+import { TestRouter } from "../routerTestUtils.js";
 
 vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
     getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
@@ -30,7 +31,7 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
 }));
 vi.mock("../../../apps/shared/search/LocalIndexLifecycle.js", () => ({ default: () => null }));
 
-// The chrome is the stand-in the router's own tests use: here only the shell inside it matters.
+// The chrome is a stand-in: here only the shell inside it matters.
 vi.mock("../../../apps/shared/components/layout/AppShell.js", async () => {
     const react = await import("react");
     return {
@@ -88,12 +89,9 @@ function Page(props: any) {
 
 function renderShell() {
     return render(
-        <AppRouter
-            routes={[{ path: "/", active: "mail", load: () => Promise.resolve({ default: () => null }) }]}
-            initialPath="/"
-            initialPage={Page}
-            pageProps={{ userUid: "u1" }}
-        />,
+        <TestRouter>
+            <Page userUid="u1" />
+        </TestRouter>,
     );
 }
 

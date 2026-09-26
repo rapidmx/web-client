@@ -6,8 +6,12 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewEscrowScopePage from "../../../../../apps/admin/escrow-scopes/new/index.js";
+import { jsonResponse, mockFetch } from "../../../testUtils.js";
+import NewEscrowScopePageBase from "../../../../../apps/admin/escrow-scopes/new/index.js";
+import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const NewEscrowScopePage = withTestRouter(NewEscrowScopePageBase);
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -135,7 +139,6 @@ describe("NewEscrowScopePage", () => {
                 throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
             }),
         );
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New escrow scope");
@@ -152,7 +155,7 @@ describe("NewEscrowScopePage", () => {
         await user.click(screen.getByRole("checkbox", { name: "Notify subject on access" }));
         await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/escrow-scopes/es1"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/escrow-scopes/es1"));
         expect(requestBody.name).toBe("Legal Hold Q1");
         expect(requestBody.publicKey.publicKey).toBe("base64cert");
         expect(requestBody.publicKey.type).toBe("ec-p256");

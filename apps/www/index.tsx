@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "./_routedPage.js";
-import { useNavigate } from "../shared/navigation/AppRouter.js";
-import { whenIdle } from "../shared/navigation/idle.js";
+import { pageTitle } from "../shared/navigation/pageTitle.js";
+import { useNavigate } from "../shared/navigation/index.js";
+import { whenIdle } from "@rapidrest/react/client";
 import { prefetchComposeWindow } from "../shared/components/mail/compose/ComposeContext.js";
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -2956,4 +2956,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     );
 }
 
-export default routedPage("/", InboxPage);
+export default InboxPage;
+
+/** The tab's title: `Brand: Mail` (see `pageTitle()`). */
+export const title = pageTitle("Mail");

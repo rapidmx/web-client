@@ -6,8 +6,12 @@ import React from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewTransportRulePage from "../../../../../apps/admin/transport-rules/new/index.js";
+import { jsonResponse, mockFetch } from "../../../testUtils.js";
+import NewTransportRulePageBase from "../../../../../apps/admin/transport-rules/new/index.js";
+import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const NewTransportRulePage = withTestRouter(NewTransportRulePageBase);
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -34,7 +38,6 @@ describe("NewTransportRulePage", () => {
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewTransportRulePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New transport rule");
@@ -46,7 +49,7 @@ describe("NewTransportRulePage", () => {
         await user.type(screen.getByLabelText("Header name"), "X-External");
         await user.click(screen.getByRole("button", { name: "Create transport rule" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/transport-rules/tr1"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/transport-rules/tr1"));
         expect(requestBody.name).toBe("Flag external senders");
         expect(requestBody.conditions).toEqual({ anyRecipientExternal: true });
         expect(requestBody.actions).toEqual([{ type: "add_header", headerName: "X-External", headerValue: "" }]);
@@ -152,7 +155,6 @@ describe("NewTransportRulePage", () => {
             }
             return jsonResponse(200, {});
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewTransportRulePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New transport rule");
@@ -169,7 +171,7 @@ describe("NewTransportRulePage", () => {
 
         await user.click(screen.getByRole("button", { name: "Create transport rule" }));
         await user.click(within(await screen.findByRole("dialog", { name: "Apply to every message?" })).getByRole("button", { name: "Save anyway" }));
-        await vi.waitFor(() => expect(location.href).toBe("/admin/transport-rules/tr2"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/transport-rules/tr2"));
         expect(posted).toBe(1);
     });
 

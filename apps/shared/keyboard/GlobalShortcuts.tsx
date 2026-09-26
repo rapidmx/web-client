@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { accountUrlOf } from "../auth/accountUrl.js";
 import { APP_HREFS, SETTINGS_HREF, isSettingsPath } from "../navigation/appHrefs.js";
-import { useNavigate } from "../navigation/routerContext.js";
+import { useNavigate } from "../navigation/index.js";
 import { SHORTCUTS } from "./keymap.js";
 import { useShortcut } from "./useShortcut.js";
 

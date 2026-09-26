@@ -11,6 +11,7 @@ import AppShell, { LOGOUT_TIMEOUT_MS } from "../../../apps/shared/components/lay
 import { clearSigningOut, isSigningOut, registerComposeFlush } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
 import { apiFetch } from "@rapidmx/react-shared/util/api.js";
 import { dismissAll, getNotificationsSnapshot, notify } from "../../../apps/shared/notifications/store.js";
+import { createFakeRouter, TestRouter } from "../routerTestUtils.js";
 
 // The hook's own behavior (activity resets the clock, disabled at 0, cleans up on unmount, ...) is
 // already exercised end to end in react-shared's own test suite - this file only needs to confirm
@@ -650,29 +651,35 @@ describe("AppShell keyboard shortcuts", () => {
         return location;
     }
 
-    it("goes to each app, Settings and the account page from wherever the user is - the chrome is what they all share", () => {
+    it("goes to each app and Settings through the router, and to the account page with a page load, from wherever the user is - the chrome is what they all share", () => {
         const location = locationAt("/tasks");
+        const router = createFakeRouter({ url: "/tasks" });
         mockFetch(() => jsonResponse(404, {}));
         render(
-            <AppShell active="tasks" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
-                content
-            </AppShell>,
+            <TestRouter router={router}>
+                <AppShell active="tasks" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AppShell>
+            </TestRouter>,
         );
 
         expect(press("M", CTRL_SHIFT)).toBe(false);
-        expect(location.href).toBe("/");
+        expect(router.navigate).toHaveBeenLastCalledWith("/", expect.anything());
         press("C", CTRL_SHIFT);
-        expect(location.href).toBe("/calendar");
+        expect(router.navigate).toHaveBeenLastCalledWith("/calendar", expect.anything());
         press("B", CTRL_SHIFT);
-        expect(location.href).toBe("/contacts");
+        expect(router.navigate).toHaveBeenLastCalledWith("/contacts", expect.anything());
         press("S", CTRL_SHIFT);
-        expect(location.href).toBe("/settings/auto-reply");
+        expect(router.navigate).toHaveBeenLastCalledWith("/settings/auto-reply", expect.anything());
+        expect(router.navigate).toHaveBeenCalledTimes(4);
+        // Account is another site: an ordinary navigation.
         press("A", CTRL_SHIFT);
         expect(location.href).toBe(`${AUTH_SERVER_URL}/account`);
         // Already there: nothing changes, the key is still taken.
         location.href = "";
         expect(press("L", CTRL_SHIFT)).toBe(false);
         expect(location.href).toBe("");
+        expect(router.navigate).toHaveBeenCalledTimes(4);
     });
 
     it("opens the shortcuts dialog with ?, listing the global shortcuts - and Account only because auth-server is configured", async () => {

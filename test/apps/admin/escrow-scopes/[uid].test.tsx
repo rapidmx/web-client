@@ -6,8 +6,12 @@ import React from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
-import EscrowScopeDetailPage from "../../../../apps/admin/escrow-scopes/[uid].js";
+import { jsonResponse, mockFetch } from "../../testUtils.js";
+import EscrowScopeDetailPageBase from "../../../../apps/admin/escrow-scopes/[uid].js";
+import { latestRouter, withTestRouter } from "../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const EscrowScopeDetailPage = withTestRouter(EscrowScopeDetailPageBase);
 
 const scope = {
     uid: "es1",
@@ -469,7 +473,6 @@ describe("EscrowScopeDetailPage", () => {
             if (url === "/api/escrow/scopes/es1?version=0" && init?.method === "DELETE") return jsonResponse(200, {});
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<EscrowScopeDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "es1" }} />);
         await screen.findByLabelText("Name");
@@ -477,7 +480,7 @@ describe("EscrowScopeDetailPage", () => {
         await user.click(screen.getByRole("button", { name: "Delete scope" }));
         await user.click(screen.getByRole("button", { name: "Delete" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/escrow-scopes"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/escrow-scopes"));
     });
 
     it("shows a generic error message in the modal when deletion fails with a non-API error", async () => {

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
 import { reopenSetup } from "@rapidmx/react-shared/admin/setupApi.js";
@@ -24,6 +25,7 @@ export default function MailboxesListPage(props: Omit<AdminShellProps, "active">
 }
 
 function MailboxesListContent() {
+    const { navigate } = useRouter();
     const [page, setPage] = useState(0);
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
     const [loading, setLoading] = useState(true);
@@ -47,7 +49,7 @@ function MailboxesListContent() {
         setReopening(true);
         try {
             await reopenSetup();
-            window.location.href = "/admin/setup";
+            void navigate("/admin/setup");
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not reopen setup.");
             setReopening(false);

@@ -8,7 +8,11 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import { DEFAULT_CALENDAR_COLOR, accentColorForMailbox } from "@rapidmx/react-shared/calendar/calendarColors.js";
-import CalendarShell, { useCalendarShell } from "../../../apps/shared/components/calendar/layout/CalendarShell.js";
+import CalendarShellBase, { useCalendarShell } from "../../../apps/shared/components/calendar/layout/CalendarShell.js";
+import { withTestRouter } from "../routerTestUtils.js";
+
+// Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
+const CalendarShell = withTestRouter(CalendarShellBase);
 
 const mailboxA = {
     uid: "mb-a",

@@ -21,45 +21,47 @@ import SettingsShell from "@rapidmx/web-client/shared/components/settings/layout
 
 ## Navigation without page loads
 
-`@rapidrest/react` 2.0 has a client-side router of its own (`router = true` on the server's route, and the client built with
-`createViteConfig({ router: true })`), and the **admin and escrow consoles use it**: their pages did not change - every ordinary
-`<a href>` between two of a console's pages is taken over, back and forward work, and the server still renders every URL. That router
-replaces the whole page on each navigation (each page is its own hydration root, and `_layout.tsx` is not rendered again), so it
-cannot keep an app frame mounted. `www` needs exactly that - the compose windows in progress, the unlock prompt, the idle-key timer and
-the user menu must survive a page change, and a folder switch must keep the page's state - so the `www` pages keep the router
-described below (all of it in `shared/navigation/`, and `www/_routedPage.tsx`, `www/_routes.ts`). The `www` pages (Mail, Calendar,
-Contacts, Tasks, Settings and their subpages) render a small client-side router themselves, and go between one another - and between
-the folders of Mail - without a page load:
+All three apps use `@rapidrest/react`'s client-side router (`router = true` on the server's route, the client built with
+`createViteConfig({ router })`; `@rapidrest/react` is a **peer dependency** here, `>=2.1.0 <3`, because the router's state lives
+in a React context that this package must share with the server's one copy). The server still renders every URL, so first
+loads, reloads and crawlers are unchanged; after the first load a click on an ordinary `<a href>` between two pages of an app
+fetches the next page's props as JSON and swaps the page in. Back and forward work, the address bar always holds the real,
+shareable URL, and anything the router cannot be sure of (a modified click, `target`, `download`, `data-router-ignore`, another
+app's page - the consoles, plugin pages, other sites - or a failure) is left to the browser as a page load.
 
-- each `apps/www` page's default export is `routedPage("/its/route", Page)` (`apps/www/_routedPage.tsx`). The server
-  renders and the browser hydrates exactly what it did before; the first load is unchanged. `apps/www/_routes.ts` lists the
-  pages, each with a dynamic `import()` so it is a chunk of its own (a test keeps it in step with the files);
-- one `AppShell` chrome (the app rail, header, user menu, impersonation banner, compose windows in progress, the unlock
-  prompt and the idle-key timer) stays mounted, and only the page inside it is replaced. A page's own shell
-  (`MailShell`, `CalendarShell`, ...) still renders `AppShell`; inside the router that is only its children;
-- **links stay ordinary links.** Every same-origin `<a href>` to a route in the table is taken over - plain left clicks
-  only, so ctrl/cmd/shift/middle click, `target`, `download`, `#hash` links and links marked `data-full-reload` keep
-  the browser's behaviour, and pages that are not in the table (the admin and escrow consoles, plugin pages, other sites) are
-  reached with a page load. The address bar always holds the real, shareable URL (`/?mailboxUid=&folderUid=`), and back and
-  forward work;
-- a page's code is fetched when the pointer, focus or a press reaches a link to it, and for the app rail's pages when the
-  browser is idle after load (not with data saving on); if it can't be loaded the router falls back to a page load;
-- after a page change focus moves to the content region (`#app-content`), the window scrolls to the top, `document.title`
-  follows the page and a polite live region announces it.
+The admin and escrow pages each render their own shell, so the router just swaps the page. The webmail (`apps/www`) has an **app
+shell**, `apps/www/_shell.tsx` (the router's persistent client layout), which the server renders around every page and the
+browser hydrates with it as one root:
 
-Code that decides where to go uses the two hooks in `shared/navigation/AppRouter.js`:
+- the one `AppChrome` (the app rail, header, user menu, impersonation banner, compose windows in progress, the unlock prompt,
+  the idle-key timer, the mail connection and the notification pop-ups) stays mounted while only the page inside it is replaced.
+  A page's own shell (`MailShell`, `CalendarShell`, ...) still renders `AppShell`; inside the frame that is only its children;
+- the shell gets the current page's props - `WwwRoute.fetchProps()`'s, the same for every page - so the rail's highlighted app
+  (from the route), the branding, the plugin navigation and the impersonation banner follow the server on every navigation. That is
+  one request to `fetchProps()` per page change (warm for most, since the router prefetches a plain link on hover and the four rail
+  pages' code when the browser is idle);
+- **a folder is a shallow navigation.** `<a data-router-shallow>` (the Mail folder links), `navigate()` to the same path with another
+  query (`useNavigate()`, below) and `useSearchParams()`' setter keep the page instance and its state and only change the location;
+- after a page change the router moves focus to the content region (`#app-content`), scrolls to the top and announces the page's
+  title in a polite live region (all set by the shell with `useNavigationEffects()`); the tab's title is each page's `title`
+  export (`pageTitle("Calendar")`: `Acme Mail: Calendar`), rendered by the server and sent with every navigation, with the unread
+  count kept in front of it; the content region is `aria-busy` while the next page loads.
+
+Code that decides where to go uses `useNavigate()` from `shared/navigation/index.js` and reads the location with the library's
+hooks:
 
 ```tsx
-import { useLocation, useNavigate } from "@rapidmx/web-client/shared/navigation/AppRouter.js";
+import { useLocation, useSearchParams } from "@rapidrest/react/client";
+import { useNavigate } from "@rapidmx/web-client/shared/navigation/index.js";
 
-const navigate = useNavigate(); // navigate("/contacts"), navigate("/?mailboxUid=a&folderUid=b", { replace: true })
-const { pathname, search, hash } = useLocation(); // empty until read after the first render, so server and browser agree
+const navigate = useNavigate(); // navigate("/contacts"); navigate("/?mailboxUid=a&folderUid=b") keeps the page (same path)
+const { pathname, search, hash } = useLocation(); // the request's on the server and while hydrating; `hash` is empty there
+const [params, setParams] = useSearchParams(); // setParams({ folderUid: "x" }) is shallow by default
 ```
 
-`navigate()` changes the page without a load when the URL is a route of the app and is an ordinary navigation otherwise
-(outside the router too, where it is `window.location.href = ...`). Page props are the same for every `www` page except
-`params`, which the router recomputes from the URL. Plugin pages are not part of the router (they render their own
-`AppShell` chrome) and are opened with a page load.
+`navigate()` changes the page without a load when the URL is a page of the app, and is an ordinary navigation otherwise (outside a
+router too). An admin or escrow page that leads to another page of its console after a save goes there with `useRouter().navigate`.
+Plugin pages are not part of the router (they render their own `AppShell` chrome) and are opened with a page load.
 
 The compose window, the reading pane, S/MIME and the emoji list are also chunks of their own, loaded on demand or fetched
 when the browser is idle, so a page's first JavaScript is React and what the first screen draws.

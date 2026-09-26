@@ -11,7 +11,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MailShell, { useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
-import AppRouter, { useNavigate } from "../../../apps/shared/navigation/AppRouter.js";
+import { useNavigate } from "../../../apps/shared/navigation/index.js";
+import { TestRouter } from "../routerTestUtils.js";
 import { collapsedSectionsKey } from "../../../apps/shared/mail/useCollapsedSections.js";
 
 vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
@@ -112,12 +113,9 @@ function Page(props: any) {
 
 function renderShell(userUid = "u1") {
     return render(
-        <AppRouter
-            routes={[{ path: "/", active: "mail", load: () => Promise.resolve({ default: () => null }) }]}
-            initialPath="/"
-            initialPage={Page}
-            pageProps={{ userUid }}
-        />,
+        <TestRouter>
+            <Page userUid={userUid} />
+        </TestRouter>,
     );
 }
 

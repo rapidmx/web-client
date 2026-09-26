@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { createEscrowScope } from "@rapidmx/react-shared/admin/escrowScopesApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
@@ -26,6 +27,7 @@ export default function NewEscrowScopePage(props: Omit<AdminShellProps, "active"
 }
 
 function NewEscrowScopeForm({ adminUid }: { adminUid?: string }) {
+    const { navigate } = useRouter();
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
     const [keyAndHolders, setKeyAndHolders] = useState(emptyEscrowScopeKeyAndHoldersValue());
@@ -74,7 +76,7 @@ function NewEscrowScopeForm({ adminUid }: { adminUid?: string }) {
                 requiredHolders: keyAndHolders.requiredHolders,
                 notifySubjectOnAccess: keyAndHolders.notifySubjectOnAccess,
             });
-            window.location.href = `/admin/escrow-scopes/${encodeURIComponent(created.uid)}`;
+            void navigate(`/admin/escrow-scopes/${encodeURIComponent(created.uid)}`);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create the escrow scope.");
         } finally {

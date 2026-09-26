@@ -3,15 +3,15 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GlobalShortcuts } from "../../../apps/shared/keyboard/GlobalShortcuts.js";
 import { ShortcutProvider } from "../../../apps/shared/keyboard/ShortcutProvider.js";
-import { RouterContext } from "../../../apps/shared/navigation/routerContext.js";
+import { createFakeRouter, TestRouter } from "../routerTestUtils.js";
 import { SETTINGS_HREF } from "../../../apps/shared/navigation/appHrefs.js";
 
 const realLocation = window.location;
-let location: { href: string; pathname: string };
+let location: { href: string; pathname: string; assign: ReturnType<typeof vi.fn> };
 
 function pretendAt(pathname: string) {
     location.pathname = pathname;
@@ -19,14 +19,19 @@ function pretendAt(pathname: string) {
 
 function press(key: string, init: KeyboardEventInit = {}, target: Element = document.body): KeyboardEvent {
     const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
-    target.dispatchEvent(event);
+    // In act(): a shortcut that navigates changes the (test) router's location.
+    act(() => {
+        target.dispatchEvent(event);
+    });
     return event;
 }
 
 const CTRL_SHIFT = { ctrlKey: true, shiftKey: true };
 
 function mount(props: { authServerUrl?: string; onToggleHelp?: () => void; inRouter?: boolean } = {}) {
-    const navigate = vi.fn();
+    const router = createFakeRouter({ url: "/" });
+    // What the router is asked to go to: the address alone (the options say whether the page is kept).
+    const navigate = router.navigate;
     const onToggleHelp = props.onToggleHelp ?? vi.fn();
     const shortcuts = <GlobalShortcuts authServerUrl={props.authServerUrl} onToggleHelp={onToggleHelp} />;
     render(
@@ -34,7 +39,7 @@ function mount(props: { authServerUrl?: string; onToggleHelp?: () => void; inRou
             {props.inRouter === false ? (
                 shortcuts
             ) : (
-                <RouterContext.Provider value={{ location: { pathname: "", search: "", hash: "" }, navigate }}>{shortcuts}</RouterContext.Provider>
+                <TestRouter router={router}>{shortcuts}</TestRouter>
             )}
         </ShortcutProvider>,
     );
@@ -42,7 +47,7 @@ function mount(props: { authServerUrl?: string; onToggleHelp?: () => void; inRou
 }
 
 beforeEach(() => {
-    location = { href: "", pathname: "/" };
+    location = { href: "", pathname: "/", assign: vi.fn() };
     Object.defineProperty(window, "location", { configurable: true, writable: true, value: location });
 });
 
@@ -57,16 +62,16 @@ describe("GlobalShortcuts", () => {
         const { navigate } = mount();
         pretendAt("/calendar");
         expect(press("M", CTRL_SHIFT).defaultPrevented).toBe(true);
-        expect(navigate).toHaveBeenLastCalledWith("/");
+        expect(navigate).toHaveBeenLastCalledWith("/", expect.anything());
         pretendAt("/");
         press("C", CTRL_SHIFT);
-        expect(navigate).toHaveBeenLastCalledWith("/calendar");
+        expect(navigate).toHaveBeenLastCalledWith("/calendar", expect.anything());
         press("B", CTRL_SHIFT);
-        expect(navigate).toHaveBeenLastCalledWith("/contacts");
+        expect(navigate).toHaveBeenLastCalledWith("/contacts", expect.anything());
         press("L", CTRL_SHIFT);
-        expect(navigate).toHaveBeenLastCalledWith("/tasks");
+        expect(navigate).toHaveBeenLastCalledWith("/tasks", expect.anything());
         press("S", CTRL_SHIFT);
-        expect(navigate).toHaveBeenLastCalledWith(SETTINGS_HREF);
+        expect(navigate).toHaveBeenLastCalledWith(SETTINGS_HREF, expect.anything());
         expect(navigate).toHaveBeenCalledTimes(5);
     });
 
@@ -91,13 +96,13 @@ describe("GlobalShortcuts", () => {
         const { navigate } = mount();
         pretendAt("/messages/abc");
         press("M", CTRL_SHIFT);
-        expect(navigate).toHaveBeenLastCalledWith("/");
+        expect(navigate).toHaveBeenLastCalledWith("/", expect.anything());
         pretendAt("/contacts/abc");
         press("B", CTRL_SHIFT);
-        expect(navigate).toHaveBeenLastCalledWith("/contacts");
+        expect(navigate).toHaveBeenLastCalledWith("/contacts", expect.anything());
         pretendAt("/settings-not-really");
         press("S", CTRL_SHIFT);
-        expect(navigate).toHaveBeenLastCalledWith(SETTINGS_HREF);
+        expect(navigate).toHaveBeenLastCalledWith(SETTINGS_HREF, expect.anything());
     });
 
     it("goes to the account page of auth-server with a full navigation, tolerating a trailing slash", () => {
@@ -126,7 +131,7 @@ describe("GlobalShortcuts", () => {
         document.body.appendChild(input);
         pretendAt("/tasks");
         press("M", CTRL_SHIFT, input);
-        expect(navigate).toHaveBeenCalledWith("/");
+        expect(navigate).toHaveBeenCalledWith("/", expect.anything());
         press("/", { ctrlKey: true }, input);
         expect(onToggleHelp).toHaveBeenCalledTimes(1);
         expect(press("?", { shiftKey: true }, input).defaultPrevented).toBe(false);
@@ -140,7 +145,7 @@ describe("GlobalShortcuts", () => {
         expect(press("T", CTRL_SHIFT).defaultPrevented).toBe(false);
         (window as { rapidmx?: unknown }).rapidmx = {};
         expect(press("T", CTRL_SHIFT).defaultPrevented).toBe(true);
-        expect(navigate).toHaveBeenCalledWith("/tasks");
+        expect(navigate).toHaveBeenCalledWith("/tasks", expect.anything());
         press("L", CTRL_SHIFT);
         expect(navigate).toHaveBeenCalledTimes(2);
     });
@@ -154,11 +159,12 @@ describe("GlobalShortcuts", () => {
         expect(navigate).toHaveBeenCalledTimes(1);
     });
 
-    it("falls back to an ordinary navigation outside a router", () => {
+    it("falls back to a full page load outside a router", () => {
         mount({ inRouter: false });
+        location.href = "http://localhost/calendar";
         pretendAt("/calendar");
         press("M", CTRL_SHIFT);
-        expect(location.href).toBe("/");
+        expect(location.assign).toHaveBeenCalledWith("/");
     });
 
     it("does nothing while a modal dialog is open", () => {

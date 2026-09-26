@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { createDistributionList } from "@rapidmx/react-shared/admin/distributionListsApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
@@ -22,6 +23,7 @@ export default function NewDistributionListPage(props: Omit<AdminShellProps, "ac
 }
 
 function NewDistributionListForm() {
+    const { navigate } = useRouter();
     const [primarySmtpAddress, setPrimarySmtpAddress] = useState("");
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
@@ -48,7 +50,7 @@ function NewDistributionListForm() {
                 name: name.trim(),
                 description: description.trim() || undefined,
             });
-            window.location.href = `/admin/distribution-lists/${encodeURIComponent(list.uid)}`;
+            void navigate(`/admin/distribution-lists/${encodeURIComponent(list.uid)}`);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create the distribution list.");
         } finally {

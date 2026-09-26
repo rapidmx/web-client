@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -489,4 +489,7 @@ function ErasureSection({ mailboxLabel }: { mailboxLabel: string }) {
     );
 }
 
-export default routedPage("/settings/privacy", SettingsPrivacyPage);
+export default SettingsPrivacyPage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

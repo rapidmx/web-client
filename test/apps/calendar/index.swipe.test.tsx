@@ -7,10 +7,12 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
-import CalendarPageRouted from "../../../apps/www/calendar/index.js";
+import CalendarPageBase from "../../../apps/www/calendar/index.js";
+import { withTestRouter } from "../routerTestUtils.js";
 import { SWIPE_PERIOD_SHIFT } from "../../../apps/shared/components/calendar/swipeNavigation.js";
 
-const CalendarPage = CalendarPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const CalendarPage = withTestRouter(CalendarPageBase);
 
 // The page's own drag callbacks, kept so a test can start and cancel a drag the (mocked-out) sensors can't.
 let capturedDnd: { onDragStart?: (event: never) => void; onDragCancel?: (event: never) => void } | undefined;

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
     createTransportRule,
@@ -34,6 +35,7 @@ export default function NewTransportRulePage(props: Omit<AdminShellProps, "activ
 }
 
 function NewTransportRuleForm() {
+    const { navigate } = useRouter();
     const [name, setName] = useState("");
     const [rule, setRule] = useState<RuleBuilderValue<TransportRuleConditions, TransportRuleAction>>({
         enabled: true,
@@ -73,7 +75,7 @@ function NewTransportRuleForm() {
         setSaving(true);
         try {
             const created = await createTransportRule({ name: name.trim(), ...rule });
-            window.location.href = `/admin/transport-rules/${encodeURIComponent(created.uid)}`;
+            void navigate(`/admin/transport-rules/${encodeURIComponent(created.uid)}`);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create the transport rule.");
         } finally {

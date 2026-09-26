@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useId, useRef, useState } from "react";
 import { blockedSendersOf, isSharedWithMe, safeSendersOf } from "@rapidmx/react-shared/mail/mailApi.js";
 import {
@@ -297,4 +297,7 @@ function ListsContent() {
     );
 }
 
-export default routedPage("/settings/blocked-senders", SettingsBlockedSendersPage);
+export default SettingsBlockedSendersPage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

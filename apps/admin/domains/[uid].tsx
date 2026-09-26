@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { deleteDomain, Domain, updateDomain } from "@rapidmx/react-shared/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
@@ -24,6 +25,7 @@ export default function DomainDetailPage(props: Omit<AdminShellProps, "active"> 
 }
 
 function DomainDetailContent({ uid }: { uid: string }) {
+    const { navigate } = useRouter();
     const [domain, setDomain] = useState<Domain | null>(null);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -48,7 +50,7 @@ function DomainDetailContent({ uid }: { uid: string }) {
         setDeleteError(null);
         try {
             await deleteDomain(domain!.uid, domain!.version);
-            window.location.href = "/admin/domains";
+            void navigate("/admin/domains");
         } catch (err) {
             setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this domain.");
             setDeleting(false);

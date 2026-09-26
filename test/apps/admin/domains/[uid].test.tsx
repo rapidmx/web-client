@@ -6,8 +6,12 @@ import React from "react";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emptyResponse, jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
-import DomainDetailPage from "../../../../apps/admin/domains/[uid].js";
+import { emptyResponse, jsonResponse, mockFetch } from "../../testUtils.js";
+import DomainDetailPageBase from "../../../../apps/admin/domains/[uid].js";
+import { latestRouter, withTestRouter } from "../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const DomainDetailPage = withTestRouter(DomainDetailPageBase);
 
 // jsdom's `navigator.clipboard` is a getter-only property — `Object.assign` throws against it, so
 // `writeText` must be installed via `defineProperty` instead.
@@ -653,9 +657,6 @@ describe("DomainDetailPage", () => {
         expect(await dialog.findByText("Could not delete this domain.")).toBeInTheDocument();
     });
 
-    // Mocks window.location wholesale (see testUtils.mockLocation), which isn't undone between tests
-    // (unlike vi.stubGlobal) — must run last in this file, same convention as mailboxes/[uid]'s own
-    // impersonation-redirect test.
     it("opens a confirmation modal from 'Delete domain', deletes the domain, and navigates back to the list", async () => {
         let deleteCalled = false;
         mockFetch((url, init) => {
@@ -672,13 +673,12 @@ describe("DomainDetailPage", () => {
         render(<DomainDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "example.com" }} />);
 
         const deleteButton = await screen.findByRole("button", { name: "Delete domain" });
-        const location = mockLocation();
         await user.click(deleteButton);
         const dialog = within(screen.getByRole("dialog", { name: "Delete domain" }));
         expect(dialog.getByText(/Are you sure you want to delete/)).toBeInTheDocument();
 
         await user.click(dialog.getByRole("button", { name: "Delete" }));
         expect(deleteCalled).toBe(true);
-        await vi.waitFor(() => expect(location.href).toBe("/admin/domains"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/domains"));
     });
 });

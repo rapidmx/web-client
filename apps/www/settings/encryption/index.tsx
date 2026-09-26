@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import {
@@ -1284,4 +1284,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     );
 }
 
-export default routedPage("/settings/encryption", SettingsEncryptionPage);
+export default SettingsEncryptionPage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

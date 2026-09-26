@@ -7,12 +7,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PushEvent } from "@rapidmx/react-shared/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import CalendarPageRouted from "../../../apps/www/calendar/index.js";
+import CalendarPageBase from "../../../apps/www/calendar/index.js";
+import { withTestRouter } from "../routerTestUtils.js";
 import { redactedEventUidOf } from "../../../apps/shared/calendar/calendarLiveUpdates.js";
 
 // The calendar page and what the push connection tells it about a private or confidential event: a busy block, to be fetched again by its uid.
 
-const CalendarPage = CalendarPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const CalendarPage = withTestRouter(CalendarPageBase);
 
 // The shared push connection: the page adds a listener, and the tests are the server.
 const listeners = new Set<(event: PushEvent) => void>();

@@ -7,7 +7,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import SettingsShell, { useSettingsShell } from "../../../apps/shared/components/settings/layout/SettingsShell.js";
+import SettingsShellBase, { useSettingsShell } from "../../../apps/shared/components/settings/layout/SettingsShell.js";
+import { latestRouter, withTestRouter } from "../routerTestUtils.js";
+
+// Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
+const SettingsShell = withTestRouter(SettingsShellBase);
 
 const mailboxA = {
     uid: "mb-a",
@@ -236,7 +240,6 @@ describe("SettingsShell", () => {
 
         it("highlights an active plugin section, and switches mailbox onto its href", async () => {
             mockMailboxes([mailboxA, mailboxB]);
-            const location = mockLocation();
             const user = userEvent.setup();
             render(
                 <SettingsShell active="reminders" userUid="u1" pluginNav={pluginNav}>
@@ -251,7 +254,7 @@ describe("SettingsShell", () => {
             expect(screen.getByRole("link", { name: "Automatic Replies" })).not.toHaveAttribute("aria-current");
 
             await user.selectOptions(select, "mb-b");
-            expect(location.href).toBe("/settings/reminders?mailboxUid=mb-b");
+            expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/settings/reminders?mailboxUid=mb-b");
         });
 
         it("shows only core sections without plugin nav, and switches mailbox onto the current path for an unlisted section", async () => {
@@ -270,7 +273,7 @@ describe("SettingsShell", () => {
             expect(screen.getByRole("navigation", { name: "Settings sections" }).querySelector("[aria-current]")).toBeNull();
 
             await user.selectOptions(select, "mb-b");
-            expect(location.href).toBe("/settings/reminders?mailboxUid=mb-b");
+            expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/settings/reminders?mailboxUid=mb-b");
         });
     });
 
@@ -289,7 +292,6 @@ describe("SettingsShell", () => {
 
     it("navigates to the active section's href with the chosen mailbox when the switcher's selection changes", async () => {
         mockMailboxes([mailboxA, mailboxB]);
-        const location = mockLocation();
         const user = userEvent.setup();
         render(
             <SettingsShell active="auto-reply" userUid="u1">
@@ -300,7 +302,7 @@ describe("SettingsShell", () => {
         const select = await screen.findByLabelText("Mailbox");
         await user.selectOptions(select, "mb-b");
 
-        expect(location.href).toBe("/settings/auto-reply?mailboxUid=mb-b");
+        expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/settings/auto-reply?mailboxUid=mb-b");
     });
 
     describe("primary mailbox", () => {

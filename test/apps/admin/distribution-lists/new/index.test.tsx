@@ -6,8 +6,12 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewDistributionListPage from "../../../../../apps/admin/distribution-lists/new/index.js";
+import { jsonResponse, mockFetch } from "../../../testUtils.js";
+import NewDistributionListPageBase from "../../../../../apps/admin/distribution-lists/new/index.js";
+import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const NewDistributionListPage = withTestRouter(NewDistributionListPageBase);
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -38,7 +42,6 @@ describe("NewDistributionListPage", () => {
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewDistributionListPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New distribution list");
@@ -48,7 +51,7 @@ describe("NewDistributionListPage", () => {
         await user.type(screen.getByLabelText("Description (optional)"), "Everyone");
         await user.click(screen.getByRole("button", { name: "Create distribution list" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/distribution-lists/team%40example.com"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/distribution-lists/team%40example.com"));
         expect(requestBody.description).toBe("Everyone");
     });
 

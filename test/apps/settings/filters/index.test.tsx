@@ -6,10 +6,11 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsFiltersPageRouted from "../../../../apps/www/settings/filters/index.js";
+import SettingsFiltersPageBase from "../../../../apps/www/settings/filters/index.js";
+import { withTestRouter } from "../../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const SettingsFiltersPage = SettingsFiltersPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const SettingsFiltersPage = withTestRouter(SettingsFiltersPageBase);
 
 const mailbox = {
     uid: "mb1",

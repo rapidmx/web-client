@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../_routedPage.js";
+import { pageTitle } from "../../shared/navigation/pageTitle.js";
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Message, getMessage } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -11,7 +11,7 @@ import { useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHook
 import { useMarkMessageRead } from "../../shared/mail/useMarkMessageRead.js";
 import MailShell, { MailShellProps, useMailShell } from "../../shared/components/mail/layout/MailShell.js";
 import { LazyConversationThreadPane, LazyMessageDetailPane } from "../../shared/components/mail/LazyReadingPane.js";
-import { useLocationSearch } from "../../shared/navigation/AppRouter.js";
+import { useSearchParams } from "@rapidrest/react/client";
 import { ReadingPaneSkeleton } from "../../shared/components/mail/reading/MessageCard.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 
@@ -35,7 +35,7 @@ function MessageDetailContent({ uid }: { uid: string }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [labels, setLabels] = useState<Label[]>([]);
-    const conversationId: string | null = new URLSearchParams(useLocationSearch()).get("conversation");
+    const conversationId: string | null = useSearchParams()[0].get("conversation");
 
     useEffect(() => {
         setLoading(true);
@@ -133,4 +133,7 @@ function MessageDetailContent({ uid }: { uid: string }) {
     );
 }
 
-export default routedPage("/messages/:uid", MessageDetailPage);
+export default MessageDetailPage;
+
+/** The tab's title: `Brand: Mail` (see `pageTitle()`). */
+export const title = pageTitle("Mail");

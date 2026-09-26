@@ -70,7 +70,7 @@ import { useKeyEnvironment } from "../../keyboard/ShortcutProvider.js";
 import { useShortcut } from "../../keyboard/useShortcut.js";
 import { useUnlockPrompt } from "../layout/UnlockPromptProvider.js";
 import { moveLocalEntity } from "../../search/localIndexRpcClient.js";
-import { useNavigate } from "../../navigation/routerContext.js";
+import { useNavigate } from "../../navigation/index.js";
 import { notify } from "../../notifications/store.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import { useMailboxUpdateAccess } from "../../mail/useMailboxUpdateAccess.js";

@@ -10,10 +10,12 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "./testUtils.js";
-import InboxPageRouted from "../../apps/www/index.js";
+import InboxPageBase from "../../apps/www/index.js";
+import { withTestRouter } from "./routerTestUtils.js";
 import { clearListSnapshots, listSnapshotKey, readListSnapshot } from "../../apps/shared/mail/listSnapshots.js";
 
-const InboxPage = InboxPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const InboxPage = withTestRouter(InboxPageBase);
 
 vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
     getUnlockedKeys: vi.fn().mockReturnValue(undefined),
@@ -35,8 +37,8 @@ vi.mock("../../apps/shared/components/mail/compose/ComposeContext.js", async (im
     prefetchComposeWindow: compose.prefetchComposeWindow,
 }));
 const idle = vi.hoisted(() => ({ whenIdle: vi.fn() }));
-vi.mock("../../apps/shared/navigation/idle.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("../../apps/shared/navigation/idle.js")>()),
+vi.mock("@rapidrest/react/client", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@rapidrest/react/client")>()),
     whenIdle: idle.whenIdle,
 }));
 
@@ -327,8 +329,8 @@ describe("InboxPage: choosing another folder while searching", () => {
             if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
             return jsonResponse(404, {});
         });
-        // The routed page: the folder link is only taken over (no page load) inside the router.
-        render(<InboxPageRouted userUid="u1" />);
+        // The folder link is only taken over (no page load, and the page kept) inside the router.
+        render(<InboxPage userUid="u1" />);
         await screen.findByText("First subject");
         const search = screen.getByRole("searchbox");
         await user.type(search, "hello");

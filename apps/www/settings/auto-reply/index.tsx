@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useState } from "react";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import { updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -130,4 +130,7 @@ function AutoReplyContent() {
     );
 }
 
-export default routedPage("/settings/auto-reply", SettingsAutoReplyPage);
+export default SettingsAutoReplyPage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

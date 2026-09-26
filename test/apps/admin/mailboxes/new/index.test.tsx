@@ -7,7 +7,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
-import NewMailboxPage from "../../../../../apps/admin/mailboxes/new/index.js";
+import NewMailboxPageBase from "../../../../../apps/admin/mailboxes/new/index.js";
+import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const NewMailboxPage = withTestRouter(NewMailboxPageBase);
 
 // A fixed device zone, so the form's starting zone doesn't depend on the machine the tests run on.
 vi.mock("@rapidmx/react-shared/util/timeZone.js", async (importOriginal) => ({
@@ -71,7 +75,6 @@ describe("NewMailboxPage", () => {
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New mailbox");
@@ -84,7 +87,7 @@ describe("NewMailboxPage", () => {
         await user.type(screen.getByLabelText("Quota (GB)"), "10");
         await user.click(screen.getByRole("button", { name: "Create mailbox" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/mb1"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/mailboxes/mb1"));
         expect(requestBody.timezone).toBe("America/Los_Angeles");
         expect(requestBody.quotaBytes).toBe(10_000_000_000);
         expect(requestBody.ownerUserUid).toBeUndefined();
@@ -130,7 +133,6 @@ describe("NewMailboxPage", () => {
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New mailbox");
@@ -147,7 +149,7 @@ describe("NewMailboxPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Create mailbox" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/mb2"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/mailboxes/mb2"));
         expect(requestBody.ownerUserUid).toBe("u-jdoe");
     });
 
@@ -245,7 +247,6 @@ describe("NewMailboxPage", () => {
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New mailbox");
@@ -260,7 +261,7 @@ describe("NewMailboxPage", () => {
         await user.type(screen.getByLabelText("Display name"), "Support");
         await user.click(screen.getByRole("button", { name: "Create mailbox" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/mb3"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/mailboxes/mb3"));
         expect(requestBody.primarySmtpAddress).toBe("support@example.org");
     });
 
@@ -336,7 +337,6 @@ describe("NewMailboxPage", () => {
             }
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
-        const location = mockLocation();
         const user = userEvent.setup();
         render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         await screen.findByText("New mailbox");
@@ -349,7 +349,7 @@ describe("NewMailboxPage", () => {
         await user.click(screen.getByRole("checkbox", { name: "Automatically accept booking requests" }));
         await user.click(screen.getByRole("button", { name: "Create mailbox" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/room1"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/mailboxes/room1"));
         expect(requestBody.isResource).toBe(true);
         expect(requestBody.resourceType).toBe("equipment");
         expect(requestBody.resourceCapacity).toBe(4);
@@ -483,7 +483,6 @@ describe("NewMailboxPage", () => {
 
         it("erases it after the address is typed, watches the erasure finish, then creates the mailbox again", async () => {
             const { calls } = server({ status: 409, body: REMAINING });
-            const location = mockLocation();
             const user = userEvent.setup();
             await fillShared(user);
             await user.click(screen.getByRole("button", { name: "Create mailbox" }));
@@ -501,7 +500,7 @@ describe("NewMailboxPage", () => {
             expect(calls.filter((call) => call === "POST /api/mail/mailboxes")).toHaveLength(1);
             await user.click(within(dialog).getByRole("button", { name: "Create mailbox" }));
 
-            await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/mb9"));
+            await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/mailboxes/mb9"));
             expect(calls.filter((call) => call === "POST /api/mail/mailboxes")).toHaveLength(2);
             expect(calls.indexOf("POST /api/mail/erasure-requests/leftover")).toBeGreaterThan(calls.indexOf("POST /api/mail/mailboxes"));
             expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -509,7 +508,6 @@ describe("NewMailboxPage", () => {
 
         it("watches an erasure that is already running, without filing another, when that is what the server says", async () => {
             const { calls } = server({ status: 409, body: ERASING });
-            const location = mockLocation();
             const user = userEvent.setup();
             await fillShared(user);
 
@@ -522,7 +520,7 @@ describe("NewMailboxPage", () => {
             expect(within(dialog).queryByLabelText("Type the address to confirm")).not.toBeInTheDocument();
             await user.click(await within(dialog).findByRole("button", { name: "Create mailbox" }));
 
-            await vi.waitFor(() => expect(location.href).toBe("/admin/mailboxes/mb9"));
+            await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/mailboxes/mb9"));
             expect(calls).not.toContain("POST /api/mail/erasure-requests/leftover");
         });
 

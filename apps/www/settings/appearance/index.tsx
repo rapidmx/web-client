@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../../_routedPage.js";
+import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React from "react";
 import SettingsShell, { SettingsShellProps } from "../../../shared/components/settings/layout/SettingsShell.js";
 import AppearanceForm from "../../../shared/appearance/AppearanceForm.js";
@@ -18,4 +18,7 @@ function SettingsAppearancePage(props: SettingsAppearancePageProps) {
     );
 }
 
-export default routedPage("/settings/appearance", SettingsAppearancePage);
+export default SettingsAppearancePage;
+
+/** The tab's title: `Brand: Settings` (see `pageTitle()`). */
+export const title = pageTitle("Settings");

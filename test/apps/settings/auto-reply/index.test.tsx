@@ -7,10 +7,11 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsAutoReplyPageRouted from "../../../../apps/www/settings/auto-reply/index.js";
+import SettingsAutoReplyPageBase from "../../../../apps/www/settings/auto-reply/index.js";
+import { withTestRouter } from "../../routerTestUtils.js";
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const SettingsAutoReplyPage = SettingsAutoReplyPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const SettingsAutoReplyPage = withTestRouter(SettingsAutoReplyPageBase);
 
 function mailbox(overrides: Record<string, unknown> = {}) {
     return {

@@ -7,12 +7,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import SettingsProfilePageRouted from "../../../../apps/www/settings/profile/index.js";
+import SettingsProfilePageBase from "../../../../apps/www/settings/profile/index.js";
+import { withTestRouter } from "../../routerTestUtils.js";
 import { getNotificationsSnapshot, resetNotifications } from "../../../../apps/shared/notifications/store.js";
 
 // The Profile page's "Free/busy visibility": who may see when this mailbox is busy.
 
-const SettingsProfilePage = SettingsProfilePageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const SettingsProfilePage = withTestRouter(SettingsProfilePageBase);
 
 const mailbox = {
     uid: "mb1",

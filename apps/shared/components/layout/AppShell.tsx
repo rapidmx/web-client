@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import "../../styles/app.css";
-import React, { PropsWithChildren, useEffect, useRef, useState } from "react";
+import React, { PropsWithChildren, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { IconType } from "react-icons";
 import {
     HiOutlineCalendarDays,
@@ -12,6 +12,7 @@ import {
     HiOutlinePuzzlePiece,
     HiOutlineUsers,
 } from "react-icons/hi2";
+import { useRouter } from "@rapidrest/react/client";
 import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
 import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
 import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
@@ -34,7 +35,7 @@ import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../plugins/pluginNav.js";
 import { useInAppFrame } from "../../navigation/frameContext.js";
 import { APP_HREFS } from "../../navigation/appHrefs.js";
-import { useNavigate } from "../../navigation/routerContext.js";
+import { useNavigate } from "../../navigation/index.js";
 import { GlobalShortcuts } from "../../keyboard/GlobalShortcuts.js";
 import { ShortcutProvider } from "../../keyboard/ShortcutProvider.js";
 import ShortcutsDialog from "../../keyboard/ShortcutsDialog.js";
@@ -138,12 +139,9 @@ export function appRailItems(pluginNav?: PluginNav): NavItem[] {
     );
 }
 
-/** What only the persistent frame (`AppRouter`) passes to the chrome it keeps mounted. */
+/** What only the persistent frame (`apps/www/_shell.tsx`) passes to the chrome it keeps mounted. */
 export interface AppChromeProps extends AppShellProps {
-    /** Changes whenever the router shows a different page: the chrome then moves focus to the content, scrolls to its top,
-     * sets the document title and announces the page. Absent outside the router, when nothing does. */
-    routeKey?: string;
-    /** The router is loading the next page's code - the content is `aria-busy`. */
+    /** The router is loading the next page - the content is `aria-busy`. */
     busy?: boolean;
     /** A screen that takes over the window (`FrameTakeover`) is showing: the rail, header, banner and footer are hidden - not
      * unmounted, so what is inside them (and the page in the content region) keeps its state. */
@@ -156,8 +154,8 @@ export interface AppChromeProps extends AppShellProps {
  * Each app's own shell (e.g. `MailShell`) renders its own contextual sidebar + content as `children`, inside
  * the area to the right of the icon rail and below the header.
  *
- * Rendered by `AppRouter`, once, for the life of the page, so that moving between apps replaces only `children` - see
- * `AppShell` below for what a page's own shell renders instead.
+ * Rendered by the webmail's app shell (`apps/www/_shell.tsx`, the router's persistent client layout), once, for the life of the
+ * page, so that moving between apps replaces only `children` - see `AppShell` below for what a page's own shell renders instead.
  */
 export function AppChrome({
     active,
@@ -170,7 +168,6 @@ export function AppChrome({
     branding: initialBranding,
     appearance,
     pluginNav,
-    routeKey,
     busy,
     hideChrome,
     children,
@@ -198,6 +195,7 @@ export function AppChrome({
     // the router (`AppShell` rendered as a page's own chrome: tests, plugin pages) it stays off, and a Mail shell owns its connection itself.
     const inFrame = useInAppFrame();
     const navigate = useNavigate();
+    const { pathname } = useRouter();
     const mail = useMailConnection({ userUid, enabled: inFrame, open: navigate });
     // A signing certificate the user asked for is announced when it is issued (or fails), on whichever page they are - see the hook.
     useSigningEnrollmentWatcher({ userUid, mailboxes: mail.mailboxes, enabled: inFrame });
@@ -301,32 +299,21 @@ export function AppChrome({
         }
     }
 
-    // What the persistent frame (`AppRouter`) needs on top of a page that never changes: the document title follows the page, and
-    // after the router replaces the page the keyboard focus, the scroll position and a screen reader are told about it - a
-    // page load did all of that by itself. Nothing here runs for a page shown outside the router (`routeKey` is undefined).
-    const contentRef = useRef<HTMLDivElement>(null);
-    const [announcement, setAnnouncement] = useState("");
-    const firstRouteKeyRef = useRef(routeKey);
-    const pageLabel = active === "settings" ? "Settings" : appRailItems(pluginNav).find((app) => app.id === active)?.label;
+    // The tab's title in the frame is each page's own (its `title` export: rendered by the server, set again by the router on every navigation),
+    // but `useBranding()` above sets it to the branding's title once its fetch answers - a title for a page that has none. The page's is put back:
+    // the layout effect reads it before that hook's effect runs, this one (declared after it) writes it back.
+    const pageTitleRef = useRef("");
+    useLayoutEffect(() => {
+        pageTitleRef.current = document.title;
+    }, [fetchedBranding?.title]);
     useEffect(() => {
-        if (routeKey !== undefined) {
-            const brand = branding?.title || branding?.companyName || "RapidMX";
-            document.title = pageLabel ? `${brand}: ${pageLabel}` : brand;
+        if (inFrame) {
+            document.title = pageTitleRef.current;
         }
-    }, [routeKey, pageLabel, branding]);
-    // After the title effect above, so a page change (which rewrites the title) is followed by the unread count going back in front of it.
-    useUnreadTitle(inboxUnreadTotal(mail.mailboxFolders, mail.folderCounts.counts), {
-        enabled: inFrame,
-        resetKey: `${routeKey}|${pageLabel}|${branding?.title}|${branding?.companyName}`,
-    });
-    useEffect(() => {
-        if (routeKey === undefined || routeKey === firstRouteKeyRef.current) {
-            return;
-        }
-        setAnnouncement(pageLabel ?? "");
-        contentRef.current?.focus({ preventScroll: true });
-        window.scrollTo(0, 0);
-    }, [routeKey]);
+    }, [fetchedBranding?.title, inFrame]);
+    // The router sets the document's title to the page's own whenever the page changes, which drops the unread count this puts in front
+    // of it, so a new pathname is what puts the count back. (A folder change is shallow and keeps the title.)
+    useUnreadTitle(inboxUnreadTotal(mail.mailboxFolders, mail.folderCounts.counts), { enabled: inFrame, resetKey: pathname });
 
     if (!userUid) {
         return <div className="min-h-screen" />;
@@ -442,7 +429,6 @@ export function AppChrome({
                         {/* The one pop-up stack for the whole app: right under the header row, so it never covers the account menu. */}
                         <NotificationCenter />
                         <div
-                            ref={contentRef}
                             id="app-content"
                             tabIndex={-1}
                             aria-busy={busy || undefined}
@@ -452,11 +438,6 @@ export function AppChrome({
                         </div>
                     </div>
                 </div>
-                {routeKey !== undefined && (
-                    <div role="status" aria-live="polite" className="sr-only">
-                        {announcement}
-                    </div>
-                )}
                 {!hideChrome && <FrameBrandingFooter parsed={footer} userMenu={menuInFooter ? renderUserMenu("up") : undefined} appTitle={activeLabel} />}
             </div>
             </ComposeProvider>
@@ -470,9 +451,9 @@ export function AppChrome({
 
 /**
  * What a page's own shell (`MailShell`, `CalendarShell`, ...) renders around its content. Outside the client-side router it
- * is the whole `AppChrome`, as it always was. Inside it (`AppRouter`) the chrome is already mounted above the page - and stays
- * mounted as the page is replaced - so this is only its children; everything it would have been given comes from the router
- * frame instead (the props are the same for every page, and `active` is the route's).
+ * is the whole `AppChrome`, as it always was. Inside it (the router's app shell, `apps/www/_shell.tsx`) the chrome is already mounted above the
+ * page - and stays mounted as the page is replaced - so this is only its children; everything it would have been given comes from
+ * the shell instead (the props are the same for every page, and `active` is the route's).
  */
 export default function AppShell(props: PropsWithChildren<AppShellProps>) {
     const inFrame = useInAppFrame();

@@ -7,7 +7,11 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
-import MailboxDetailPage from "../../../../apps/admin/mailboxes/[uid].js";
+import MailboxDetailPageBase from "../../../../apps/admin/mailboxes/[uid].js";
+import { latestRouter, withTestRouter } from "../../routerTestUtils.js";
+
+// Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
+const MailboxDetailPage = withTestRouter(MailboxDetailPageBase);
 
 const mailbox = {
     uid: "mb1",
@@ -245,13 +249,12 @@ describe("MailboxDetailPage", () => {
         });
         const user = userEvent.setup();
         render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
-        const location = mockLocation();
 
         await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
         expect(await screen.findByText(/Deleting removes the mailbox itself/)).toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Delete" }));
 
-        await vi.waitFor(() => expect(location.href).toBe("/admin"));
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin"));
     });
 
     it("closes the delete-confirmation modal via Cancel without deleting", async () => {
@@ -367,19 +370,17 @@ describe("MailboxDetailPage", () => {
 
         it("deletes without erasing by default: the request asks for nothing more", async () => {
             const deletes = server(() => jsonResponse(200, {}));
-            const location = mockLocation();
             const user = userEvent.setup();
             const dialog = await openDelete(user);
 
             await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 
-            await vi.waitFor(() => expect(location.href).toBe("/admin"));
+            await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin"));
             expect(deletes).toEqual(["/api/mail/mailboxes/mb1?version=0"]);
         });
 
         it("offers 'Delete and erase all its data' behind a checkbox, and needs the address typed before it will send it", async () => {
             const deletes = server(() => jsonResponse(200, {}));
-            const location = mockLocation();
             const user = userEvent.setup();
             const dialog = await openDelete(user);
 
@@ -396,7 +397,7 @@ describe("MailboxDetailPage", () => {
             expect(erase).toBeEnabled();
             await user.click(erase);
 
-            await vi.waitFor(() => expect(location.href).toBe("/admin"));
+            await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin"));
             expect(deletes).toEqual(["/api/mail/mailboxes/mb1?version=0&erase=true"]);
         });
 
@@ -439,7 +440,7 @@ describe("MailboxDetailPage", () => {
 
             refuse = false;
             await user.click(within(dialog).getByRole("button", { name: "Delete and erase all its data" }));
-            await vi.waitFor(() => expect(location.href).toBe("/admin"));
+            await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin"));
             expect(deletes).toHaveLength(2);
         });
 

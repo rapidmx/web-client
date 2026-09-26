@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../_routedPage.js";
+import { pageTitle } from "../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { endOfWeek, isAfter, isBefore, isToday, parseISO, startOfDay } from "date-fns";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
@@ -404,6 +404,8 @@ function TasksContent() {
                                     {mailboxes.find((mb) => mb.uid === addedElsewhere.mailboxUid)?.displayName ?? "another mailbox"}.{" "}
                                     <a
                                         href={`/tasks?mailboxUid=${encodeURIComponent(addedElsewhere.mailboxUid)}`}
+                                        data-router-shallow=""
+                                        data-router-prefetch="false"
                                         className="font-medium text-primary-dark hover:underline"
                                     >
                                         View that mailbox&rsquo;s tasks
@@ -646,4 +648,7 @@ function TaskTable({ tasks, checkedUids, onToggleChecked, onToggle, onDelete }: 
     );
 }
 
-export default routedPage("/tasks", TasksPage);
+export default TasksPage;
+
+/** The tab's title: `Brand: Tasks` (see `pageTitle()`). */
+export const title = pageTitle("Tasks");

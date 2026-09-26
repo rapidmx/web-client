@@ -5,7 +5,7 @@
 import React, { PropsWithChildren, createContext, useContext, useLayoutEffect } from "react";
 
 /**
- * What the persistent app frame (`AppRouter`'s one mounted `AppShell` chrome) offers to what is rendered inside it. `null`
+ * What the persistent app frame (the webmail's router shell, `apps/www/_shell.tsx`, whose one mounted `AppChrome` never unmounts) offers to what is rendered inside it. `null`
  * outside a frame - a page not shown by the router (an admin page, a plugin page, a test) renders its own chrome.
  */
 export interface AppFrameContextValue {

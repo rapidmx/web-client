@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../_routedPage.js";
-import { useNavigate } from "../../shared/navigation/AppRouter.js";
+import { pageTitle } from "../../shared/navigation/pageTitle.js";
+import { useNavigate } from "../../shared/navigation/index.js";
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { Contact, deleteContact, getContact } from "@rapidmx/react-shared/contacts/contactsApi.js";
@@ -106,4 +106,7 @@ function ContactDetailContent({ uid }: { uid: string }) {
     );
 }
 
-export default routedPage("/contacts/:uid", ContactDetailPage);
+export default ContactDetailPage;
+
+/** The tab's title: `Brand: Contacts` (see `pageTitle()`). */
+export const title = pageTitle("Contacts");

@@ -9,7 +9,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import MessageDetailPageRouted from "../../../apps/www/messages/[uid].js";
+import MessageDetailPageBase from "../../../apps/www/messages/[uid].js";
+import { withTestRouter } from "../routerTestUtils.js";
 import { SendRequest, startSend } from "../../../apps/shared/mail/outbox/sendJob.js";
 import { handleSendEvent } from "../../../apps/shared/mail/outbox/sendOutcomes.js";
 import { getOutgoingReplies } from "../../../apps/shared/mail/outbox/outgoingReplies.js";
@@ -21,7 +22,8 @@ vi.mock("../../../apps/shared/search/localIndexRpcClient.js", async (importOrigi
     moveLocalEntity: vi.fn(),
 }));
 
-const MessageDetailPage = MessageDetailPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const MessageDetailPage = withTestRouter(MessageDetailPageBase);
 
 const stamp = { version: 0, dateCreated: "2026-01-01T00:00:00.000Z", dateModified: "2026-01-01T00:00:00.000Z" };
 const mailbox = { uid: "mb1", ...stamp, ownerUserUid: "u1", primarySmtpAddress: "u1@example.com", aliasAddresses: [], displayName: "My Mail", timezone: "UTC", quotaBytes: 1, usedBytes: 0 };

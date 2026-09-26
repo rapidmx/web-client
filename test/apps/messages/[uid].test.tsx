@@ -7,7 +7,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import MessageDetailPageRouted from "../../../apps/www/messages/[uid].js";
+import MessageDetailPageBase from "../../../apps/www/messages/[uid].js";
+import { withTestRouter } from "../routerTestUtils.js";
 
 // Archiving and moving a message update the on-device search index through a worker, which jsdom doesn't have.
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", async (importOriginal) => ({
@@ -15,8 +16,8 @@ vi.mock("../../../apps/shared/search/localIndexRpcClient.js", async (importOrigi
     moveLocalEntity: vi.fn(),
 }));
 
-// The page's own component: what a test renders is the page, not the client-side router around it (see `routedPage()`).
-const MessageDetailPage = MessageDetailPageRouted.page;
+// Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
+const MessageDetailPage = withTestRouter(MessageDetailPageBase);
 
 const mailbox = {
     uid: "mb1",

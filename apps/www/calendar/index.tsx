@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { routedPage } from "../_routedPage.js";
+import { pageTitle } from "../../shared/navigation/pageTitle.js";
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { HiOutlineBars3, HiOutlinePlus } from "react-icons/hi2";
@@ -575,4 +575,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     );
 }
 
-export default routedPage("/calendar", CalendarPage);
+export default CalendarPage;
+
+/** The tab's title: `Brand: Calendar` (see `pageTitle()`). */
+export const title = pageTitle("Calendar");

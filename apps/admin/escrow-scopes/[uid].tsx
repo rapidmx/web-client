@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
 import {
@@ -118,6 +119,7 @@ export default function EscrowScopeDetailPage(props: Omit<AdminShellProps, "acti
 }
 
 function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: string }) {
+    const { navigate } = useRouter();
     const [original, setOriginal] = useState<EscrowScope | null>(null);
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
@@ -225,7 +227,7 @@ function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: s
         setDeleteError(null);
         try {
             await deleteEscrowScope(original!.uid, original!.version);
-            window.location.href = "/admin/escrow-scopes";
+            void navigate("/admin/escrow-scopes");
         } catch (err) {
             // Most commonly a 409 ("referenced by an existing Matter") — see `deleteEscrowScope()`'s own
             // doc comment - surfaced as-is rather than special-cased.

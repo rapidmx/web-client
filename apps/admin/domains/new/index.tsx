@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
+import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { createDomain, Domain, listDomains } from "@rapidmx/react-shared/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
@@ -22,6 +23,7 @@ export default function NewDomainPage(props: Omit<AdminShellProps, "active">) {
 }
 
 function NewDomainForm() {
+    const { navigate } = useRouter();
     const [name, setName] = useState("");
     const [aliasOf, setAliasOf] = useState("");
     // Only an existing, non-alias domain can be aliased (no chains) - see `Domain.aliasOf`'s own doc comment
@@ -48,7 +50,7 @@ function NewDomainForm() {
         setSaving(true);
         try {
             const domain = await createDomain({ name: name.trim(), aliasOf: aliasOf || undefined });
-            window.location.href = `/admin/domains/${encodeURIComponent(domain.uid)}`;
+            void navigate(`/admin/domains/${encodeURIComponent(domain.uid)}`);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create the domain.");
         } finally {

@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
+import { useRouter } from "@rapidrest/react/client";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
 import MailboxCreateForm from "../../../shared/components/admin/settings/MailboxCreateForm.js";
 
 export default function NewMailboxPage(props: Omit<AdminShellProps, "active">) {
+    const { navigate } = useRouter();
     return (
         <AdminShell {...props} active="mailboxes">
             <div className="max-w-xl">
@@ -19,7 +21,7 @@ export default function NewMailboxPage(props: Omit<AdminShellProps, "active">) {
                 <MailboxCreateForm
                     cancelHref="/admin"
                     onCreated={(mailbox) => {
-                        window.location.href = `/admin/mailboxes/${encodeURIComponent(mailbox.uid)}`;
+                        void navigate(`/admin/mailboxes/${encodeURIComponent(mailbox.uid)}`);
                     }}
                 />
             </div>

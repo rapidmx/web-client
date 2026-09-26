@@ -13,6 +13,7 @@ import { clearBodyContentCache } from "../../../apps/shared/components/mail/read
 import { clearResolvedFolders } from "../../../apps/shared/mail/folderOfType.js";
 import { clearMailboxUpdateAccessCache } from "../../../apps/shared/mail/useMailboxUpdateAccess.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
+import { createFakeRouter, TestRouter } from "../routerTestUtils.js";
 
 // The message card's Report junk button and "More actions" menu, over the real pane: which requests each row makes (to the message's own mailbox),
 // what the caller is told, and what the reader is told. The body's frame, the compose window and the crypto are stand-ins - the pane's own
@@ -1551,21 +1552,36 @@ describe("Advanced actions > Create rule", () => {
     it("opens the new filter page for the message's mailbox with its sender and its subject, without Re:", async () => {
         serve();
         const user = userEvent.setup();
-        render(<MessageDetailPane message={message()} attachments={[]} folders={FOLDERS as never} />);
+        const router = createFakeRouter({ url: "/" });
+        render(
+            <TestRouter router={router}>
+                <MessageDetailPane message={message()} attachments={[]} folders={FOLDERS as never} />
+            </TestRouter>,
+        );
         await choose(user, ["Advanced actions"], /^Create rule/);
-        expect(hrefs).toEqual(["/settings/filters/new?mailboxUid=mb1&from=Sender%40Example.com&subject=Hello+there"]);
+        expect(router.navigate).toHaveBeenCalledTimes(1);
+        expect(router.navigate).toHaveBeenCalledWith("/settings/filters/new?mailboxUid=mb1&from=Sender%40Example.com&subject=Hello+there", expect.anything());
     });
 
     it("leaves the subject out for an encrypted message, and for one that has none", async () => {
         serve();
         const user = userEvent.setup();
-        const { unmount } = render(<MessageDetailPane message={message({ encrypted: true, subject: "Encrypted message" })} attachments={[]} folders={FOLDERS as never} />);
+        const router = createFakeRouter({ url: "/" });
+        const { unmount } = render(
+            <TestRouter router={router}>
+                <MessageDetailPane message={message({ encrypted: true, subject: "Encrypted message" })} attachments={[]} folders={FOLDERS as never} />
+            </TestRouter>,
+        );
         await choose(user, ["Advanced actions"], /^Create rule/);
-        expect(hrefs[0]).toBe("/settings/filters/new?mailboxUid=mb1&from=Sender%40Example.com");
+        expect(router.navigate.mock.calls[0][0]).toBe("/settings/filters/new?mailboxUid=mb1&from=Sender%40Example.com");
         unmount();
-        render(<MessageDetailPane message={message({ subject: "Fwd:" })} attachments={[]} folders={FOLDERS as never} />);
+        render(
+            <TestRouter router={router}>
+                <MessageDetailPane message={message({ subject: "Fwd:" })} attachments={[]} folders={FOLDERS as never} />
+            </TestRouter>,
+        );
         await choose(user, ["Advanced actions"], /^Create rule/);
-        expect(hrefs[1]).toBe("/settings/filters/new?mailboxUid=mb1&from=Sender%40Example.com");
+        expect(router.navigate.mock.calls[1][0]).toBe("/settings/filters/new?mailboxUid=mb1&from=Sender%40Example.com");
     });
 });
 
