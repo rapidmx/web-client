@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-26
+
+### Added
+- Added a Report junk button and a More actions menu to the message card, with Delete, Mark as read or unread, Flag or Unflag, Report junk or phishing, Block or Never block the sender as mail filters, Print, View source and message details, Save as .eml or PDF, Create rule prefilled from the message, and Reply all and Forward, each acting in the message's own mailbox and saying why it is unavailable
+- Added Not junk in Junk Email, in the card button and the Report menu, and Not junk and always trust the sender
+- Added a Blocked & Safe Senders page to Settings to add and remove addresses and domains per mailbox
+
+### Changed
+- Document that a downstream package's release bump level follows its upstream dependency's, minor for minor, patch for patch and major for major, in NOTES
+- Delete messages in Deleted Items permanently after a confirmation, from the toolbar, the keyboard, the message card's menu and search results, and empty Deleted Items and Junk Email from the top of the folder's list with a confirmation that states the count, reporting refused messages such as those under a legal hold without stopping the rest
+- Prefill the new filter form from a message's sender and subject
+- Test the card menu, the sender blocking, the permanent delete and the empty folder bar
+- Document the change in the release notes and NOTES
+- Make Report junk and Report phishing on the message card ask the server, which moves the message, trains the spam filter and audits the report, and say in the pop-up whether the filter learned from it, falling back to moving the message on an older server
+- Block and Never block a sender through the mailbox's blocked and safe senders lists instead of filter rules, so blocking ann@x.com no longer matches joann@x.com and mail the spam filter judged junk is covered, with Undo and a link to Settings
+- Test the card actions, the fallbacks and the settings page
+- Document the change in the release notes and NOTES
+- Explain in the README and the AppRouter comment that the admin and escrow consoles use the router of @rapidrest/react and why the webmail keeps its own, which it can drop when the library keeps a shell mounted across navigation
+- Document why in NOTES
+- Move the webmail, admin and escrow apps onto the client-side router and persistent shell of @rapidrest/react 2.1.0 and delete the bespoke router, with @rapidrest/react as a peer dependency and the admin and escrow after-save redirects going through the router
+- Note the change in the release notes and the README
+- Record in NOTES how www runs on the router and shell of @rapidrest/react 2.1.0
+- Use @rapidmx/react-shared 0.19.0
+
 ## [0.16.0] - 2026-09-25
 
 ### Added
@@ -982,7 +1006,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/rapidmx/web-client/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rapidmx/web-client/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/rapidmx/web-client/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/rapidmx/web-client/compare/v0.14.1...v0.15.0

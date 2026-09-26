@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.17.0
+
 ### Changed
 
 - **The webmail, admin and escrow apps all use the client-side router of `@rapidrest/react` 2.1.0.** The webmail's own router (`shared/navigation`, `www/_routedPage.tsx`, `www/_routes.ts`) is gone: `www/_shell.tsx` is the library's persistent shell, which keeps the app frame (compose windows, unlock prompt, idle timer) mounted while only the page changes, and pages use `Link`, `useRouter()` and the shallow navigation for folder and search changes. The admin and escrow consoles go to their next page after a save without loading a document. `@rapidrest/react` `>=2.1.0 <3` is a peer dependency, and the server must build with `router` on for `www`.
