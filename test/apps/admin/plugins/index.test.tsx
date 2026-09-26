@@ -748,6 +748,195 @@ describe("PluginsPage", () => {
         });
     });
 
+    describe("settings the deployment configures", () => {
+        const configuredPlugin = (settings: Record<string, unknown>) => ({
+            ...mapi,
+            settings,
+            configured: {
+                "x:url": { value: "turn:mail.example.com:3478", secret: false },
+                "x:secret": { secret: true },
+                "x:limit": { value: 5, secret: false },
+            },
+            manifest: {
+                apiVersion: 1,
+                displayName: "MAPI over HTTP",
+                settings: [
+                    { key: "x:url", label: "TURN URL", type: "string", default: "" },
+                    { key: "x:secret", label: "TURN secret", type: "string", default: "" },
+                    { key: "x:limit", label: "Limit", type: "number", default: 100 },
+                    { key: "x:note", label: "Note", type: "string", default: "" },
+                    { key: "x:size", label: "Size", type: "number", default: 20 },
+                ],
+            },
+        });
+
+        const openSettings = async (user: ReturnType<typeof userEvent.setup>) => {
+            const row = (await screen.findByText("MAPI over HTTP")).closest("tr") as HTMLElement;
+            await user.click(within(row).getByRole("button", { name: "Settings" }));
+            return screen.findByRole("dialog");
+        };
+
+        const respondingWith = (plugin: unknown) =>
+            mockPlugins({
+                plugins: [plugin],
+                extra: (url, init) => (url === "/api/system/plugins/p-mapi" && init?.method === "PUT" ? jsonResponse(200, plugin) : undefined),
+            });
+
+        const putSent = (fetchMock: any) => fetchMock.mock.calls.some((c: any[]) => (c[1] as RequestInit)?.method === "PUT");
+
+        it("shows what the deployment configures while nothing is saved, a secret only as set, and saves nothing when left alone", async () => {
+            const fetchMock = respondingWith(configuredPlugin({ "x:url": "", "x:secret": "", "x:limit": "", "x:note": "", "x:size": 20 }));
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            expect(within(dialog).getByLabelText("TURN URL")).toHaveValue("turn:mail.example.com:3478");
+            expect(within(dialog).getByLabelText("TURN URL")).toBeEnabled();
+            expect(within(dialog).getByLabelText("TURN secret")).toHaveValue("");
+            expect(within(dialog).getByLabelText("TURN secret")).toHaveAttribute("placeholder", "Set by this deployment");
+            expect(within(dialog).getByLabelText("Limit")).toHaveValue(5);
+            expect(within(dialog).getAllByText(/This deployment's configuration provides/)).toHaveLength(3);
+
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(putSent(fetchMock)).toBe(false);
+        });
+
+        it("shows a saved value over the deployment's, and saves a different one", async () => {
+            const fetchMock = respondingWith(configuredPlugin({ "x:limit": 9 }));
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            expect(within(dialog).getByLabelText("Limit")).toHaveValue(9);
+            await user.clear(within(dialog).getByLabelText("Limit"));
+            await user.type(within(dialog).getByLabelText("Limit"), "12");
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings["x:limit"]).toBe(12);
+        });
+
+        it("saves nothing for a value edited back to what the deployment configures, so it keeps following it", async () => {
+            const fetchMock = respondingWith(configuredPlugin({ "x:limit": 9 }));
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            await user.clear(within(dialog).getByLabelText("Limit"));
+            await user.type(within(dialog).getByLabelText("Limit"), "5");
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings).toMatchObject({ "x:limit": null });
+        });
+
+        it("saves a value typed over the deployment's, a secret included, and never a copy of what is shown", async () => {
+            const fetchMock = respondingWith(configuredPlugin({}));
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            await user.clear(within(dialog).getByLabelText("TURN URL"));
+            await user.type(within(dialog).getByLabelText("TURN URL"), "turn:mine.example.com:3478");
+            await user.type(within(dialog).getByLabelText("TURN secret"), "hunter2");
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings).toEqual({
+                "x:url": "turn:mine.example.com:3478",
+                "x:secret": "hunter2",
+                "x:limit": null,
+                "x:note": null,
+                "x:size": null,
+            });
+        });
+
+        it("resets every setting to what the deployment configures, or the default, and saves that", async () => {
+            const fetchMock = respondingWith(configuredPlugin({ "x:url": "old", "x:secret": "old", "x:limit": 9, "x:note": "custom", "x:size": 20 }));
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            expect(within(dialog).getByLabelText("TURN URL")).toHaveValue("old");
+            await user.clear(within(dialog).getByLabelText("Size"));
+            await user.type(within(dialog).getByLabelText("Size"), "30");
+
+            await user.click(within(dialog).getByRole("button", { name: "Reset" }));
+            expect(within(dialog).getByLabelText("TURN URL")).toHaveValue("turn:mail.example.com:3478");
+            expect(within(dialog).getByLabelText("TURN secret")).toHaveValue("");
+            expect(within(dialog).getByLabelText("Limit")).toHaveValue(5);
+            expect(within(dialog).getByLabelText("Note")).toHaveValue("");
+            expect(within(dialog).getByLabelText("Size")).toHaveValue(20);
+            expect(within(dialog).getByText(/Every setting is back to/)).toBeInTheDocument();
+            // Nothing is stored until the form is saved.
+            expect(putSent(fetchMock)).toBe(false);
+
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            // The saved 20 is the default already, so it stays; every other saved value is dropped.
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings).toEqual({
+                "x:url": null,
+                "x:secret": null,
+                "x:limit": null,
+                "x:note": null,
+                "x:size": 20,
+            });
+        });
+
+        it("saves nothing on a reset when nothing was saved, and a reset can still be edited before it is saved", async () => {
+            const fetchMock = respondingWith(configuredPlugin({}));
+            const user = userEvent.setup();
+            renderPage();
+            let dialog = await openSettings(user);
+            await user.click(within(dialog).getByRole("button", { name: "Reset" }));
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(putSent(fetchMock)).toBe(false);
+
+            dialog = await openSettings(user);
+            await user.click(within(dialog).getByRole("button", { name: "Reset" }));
+            await user.type(within(dialog).getByLabelText("Note"), "after");
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings["x:note"]).toBe("after");
+        });
+
+        it("resets a default naming the host to the address the console was reached at", async () => {
+            const plugin = {
+                ...mapi,
+                settings: { "x:url": "https://elsewhere.example.com/meet" },
+                manifest: { apiVersion: 1, displayName: "MAPI over HTTP", settings: [{ key: "x:url", label: "Public URL", type: "string", default: "https://<host>/meet" }] },
+            };
+            const fetchMock = respondingWith(plugin);
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            await user.click(within(dialog).getByRole("button", { name: "Reset" }));
+            expect(within(dialog).getByLabelText("Public URL")).toHaveValue(`https://${window.location.host}/meet`);
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings).toEqual({ "x:url": `https://${window.location.host}/meet` });
+        });
+
+        it("shows a configured flag and select", async () => {
+            const plugin = {
+                ...mapi,
+                settings: {},
+                configured: { "x:flag": { value: true, secret: false }, "x:mode": { value: "b", secret: false } },
+                manifest: {
+                    apiVersion: 1,
+                    displayName: "MAPI over HTTP",
+                    settings: [
+                        { key: "x:flag", label: "Flag", type: "boolean" },
+                        { key: "x:mode", label: "Mode", type: "select", options: [{ value: "a", label: "A" }, { value: "b", label: "B" }] },
+                    ],
+                },
+            };
+            const fetchMock = respondingWith(plugin);
+            const user = userEvent.setup();
+            renderPage();
+            const dialog = await openSettings(user);
+            expect(within(dialog).getByRole("checkbox")).toBeChecked();
+            expect(within(dialog).getByLabelText("Mode")).toHaveValue("b");
+            await user.click(within(dialog).getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+            expect(putSent(fetchMock)).toBe(false);
+        });
+    });
+
     it("clears an emptied setting back to its default, and shows a save error", async () => {
         const fetchMock = mockPlugins({
             extra: (url, init) => (url === "/api/system/plugins/p-eas" && init?.method === "PUT" ? jsonResponse(400, { message: "'Mode' is required." }) : undefined),

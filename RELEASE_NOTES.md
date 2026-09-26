@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **A plugin's Settings dialog shows the values the deployment's configuration sets, and has a Reset button.** While nothing is saved for a setting, its field shows what the deployment provides (the Helm chart's TURN address for the Video Conferencing plugin, the plugin's public URL), with a note; a secret shows as "Set by this deployment", never its value. A value saved in the dialog wins over it. A field is never saved as a copy of what the deployment provides (that would pin it against later changes): edited back to it, it is saved as nothing. **Reset** puts every field back to what it shows with nothing saved - the deployment's value, else the plugin's default (the address of this console for a default naming the host) - and saving drops the saved values. It needs a `@rapidmx/restapi` with `configured`; with an older one the dialog behaves as before, apart from Reset.
+
 ## v0.18.0
 
 ### Added

@@ -15,6 +15,7 @@ import {
     planPluginChange,
     Plugin,
     PluginChangePlan,
+    PluginConfiguredSetting,
     PluginInstanceStatus,
     PluginNamespace,
     PluginPurgeInfo,
@@ -1315,13 +1316,39 @@ function suggestedHost(definition: PluginSettingDefinition, saved: PluginSetting
     return unset ? definition.default.split(HOST_PLACEHOLDER).join(window.location.host) : undefined;
 }
 
-/** A setting's current form value: its saved value, else its default - or, for a required select with neither, its
- * first option. Kept as a string for text inputs. */
-function initialValue(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined): PluginSettingValue | "" {
+/** What the deployment configures for a setting, as a form value: nothing for a secret, whose value the server keeps to itself. */
+function configuredValue(definition: PluginSettingDefinition, configured: PluginConfiguredSetting): PluginSettingValue | "" {
+    if (definition.type === "boolean") {
+        return configured.value === true;
+    }
+    return configured.value === undefined ? "" : String(configured.value);
+}
+
+/** Whether a saved value is absent - nothing, or the empty value a plugin's own "" default is saved as. */
+function isUnsaved(saved: PluginSettingValue | undefined): boolean {
+    return saved === undefined || saved === "";
+}
+
+/** The suggestion for the host, unless the deployment configures the setting, which is offered instead. */
+function hostSuggestion(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined, configured: PluginConfiguredSetting | undefined): string | undefined {
+    return configured ? undefined : suggestedHost(definition, saved);
+}
+
+/** A setting's current form value: its saved value (which wins over the deployment's configuration); else what the
+ * deployment configures; else the setting's own default - or, for a required select with none of those, its first
+ * option. Kept as a string for text inputs. */
+function initialValue(
+    definition: PluginSettingDefinition,
+    saved: PluginSettingValue | undefined,
+    configured?: PluginConfiguredSetting,
+): PluginSettingValue | "" {
+    if (configured && isUnsaved(saved)) {
+        return configuredValue(definition, configured);
+    }
     if (needsSelection(definition, saved)) {
         return definition.options![0].value;
     }
-    const suggestion = suggestedHost(definition, saved);
+    const suggestion = hostSuggestion(definition, saved, configured);
     if (suggestion !== undefined) {
         return suggestion;
     }
@@ -1335,29 +1362,53 @@ function initialValue(definition: PluginSettingDefinition, saved: PluginSettingV
 function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: () => void; onSaved: (plugin: Plugin) => void }) {
     // Only opened from the Settings button, which is only shown for a plugin that declares settings.
     const definitions: PluginSettingDefinition[] = plugin.manifest.settings!;
-    const initial = useRef(Object.fromEntries(definitions.map((d) => [d.key, initialValue(d, plugin.settings[d.key])])));
+    const initial = useRef(Object.fromEntries(definitions.map((d) => [d.key, initialValue(d, plugin.settings[d.key], plugin.configured?.[d.key])])));
     const [values, setValues] = useState<Record<string, PluginSettingValue | "">>(initial.current);
+    // Set by Reset: saving then drops every saved value, so the deployment's configuration (or the default) applies again.
+    const [resetting, setResetting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+
+    /** Puts every field back to what it shows with nothing saved. Nothing is stored until the form is saved. */
+    function reset() {
+        setValues(Object.fromEntries(definitions.map((d) => [d.key, initialValue(d, undefined, plugin.configured?.[d.key])])));
+        setResetting(true);
+        setError(null);
+    }
 
     async function save(e: FormEvent) {
         e.preventDefault();
         // The server replaces the whole settings object, so every setting is sent. One left alone is sent as it's saved
         // - `null` when nothing is, so it keeps following the plugin's default rather than pinning the default shown.
         // A required select with nothing to fall back on, and a setting offering this console's host, are sent as the
-        // form shows them.
+        // form shows them. What the deployment configures is never saved as a copy, which would outrank it when it changes
+        // - a field that shows it is sent as nothing.
         const settings: Record<string, PluginSettingValue | null> = {};
         let changed = false;
         for (const definition of definitions) {
             const key: string = definition.key;
+            const configured: PluginConfiguredSetting | undefined = plugin.configured?.[key];
+            const saved: PluginSettingValue | undefined = plugin.settings[key];
             const value = values[key];
-            if (value === initial.current[key] && !needsSelection(definition, plugin.settings[key]) && suggestedHost(definition, plugin.settings[key]) === undefined) {
-                settings[key] = plugin.settings[key] ?? null;
+            if (resetting && value === initialValue(definition, undefined, configured)) {
+                // What a fresh install saves: only a default naming this console's host has to be, for the plugin to work.
+                // A saved value that already is the default shown stays, since dropping it changes nothing.
+                settings[key] = !configured && saved !== undefined && String(saved) === String(value) ? saved : (hostSuggestion(definition, undefined, configured) ?? null);
+                changed ||= settings[key] !== (saved ?? null);
+                continue;
+            }
+            if (!resetting && value === initial.current[key] && !needsSelection(definition, saved) && hostSuggestion(definition, saved, configured) === undefined) {
+                settings[key] = saved ?? null;
                 continue;
             }
             changed = true;
             // A number input only ever reports a valid number or an empty string.
-            settings[key] = value === "" ? null : definition.type === "number" ? Number(value) : value;
+            settings[key] =
+                value === "" || (configured && !configured.secret && String(value) === String(configured.value))
+                    ? null
+                    : definition.type === "number"
+                      ? Number(value)
+                      : value;
         }
         if (!changed) {
             onClose();
@@ -1383,14 +1434,22 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
                         key={definition.key}
                         definition={definition}
                         value={values[definition.key]}
+                        configured={plugin.configured?.[definition.key]}
                         onChange={(value) => setValues((prev) => ({ ...prev, [definition.key]: value }))}
                     />
                 ))}
                 {/* Kept in view at the bottom of the dialog while a long list of settings scrolls. The dialog scrolls
                     inside its padding, so the bar reaches past it to the dialog's edges. */}
                 <div className="sticky -bottom-7 -mx-7 -mb-7 px-7 py-4 bg-surface border-t border-border flex flex-col gap-3">
-                    <p className="text-xs text-text-muted">Saving restarts the servers one at a time to apply the new settings.</p>
+                    <p className="text-xs text-text-muted">
+                        {resetting
+                            ? "Every setting is back to what this deployment's configuration or the plugin's default gives. Save to apply that."
+                            : "Saving restarts the servers one at a time to apply the new settings."}
+                    </p>
                     <div className="flex gap-2 justify-end">
+                        <Button type="button" variant="secondary" className="!w-auto mr-auto" onClick={reset} disabled={busy}>
+                            Reset
+                        </Button>
                         <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
                             Cancel
                         </Button>
@@ -1407,13 +1466,28 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
 function SettingField({
     definition,
     value,
+    configured,
     onChange,
 }: {
     definition: PluginSettingDefinition;
     value: PluginSettingValue | "";
+    configured?: PluginConfiguredSetting;
     onChange: (value: PluginSettingValue | "") => void;
 }) {
-    const help = definition.help && <span className="text-xs text-text-muted">{definition.help}</span>;
+    // What applies without a saved value; one saved here replaces it, and Reset goes back to it.
+    const note = configured && (
+        <span className="text-xs text-text-muted">
+            This deployment&apos;s configuration provides {configured.secret ? "a value" : "the value shown"} unless one is saved here.
+        </span>
+    );
+    // A secret's value never reaches the browser, so the field only says that it is set.
+    const placeholder: string | undefined = configured?.secret ? "Set by this deployment" : undefined;
+    const help = (
+        <>
+            {definition.help && <span className="text-xs text-text-muted">{definition.help}</span>}
+            {note}
+        </>
+    );
     if (definition.type === "boolean") {
         // Laid out like the admin policy forms' checkboxes: the help sits under the label, beside the box.
         return (
@@ -1445,7 +1519,8 @@ function SettingField({
                     type={definition.type === "number" ? "number" : "text"}
                     min={definition.min}
                     max={definition.max}
-                    required={definition.required}
+                    required={definition.required && !configured}
+                    placeholder={placeholder}
                     value={String(value)}
                     onChange={(e) => onChange(e.target.value)}
                 />
