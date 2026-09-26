@@ -124,7 +124,20 @@ export interface DiagnosticsHostMetrics {
     memoryTotalBytes: number;
     memoryUsedBytes: number;
     loadAverage: [number, number, number];
+    /**
+     * Memory the hypervisor holds in the machine's memory balloon. It counts in `memoryUsedBytes` (a guest sees ballooned memory
+     * as used) though no process holds it. Absent where no balloon has ever taken any.
+     */
+    balloon?: { heldBytes: number; inflatedTotalBytes: number };
+    /** How stalled the node is waiting for memory, disk and CPU (Linux pressure stall information). Absent without kernel support. */
+    pressure?: { memory?: DiagnosticsPressure; io?: DiagnosticsPressure; cpu?: DiagnosticsPressure };
     disks: DiagnosticsDiskMetrics[];
+}
+
+/** The share (0 to 100) of the last 10, 60 and 300 seconds that tasks were stalled. `some`: at least one waited. `full`: every one did. */
+export interface DiagnosticsPressure {
+    some: { avg10: number; avg60: number; avg300: number };
+    full?: { avg10: number; avg60: number; avg300: number };
 }
 
 /** From the metrics API (metrics-server): absent when it is not installed. */
@@ -136,8 +149,11 @@ export interface DiagnosticsPodMetrics {
 }
 
 /**
- * `usedBytes`/`availableBytes` exist only for a volume the server pod mounts (`mountedByServer`). `sharesNodeDisk` means the
- * figures are the whole node filesystem's, and the volume's own size is not enforced.
+ * `usedBytes` (what the volume holds) exists only for a volume the server pod mounts (`mountedByServer`), and `measuredBy`
+ * says how it was found: from the volume's own filesystem, or - when the volume is a directory of the node's disk
+ * (`sharesNodeDisk`, such as k3s's local-path), where the filesystem is the whole disk - by measuring the directory.
+ * `capacityBytes` is the volume's allocation, which a volume that shares the node's disk does not enforce; `availableBytes` is
+ * what is left of the filesystem it is on.
  */
 export interface DiagnosticsPvcMetrics {
     name: string;
@@ -147,6 +163,9 @@ export interface DiagnosticsPvcMetrics {
     capacityBytes?: number;
     usedBytes?: number;
     availableBytes?: number;
+    measuredBy?: "filesystem" | "directory";
+    /** The directory could not be measured completely, so `usedBytes` is a lower bound. */
+    usedPartial?: boolean;
     mountedByServer: boolean;
     sharesNodeDisk?: boolean;
 }

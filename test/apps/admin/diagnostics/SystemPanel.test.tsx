@@ -185,7 +185,7 @@ describe("PvcTable", () => {
         expect(first.getByText("server-data")).toBeInTheDocument();
         expect(first.getByText("local-path")).toBeInTheDocument();
         expect(first.getByText("100 GiB")).toBeInTheDocument();
-        expect(first.getByText("50.0 GiB of 100 GiB")).toBeInTheDocument();
+        expect(first.getByText("50.0 GiB of 100 GiB allocated")).toBeInTheDocument();
         expect(first.getByRole("meter", { name: "Usage of volume server-data" })).toHaveAttribute("aria-valuenow", "50");
         const second = within(rows[1]);
         expect(second.getByText("mongodb-data")).toBeInTheDocument();
@@ -200,12 +200,32 @@ describe("PvcTable", () => {
         expect(screen.getByText("Critical")).toBeInTheDocument();
     });
 
-    it("does not flag a volume that shares the node's disk, and says so", () => {
-        render(<PvcTable pvcs={[{ ...mounted, usedBytes: 97 * 1024 ** 3, sharesNodeDisk: true }]} />);
-        expect(screen.queryByText("Critical")).not.toBeInTheDocument();
-        expect(screen.queryByText("High")).not.toBeInTheDocument();
-        expect(screen.getByText("97.0 GiB of 100 GiB")).toBeInTheDocument();
-        expect(screen.getByText(/Shares the node.s disk; the volume.s size is not enforced/)).toBeInTheDocument();
+    it("shows what a volume on the node's disk holds against its allocation, and the room left on the disk", () => {
+        const shared = { ...mounted, usedBytes: 3 * 1024 ** 2, capacityBytes: 1024 ** 3, availableBytes: 433 * 1024 ** 3, sharesNodeDisk: true, measuredBy: "directory" as const };
+        render(<PvcTable pvcs={[shared]} />);
+        expect(screen.getByText("3.0 MiB of 1.0 GiB allocated")).toBeInTheDocument();
+        expect(screen.getByRole("meter", { name: "Usage of volume server-data" })).toHaveAttribute("aria-valuenow", "0");
+        expect(screen.getByText(/Measured from the volume.s directory\. It shares the node.s disk, which has 433 GiB free; the volume.s allocation is not enforced/)).toBeInTheDocument();
+        expect(screen.getByText("Allocated")).toBeInTheDocument();
+    });
+
+    it("flags a volume on the node's disk that has filled its allocation, since its own figure is now real", () => {
+        render(<PvcTable pvcs={[{ ...mounted, usedBytes: 97 * 1024 ** 3, sharesNodeDisk: true, measuredBy: "directory" }]} />);
+        expect(screen.getByText("Critical")).toBeInTheDocument();
+    });
+
+    it("says a directory figure is a lower bound when it could not be measured completely", () => {
+        render(<PvcTable pvcs={[{ ...mounted, usedBytes: 5 * 1024 ** 3, sharesNodeDisk: true, measuredBy: "directory", usedPartial: true }]} />);
+        expect(screen.getByText("At least 5.0 GiB of 100 GiB allocated")).toBeInTheDocument();
+        expect(screen.getByText("The volume is too large to measure completely, so this is a lower bound.")).toBeInTheDocument();
+    });
+
+    it("does not show the disk's own figures for a volume on it as the volume's, however the server sent them", () => {
+        const { rerender } = render(<PvcTable pvcs={[{ ...mounted, usedBytes: 15 * 1024 ** 3, sharesNodeDisk: true }]} />);
+        expect(screen.queryByRole("meter")).not.toBeInTheDocument();
+        expect(screen.getByText("Shares the node\u2019s disk, and what the volume holds could not be measured.")).toBeInTheDocument();
+        rerender(<PvcTable pvcs={[{ ...mounted, usedBytes: undefined, sharesNodeDisk: true, measuredBy: undefined }]} />);
+        expect(screen.getByText("Shares the node\u2019s disk, and what the volume holds could not be measured.")).toBeInTheDocument();
     });
 
     it("says when a mounted volume has no figures, and writes a dash for a missing class and size", () => {

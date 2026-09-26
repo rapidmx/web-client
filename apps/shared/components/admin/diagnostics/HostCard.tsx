@@ -7,6 +7,7 @@ import type { DiagnosticsDiskMetrics, DiagnosticsMetrics } from "./diagnosticsAp
 import { formatBytes, formatCores, formatPercent, NO_VALUE, percentOf } from "./format.js";
 import { seriesOf } from "./metricsHistory.js";
 import MetricTile from "./MetricTile.js";
+import PressureTiles from "./PressureTiles.js";
 import UsageMeter from "./UsageMeter.js";
 
 const percentLabel = (value: number) => formatPercent(value);
@@ -91,6 +92,7 @@ export default function HostCard({ host, history }: HostCardProps) {
                         />
                         <MetricTile label="Load average" value={formatLoad(host.loadAverage)} detail="1, 5 and 15 minutes" />
                     </div>
+                    <PressureTiles host={host} history={history} />
                     <h3 className="mt-4 mb-2 text-xs uppercase tracking-wide text-text-muted">Disks</h3>
                     {disks.length === 0 ? (
                         <p className="text-sm text-text-muted">No disks were reported.</p>
