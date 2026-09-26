@@ -7,8 +7,8 @@
  * route, the app's `_shell.tsx` as the persistent frame - see `apps/www/_shell.tsx`); this is the one thing on top of it: a
  * `navigate()` that keeps the page when only the query string changes.
  */
-import { useCallback, useRef } from "react";
-import { useRouter } from "@rapidrest/react/client";
+import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
+import { useLocation as useRouterLocation, useRouter } from "@rapidrest/react/client";
 
 export interface NavigateOptions {
     /** Replaces the current history entry instead of adding one (a redirect, or a state change that isn't a "place"). */
@@ -40,4 +40,30 @@ export function useNavigate(): NavigateFn {
         const shallow = destination.origin === "http://router.invalid" && destination.pathname === here;
         void go(href, { replace: options.replace, shallow });
     }, []);
+}
+
+function subscribeToHistory(onChange: () => void): () => void {
+    window.addEventListener("popstate", onChange);
+    return () => window.removeEventListener("popstate", onChange);
+}
+
+const currentAddress = (): string => window.location.pathname + window.location.search + window.location.hash;
+const noAddress = (): string => "";
+
+/**
+ * Where the page is, as `{ pathname, search, hash }`: the router's location when the page is under a router, else the browser's.
+ * A page a plugin renders has no router (`router = false`), where `@rapidrest/react`'s `useLocation()` is empty and the query a
+ * shell reads its mailbox from (`?mailboxUid=`) would be lost. Without one, the address is the browser's - and empty on the
+ * server and while hydrating, so the page hydrates as it was rendered and then follows the address.
+ */
+export function useLocation(): { pathname: string; search: string; hash: string } {
+    const routed = useRouterLocation();
+    const own = useSyncExternalStore(subscribeToHistory, currentAddress, noAddress);
+    const ownLocation = useMemo(() => {
+        // Split by hand, not with `URL`: a page that stubs the global `URL` (for `createObjectURL`) must still render.
+        const [beforeHash, ...fragment] = own.split("#");
+        const [pathname, ...query] = beforeHash.split("?");
+        return { pathname, search: query.length ? `?${query.join("?")}` : "", hash: fragment.length ? `#${fragment.join("#")}` : "" };
+    }, [own]);
+    return routed.pathname !== "" ? routed : ownLocation;
 }

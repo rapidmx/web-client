@@ -9,7 +9,7 @@ import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shar
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
-import { useLocation } from "@rapidrest/react/client";
+import { useLocation } from "../../../navigation/index.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { orderMailboxes, primaryMailboxUid } from "../../../mail/primaryMailbox.js";
 
