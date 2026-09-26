@@ -47,7 +47,8 @@ function subscribeToHistory(onChange: () => void): () => void {
     return () => window.removeEventListener("popstate", onChange);
 }
 
-const currentAddress = (): string => window.location.pathname + window.location.search + window.location.hash;
+// Joined, not added: a test's stand-in for `window.location` may have no `search`, and `undefined + undefined` is `NaN`.
+const currentAddress = (): string => [window.location.pathname, window.location.search, window.location.hash].join("");
 const noAddress = (): string => "";
 
 /**
