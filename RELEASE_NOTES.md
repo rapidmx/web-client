@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **An "Allow pre-release versions" checkbox on the Plugins page.** Off, the page offers releases only, as before. On, an update can be a beta (or any pre-release), the Change version and Add by name lists include them, and Find plugins and installing an uninstalled plugin again use the newest of any kind. It is a preference of the browser (kept in `localStorage`), not a server setting, and needs a `@rapidmx/restapi` that has `?prerelease=`.
+- **Actions for several plugins at once.** Each installed plugin has a checkbox, with Select all above the list. **Upgrade**, **Disable** and **Uninstall** act on the ticked plugins (each says how many it applies to), and **Upgrade all** is always there, checking the registry again first. Plugins are changed one after another, in the order their requirements need (the plugins others require are upgraded first, and disabled or uninstalled last), a note says which one is under way, and one the server refuses is left as it was and listed with the reason while the rest carry on. A change that would also install or enable other plugins is not made in bulk - it says to change that plugin on its own to review them. Uninstalling several lists them and asks first, with an "Also delete all data these plugins stored" checkbox: unticked their data stays, ticked it is deleted once no server runs them (behind a typed "delete", and only for an administrator who confirmed their identity recently - if the server refuses, the rest aren't tried).
+- **A progress bar runs across the top of the window while a plugin is being installed, upgraded, enabled or disabled, and while the servers apply a change.** It slides endlessly, and stands still as a faded bar when the user asks for less motion.
+
+### Fixed
+
+- **A plugin published as pre-releases showed no update.** The Plugins page compared with the registry's `latest` tag; the newest version now comes from `@rapidmx/restapi` (see its notes), so an installed `1.0.0-beta.9` is offered `1.0.0-beta.10` once pre-releases are allowed.
+
 ## v0.19.0
 
 ### Added

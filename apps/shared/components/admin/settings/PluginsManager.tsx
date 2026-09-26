@@ -37,6 +37,7 @@ import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
 import { notify } from "../../../notifications/store.js";
 import { isElevationRequired } from "../elevation.js";
+import { getAllowPrerelease, setAllowPrerelease } from "./pluginPreferences.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -91,6 +92,72 @@ interface PendingChange {
     uid?: string;
 }
 
+/** An action the toolbar above the installed plugins applies to several plugins at once. */
+type BulkKind = "upgrade" | "disable" | "uninstall";
+
+const BULK_WORDS: Record<BulkKind, { doing: string; done: string }> = {
+    upgrade: { doing: "Upgrading", done: "upgraded" },
+    disable: { doing: "Disabling", done: "disabled" },
+    uninstall: { doing: "Uninstalling", done: "uninstalled" },
+};
+
+/** How far a bulk action has got. */
+interface BulkProgress {
+    kind: BulkKind;
+    /** How many plugins were finished, failures included. */
+    done: number;
+    total: number;
+    /** The plugin being changed now. */
+    current: string;
+}
+
+/** Why some plugins of a bulk action were left as they were. */
+interface BulkFailure {
+    title: string;
+    reasons: string[];
+}
+
+const pluralPlugins = (count: number): string => `${count} ${count === 1 ? "plugin" : "plugins"}`;
+
+/**
+ * `plugins` in the order a bulk action has to change them in, since a plugin that others require can't be disabled or
+ * uninstalled while they're enabled, and one that requires others may need them at their new versions first: each
+ * plugin comes after the ones it requires (`dependenciesFirst`, for an upgrade) or before them (for the rest).
+ */
+function orderByRequirements(plugins: Plugin[], dependenciesFirst: boolean): Plugin[] {
+    const byName: Map<string, Plugin> = new Map(plugins.map((plugin) => [plugin.name, plugin]));
+    const ordered: Plugin[] = [];
+    const seen: Set<string> = new Set();
+    const visit = (plugin: Plugin) => {
+        if (seen.has(plugin.name)) {
+            return;
+        }
+        seen.add(plugin.name);
+        for (const required of Object.keys(plugin.manifest.requires ?? {})) {
+            const dependency: Plugin | undefined = byName.get(required);
+            if (dependency) {
+                visit(dependency);
+            }
+        }
+        ordered.push(plugin);
+    };
+    plugins.forEach(visit);
+    return dependenciesFirst ? ordered : ordered.reverse();
+}
+
+/**
+ * The bar that runs across the top of the window while plugins are being changed, so it's plain that something is still
+ * happening: it slides endlessly, since how long a registry lookup or an install takes isn't known. It stands still
+ * (as a faded full bar) when the user asks for less motion.
+ */
+function PluginProgressBar({ label }: { label: string }) {
+    return (
+        <div role="progressbar" aria-label={label} className="fixed inset-x-0 top-0 z-[1100] h-1 overflow-hidden bg-primary/20">
+            <div className="rr-progress-indeterminate h-full w-1/3 rounded-pill bg-primary motion-reduce:w-full motion-reduce:opacity-40" />
+        </div>
+    );
+}
+
 /** Classes for a plugin table's header and body cells. */
 const TH_CLASS = "text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border";
 const TD_CLASS = "py-3 px-2.5 border-b border-border align-top";
@@ -139,6 +206,21 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
     const [listStale, setListStale] = useState(false);
     /** How many times status has been retried while none has ever been read. */
     const [statusRetries, setStatusRetries] = useState(0);
+    /** Whether prerelease versions are offered (a preference of this browser). */
+    const [allowPrerelease, setAllowPrereleaseState] = useState<boolean>(getAllowPrerelease);
+    /** The same, for `refreshUpdates()`, which must stay the same function for the effects that depend on it. */
+    const allowPrereleaseRef = useRef(allowPrerelease);
+    /** Identifies the latest update check, so a slower earlier one can't replace what it found. */
+    const updatesRequest = useRef(0);
+    /** The plugins ticked for a bulk action. */
+    const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+    /** Set while a bulk action runs. */
+    const [bulk, setBulk] = useState<BulkProgress | null>(null);
+    const [bulkFailure, setBulkFailure] = useState<BulkFailure | null>(null);
+    /** The plugins waiting for the administrator to confirm uninstalling them together. */
+    const [confirmingBulkUninstall, setConfirmingBulkUninstall] = useState<Plugin[] | null>(null);
+    /** How many changes (or the lookups that come before them) are waiting on the server. */
+    const [working, setWorking] = useState(0);
     const statusRequest = useRef<Promise<void> | null>(null);
     /** The state each data deletion was last seen in, so a notification is raised when one that was under way ends. */
     const seenPurges = useRef<Map<string, PluginPurgeState>>(new Map());
@@ -169,12 +251,42 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         return statusRequest.current;
     }, []);
 
-    const refreshUpdates = useCallback(() => {
+    /** Checks the registry for newer versions. Resolves what it found, or `undefined` when it couldn't check. */
+    const refreshUpdates = useCallback((): Promise<PluginUpdateInfo[] | undefined> => {
+        const token: number = ++updatesRequest.current;
         // Also advisory: a registry that can't be reached just means no update badges.
-        return getPluginUpdates()
-            .then((list) => setUpdates(new Map(list.map((info) => [info.uid, info]))))
-            .catch(() => setUpdates(new Map()));
+        return getPluginUpdates({ prerelease: allowPrereleaseRef.current })
+            .then((list): PluginUpdateInfo[] | undefined => {
+                if (token === updatesRequest.current) {
+                    setUpdates(new Map(list.map((info) => [info.uid, info])));
+                }
+                return list;
+            })
+            .catch((): PluginUpdateInfo[] | undefined => {
+                if (token === updatesRequest.current) {
+                    setUpdates(new Map());
+                }
+                return undefined;
+            });
     }, []);
+
+    /** Keeps `work` counted as in progress, which is what the bar across the top of the window shows. */
+    const track = useCallback(async <R,>(work: Promise<R>): Promise<R> => {
+        setWorking((count) => count + 1);
+        try {
+            return await work;
+        } finally {
+            setWorking((count) => count - 1);
+        }
+    }, []);
+
+    function changePrerelease(allow: boolean) {
+        setAllowPrerelease(allow);
+        allowPrereleaseRef.current = allow;
+        setAllowPrereleaseState(allow);
+        // What counts as an update depends on it.
+        void refreshUpdates();
+    }
 
     /** Re-reads the list, for changes that also installed or enabled other plugins. */
     const reload = useCallback(() => {
@@ -283,12 +395,18 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         setBusy(plugin.uid, false);
     }
 
+    /** Disables an installed plugin, resolving why it couldn't be, or `null`. */
+    function disable(plugin: Plugin): Promise<string | null> {
+        return attempt(
+            async () => applied(await track(updatePlugin(plugin.uid, { version: plugin.version, enabled: false }))),
+            `Could not disable ${plugin.manifest.displayName}.`,
+        );
+    }
+
     function toggle(plugin: Plugin) {
         const displayName: string = plugin.manifest.displayName;
         if (plugin.enabled) {
-            return onRow(plugin, () =>
-                attempt(async () => applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: false })), `Could not disable ${displayName}.`),
-            );
+            return onRow(plugin, () => disable(plugin));
         }
         // Enabling a plugin also installs or enables the plugins it requires, so it's previewed like any other change.
         // The installed version is planned from its stored manifest, so this doesn't need the registry. A preview that
@@ -300,7 +418,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                 plugin.packageVersion,
                 displayName,
                 async (plan) => {
-                    applied(await updatePlugin(plugin.uid, { version: plugin.version, enabled: true, expectedPlan: expectedPlanOf(plan) }));
+                    applied(await track(updatePlugin(plugin.uid, { version: plugin.version, enabled: true, expectedPlan: expectedPlanOf(plan) })));
                     if (plan.install.length > 0 || plan.enable.length > 0) {
                         void reload();
                     }
@@ -325,11 +443,16 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         displayName: string,
         apply: (plan: PluginChangePlan) => Promise<void>,
         failure: string,
-        options: { uid?: string } = {},
+        options: {
+            uid?: string;
+            /** Part of a bulk action, which has no one to confirm the other plugins the change would also install or enable:
+             * such a change isn't made, and says why. */
+            unattended?: boolean;
+        } = {},
     ): Promise<string | null> {
         let plan: PluginChangePlan;
         try {
-            plan = await planPluginChange(name, packageVersion);
+            plan = await track(planPluginChange(name, packageVersion));
         } catch (err) {
             return errorMessage(err, failure);
         }
@@ -337,6 +460,9 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             return `${displayName} ${plan.plugin.version} can't be installed. ${plan.conflicts.join(" ")}`;
         }
         if (plan.install.length > 0 || plan.enable.length > 0) {
+            if (options.unattended) {
+                return `${displayName} ${plan.plugin.version} also needs other plugins installed or enabled, so it wasn't changed. Change it on its own to review them.`;
+            }
             setConfirming({ displayName, plan, apply, failure, uid: options.uid });
             return null;
         }
@@ -349,7 +475,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             packageVersion,
             displayName,
             async (plan) => {
-                const result = await addPlugin(name, packageVersion, expectedPlanOf(plan));
+                const result = await track(addPlugin(name, packageVersion, expectedPlanOf(plan)));
                 applied(...result.dependencies, result.plugin);
                 // Adding a plugin cancels the deletion of its data that was waiting for the servers to stop running it.
                 for (const warning of result.warnings ?? []) {
@@ -360,24 +486,24 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         );
     }
 
-    function changeVersion(plugin: Plugin, packageVersion: string) {
+    function changeVersion(plugin: Plugin, packageVersion: string, unattended = false) {
         const failure = `Could not upgrade ${plugin.manifest.displayName}.`;
         if (!plugin.enabled) {
             // A disabled plugin stays disabled, so nothing it requires is installed or enabled - there's nothing to preview.
-            return attempt(async () => applied(await updatePlugin(plugin.uid, { version: plugin.version, packageVersion })), failure);
+            return attempt(async () => applied(await track(updatePlugin(plugin.uid, { version: plugin.version, packageVersion }))), failure);
         }
         return planned(
             plugin.name,
             packageVersion,
             plugin.manifest.displayName,
             async (plan) => {
-                applied(await updatePlugin(plugin.uid, { version: plugin.version, packageVersion, expectedPlan: expectedPlanOf(plan) }));
+                applied(await track(updatePlugin(plugin.uid, { version: plugin.version, packageVersion, expectedPlan: expectedPlanOf(plan) })));
                 if (plan.install.length > 0 || plan.enable.length > 0) {
                     void reload();
                 }
             },
             failure,
-            { uid: plugin.uid },
+            { uid: plugin.uid, unattended },
         );
     }
 
@@ -391,7 +517,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         return onRow(purge, async () => {
             let latest: string;
             try {
-                latest = (await planPluginChange(purge.name)).plugin.version;
+                latest = (await track(planPluginChange(purge.name, undefined, { prerelease: allowPrerelease }))).plugin.version;
             } catch (err) {
                 return errorMessage(err, `Could not install ${displayName}.`);
             }
@@ -415,6 +541,130 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         setBusy(purge.uid, false);
     }
 
+    /** Lists a data deletion the server just scheduled. Shown at once; the status polling that follows replaces it with
+     * what the servers report. */
+    function showScheduledPurge(scheduled: PluginPurgeInfo | undefined) {
+        setStatus((prev) =>
+            prev && scheduled ? { ...prev, purges: [...(prev.purges ?? []).filter((purge) => purge.uid !== scheduled.uid), scheduled] } : prev,
+        );
+    }
+
+    /** Uninstalls an installed plugin, and with `purgeData` deletes the data it stored once no server runs it. Resolves
+     * why it couldn't be, or `null`. */
+    async function uninstall(plugin: Plugin, purgeData: boolean): Promise<string | null> {
+        try {
+            const result = await removePlugin(plugin.uid, { purgeData });
+            setPlugins((prev) => prev.filter((other) => other.uid !== plugin.uid));
+            if (result.purgeScheduled) {
+                showScheduledPurge(result.purge);
+            }
+            return null;
+        } catch (err) {
+            return isElevationRequired(err) ? ELEVATION_MESSAGE : errorMessage(err, `Could not uninstall ${plugin.manifest.displayName}.`);
+        }
+    }
+
+    /**
+     * Applies `kind` to `targets` one after another, in the order their requirements allow, and says what became of
+     * them. A plugin that can't be changed is left as it was and the rest carry on. For an upgrade, `versions` holds the
+     * version each plugin goes to; for an uninstall, `purgeData` also deletes what each stored. Deleting data needs the
+     * administrator to have confirmed their identity recently, which no plugin will get past if one is refused for it,
+     * so the rest aren't tried.
+     */
+    async function runBulk(kind: BulkKind, targets: Plugin[], options: { versions?: ReadonlyMap<string, string>; purgeData?: boolean } = {}) {
+        const { versions = new Map<string, string>(), purgeData = false } = options;
+        const ordered: Plugin[] = orderByRequirements(targets, kind === "upgrade");
+        const reasons: string[] = [];
+        const failed: Set<string> = new Set();
+        setError(null);
+        setRetryEnableUid(null);
+        setBulkFailure(null);
+        await track(
+            (async () => {
+                for (const [index, plugin] of ordered.entries()) {
+                    setBulk({ kind, done: index, total: ordered.length, current: plugin.manifest.displayName });
+                    const problem: string | null =
+                        kind === "upgrade"
+                            ? await changeVersion(plugin, versions.get(plugin.uid)!, true)
+                            : kind === "disable"
+                              ? await disable(plugin)
+                              : await uninstall(plugin, purgeData);
+                    if (!problem) {
+                        continue;
+                    }
+                    failed.add(plugin.uid);
+                    reasons.push(`${plugin.manifest.displayName}: ${problem}`);
+                    if (problem === ELEVATION_MESSAGE) {
+                        for (const untried of ordered.slice(index + 1)) {
+                            failed.add(untried.uid);
+                            reasons.push(`${untried.manifest.displayName}: Not attempted.`);
+                        }
+                        break;
+                    }
+                }
+            })(),
+        );
+        setBulk(null);
+        setSelected(failed);
+        const succeeded: number = ordered.length - failed.size;
+        if (kind === "uninstall" && succeeded > 0) {
+            watchRollout();
+        }
+        if (succeeded > 0) {
+            notify({
+                kind: "success",
+                title: `${pluralPlugins(succeeded)} ${BULK_WORDS[kind].done}`,
+                message: purgeData ? "Their data is deleted once every server has stopped running them. Adding a plugin again before then cancels its deletion." : undefined,
+            });
+        }
+        if (reasons.length > 0) {
+            setBulkFailure({ title: `${pluralPlugins(reasons.length)} couldn't be ${BULK_WORDS[kind].done}:`, reasons });
+        }
+    }
+
+    /** Upgrades every plugin that has an update, whatever is ticked. Checks the registry first, so it's never working
+     * from an out-of-date list of updates. */
+    async function upgradeAll() {
+        setError(null);
+        setBulkFailure(null);
+        const found: PluginUpdateInfo[] | undefined = await track(refreshUpdates());
+        if (!found) {
+            setError("Could not check for plugin updates.");
+            return;
+        }
+        const versions: Map<string, string> = new Map();
+        for (const info of found) {
+            if (info.updateAvailable && info.latestVersion) {
+                versions.set(info.uid, info.latestVersion);
+            }
+        }
+        const targets: Plugin[] = plugins.filter((plugin) => versions.has(plugin.uid));
+        if (targets.length === 0) {
+            const unchecked: number = found.filter((info) => info.error).length;
+            notify(
+                unchecked > 0
+                    ? { kind: "warning", title: "No updates found", message: `${pluralPlugins(unchecked)} couldn't be checked against the registry.` }
+                    : { kind: "info", title: "All plugins are up to date" },
+            );
+            return;
+        }
+        await runBulk("upgrade", targets, { versions });
+    }
+
+    const toggleSelected = (uid: string) =>
+        setSelected((prev) => {
+            const next = new Set(prev);
+            if (!next.delete(uid)) {
+                next.add(uid);
+            }
+            return next;
+        });
+
+    const selectedPlugins: Plugin[] = plugins.filter((plugin) => selected.has(plugin.uid));
+    const allSelected: boolean = plugins.length > 0 && selectedPlugins.length === plugins.length;
+    const selectedUpgrades: Plugin[] = selectedPlugins.filter((plugin) => updates.get(plugin.uid)?.updateAvailable);
+    const selectedEnabled: Plugin[] = selectedPlugins.filter((plugin) => plugin.enabled);
+
     // Retried against the plugin as it's listed now (a newer version, or already enabled elsewhere, hides the retry).
     const retryEnable: Plugin | undefined = plugins.find((plugin) => plugin.uid === retryEnableUid && !plugin.enabled);
 
@@ -426,9 +676,11 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             Add by name
         </Button>
     );
+    const bulkBusy: boolean = bulk !== null;
 
     return (
         <>
+            {(working > 0 || pending) && <PluginProgressBar label={working > 0 ? "Working on plugins" : "Applying plugin changes"} />}
             {embedded ? (
                 <p className="text-sm text-text-muted mb-5 max-w-3xl">
                     Changes are applied by restarting the servers one at a time, so mail keeps flowing. Plugins run
@@ -448,6 +700,36 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                 </>
             )}
 
+            <label className="flex items-start gap-2 text-sm mb-5 max-w-3xl cursor-pointer">
+                <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 shrink-0"
+                    checked={allowPrerelease}
+                    onChange={(e) => changePrerelease(e.target.checked)}
+                />
+                <span className="flex flex-col gap-0.5">
+                    <span className="font-semibold">Allow pre-release versions</span>
+                    <span className="text-xs text-text-muted">
+                        Also offer beta and other pre-release builds, such as 1.0.0-beta.2, as updates and as versions to
+                        install. They can be unstable. This is remembered in this browser.
+                    </span>
+                </span>
+            </label>
+
+            {bulkFailure && (
+                <Alert>
+                    <div>
+                        {bulkFailure.title}
+                        <ul className="list-disc pl-5 mt-1">
+                            {bulkFailure.reasons.map((reason) => (
+                                <li key={reason} className="break-words">
+                                    {reason}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                </Alert>
+            )}
             {error && (
                 <Alert>
                     {error}
@@ -489,6 +771,75 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                 <p className="text-sm text-text-muted">No plugins installed.</p>
             ) : (
                 <div className="overflow-x-auto">
+                    {plugins.length > 0 && (
+                        <div role="toolbar" aria-label="Actions for several plugins" className="flex flex-wrap items-center gap-2 py-2">
+                            <label className="flex items-center gap-2 text-sm mr-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    className="h-4 w-4 shrink-0"
+                                    aria-label="Select all plugins"
+                                    checked={allSelected}
+                                    disabled={bulkBusy}
+                                    ref={(input) => {
+                                        if (input) {
+                                            input.indeterminate = selectedPlugins.length > 0 && !allSelected;
+                                        }
+                                    }}
+                                    onChange={(e) => setSelected(e.target.checked ? new Set(plugins.map((plugin) => plugin.uid)) : new Set())}
+                                />
+                                <span>{selectedPlugins.length > 0 ? `${selectedPlugins.length} selected` : "Select all"}</span>
+                            </label>
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                className="!w-auto"
+                                aria-label="Upgrade selected plugins"
+                                disabled={bulkBusy || selectedUpgrades.length === 0}
+                                onClick={() =>
+                                    void runBulk("upgrade", selectedUpgrades, {
+                                        versions: new Map(selectedUpgrades.map((plugin) => [plugin.uid, updates.get(plugin.uid)!.latestVersion!])),
+                                    })
+                                }
+                            >
+                                Upgrade{selectedUpgrades.length > 0 ? ` (${selectedUpgrades.length})` : ""}
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                className="!w-auto"
+                                aria-label="Disable selected plugins"
+                                disabled={bulkBusy || selectedEnabled.length === 0}
+                                onClick={() => void runBulk("disable", selectedEnabled)}
+                            >
+                                Disable{selectedEnabled.length > 0 ? ` (${selectedEnabled.length})` : ""}
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                className="!w-auto"
+                                aria-label="Uninstall selected plugins"
+                                disabled={bulkBusy || selectedPlugins.length === 0}
+                                onClick={() => setConfirmingBulkUninstall(selectedPlugins)}
+                            >
+                                Uninstall{selectedPlugins.length > 0 ? ` (${selectedPlugins.length})` : ""}
+                            </Button>
+                            <Button
+                                type="button"
+                                className="!w-auto ml-auto"
+                                aria-label="Upgrade all plugins"
+                                loading={bulk?.kind === "upgrade"}
+                                disabled={bulkBusy}
+                                onClick={() => void upgradeAll()}
+                            >
+                                Upgrade all
+                            </Button>
+                            {bulk && (
+                                <span aria-live="polite" className="basis-full text-xs text-text-muted">
+                                    {BULK_WORDS[bulk.kind].doing} {bulk.current} ({bulk.done + 1} of {bulk.total})&hellip;
+                                </span>
+                            )}
+                        </div>
+                    )}
                     <table role="table" className="w-full text-sm border-collapse block lg:table">
                         <thead role="rowgroup" className="hidden lg:table-header-group">
                             <tr role="row">
@@ -510,7 +861,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                             {plugins.map((plugin) => {
                                 const update: PluginUpdateInfo | undefined = updates.get(plugin.uid);
                                 const latest: string | undefined = update?.updateAvailable ? update.latestVersion : undefined;
-                                const busy: boolean = busyUids.has(plugin.uid) || confirming?.uid === plugin.uid;
+                                const busy: boolean = busyUids.has(plugin.uid) || confirming?.uid === plugin.uid || bulkBusy;
                                 const requires: string[] = Object.keys(plugin.manifest.requires ?? {}).map(displayNameOf);
                                 const requiredBy: string[] = plugins
                                     .filter((other) => other.uid !== plugin.uid && other.manifest.requires?.[plugin.name] !== undefined)
@@ -518,15 +869,27 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                                 return (
                                     <tr key={plugin.uid} role="row" className={INSTALLED_ROW_CLASS}>
                                         <td role="cell" className={`${INSTALLED_TD_CLASS} basis-full pt-3 pb-2`}>
-                                            <div className="font-semibold">{plugin.manifest.displayName}</div>
-                                            <div className="text-xs text-text-muted">{plugin.name}</div>
-                                            {plugin.manifest.description && (
-                                                <div className="text-xs text-text-muted mt-1 max-w-md">{plugin.manifest.description}</div>
-                                            )}
-                                            {requires.length > 0 && <div className="text-xs text-text-muted mt-1">Requires: {requires.join(", ")}</div>}
-                                            {requiredBy.length > 0 && (
-                                                <div className="text-xs text-text-muted mt-1">Required by: {requiredBy.join(", ")}</div>
-                                            )}
+                                            <div className="flex items-start gap-3">
+                                                <input
+                                                    type="checkbox"
+                                                    className="mt-1 h-4 w-4 shrink-0"
+                                                    aria-label={`Select ${plugin.manifest.displayName}`}
+                                                    checked={selected.has(plugin.uid)}
+                                                    disabled={bulkBusy}
+                                                    onChange={() => toggleSelected(plugin.uid)}
+                                                />
+                                                <div className="min-w-0">
+                                                    <div className="font-semibold">{plugin.manifest.displayName}</div>
+                                                    <div className="text-xs text-text-muted">{plugin.name}</div>
+                                                    {plugin.manifest.description && (
+                                                        <div className="text-xs text-text-muted mt-1 max-w-md">{plugin.manifest.description}</div>
+                                                    )}
+                                                    {requires.length > 0 && <div className="text-xs text-text-muted mt-1">Requires: {requires.join(", ")}</div>}
+                                                    {requiredBy.length > 0 && (
+                                                        <div className="text-xs text-text-muted mt-1">Required by: {requiredBy.join(", ")}</div>
+                                                    )}
+                                                </div>
+                                            </div>
                                         </td>
                                         <td role="cell" className={`${INSTALLED_TD_CLASS} pt-1 pb-1 whitespace-nowrap`}>
                                             <div>{plugin.packageVersion}</div>
@@ -596,6 +959,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             <PluginBrowser
                 headingLevel={SectionHeading}
                 plugins={plugins}
+                prerelease={allowPrerelease}
                 onInstall={(result) => install(result.name, result.version, result.name)}
                 // The browser only offers an upgrade for a result it matched to one of these same `plugins`.
                 onUpgrade={(uid, packageVersion) => upgrade(plugins.find((p) => p.uid === uid)!, packageVersion)}
@@ -603,6 +967,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
 
             <AddPluginModal
                 open={adding}
+                prerelease={allowPrerelease}
                 onClose={() => setAdding(false)}
                 onAdd={async (name, packageVersion, displayName) => {
                     const problem = await install(name, packageVersion, displayName);
@@ -615,6 +980,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             {upgrading && (
                 <ChangeVersionModal
                     plugin={upgrading}
+                    prerelease={allowPrerelease}
                     onClose={() => setUpgrading(null)}
                     onSave={async (packageVersion) => {
                         const problem = await changeVersion(upgrading, packageVersion);
@@ -631,6 +997,17 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                     displayNameOf={displayNameOf}
                     onClose={() => setConfirming(null)}
                     onDone={() => setConfirming(null)}
+                />
+            )}
+            {confirmingBulkUninstall && (
+                <BulkUninstallModal
+                    plugins={confirmingBulkUninstall}
+                    onClose={() => setConfirmingBulkUninstall(null)}
+                    onConfirm={(purgeData) => {
+                        const targets = confirmingBulkUninstall;
+                        setConfirmingBulkUninstall(null);
+                        void runBulk("uninstall", targets, { purgeData });
+                    }}
                 />
             )}
             {configuring && (
@@ -653,11 +1030,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                         setRemoving(null);
                         setPlugins((prev) => prev.filter((plugin) => plugin.uid !== uid));
                         if (result.purgeScheduled) {
-                            // Shown at once; the status polling that follows replaces it with what the servers report.
-                            const scheduled = result.purge;
-                            setStatus((prev) =>
-                                prev && scheduled ? { ...prev, purges: [...(prev.purges ?? []).filter((purge) => purge.uid !== scheduled.uid), scheduled] } : prev,
-                            );
+                            showScheduledPurge(result.purge);
                             notify({
                                 kind: "info",
                                 title: `${displayName} uninstalled`,
@@ -678,11 +1051,14 @@ const ALL_NAMESPACES = "";
 function PluginBrowser({
     headingLevel: Heading,
     plugins,
+    prerelease,
     onInstall,
     onUpgrade,
 }: {
     headingLevel: "h2" | "h3";
     plugins: Plugin[];
+    /** Whether prerelease versions count as a plugin's newest. */
+    prerelease: boolean;
     /** Resolves why the plugin couldn't be installed, or `null`. */
     onInstall: (result: PluginSearchResult) => Promise<string | null>;
     onUpgrade: (uid: string, packageVersion: string) => Promise<void>;
@@ -700,12 +1076,15 @@ function PluginBrowser({
             .catch(() => setNamespaces([]));
     }, []);
 
+    // What was found was found under the other setting, so it isn't shown as though it still held.
+    useEffect(() => setResults(null), [prerelease]);
+
     async function search(e: FormEvent) {
         e.preventDefault();
         setSearching(true);
         setError(null);
         try {
-            setResults(await searchPlugins(namespace || undefined));
+            setResults(await searchPlugins(namespace || undefined, { prerelease }));
         } catch (err) {
             setResults(null);
             setError(errorMessage(err, "Could not search for plugins."));
@@ -996,10 +1375,13 @@ function UninstalledPluginRow({ purge, busy, onRetry, onInstall }: { purge: Plug
 
 function AddPluginModal({
     open,
+    prerelease,
     onClose,
     onAdd,
 }: {
     open: boolean;
+    /** Whether prerelease versions are listed, and count as the package's newest. */
+    prerelease: boolean;
     onClose: () => void;
     /** Resolves why the plugin couldn't be added, or `null`. */
     onAdd: (name: string, packageVersion: string, displayName: string) => Promise<string | null>;
@@ -1040,7 +1422,7 @@ function AddPluginModal({
         setLooking(true);
         setError(null);
         try {
-            const found = await lookupPluginPackage(packageName, packageVersion);
+            const found = await lookupPluginPackage(packageName, packageVersion, { prerelease });
             if (token === lookupToken.current) {
                 setLookup(found);
                 setSelectedVersion(found.selected.version);
@@ -1161,10 +1543,13 @@ function AddPluginModal({
 
 function ChangeVersionModal({
     plugin,
+    prerelease,
     onClose,
     onSave,
 }: {
     plugin: Plugin;
+    /** Whether prerelease versions are listed, and count as the package's newest. */
+    prerelease: boolean;
     onClose: () => void;
     /** Resolves why the version couldn't be changed, or `null`. */
     onSave: (packageVersion: string) => Promise<string | null>;
@@ -1176,13 +1561,13 @@ function ChangeVersionModal({
     const [busy, setBusy] = useState(false);
 
     useEffect(() => {
-        lookupPluginPackage(plugin.name)
+        lookupPluginPackage(plugin.name, undefined, { prerelease })
             .then((found) => {
                 setVersions(found.package.versions);
                 setLatest(found.package.latest);
             })
             .catch((err) => setError(errorMessage(err, "Could not load the available versions.")));
-    }, [plugin.name]);
+    }, [plugin.name, prerelease]);
 
     async function save() {
         setBusy(true);
@@ -1527,6 +1912,94 @@ function SettingField({
             )}
             {help}
         </label>
+    );
+}
+
+/** The word typed to confirm deleting the data of several plugins at once, in place of a plugin's name. */
+const BULK_DELETE_WORD = "delete";
+
+/** Asks for confirmation before several plugins are uninstalled at once, listing them, with the choice to delete the
+ * data they stored too. Deleting data is permanent, so it also takes `BULK_DELETE_WORD` typed out. */
+function BulkUninstallModal({ plugins, onClose, onConfirm }: { plugins: Plugin[]; onClose: () => void; onConfirm: (purgeData: boolean) => void }) {
+    const [purgeData, setPurgeData] = useState(false);
+    const [typed, setTyped] = useState("");
+    const helpId = useId();
+    const single: boolean = plugins.length === 1;
+    const confirmed: boolean = !purgeData || typed.trim().toLowerCase() === BULK_DELETE_WORD;
+
+    return (
+        <Modal open onClose={onClose} title={`Uninstall ${pluralPlugins(plugins.length)}?`}>
+            <form
+                onSubmit={(event) => {
+                    event.preventDefault();
+                    if (confirmed) {
+                        onConfirm(purgeData);
+                    }
+                }}
+            >
+                <p className="text-sm mb-2">The servers stop running {single ? "this plugin" : "these plugins"} after they restart:</p>
+                <ul className="text-sm list-disc pl-5 mb-4">
+                    {plugins.map((plugin) => (
+                        <li key={plugin.uid}>{plugin.manifest.displayName}</li>
+                    ))}
+                </ul>
+                <p className="text-sm mb-4">
+                    {purgeData
+                        ? `Once every server has stopped running ${single ? "it" : "them"}, all the data ${single ? "it" : "they"} stored is deleted.`
+                        : `Data ${single ? "it" : "they"} stored stays in the database, and adding ${single ? "the plugin" : "a plugin"} again brings it back.`}
+                </p>
+                <div className="mb-4">
+                    <label className="flex items-start gap-2 text-sm font-semibold cursor-pointer">
+                        <input
+                            type="checkbox"
+                            className="mt-0.5 h-4 w-4 shrink-0 accent-danger"
+                            checked={purgeData}
+                            aria-describedby={helpId}
+                            onChange={(e) => setPurgeData(e.target.checked)}
+                        />
+                        <span>Also delete all data {single ? "this plugin" : "these plugins"} stored</span>
+                    </label>
+                    <div id={helpId} className="mt-2 pl-6 text-xs text-text-muted">
+                        <p>What is deleted, for each plugin:</p>
+                        <ul className="list-disc pl-5 mt-1 space-y-0.5">
+                            <li>the database collections and tables its features use, with everything in them</li>
+                            <li>its saved settings</li>
+                            <li>its downloaded package and cached pages on the servers</li>
+                            <li>whatever else it cleans up itself, such as files it stored or data kept outside the database</li>
+                        </ul>
+                        <p className="mt-2 text-danger font-semibold">This can&apos;t be undone.</p>
+                    </div>
+                </div>
+                {purgeData && (
+                    <>
+                        <p className="text-xs text-text-muted mb-3">
+                            Nothing is deleted while a server is still running a plugin. Adding a plugin again before its data is deleted cancels the deletion.
+                        </p>
+                        <label className="block text-sm mb-4">
+                            <span>
+                                Type <strong>{BULK_DELETE_WORD}</strong> to confirm
+                            </span>
+                            <input
+                                type="text"
+                                className={`${INPUT_CLASS} mt-1.5`}
+                                value={typed}
+                                autoComplete="off"
+                                spellCheck={false}
+                                onChange={(e) => setTyped(e.target.value)}
+                            />
+                        </label>
+                    </>
+                )}
+                <div className="flex gap-2 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                        Cancel
+                    </Button>
+                    <Button type="submit" className={purgeData ? DANGER_BUTTON_CLASS : "!w-auto"} disabled={!confirmed}>
+                        {purgeData ? `Uninstall ${pluralPlugins(plugins.length)} and delete data` : `Uninstall ${pluralPlugins(plugins.length)}`}
+                    </Button>
+                </div>
+            </form>
+        </Modal>
     );
 }
 
