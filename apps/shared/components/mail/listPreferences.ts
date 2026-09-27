@@ -155,11 +155,11 @@ function compareConversations(a: ConversationSummary, b: ConversationSummary, so
  * order that would mean nothing. Ties break newest first whichever direction is in force, so two rows the
  * key can't tell apart still read in a stable, familiar order.
  */
-export function sortConversations(
-    conversations: ConversationSummary[],
+export function sortConversations<T extends ConversationSummary>(
+    conversations: T[],
     sortBy: MessageListSort,
     sortOrder: MessageSortOrder,
-): ConversationSummary[] {
+): T[] {
     if (!CONVERSATION_SORTS.includes(sortBy)) {
         return conversations;
     }

@@ -68,7 +68,7 @@ import { setReadStateMany } from "../shared/mail/messageReadState.js";
 import { useMarkMessageRead } from "../shared/mail/useMarkMessageRead.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "../shared/components/mail/unreadStyle.js";
 import { LazyConversationThreadPane, LazyMessageDetailPane, prefetchReadingPane } from "../shared/components/mail/LazyReadingPane.js";
-import ConversationList from "../shared/components/mail/ConversationList.js";
+import ConversationList, { ListedConversation, conversationRowKey } from "../shared/components/mail/ConversationList.js";
 import type { ConversationThreadHead } from "../shared/components/mail/ConversationThreadPane.js";
 import SwipeRow from "../shared/components/mail/SwipeRow.js";
 import InviteRowChip from "../shared/components/mail/invite/InviteRowChip.js";
@@ -462,7 +462,7 @@ function appendUnseenRows<T>(shown: T[], more: T[], idOf: (row: T) => string, ca
 }
 
 const messageUid = (message: Message) => message.uid;
-const conversationKey = (conversation: ConversationSummary) => conversation.conversationId;
+const conversationKey = conversationRowKey;
 
 /** Flattens and sorts a per-mailbox fetch into one merged, newest-first list - the aggregate ("All
  * Inboxes" etc.) equivalent of `mergeSearchResults()` above, but simpler: an aggregated message has no
@@ -507,6 +507,30 @@ async function fetchAggregateMessages(
     return mergeInboxMessages(perMailbox);
 }
 
+/**
+ * The conversation-list counterpart of `fetchAggregateMessages()`: one `listConversations()` per accessible mailbox that has a folder of
+ * `type`, each scoped to *that folder* (so "All Inboxes" groups only Inbox mail - not the Sent Items copy of a reply, which a mailbox-wide
+ * grouping pulls in) and each row tagged with its mailbox, then merged newest activity first. Same first-page-only scope, and the same
+ * rule that a mailbox that has no such folder or fails to answer contributes nothing rather than blanking the rest.
+ */
+async function fetchAggregateConversations(
+    mailboxFolders: MailboxFolders[],
+    type: AggregateFolderType,
+    params: ConversationListParams,
+): Promise<ListedConversation[]> {
+    const perMailbox = await Promise.all(
+        mailboxFolders.map(async ({ mailbox, folders }): Promise<ListedConversation[]> => {
+            const folder = folders.find((f) => f.type === type);
+            if (!folder) {
+                return [];
+            }
+            const rows = await listConversations(mailbox.uid, { ...params, folderUid: folder.uid, page: 0 }).catch(() => [] as ConversationSummary[]);
+            return rows.map((row) => ({ ...row, mailboxUid: mailbox.uid }));
+        }),
+    );
+    return perMailbox.flat().sort((a, b) => Date.parse(b.latestDate) - Date.parse(a.latestDate));
+}
+
 /** One conversation's part of a set of search results. */
 interface ResultGroup {
     /** The conversation's id - a message that belongs to no thread is its own conversation. */
@@ -547,7 +571,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const navigate = useNavigate();
     const { requestUnlock } = useUnlockPrompt();
     const [messages, setMessages] = useState<Message[]>([]);
-    const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+    const [conversations, setConversations] = useState<ListedConversation[]>([]);
     const [loading, setLoading] = useState(true);
     // Once a list is on screen and the browser has nothing better to do, fetch the code a click on a message (the reading pane)
     // or on Compose/Reply (the compose window, with its editor) would otherwise wait for.
@@ -1054,12 +1078,28 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return;
         }
 
+        if (asConversations && aggregateFolderType) {
+            // Grouped per mailbox, inside that mailbox's folder of this type, and merged - first pages only, like the message listing.
+            setLoading(true);
+            setError(null);
+            setHasMore(false);
+            void fetchAggregateConversations(mailboxFolders, aggregateFolderType, conversationParams(0))
+                .then((results) => {
+                    if (isCurrentRun()) {
+                        setConversations(results);
+                    }
+                })
+                .finally(() => {
+                    if (isCurrentRun()) {
+                        setLoading(false);
+                    }
+                });
+            return invalidate;
+        }
+
         if (asConversations) {
-            // Conversations stay single-mailbox (not aggregated across mailboxes in this pass) - in
-            // aggregate mode this falls back to `activeMailboxUid`, the same mailbox unlock/labels use
-            // (always set - `MailShell` only renders this component once at least one mailbox exists).
-            // They're scoped to the selected folder (`folderUid`, absent only in aggregate mode), so the
-            // conversation list matches the folder the sidebar has selected rather than the whole mailbox.
+            // A single mailbox's own folder (`folderUid`), so the conversation list matches the folder the sidebar has selected rather
+            // than the whole mailbox.
             if (snapshot) {
                 setConversations(snapshot.conversations);
                 listedOffsetRef.current = snapshot.conversations.length;
@@ -1431,7 +1471,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
         const isCurrent = () => searchRunIdRef.current === listRun && liveRunRef.current === myRun;
         void (async () => {
             try {
-                if (asConversations) {
+                if (asConversations && aggregateFolderType) {
+                    // No paging here either: the fresh merged first pages are the list.
+                    const fresh = await fetchAggregateConversations(mailboxFolders, aggregateFolderType, conversationParams(0));
+                    if (isCurrent()) {
+                        setConversations(fresh);
+                    }
+                } else if (asConversations) {
                     const fresh = await listConversations(activeMailboxUid, conversationParams(0));
                     if (!isCurrent()) {
                         return;
@@ -2267,7 +2313,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     /** Opens a conversation in the reading pane, positioned at one of its messages: the one a child row
      * stands for, or the latest for a parent row. The thread pane loads the thread itself. */
-    function handleOpenConversation(conversation: ConversationSummary, uid: string) {
+    function handleOpenConversation(conversation: ListedConversation, uid: string) {
         if (selectMode) {
             // Same rule as `handleSelect()` for a message row: while selecting, a row's own button ticks
             // the row rather than opening it.
@@ -2281,7 +2327,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
         removedAnchorRef.current = null;
         setSelectedUid(uid);
-        setOpenThread({ conversation, uid, mailboxUid: activeMailboxUid });
+        setOpenThread({ conversation, uid, mailboxUid: conversation.mailboxUid ?? activeMailboxUid });
     }
 
     // ---- Keyboard shortcuts (see `shared/keyboard`). Each is registered only while this view can do it, and calls what the toolbar and
@@ -2320,7 +2366,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
     /** The index of the selected row: the open message's, or the open conversation's; -1 with nothing selected. */
     function selectedRowIndex(): number {
         if (inConversations) {
-            return openThread ? listedConversations.findIndex((c) => c.conversationId === openThread.conversation.conversationId) : -1;
+            return openThread
+                ? listedConversations.findIndex(
+                      (c) => c.conversationId === openThread.conversation.conversationId && (!c.mailboxUid || c.mailboxUid === openThread.mailboxUid),
+                  )
+                : -1;
         }
         return messages.findIndex((m) => m.uid === selectedUid);
     }

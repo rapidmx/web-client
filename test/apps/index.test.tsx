@@ -5893,7 +5893,7 @@ describe("InboxPage", () => {
             expect(screen.getAllByText("Row 49")).toHaveLength(1);
         });
 
-        it("uses the caller's own mailbox (not merely the first owned-by-someone one) for the aggregate conversation view", async () => {
+        it("groups the aggregate conversation view per mailbox, inside each mailbox's own folder of that type", async () => {
             const location = mockLocation();
             (location as any).search = "?aggregate=inbox";
             const fetchMock = mockFetch((url, init) => {
@@ -5901,7 +5901,14 @@ describe("InboxPage", () => {
                 if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [sharedMailbox, mailbox]);
                 if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder]);
                 if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
-                if (url.startsWith("/api/mail/messages/conversations")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/conversations")) {
+                    return jsonResponse(
+                        200,
+                        url.includes("mailboxUid=mb2")
+                            ? [conversationFixture({ conversationId: "cs", subject: "Shared thread", latestDate: "2026-02-02T00:00:00.000Z" })]
+                            : [conversationFixture({ conversationId: "co", subject: "Own thread", latestDate: "2026-03-03T00:00:00.000Z" })],
+                    );
+                }
                 if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
                 throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
             });
@@ -5911,17 +5918,54 @@ describe("InboxPage", () => {
 
             await toggleConversations(user);
 
-            await waitFor(() =>
-                expect(fetchMock).toHaveBeenCalledWith(
-                    "/api/mail/messages/conversations?mailboxUid=mb1&filter=all&page=0&limit=50",
-                    expect.anything(),
-                ),
-            );
-            expect(
-                fetchMock.mock.calls.some(
-                    ([url]) => String(url).startsWith("/api/mail/messages/conversations") && String(url).includes("mailboxUid=mb2"),
-                ),
-            ).toBe(false);
+            // Both mailboxes' rows, newest activity first, from a request scoped to each mailbox's own Inbox.
+            expect(await screen.findByText("Shared thread")).toBeInTheDocument();
+            expect(screen.getByText("Own thread")).toBeInTheDocument();
+            const subjects = screen.getAllByText(/ thread$/).map((el) => el.textContent);
+            expect(subjects).toEqual(["Own thread", "Shared thread"]);
+            const requested = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith("/api/mail/messages/conversations"));
+            const scopes = requested.map((url) => {
+                const query = new URL(url, "http://localhost").searchParams;
+                return `${query.get("mailboxUid")}:${query.get("folderUid")}`;
+            });
+            expect(scopes.sort()).toEqual(["mb1:f1", "mb2:f-shared-inbox"]);
+            mockLocation();
+        });
+
+        it("expands an aggregate conversation from the mailbox it belongs to, even when two mailboxes hold the same conversation id", async () => {
+            const location = mockLocation();
+            (location as any).search = "?aggregate=inbox";
+            const expanded: string[] = [];
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder]);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/conversations/")) {
+                    expanded.push(url);
+                    return jsonResponse(200, [messageFixture({ uid: "m-child", subject: "Child" })]);
+                }
+                if (url.startsWith("/api/mail/messages/conversations")) {
+                    return jsonResponse(200, [
+                        conversationFixture({ conversationId: "same", subject: url.includes("mailboxUid=mb2") ? "In support" : "In mine" }),
+                    ]);
+                }
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByPlaceholderText("Search all mail…");
+            await toggleConversations(user);
+
+            // Two rows, not one: the id alone does not tell them apart.
+            expect(await screen.findByText("In support")).toBeInTheDocument();
+            expect(screen.getByText("In mine")).toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: "Expand conversation: In support" }));
+            await waitFor(() => expect(expanded).toHaveLength(1));
+            expect(expanded[0]).toContain("mailboxUid=mb2");
+            expect(screen.getByRole("button", { name: "Expand conversation: In mine" })).toBeInTheDocument();
             mockLocation();
         });
     });
@@ -6329,6 +6373,49 @@ describe("InboxPage", () => {
             pushMessage("f-other");
             await new Promise((resolve) => setTimeout(resolve, 700));
             expect(screen.queryByText("Not refreshed")).not.toBeInTheDocument();
+        });
+
+        it("refreshes the merged All Mailboxes conversations, skipping a mailbox with no such folder or that fails to answer", async () => {
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: true }),
+            );
+            const sharedMailbox = { ...mailbox, uid: "mb2", ownerUserUid: undefined, displayName: "Support", primarySmtpAddress: "support@example.com" };
+            const sentOnlyMailbox = { ...mailbox, uid: "mb3", ownerUserUid: undefined, displayName: "Sent only", primarySmtpAddress: "sent@example.com" };
+            const sharedInbox = { ...inboxFolder, uid: "f-shared-inbox", mailboxUid: "mb2" };
+            const shared: any[] = [];
+            let failShared = false;
+            mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox, sentOnlyMailbox]);
+                if (url.startsWith("/api/mail/folders")) {
+                    return jsonResponse(
+                        200,
+                        url.includes("mailboxUid=mb3") ? [{ ...sentItemsFolder, mailboxUid: "mb3" }] : url.includes("mailboxUid=mb2") ? [sharedInbox] : [inboxFolder],
+                    );
+                }
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/messages/conversations")) {
+                    if (url.includes("mailboxUid=mb2")) return failShared ? jsonResponse(500, { message: "boom" }) : jsonResponse(200, shared);
+                    return jsonResponse(200, [conversationFixture({ conversationId: "co", subject: "Own thread" })]);
+                }
+                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, []);
+                if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            Object.defineProperty(window, "location", { configurable: true, writable: true, value: new URL("http://localhost:3000/?aggregate=inbox") });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Own thread");
+
+            shared.push(conversationFixture({ conversationId: "cs", subject: "Support thread", latestDate: "2026-02-01T00:00:00.000Z" }));
+            pushMessage("f-shared-inbox");
+            expect(await screen.findByText("Support thread", {}, { timeout: 3000 })).toBeInTheDocument();
+
+            // A mailbox that fails to answer contributes nothing - the rest still list.
+            failShared = true;
+            pushMessage("f-shared-inbox");
+            await waitFor(() => expect(screen.queryByText("Support thread")).not.toBeInTheDocument(), { timeout: 3000 });
+            expect(screen.getByText("Own thread")).toBeInTheDocument();
         });
 
         it("folds a full first page of conversations in above the older ones already shown", async () => {

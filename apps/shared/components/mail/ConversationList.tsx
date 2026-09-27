@@ -14,9 +14,18 @@ import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass,
 import SwipeRow from "./SwipeRow.js";
 import InviteRowChip from "./invite/InviteRowChip.js";
 
+/** A conversation row of the list. `mailboxUid` is set only by a view that merges several mailboxes ("All Mailboxes"), whose rows are
+ * each from a different one; a list of one mailbox's own leaves it out and every row is that mailbox's. */
+export type ListedConversation = ConversationSummary & { mailboxUid?: string };
+
+/** What tells a row apart from the others: the same conversation id in two mailboxes (a message sent to both) is two rows. */
+export function conversationRowKey(conversation: ListedConversation): string {
+    return conversation.mailboxUid ? `${conversation.mailboxUid}\u0000${conversation.conversationId}` : conversation.conversationId;
+}
+
 export interface ConversationListProps {
-    conversations: ConversationSummary[];
-    /** The mailbox the conversations were listed from - `listConversationMessages()` is mailbox-scoped. */
+    conversations: ListedConversation[];
+    /** The mailbox the conversations were listed from - `listConversationMessages()` is mailbox-scoped. A row that names its own mailbox uses that. */
     mailboxUid: string;
     /** The message currently open in the reading pane, so the row standing for it can be marked. */
     selectedUid: string | null;
@@ -25,7 +34,7 @@ export interface ConversationListProps {
      * stands for, or the conversation's own `latestMessageUid` for a parent row. The conversation goes
      * with the uid because the pane shows the whole thread, not just that message.
      */
-    onOpenMessage: (conversation: ConversationSummary, uid: string) => void;
+    onOpenMessage: (conversation: ListedConversation, uid: string) => void;
     /** Newer copies of messages this list already fetched - the reading pane marks the message it opens as
      * read, which this list would otherwise keep showing as unread until the thread is collapsed and
      * expanded again. */
@@ -98,8 +107,8 @@ export default function ConversationList({
         setAnswers((prev) => ({ ...prev, [updated.uid]: updated.meetingResponse }));
     }
 
-    function toggle(conversation: ConversationSummary) {
-        const id = conversation.conversationId;
+    function toggle(conversation: ListedConversation) {
+        const id = conversationRowKey(conversation);
         setExpanded((prev) => {
             const next = new Set(prev);
             if (next.has(id)) {
@@ -118,7 +127,7 @@ export default function ConversationList({
             delete next[id];
             return next;
         });
-        listConversationMessages(mailboxUid, id)
+        listConversationMessages(conversation.mailboxUid ?? mailboxUid, conversation.conversationId)
             .then((loaded) => setMessagesById((prev) => ({ ...prev, [id]: loaded })))
             .catch((err) =>
                 setErrorsById((prev) => ({
@@ -143,15 +152,15 @@ export default function ConversationList({
         // `overflow-x-clip`: the panels a swiped row drags along stand outside its edges (see `SwipeRow`).
         <ul className={swipe?.enabled ? "overflow-x-clip" : undefined}>
             {conversations.map((conversation) => {
-                const id = conversation.conversationId;
+                const id = conversationRowKey(conversation);
                 const isExpanded = expanded.has(id);
                 const unread = conversation.unreadCount > 0;
                 const loaded = messagesById[id];
                 // `listConversationMessages()` answers oldest first; the rows read in whichever sense the
                 // list itself is arranged in. Copied before reversing - the fetched array is cached.
                 const children = loaded && newestFirst ? [...loaded].reverse() : loaded;
-                const panelId = `conversation-messages-${id}`;
-                const ticked = selectedConversationIds?.has(id) ?? false;
+                const panelId = `conversation-messages-${conversation.mailboxUid ? `${conversation.mailboxUid}-` : ""}${conversation.conversationId}`;
+                const ticked = selectedConversationIds?.has(conversation.conversationId) ?? false;
                 return (
                     <li key={id}>
                         <SwipeRow

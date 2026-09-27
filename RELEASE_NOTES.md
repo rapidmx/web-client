@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- **All Mailboxes showed only your own mail when arranged by conversation, and grouped it wrongly.** With "Show as conversations" on, the All Mailboxes views (Inbox, Sent Items and the rest) listed only your primary mailbox's conversations, and across all of its folders - so a Sent Items reply was counted into an Inbox conversation, and sent messages appeared as Inbox rows. They now group each mailbox you can read inside that mailbox's own folder of the type (shared mailboxes included) and merge the results, newest activity first. A conversation opens and expands from the mailbox it belongs to, and the same conversation in two mailboxes (a message sent to both) is two rows. Like the flat All Mailboxes list, it shows each mailbox's first page only.
 - **A plugin published as pre-releases showed no update.** The Plugins page compared with the registry's `latest` tag; the newest version now comes from `@rapidmx/restapi` (see its notes), so an installed `1.0.0-beta.9` is offered `1.0.0-beta.10` once pre-releases are allowed.
 
 ## v0.19.0
