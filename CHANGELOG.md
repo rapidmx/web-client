@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-27
+
+### Added
+- Added an Allow pre-release versions checkbox to the Plugins page, kept in the browser, that makes updates, version lists, plugin search and reinstalling count pre-release versions
+- Added a checkbox to each installed plugin with Select all, and Upgrade, Disable and Uninstall buttons that act on the selected plugins one after another in the order their requirements need, listing any the server refuses while the rest carry on
+- Added an Upgrade all button that is always available and checks the registry again first
+- Added a progress bar across the top of the window while a plugin is being installed, upgraded, enabled or disabled and while the servers apply a change
+- Added memory, I/O and CPU pressure tiles with Low, Elevated and High in words, and a Held by the hypervisor tile for the memory balloon, to the node's card
+
+### Changed
+- Ask before uninstalling several plugins at once, listing them, with a checkbox to delete their data as well that takes a typed word and stops when the server wants the administrator to confirm their identity
+- Test the pre-release preference, the bulk actions and the progress bar
+- Document the change in the release notes and NOTES
+- Show what a volume on the node's disk really holds in the Diagnostics System tab, against its allocation and with the room the node's disk has left, and rename the Size column to Allocated
+- Ignore the whole disk's figure an older server sends for such a volume, and say its usage could not be measured
+- Test each, and document the change in the release notes and NOTES
+- Group the All Mailboxes conversation view per mailbox, inside each mailbox's own folder of the chosen type, and merge the results newest first, so shared mailboxes are included and a Sent Items reply is no longer counted into an Inbox conversation
+- Tag each conversation row with its mailbox so expanding or opening it uses that mailbox, and the same conversation in two mailboxes is two rows
+- Refresh the merged conversation view when a folder it is made of gets mail
+- Test the per-mailbox grouping, expanding from the row's own mailbox, and the refresh, and replace the test that pinned the old primary-mailbox behaviour
+- Document the change in the release notes and NOTES
+- Updated react-shared dep
+
 ## [0.19.0] - 2026-09-26
 
 ### Added
@@ -1040,7 +1063,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/rapidmx/web-client/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rapidmx/web-client/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rapidmx/web-client/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/rapidmx/web-client/compare/v0.17.1...v0.17.2

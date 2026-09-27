@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.20.0
+
 ### Added
 
 - **An "Allow pre-release versions" checkbox on the Plugins page.** Off, the page offers releases only, as before. On, an update can be a beta (or any pre-release), the Change version and Add by name lists include them, and Find plugins and installing an uninstalled plugin again use the newest of any kind. It is a preference of the browser (kept in `localStorage`), not a server setting, and needs a `@rapidmx/restapi` that has `?prerelease=`.
