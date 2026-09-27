@@ -168,7 +168,7 @@ describe("BrandingPage", () => {
         const uploads: string[] = [];
         mockAdminFetch((url, init) => {
             if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
-            if (init.method === "POST") uploads.push(url);
+            if (init.method === "POST" && !url.endsWith("/api/auth/refresh")) uploads.push(url);
             return jsonResponse(200, BRANDING);
         });
         render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);

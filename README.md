@@ -357,7 +357,7 @@ Plugin pages import these directly from `@rapidmx/react-shared`, which the serve
 use:
 
 - `branding/useBranding.js`: `useBranding()`, for the branding and icon of pages outside a shell;
-- `auth/session.js`: `useRedirectIfUnauthenticated()`, already called by every shell;
+- `auth/session.js`: `useSessionRefresh()`, already called by every shell, which renews the sign-in before its hour is up;
 - `util/api.js`: `apiFetch()` and `ApiRequestError`, for calling the plugin's own API routes;
 - `mail/mailApi.js`: mailboxes and folders, such as `listMailboxes()` and `listFolders()`;
 - `components/buttons/Button.js`, `components/feedback/Alert.js` and `components/feedback/Skeleton.js`;

@@ -90,7 +90,7 @@ function mockApi(options: Options = {}) {
 /** Every change made, in order, as `<METHOD> <uid>`. */
 const writes = (fetchMock: ReturnType<typeof vi.fn>): string[] =>
     fetchMock.mock.calls
-        .filter(([, init]) => init?.method && init.method !== "GET")
+        .filter(([url, init]) => init?.method && init.method !== "GET" && !String(url).endsWith("/api/auth/refresh"))
         .map(([url, init]) => `${init.method} ${String(url).split("/").pop()}`);
 
 const bodyOf = (fetchMock: ReturnType<typeof vi.fn>, uid: string): any =>
@@ -239,7 +239,7 @@ describe("the pre-release preference", () => {
         await user.click(screen.getByRole("checkbox", { name: /Allow pre-release versions/ }));
         await user.click(await screen.findByRole("button", { name: "Install Gone" }));
         await waitFor(() => expect(calledWith(fetchMock, `${PLUGINS}/plan?name=%40rapidmx%2Fgone-plugin&prerelease=true`)).toBe(true));
-        await waitFor(() => expect(JSON.parse(fetchMock.mock.calls.find(([, init]) => init?.method === "POST")![1].body)).toMatchObject({ name: "@rapidmx/gone-plugin", packageVersion: "1.0.0-beta.3" }));
+        await waitFor(() => expect(JSON.parse(fetchMock.mock.calls.find(([url, init]) => init?.method === "POST" && !String(url).endsWith("/api/auth/refresh"))![1].body)).toMatchObject({ name: "@rapidmx/gone-plugin", packageVersion: "1.0.0-beta.3" }));
     });
 
     it("is off when this browser won't say, and a choice it can't keep still applies", async () => {

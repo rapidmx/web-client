@@ -83,7 +83,7 @@ describe("NewEscrowScopePage", () => {
         await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
 
         expect(await screen.findByText(/You can't add yourself as a holder/)).toBeInTheDocument();
-        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "POST")).toBe(false);
+        expect(fetchMock.mock.calls.some(([url, init]) => (init as RequestInit)?.method === "POST" && !String(url).endsWith("/api/auth/refresh"))).toBe(false);
     });
 
     it("validates at least one holder is required", async () => {

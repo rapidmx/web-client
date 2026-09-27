@@ -143,7 +143,7 @@ describe("NewTransportRulePage", () => {
 
         expect(await screen.findByText(/rejects or quarantines mail would do so for every message/)).toBeInTheDocument();
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "POST")).toBe(false);
+        expect(fetchMock.mock.calls.some(([url, init]) => (init as RequestInit)?.method === "POST" && !String(url).endsWith("/api/auth/refresh"))).toBe(false);
     });
 
     it("asks before saving a rule with no conditions and non-blocking actions", async () => {

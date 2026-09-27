@@ -1443,6 +1443,32 @@ describe("ComposeWindow", () => {
             expect(assembleCalls(fetchMock)).toHaveLength(1);
         });
 
+        it("saves at a regular interval while typing never pauses long enough for the debounce, and not again once nothing has changed", async () => {
+            const fetchMock = mockSaves();
+            await renderReady({ autosaveDelayMs: 200, autosaveMaxWaitMs: 350 });
+
+            // An edit every 40 ms restarts a 200 ms debounce each time, so it alone would never save.
+            let typed = 0;
+            const typing = setInterval(() => {
+                typed += 1;
+                fireEvent.change(screen.getByLabelText("Subject"), { target: { value: `Draft ${typed}` } });
+            }, 40);
+            try {
+                await waitFor(() => expect(assembleCalls(fetchMock).length).toBeGreaterThanOrEqual(1), { timeout: 2000 });
+                expect(typed).toBeGreaterThan(0);
+                const during = assembleCalls(fetchMock)[0];
+                expect(during.subject).toMatch(/^Draft \d+$/);
+            } finally {
+                clearInterval(typing);
+            }
+
+            // Typing stopped: the final text is saved by the debounce, and then nothing more is sent.
+            await waitFor(() => expect(assembleCalls(fetchMock).at(-1)?.subject).toBe(`Draft ${typed}`));
+            const settled = assembleCalls(fetchMock).length;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            expect(assembleCalls(fetchMock)).toHaveLength(settled);
+        });
+
         it("shows 'Saving…' while a save is in flight and reports a failed save", async () => {
             const save = deferredResponse();
             mockSaves((url) => (url === "/api/mail/compose/m1/assemble" ? (save.promise as unknown as Response) : undefined));

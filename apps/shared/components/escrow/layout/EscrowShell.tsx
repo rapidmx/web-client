@@ -7,7 +7,7 @@ import React, { PropsWithChildren, ReactNode, useEffect, useState } from "react"
 import { HiOutlineClipboardDocumentList, HiOutlineFolderOpen } from "react-icons/hi2";
 import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { listMatters } from "@rapidmx/react-shared/admin/mattersApi.js";
-import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
+import { useSessionRefresh } from "@rapidmx/react-shared/auth/session.js";
 import { getBranding } from "@rapidmx/react-shared/branding/brandingApi.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
@@ -54,7 +54,7 @@ export default function EscrowShell({ active, userUid, authServerUrl, children }
     const [error, setError] = useState<string | null>(null);
     const [iconSrc, setIconSrc] = useState(DEFAULT_ICON_SRC);
 
-    useRedirectIfUnauthenticated(userUid, authServerUrl);
+    useSessionRefresh(userUid, authServerUrl);
 
     // Only the icon is taken from branding here. The escrow console deliberately skips `useBranding()`, which
     // would inject the custom stylesheet, and never renders the admin-configured header/footer HTML - this

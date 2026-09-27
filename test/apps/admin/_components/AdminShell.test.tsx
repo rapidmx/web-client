@@ -19,15 +19,16 @@ const AUTH_SERVER_URL = "https://auth.example.com";
 const ADMIN_URL = "https://mail.example.com/admin/domains?tab=dns";
 const ELEVATE_URL = elevationUrl(AUTH_SERVER_URL, ADMIN_URL);
 
-/** A canary that answers as `@RequiresElevation()` does for a caller whose token isn't elevated. */
+/** A canary that answers as `@RequiresElevation()` does for a caller whose token isn't elevated (auth-server's refresh, which the frame also calls, succeeds). */
 function mockNeedsElevation() {
-    return mockFetch(() => jsonResponse(403, { code: "api-104", message: "Requires elevation." }));
+    return mockFetch((url) => (url.endsWith("/api/auth/refresh") ? jsonResponse(200, {}) : jsonResponse(403, { code: "api-104", message: "Requires elevation." })));
 }
 
 afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     sessionStorage.clear();
+    localStorage.clear();
 });
 
 /** Opens the phone layout's menu (the hamburger in the header) and returns the section links in it. */
@@ -165,7 +166,9 @@ describe("AdminShell", () => {
         it("does not elevate for api-103 (already elevated, not an administrator) or any other 403", async () => {
             const location = mockLocation();
             location.href = ADMIN_URL;
-            mockFetch(() => jsonResponse(403, { code: "api-103", message: "User does not have permission." }));
+            // Everything but auth-server's refresh (which succeeds) is refused.
+            const refused = (body: unknown) => (url: string) => (url.endsWith("/api/auth/refresh") ? jsonResponse(200, {}) : jsonResponse(403, body));
+            mockFetch(refused({ code: "api-103", message: "User does not have permission." }));
             const { unmount } = render(
                 <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
                     content
@@ -174,7 +177,7 @@ describe("AdminShell", () => {
             expect(await screen.findByText("You do not have administrator access.")).toBeInTheDocument();
             unmount();
 
-            mockFetch(() => jsonResponse(403, { message: "Forbidden" }));
+            mockFetch(refused({ message: "Forbidden" }));
             render(
                 <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
                     content

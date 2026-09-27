@@ -69,6 +69,10 @@ export interface ComposeWindowProps {
     /** How long (ms) after the last edit the draft is autosaved. Defaults to `DEFAULT_AUTOSAVE_DELAY_MS`;
      * only overridden by tests. */
     autosaveDelayMs?: number;
+    /** The longest (ms) an unsaved edit waits before the draft is saved even though typing hasn't paused - so a
+     * message written without a 2-second break is still saved regularly. Defaults to `DEFAULT_AUTOSAVE_MAX_WAIT_MS`
+     * and is never shorter than `autosaveDelayMs`; only overridden by tests. */
+    autosaveMaxWaitMs?: number;
     /** Backoff (ms) between automatic retries of a failed mailbox/encryption-policy load, one entry per retry.
      * Defaults to `DEFAULT_CRYPTO_RETRY_DELAYS_MS`; only overridden by tests. */
     cryptoRetryDelaysMs?: number[];
@@ -76,6 +80,8 @@ export interface ComposeWindowProps {
 
 /** Debounce between the last edit and the draft autosave. */
 export const DEFAULT_AUTOSAVE_DELAY_MS = 2000;
+/** The longest an edit stays unsaved while the user keeps typing (the debounce above restarts on every keystroke, so it alone never fires then). */
+export const DEFAULT_AUTOSAVE_MAX_WAIT_MS = 30_000;
 
 /** Automatic, silent retries of a failed mailbox/encryption-policy (or recipient key) load, one entry per retry - a flapping gateway is waited out
  * in the background, without a word to the user. */
@@ -192,6 +198,7 @@ export default function ComposeWindow({
     userUid,
     trusted,
     autosaveDelayMs = DEFAULT_AUTOSAVE_DELAY_MS,
+    autosaveMaxWaitMs = DEFAULT_AUTOSAVE_MAX_WAIT_MS,
     cryptoRetryDelaysMs = DEFAULT_CRYPTO_RETRY_DELAYS_MS,
 }: ComposeWindowProps) {
     const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, initialEncrypt, signatureContext, suppressSigning, minimized, quotePending, late, resume } = session;
@@ -296,6 +303,8 @@ export default function ComposeWindow({
     const lastSavedRef = useRef<string | null>(null);
     /** An edit is waiting on the autosave debounce - flushed if the window unmounts first. */
     const pendingSaveRef = useRef(false);
+    /** Fires the save when an edit has waited `autosaveMaxWaitMs` without the debounce ever getting a pause to fire in. */
+    const maxWaitTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     /** Send was pressed and is being validated/handed over: a second press (a double click, the shortcut held or repeated) does nothing. */
     const submittingRef = useRef(false);
     /** Attachment/inline-image uploads on the wire, and who is waiting for them to finish (Send pressed meanwhile). */
@@ -885,6 +894,8 @@ export default function ComposeWindow({
         const target = latestRef.current.draft!;
         const previous = saveInFlightRef.current;
         pendingSaveRef.current = false;
+        clearTimeout(maxWaitTimerRef.current);
+        maxWaitTimerRef.current = undefined;
         setSaveStatus("saving");
         const outcome = (async (): Promise<{ message?: Message; skipped?: boolean }> => {
             const before = await previous;
@@ -1164,7 +1175,19 @@ export default function ComposeWindow({
             lastSavedRef.current !== `${draft.uid}:${contentKey}`;
         pendingSaveRef.current = due;
         if (!due) {
+            clearTimeout(maxWaitTimerRef.current);
+            maxWaitTimerRef.current = undefined;
             return;
+        }
+        // The debounce below restarts on every edit, so steady typing never lets it fire: this timer, started by the first unsaved edit and stopped
+        // by the save that follows, is what saves such a message at a regular interval.
+        if (maxWaitTimerRef.current === undefined) {
+            maxWaitTimerRef.current = setTimeout(() => {
+                maxWaitTimerRef.current = undefined;
+                if (pendingSaveRef.current && !finishedRef.current) {
+                    void saveDraftNow();
+                }
+            }, Math.max(autosaveMaxWaitMs, autosaveDelayMs));
         }
         const timer = setTimeout(() => void saveDraftNow(), autosaveDelayMs);
         return () => clearTimeout(timer);
@@ -1174,6 +1197,7 @@ export default function ComposeWindow({
     // right away rather than losing it.
     useEffect(
         () => () => {
+            clearTimeout(maxWaitTimerRef.current);
             if (pendingSaveRef.current && !finishedRef.current) {
                 void saveDraftNow();
             }

@@ -13,7 +13,7 @@ import {
     HiOutlineUsers,
 } from "react-icons/hi2";
 import { useRouter } from "@rapidrest/react/client";
-import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
+import { useSessionRefresh } from "@rapidmx/react-shared/auth/session.js";
 import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
 import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
@@ -202,7 +202,9 @@ export function AppChrome({
     // A meeting reminder pops up on whichever page they are - see the hook.
     useCalendarReminders({ userUid, enabled: inFrame });
 
-    useRedirectIfUnauthenticated(userUid, authServerUrl);
+    // A refused refresh means the sign-in has ended: open compose windows save what they hold (the access token still works for a while) and the
+    // browser goes to sign-in. Not while viewing as another user - the refresh cookie is the admin's own, and refreshing would end the impersonation.
+    useSessionRefresh(userUid, authServerUrl, { paused: impersonating, beforeRedirect: () => flushComposeDrafts(LOGOUT_TIMEOUT_MS) });
     // Any request this app makes that the server answers with a 401 - the session ended - raises one "Your session expired" pop-up with a
     // Sign in action (see `notifySessionExpired()`), whichever request noticed first, a background refresh included.
     useEffect(() => {

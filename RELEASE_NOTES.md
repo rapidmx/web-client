@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- **You are no longer signed out every hour.** The sign-in lasts an hour, and nothing renewed it, so the web app, the admin console and the escrow console all sent you back to sign in when it ran out. Each now renews it in the background well before then, and again when you return to a tab or your computer wakes, and a tab opened after the hour has passed signs you back in on its own for as long as the two-week sign-in is valid. When a renewal is refused because the two-week sign-in has ended, the app saves what is open in your compose windows to Drafts and then takes you to the sign-in page, which brings you back to where you were. It does not renew the sign-in of an administrator viewing as another user. Needs `@rapidmx/react-shared` with `useSessionRefresh`.
+- **A message you are writing is now saved to Drafts at least every 30 seconds.** It was saved two seconds after you stopped typing, so a message written without a two-second pause, such as a long dictation, was not saved until you did pause. Drafts are on the server, so an unfinished message can be picked up from any device. A message that is going to be encrypted is still not saved as a draft, so that its text is never stored unencrypted.
+
 ## v0.20.0
 
 ### Added

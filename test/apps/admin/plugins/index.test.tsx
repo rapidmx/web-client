@@ -1178,7 +1178,7 @@ describe("PluginsPage", () => {
             expect(within(dialog).getByText("Install Exchange ActiveSync 1.2.0")).toBeInTheDocument();
             expect(within(dialog).getByText("Enable MAPI over HTTP")).toBeInTheDocument();
             expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fautodiscover-plugin&packageVersion=1.0.0", expect.anything());
-            expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST")).toBe(false);
+            expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST" && !String(c[0]).endsWith("/api/auth/refresh"))).toBe(false);
 
             await user.click(within(dialog).getByRole("button", { name: "Continue" }));
             await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -1219,7 +1219,7 @@ describe("PluginsPage", () => {
                 await user.click(within(confirm).getByRole("button", { name: action }));
                 if (action === "Cancel") {
                     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-                    expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST")).toBe(false);
+                    expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST" && !String(c[0]).endsWith("/api/auth/refresh"))).toBe(false);
                 } else {
                     expect(await within(confirm).findByText("Changed meanwhile")).toBeInTheDocument();
                 }
@@ -1259,7 +1259,7 @@ describe("PluginsPage", () => {
             await user.click(browser.getByRole("button", { name: "Search" }));
             await user.click(await browser.findByRole("button", { name: `Install ${autodiscover.name}` }));
             expect(await browser.findByText(/can't be installed\. Autodiscover requires Exchange ActiveSync \^3\.0\.0/)).toBeInTheDocument();
-            expect(fetchMock.mock.calls.some((c) => ["POST", "PUT"].includes((c[1] as RequestInit)?.method ?? ""))).toBe(false);
+            expect(fetchMock.mock.calls.some((c) => ["POST", "PUT"].includes((c[1] as RequestInit)?.method ?? "") && !String(c[0]).endsWith("/api/auth/refresh"))).toBe(false);
         });
 
         it("reloads the list after a version change or enable that brought in other plugins, keeping the row busy while confirming", async () => {
@@ -1620,7 +1620,7 @@ describe("PluginsPage", () => {
             await user.click(browser.getByRole("button", { name: "Search" }));
             await user.click(await browser.findByRole("button", { name: "Install @acme/crm-plugin" }));
             expect(await browser.findByText("Registry unreachable")).toBeInTheDocument();
-            expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST")).toBe(false);
+            expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST" && !String(c[0]).endsWith("/api/auth/refresh"))).toBe(false);
         });
 
         it("shows no results, a search error, and an install error", async () => {

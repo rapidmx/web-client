@@ -27,7 +27,7 @@ import {
 } from "react-icons/hi2";
 import { apiFetch, ApiRequestError } from "@rapidmx/react-shared/util/api.js";
 import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
-import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
+import { useSessionRefresh } from "@rapidmx/react-shared/auth/session.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
@@ -197,7 +197,7 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
     const { branding, iconSrc } = useBranding();
     const footer = useBrandingHtml(branding?.footerHtml);
 
-    useRedirectIfUnauthenticated(userUid, authServerUrl);
+    useSessionRefresh(userUid, authServerUrl);
 
     useEffect(() => {
         if (!userUid) {

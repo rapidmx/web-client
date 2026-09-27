@@ -36,6 +36,9 @@ vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearP
 const AUTH_SERVER_URL = "https://auth.example.com";
 
 beforeEach(() => {
+    // A refresh one test recorded would make the next one skip its own (see react-shared's `refreshSession()`).
+    localStorage.clear();
+    sessionStorage.clear();
     destroyAllLocalIndexes.mockResolvedValue(true);
 });
 
@@ -298,6 +301,46 @@ describe("AppShell", () => {
             `${AUTH_SERVER_URL}/api/auth/logout`,
             expect.objectContaining({ method: "POST", credentials: "include" }),
         );
+    });
+
+    it("renews the sign-in through auth-server, and lets open compose windows save before going to sign-in when that is refused", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/mail";
+        const fetchMock = mockFetch((url) => (url === `${AUTH_SERVER_URL}/api/auth/refresh` ? jsonResponse(401, { message: "Authentication failed" }) : jsonResponse(404, {})));
+        let finishSave!: () => void;
+        const flush = vi.fn(() => new Promise<void>((resolve) => (finishSave = resolve)));
+        const unregister = registerComposeFlush(flush);
+        try {
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AppShell>,
+            );
+
+            await waitFor(() => expect(flush).toHaveBeenCalled());
+            expect(fetchMock).toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/auth/refresh`, expect.objectContaining({ method: "POST", credentials: "include" }));
+            // Still here until the drafts are saved.
+            expect(location.href).toBe("https://mail.example.com/mail");
+
+            finishSave();
+            await waitFor(() =>
+                expect(location.href).toBe(`${AUTH_SERVER_URL}/auth/signin?return_to=${encodeURIComponent("https://mail.example.com/mail")}`),
+            );
+        } finally {
+            unregister();
+        }
+    });
+
+    it("does not renew the sign-in of an administrator viewing as another user, whose refresh token is their own", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL} impersonating>
+                content
+            </AppShell>,
+        );
+        await screen.findByText("content");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(fetchMock).not.toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/auth/refresh`, expect.anything());
     });
 
     it("lets open compose windows save their pending edits before logging out", async () => {
@@ -805,7 +848,8 @@ describe("AppShell notifications", () => {
     it("says 'Your session expired' once, with a Sign in action, when any request is answered 401 - and stops listening when it goes", async () => {
         const location = mockLocation();
         location.href = "https://mail.example.com/mail";
-        const fetchMock = mockFetch(() => jsonResponse(401, { message: "Unauthorized" }));
+        // Everything but the sign-in renewal (a refused one goes to sign-in, see above) is refused.
+        const fetchMock = mockFetch((url) => (url.endsWith("/api/auth/refresh") ? jsonResponse(200, {}) : jsonResponse(401, { message: "Unauthorized" })));
         const view = render(
             <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
                 content
