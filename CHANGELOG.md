@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-27
+
+### Changed
+- Call useSessionRefresh from AppShell, AdminShell and EscrowShell so the sign-in is renewed in the background and no one is signed out every hour
+- Make AppShell save open compose windows to Drafts before a refused renewal takes the browser to sign-in, and skip renewing for an administrator viewing as another user
+- Save a draft at least every 30 seconds while the user keeps typing, through the new autosaveMaxWaitMs of ComposeWindow, since the two second debounce restarted on every keystroke and never fired
+- Test the interval save, the renewal, the save before sign-in and the impersonation exception, and make the tests that assert no request was sent ignore the renewal
+- Document the change in the release notes and NOTES
+- Upgraded react-shared
+
 ## [0.20.0] - 2026-09-27
 
 ### Added
@@ -1063,7 +1073,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/rapidmx/web-client/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/rapidmx/web-client/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rapidmx/web-client/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rapidmx/web-client/compare/v0.17.2...v0.18.0

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.21.0
+
 ### Fixed
 
 - **You are no longer signed out every hour.** The sign-in lasts an hour, and nothing renewed it, so the web app, the admin console and the escrow console all sent you back to sign in when it ran out. Each now renews it in the background well before then, and again when you return to a tab or your computer wakes, and a tab opened after the hour has passed signs you back in on its own for as long as the two-week sign-in is valid. When a renewal is refused because the two-week sign-in has ended, the app saves what is open in your compose windows to Drafts and then takes you to the sign-in page, which brings you back to where you were. It does not renew the sign-in of an administrator viewing as another user. Needs `@rapidmx/react-shared` with `useSessionRefresh`.
