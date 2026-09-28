@@ -4,8 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
 import { HiOutlineAdjustmentsHorizontal, HiOutlineBarsArrowDown, HiOutlineStop } from "react-icons/hi2";
-import { MessageListFilter, MessageListSort, MessageSortOrder } from "@rapidmx/react-shared/mail/mailApi.js";
-import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
+import { MessageListFilter, MessageListSort, MessageSortOrder } from "../../../../lib/mail/mailApi.js";
+import { Label } from "../../../../lib/mail/labelsApi.js";
 import MenuButton, { MenuSectionSpec } from "./MenuButton.js";
 import { NewLabelDialog, labelSections, useLabelDraft } from "./labelMenu.js";
 import {

@@ -14,9 +14,10 @@ import {
     HiOutlineSun,
     HiOutlineXMark,
 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { TaskList, TaskPriority, createTask, listTaskLists } from "@rapidmx/react-shared/tasks/tasksApi.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import { TaskList, TaskPriority, createTask, listTaskLists } from "../../../../lib/tasks/tasksApi.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
 import { notify } from "../../notifications/store.js";
 import { EventFormController } from "./eventForm.js";
@@ -75,6 +76,7 @@ export interface TaskQuickFormProps {
  */
 export default function TaskQuickForm({ c, draft, onDraftChange, tabs, expanded, onExpand }: TaskQuickFormProps) {
     const { values } = c;
+    const client = useApiClient();
     const [lists, setLists] = useState<TaskList[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
@@ -83,7 +85,7 @@ export default function TaskQuickForm({ c, draft, onDraftChange, tabs, expanded,
     useEffect(() => {
         let cancelled = false;
         setLists([]);
-        void listTaskLists(values.targetMailboxUid)
+        void listTaskLists(values.targetMailboxUid, {}, client)
             .catch((): TaskList[] => [])
             .then((result) => {
                 if (!cancelled) {
@@ -93,7 +95,7 @@ export default function TaskQuickForm({ c, draft, onDraftChange, tabs, expanded,
         return () => {
             cancelled = true;
         };
-    }, [values.targetMailboxUid]);
+    }, [values.targetMailboxUid, client]);
 
     const mailboxChoices = c.mailboxOptions && c.mailboxOptions.length > 1 ? c.mailboxOptions : undefined;
     // A list of another mailbox that was chosen before the mailbox changed is no longer one.
@@ -114,23 +116,26 @@ export default function TaskQuickForm({ c, draft, onDraftChange, tabs, expanded,
         setSaving(true);
         try {
             const mailboxUid = values.targetMailboxUid;
-            const folderUid = await findWellKnownFolderUid(mailboxUid, "tasks");
+            const folderUid = await findWellKnownFolderUid(mailboxUid, "tasks", client);
             if (!folderUid) {
                 setError("That mailbox has no Tasks folder.");
                 return;
             }
-            await createTask({
-                mailboxUid,
-                folderUid,
-                title,
-                body: draft.body.trim() || undefined,
-                // A date-only due date is the local day's midnight, the way the Tasks app writes one.
-                dueDate: draft.dueDate ? parseISO(draft.allDay ? draft.dueDate : `${draft.dueDate}T${draft.dueTime}`).toISOString() : undefined,
-                priority: draft.priority,
-                reminderDate: draft.reminder ? parseISO(draft.reminder).toISOString() : undefined,
-                taskListUid: listUid || undefined,
-                myDay: draft.myDay || undefined,
-            });
+            await createTask(
+                {
+                    mailboxUid,
+                    folderUid,
+                    title,
+                    body: draft.body.trim() || undefined,
+                    // A date-only due date is the local day's midnight, the way the Tasks app writes one.
+                    dueDate: draft.dueDate ? parseISO(draft.allDay ? draft.dueDate : `${draft.dueDate}T${draft.dueTime}`).toISOString() : undefined,
+                    priority: draft.priority,
+                    reminderDate: draft.reminder ? parseISO(draft.reminder).toISOString() : undefined,
+                    taskListUid: listUid || undefined,
+                    myDay: draft.myDay || undefined,
+                },
+                client,
+            );
             notify({ kind: "success", title: "Task added", message: `“${title}” was added to Tasks.` });
             c.onCancel();
         } catch (err) {

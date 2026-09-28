@@ -4,8 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { HiOutlineExclamationTriangle } from "react-icons/hi2";
-import { getPluginStatus, listPlugins, Plugin, PluginStatus } from "@rapidmx/react-shared/admin/pluginsApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import { getPluginStatus, listPlugins, Plugin, PluginStatus } from "../../../../../lib/admin/pluginsApi.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
 import Badge from "./Badge.js";
 import { NO_VALUE } from "./format.js";
 

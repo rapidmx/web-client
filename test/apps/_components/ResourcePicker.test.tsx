@@ -8,10 +8,19 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ResourcePicker from "../../../apps/shared/components/calendar/ResourcePicker.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // `PopoverPortal`'s own positioning/portal/outside-click behavior is tested in its own file — mocked
 // here to a plain passthrough so this file only exercises `ResourcePicker`'s own content.
-vi.mock("@rapidmx/react-shared/components/overlays/PopoverPortal.js", () => ({
+vi.mock("../../../lib/components/overlays/PopoverPortal.js", () => ({
     default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
@@ -108,5 +117,30 @@ describe("ResourcePicker", () => {
         mockFetch(() => jsonResponse(200, [resource({ resourceType: undefined, resourceCapacity: undefined })]));
         render(<ResourcePicker anchorRef={anchorRef} onClose={vi.fn()} onSelect={vi.fn()} excludeAddresses={[]} />);
         expect(await screen.findByText("room")).toBeInTheDocument();
+    });
+
+    describe("an explicit ApiClient from context (e.g. tauri-client's multi-account mode)", () => {
+        it("fetches resources through the provided client's own fetch, not the global one", async () => {
+            const fetchMock = mockFetch(() => {
+                throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+            });
+            const client = fakeApiClient(() => [resource()]);
+
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <ResourcePicker anchorRef={anchorRef} onClose={vi.fn()} onSelect={vi.fn()} excludeAddresses={[]} />
+                </ApiClientContext.Provider>,
+            );
+
+            expect(await screen.findByRole("button", { name: /Room A/ })).toBeInTheDocument();
+            expect(client.fetch).toHaveBeenCalledWith(expect.stringContaining("/mail/mailboxes"), undefined);
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it("still behaves exactly as before with no provider above it (the default global-fetch path)", async () => {
+            mockFetch(() => jsonResponse(200, [resource()]));
+            render(<ResourcePicker anchorRef={anchorRef} onClose={vi.fn()} onSelect={vi.fn()} excludeAddresses={[]} />);
+            expect(await screen.findByRole("button", { name: /Room A/ })).toBeInTheDocument();
+        });
     });
 });

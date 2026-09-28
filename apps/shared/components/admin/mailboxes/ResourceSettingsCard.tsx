@@ -3,10 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Mailbox, updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { Mailbox, updateMailbox } from "../../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -31,6 +32,7 @@ export interface ResourceSettingsCardProps {
  * resource at creation time (`apps/admin/mailboxes/new`), not retroactively from here.
  */
 export default function ResourceSettingsCard({ mailbox, onUpdate }: ResourceSettingsCardProps) {
+    const client = useApiClient();
     const [resourceType, setResourceType] = useState<"room" | "equipment">(mailbox.resourceType ?? "room");
     const [resourceCapacity, setResourceCapacity] = useState(mailbox.resourceCapacity?.toString() ?? "");
     const [autoAcceptBookings, setAutoAcceptBookings] = useState(!!mailbox.autoAcceptBookings);
@@ -47,16 +49,19 @@ export default function ResourceSettingsCard({ mailbox, onUpdate }: ResourceSett
         setSaved(false);
         setSaving(true);
         try {
-            const updated = await updateMailbox({
-                uid: mailbox.uid,
-                version: mailbox.version,
-                resourceType,
-                resourceCapacity: resourceCapacity ? Number(resourceCapacity) : null,
-                autoAcceptBookings,
-                allowConflicts,
-                bookingWindowDays: bookingWindowDays ? Number(bookingWindowDays) : null,
-                maxDurationMinutes: maxDurationMinutes ? Number(maxDurationMinutes) : null,
-            });
+            const updated = await updateMailbox(
+                {
+                    uid: mailbox.uid,
+                    version: mailbox.version,
+                    resourceType,
+                    resourceCapacity: resourceCapacity ? Number(resourceCapacity) : null,
+                    autoAcceptBookings,
+                    allowConflicts,
+                    bookingWindowDays: bookingWindowDays ? Number(bookingWindowDays) : null,
+                    maxDurationMinutes: maxDurationMinutes ? Number(maxDurationMinutes) : null,
+                },
+                client,
+            );
             onUpdate(updated);
             setSaved(true);
         } catch (err) {

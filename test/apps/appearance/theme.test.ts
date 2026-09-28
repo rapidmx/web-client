@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import type { AppearancePreferences } from "@rapidmx/react-shared/appearance/preferencesApi.js";
+import type { AppearancePreferences } from "../../../lib/appearance/preferencesApi.js";
 import { BLACK, WHITE, contrastRatio, parseHex } from "../../../apps/shared/appearance/color.js";
 import {
     DEFAULT_PALETTE,

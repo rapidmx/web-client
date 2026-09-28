@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import { describeGuestPermissions, VISIBILITIES, VISIBILITY_HELP, VISIBILITY_LABEL } from "../../../apps/shared/components/calendar/eventFormat.js";
 import {
     SEARCH_DAYS,

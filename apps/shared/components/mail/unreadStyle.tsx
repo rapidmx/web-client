@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../../lib/mail/mailApi.js";
 
 /**
  * How an unread message looks in every list of mail (the message list, the conversation list and its child rows, the

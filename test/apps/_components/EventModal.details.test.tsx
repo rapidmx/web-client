@@ -8,8 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
-import { Attendee } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
+import { Attendee } from "../../../lib/calendar/calendarApi.js";
 
 // What an existing event shows first: read-only details, with Modify (organizer only) and Delete, and the invited reader's answer.
 

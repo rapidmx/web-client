@@ -4,9 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useState } from "react";
-import { updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { updateMailbox } from "../../../../lib/mail/mailApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 export type SettingsReadReceiptsPageProps = Omit<SettingsShellProps, "active">;
@@ -24,6 +25,7 @@ function ReadReceiptsContent() {
     // `SettingsShell` only ever renders its children once `mailboxes` has loaded and `mailboxUid` has
     // resolved to one of them — same established non-null pattern as `apps/www/settings/auto-reply/index.tsx`.
     const mailbox = mailboxes.find((mb) => mb.uid === mailboxUid)!;
+    const client = useApiClient();
 
     const [alwaysRequestReceiptInternal, setAlwaysRequestReceiptInternal] = useState(mailbox.alwaysRequestReceiptInternal ?? true);
     const [alwaysRequestReceiptFederated, setAlwaysRequestReceiptFederated] = useState(mailbox.alwaysRequestReceiptFederated ?? false);
@@ -41,16 +43,19 @@ function ReadReceiptsContent() {
         setSaved(false);
         setSaving(true);
         try {
-            const updated = await updateMailbox({
-                uid: mailbox.uid,
-                version,
-                alwaysRequestReceiptInternal,
-                alwaysRequestReceiptFederated,
-                alwaysRequestReceiptExternal,
-                autoSendReceiptsInternal,
-                autoSendReceiptsFederated,
-                autoSendReceiptsExternal,
-            });
+            const updated = await updateMailbox(
+                {
+                    uid: mailbox.uid,
+                    version,
+                    alwaysRequestReceiptInternal,
+                    alwaysRequestReceiptFederated,
+                    alwaysRequestReceiptExternal,
+                    autoSendReceiptsInternal,
+                    autoSendReceiptsFederated,
+                    autoSendReceiptsExternal,
+                },
+                client,
+            );
             setVersion(updated.version);
             setSaved(true);
         } catch (err) {

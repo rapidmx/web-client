@@ -4,20 +4,20 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
     MailboxAccessMember,
     MailboxAccessRole,
     listMailboxAccess,
     removeMailboxAccess,
     setMailboxAccess,
-} from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
+} from "../../../../lib/mail/mailboxAccessApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import PrincipalPicker from "../../../shared/components/sharing/PrincipalPicker.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
+import { SkeletonList } from "../../../../lib/components/feedback/Skeleton.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const ROLE_LABELS: Record<MailboxAccessRole, string> = { viewer: "Can view", manager: "Can manage" };

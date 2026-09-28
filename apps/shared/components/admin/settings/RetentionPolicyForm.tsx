@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { MIN_AUDIT_LOG_RETENTION_DAYS, RetentionPolicy, RetentionPolicyUpdate, updateRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { MIN_AUDIT_LOG_RETENTION_DAYS, RetentionPolicy, RetentionPolicyUpdate, updateRetentionPolicy } from "../../../../../lib/admin/retentionPolicyApi.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

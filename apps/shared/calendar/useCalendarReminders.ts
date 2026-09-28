@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useEffect } from "react";
-import { getPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
+import { getPushClient } from "../../../lib/mail/pushClient.js";
 import { notify } from "../notifications/store.js";
 import { CalendarReminderNotice, calendarReminderOf, joinMeetingUrl, reminderMessage, reminderNotificationId, snoozeDelayMs } from "./calendarReminders.js";
 

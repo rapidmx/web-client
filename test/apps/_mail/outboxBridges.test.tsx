@@ -4,7 +4,9 @@
 import React from "react";
 import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { Folder, Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Folder, Message } from "../../../lib/mail/mailApi.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { openComposeFromOutside, registerComposeOpener, registerUnlockOpener, requestUnlockFromOutside } from "../../../apps/shared/mail/outbox/composeBridge.js";
 import UnlockBridge from "../../../apps/shared/mail/outbox/UnlockBridge.js";
@@ -109,5 +111,20 @@ describe("useOutboxStatus", () => {
         view.unmount();
         release(jsonResponse(200, [failed, going] as unknown));
         await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    it("reads through an explicit ApiClient when one is provided (e.g. a native multi-account host), instead of the default global cookie-based session", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(500, { message: "the default global session must not be used" }));
+        const clientFetch = vi.fn().mockResolvedValue([failed, going]);
+        const client: ApiClient = { fetch: clientFetch, setUnauthorizedObserver: vi.fn() };
+        const view = render(
+            <ApiClientContext.Provider value={client}>
+                <Probe folders={mailboxFolders([outbox, inbox])} />
+            </ApiClientContext.Provider>,
+        );
+        await waitFor(() => expect(view.getByTestId("statuses")).toHaveTextContent('"ob1":{"sending":1,"retrying":0,"failed":1,"scheduled":0}'));
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(clientFetch).toHaveBeenCalledTimes(1);
+        expect(clientFetch.mock.calls[0][0]).toContain(`limit=${OUTBOX_STATUS_LIMIT}`);
     });
 });

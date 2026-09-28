@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { createContext, ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { OverlayDepthContext, useOverlayDialog } from "@rapidmx/react-shared/components/overlays/overlayStack.js";
+import { OverlayDepthContext, useOverlayDialog } from "../../../../lib/components/overlays/overlayStack.js";
 
 /**
  * Where a new event's quick-create popover hangs: the rectangle (viewport coordinates) of what was clicked - a time slot, a day cell, the

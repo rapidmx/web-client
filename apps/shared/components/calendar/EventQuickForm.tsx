@@ -4,9 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { HTMLAttributes, ReactNode, useContext, useState } from "react";
 import { HiOutlineBars2, HiOutlineCalendarDays, HiOutlineClock, HiOutlineXMark } from "react-icons/hi2";
-import { describeRecurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { describeRecurrence } from "../../../../lib/calendar/recurrence.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import { EventShellContext } from "./EventShell.js";
 import { CalendarField, DateTimeControls, DescriptionRow, GuestsRow, IconRow, LocationRow, VideoConferencingRow } from "./EventFormParts.js";
 import { EventFormController } from "./eventForm.js";

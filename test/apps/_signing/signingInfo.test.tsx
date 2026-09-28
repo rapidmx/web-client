@@ -2,7 +2,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-// The request itself and its shape are `@rapidmx/react-shared/crypto/signingProviderApi.js`'s (R6's) - covered by react-shared's own
+// The request itself and its shape are `../../../lib/crypto/signingProviderApi.js`'s (R6's) - covered by react-shared's own
 // `signingProviderApi.test.ts`. This file is only the caching, the never-rejects contract, and the hook that sit on top of it here.
 import React from "react";
 import { act, render, screen } from "@testing-library/react";

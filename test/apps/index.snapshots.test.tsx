@@ -17,7 +17,7 @@ import { clearListSnapshots, listSnapshotKey, readListSnapshot } from "../../app
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const InboxPage = withTestRouter(InboxPageBase);
 
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../lib/crypto/keySession.js", () => ({
     getUnlockedKeys: vi.fn().mockReturnValue(undefined),
     unlockWithPassword: vi.fn(),
     subscribeKeySession: vi.fn(() => () => undefined),

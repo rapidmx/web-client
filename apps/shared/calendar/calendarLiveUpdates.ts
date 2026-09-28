@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 /** Pure helper behind the calendar page's live updates: which push events say "an event changed, and the payload is only a busy block". */
 
-import type { PushEvent } from "@rapidmx/react-shared/mail/pushClient.js";
+import type { PushEvent } from "../../../lib/mail/pushClient.js";
 
 /** The published model name of a calendar event on either database (`CalendarEventMongo`, `CalendarEventSQL`) - and not the reminder's `"CalendarEvent"`,
  * which has its own action. */

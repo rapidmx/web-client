@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
 import type { DiagnosticsRuntime } from "./diagnosticsApi.js";
 import type { DiagnosticsResource } from "./useDiagnosticsResource.js";
 import Badge from "./Badge.js";

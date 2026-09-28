@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { PinnedKeyChangedError, type PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { PinnedKeyChangedError, type PublicKey } from "../../../lib/crypto/keyvaultApi.js";
 import {
     KEY_CHANGE_FORBIDDEN_MESSAGE,
     KEY_CHANGE_GENERIC_MESSAGE,

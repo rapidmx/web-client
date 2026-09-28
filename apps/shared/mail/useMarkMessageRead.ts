@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useEffect, useRef } from "react";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import { useMailShell } from "../components/mail/layout/MailShell.js";
 import { setReadState } from "./messageReadState.js";
 
@@ -19,10 +20,11 @@ import { setReadState } from "./messageReadState.js";
  */
 export function useMarkMessageRead(message: Message | null, onPatched: (updated: Message, previous?: Message) => void): void {
     const { trackMessageChange } = useMailShell();
+    const client = useApiClient();
     const openUidRef = useRef<string | undefined>(undefined);
     const requestedRef = useRef<Set<string>>(new Set());
-    const latestRef = useRef({ onPatched, trackMessageChange });
-    latestRef.current = { onPatched, trackMessageChange };
+    const latestRef = useRef({ onPatched, trackMessageChange, client });
+    latestRef.current = { onPatched, trackMessageChange, client };
 
     useEffect(() => {
         if (message?.uid !== openUidRef.current) {
@@ -39,9 +41,14 @@ export function useMarkMessageRead(message: Message | null, onPatched: (updated:
         if (message.flags.read === true) {
             return;
         }
-        void setReadState(message, true, {
-            patch: (updated, previous) => latestRef.current.onPatched(updated, previous),
-            track: (previous, next) => latestRef.current.trackMessageChange(previous, next),
-        });
+        void setReadState(
+            message,
+            true,
+            {
+                patch: (updated, previous) => latestRef.current.onPatched(updated, previous),
+                track: (previous, next) => latestRef.current.trackMessageChange(previous, next),
+            },
+            latestRef.current.client,
+        );
     }, [message]);
 }

@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { PinnedKeyChangedError, resolveKeyConflict, type KeyConflict } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { PinnedKeyChangedError, resolveKeyConflict, type KeyConflict } from "../../../../lib/crypto/keyvaultApi.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
 import { conflictSourceLabel, formatDate, groupFingerprint, keyChangeErrorMessage } from "./contactKeys.js";
 
 export interface KeyChangeReviewProps {

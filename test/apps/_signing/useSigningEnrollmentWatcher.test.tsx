@@ -5,15 +5,16 @@
 import React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import type { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ApiRequestError, type ApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { Mailbox } from "../../../lib/mail/mailApi.js";
 
 const { checkSignEnrollmentStatus, getCurrentSignEnrollment } = vi.hoisted(() => ({
     checkSignEnrollmentStatus: vi.fn(),
     getCurrentSignEnrollment: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     checkSignEnrollmentStatus,
     getCurrentSignEnrollment,
 }));
@@ -115,7 +116,7 @@ describe("the signing-certificate watcher", () => {
         checkSignEnrollmentStatus.mockResolvedValue({ status: "issued" });
         render(<Watcher mailboxes={[mailbox("mb1")]} />);
         await act(() => vi.advanceTimersByTimeAsync(0));
-        expect(getCurrentSignEnrollment).toHaveBeenCalledWith("mb1");
+        expect(getCurrentSignEnrollment).toHaveBeenCalledWith("mb1", undefined);
         expect(readStoredSignEnrollment("mb1")).toBe("enr-9");
         expect(getEnrollmentSnapshot("mb1")?.result?.stage).toBe("awaiting-challenge");
         expect(shown()).toHaveLength(0);
@@ -184,5 +185,21 @@ describe("the signing-certificate watcher", () => {
         await act(async () => answer({ enrollmentId: "enr-9", status: "pending" }));
         expect(readStoredSignEnrollment("mb1")).toBeNull();
         expect(getEnrollmentSnapshot("mb1")).toBeUndefined();
+    });
+
+    it("passes an explicit ApiClient (from useApiClient()) through to getCurrentSignEnrollment() when one is provided, instead of the default global session", async () => {
+        const client: ApiClient = { fetch: vi.fn(), setUnauthorizedObserver: vi.fn() };
+        getCurrentSignEnrollment.mockResolvedValue(null);
+        const { rerender } = render(
+            <ApiClientContext.Provider value={client}>
+                <Watcher mailboxes={[mailbox("mb1")]} />
+            </ApiClientContext.Provider>,
+        );
+        await act(() => vi.advanceTimersByTimeAsync(0));
+        expect(getCurrentSignEnrollment).toHaveBeenCalledWith("mb1", client);
+        // Every test above renders with no ApiClientContext.Provider at all, proving the other half: `client` there is always undefined.
+        rerender(<Watcher mailboxes={[mailbox("mb2")]} />);
+        await act(() => vi.advanceTimersByTimeAsync(0));
+        expect(getCurrentSignEnrollment).toHaveBeenCalledWith("mb2", undefined);
     });
 });

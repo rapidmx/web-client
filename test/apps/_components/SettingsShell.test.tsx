@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import SettingsShellBase, { useSettingsShell } from "../../../apps/shared/components/settings/layout/SettingsShell.js";
 import { latestRouter, withTestRouter } from "../routerTestUtils.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
 const SettingsShell = withTestRouter(SettingsShellBase);
@@ -409,5 +411,28 @@ describe("SettingsShell", () => {
         );
 
         expect(await screen.findByText("mb-a/1")).toBeInTheDocument();
+    });
+
+    it("lists mailboxes via the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) return jsonResponse(200, [mailboxA]);
+            throw new Error(`unexpected ${url}`);
+        });
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SettingsShell active="auto-reply" userUid="u1">
+                    content
+                </SettingsShell>
+            </ApiClientContext.Provider>,
+        );
+
+        expect(await screen.findByText("content")).toBeInTheDocument();
+        const call = fetchMock.mock.calls.find(([url]) => String(url).startsWith("https://account-a.example.com/api/mail/mailboxes?"))!;
+        expect(new Headers((call[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

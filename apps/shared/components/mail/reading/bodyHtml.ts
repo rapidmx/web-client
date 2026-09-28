@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { sanitizeMessageBodyHtml } from "@rapidmx/react-shared/mail/messageBodySanitizer.js";
+import { sanitizeMessageBodyHtml } from "../../../../../lib/mail/messageBodySanitizer.js";
 import { parseColour } from "./color.js";
 
 /**

@@ -3,8 +3,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
+import { ApiRequestError, type ApiClient } from "../../../lib/util/api.js";
 import {
     EMPTIABLE_FOLDER_TYPES,
     PURGE_CONCURRENCY,
@@ -18,7 +18,7 @@ import { getNotificationsSnapshot } from "../../../apps/shared/notifications/sto
 
 // The server, stood in for: what `purgeMessage()`/`emptyFolder()`/`listMessages()` answer is the test's to decide.
 const api = vi.hoisted(() => ({ purgeMessage: vi.fn(), emptyFolder: vi.fn(), listMessages: vi.fn() }));
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", () => api);
+vi.mock("../../../lib/mail/mailApi.js", () => api);
 
 function message(uid: string, subject = `Subject ${uid}`): Message {
     return { uid, subject, mailboxUid: "mb1", folderUid: "trash" } as Message;
@@ -105,13 +105,19 @@ describe("purgeMessages", () => {
 
         expect(peak).toBe(PURGE_CONCURRENCY);
     });
+
+    it("threads an explicit ApiClient through to purgeMessage, unchanged from the default (undefined) path otherwise", async () => {
+        const client = {} as ApiClient;
+        await purgeMessages([message("a")], client);
+        expect(api.purgeMessage).toHaveBeenCalledWith("a", client);
+    });
 });
 
 describe("purgeFolder", () => {
     it("empties the folder with one request, and never lists it", async () => {
         const outcome = await purgeFolder("trash");
 
-        expect(api.emptyFolder).toHaveBeenCalledWith("trash");
+        expect(api.emptyFolder).toHaveBeenCalledWith("trash", undefined);
         expect(api.listMessages).not.toHaveBeenCalled();
         expect(outcome).toEqual({ emptied: true, deleted: [], failed: [] });
     });
@@ -125,7 +131,7 @@ describe("purgeFolder", () => {
 
         const outcome = await purgeFolder("trash");
 
-        expect(api.listMessages).toHaveBeenCalledWith("trash", { limit: 500, page: 0 });
+        expect(api.listMessages).toHaveBeenCalledWith("trash", { limit: 500, page: 0 }, undefined);
         expect(outcome.deleted.map((m) => m.uid)).toEqual(["a"]);
         expect(outcome.failed.map((f) => f.message.uid)).toEqual(["b"]);
         expect(outcome.emptied).toBe(false);
@@ -170,6 +176,18 @@ describe("purgeFolder", () => {
         api.emptyFolder.mockRejectedValue(new TypeError("Failed to fetch"));
         await expect(purgeFolder("trash")).rejects.toBeInstanceOf(TypeError);
         expect(api.listMessages).not.toHaveBeenCalled();
+    });
+
+    it("threads an explicit ApiClient through to emptyFolder (and, on fallback, listMessages/purgeMessage too)", async () => {
+        const client = {} as ApiClient;
+        api.emptyFolder.mockRejectedValue(refusal(409, HOLD));
+        api.listMessages.mockResolvedValue([message("a")]);
+
+        await purgeFolder("trash", undefined, client);
+
+        expect(api.emptyFolder).toHaveBeenCalledWith("trash", client);
+        expect(api.listMessages).toHaveBeenCalledWith("trash", { limit: 500, page: 0 }, client);
+        expect(api.purgeMessage).toHaveBeenCalledWith("a", client);
     });
 });
 

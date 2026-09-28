@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import type { Attachment } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
+import type { Attachment } from "../../../../../lib/mail/mailApi.js";
+import type { MimeAttachment } from "../../../../../lib/crypto/mime.js";
 import { BodyContent, attachmentSource, makeCidResolver } from "./bodyContent.js";
 import { prepareBodyHtml } from "./bodyHtml.js";
 import { frameCsp } from "./frameDocument.js";

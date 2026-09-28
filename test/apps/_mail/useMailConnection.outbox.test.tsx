@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
+import { getPushClient } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { useMailConnection } from "../../../apps/shared/mail/useMailConnection.js";
 import { sendState } from "../../../apps/shared/mail/outbox/sendState.js";

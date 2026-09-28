@@ -5,11 +5,13 @@
 import React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Folder } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Folder } from "../../../lib/mail/mailApi.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import LocalIndexLifecycle, { POLL_INTERVAL_MS } from "../../../apps/shared/search/LocalIndexLifecycle.js";
 
 const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys }));
 
 const { buildLocalIndex, cancelLocalIndexBuild } = vi.hoisted(() => ({ buildLocalIndex: vi.fn(), cancelLocalIndexBuild: vi.fn() }));
 vi.mock("../../../apps/shared/search/localIndexBuilder.js", () => ({ buildLocalIndex, cancelLocalIndexBuild }));
@@ -60,7 +62,7 @@ describe("LocalIndexLifecycle", () => {
         rerender(<LocalIndexLifecycle mailboxUid="mb1" folders={[...folders]} />);
         await tick();
         expect(buildLocalIndex).toHaveBeenCalledTimes(1);
-        expect(buildLocalIndex).toHaveBeenCalledWith("mb1", expect.anything(), folders);
+        expect(buildLocalIndex).toHaveBeenCalledWith("mb1", expect.anything(), folders, undefined, undefined);
     });
 
     it("waits for folders, and starts the build once the active mailbox is unlocked later", async () => {
@@ -76,7 +78,7 @@ describe("LocalIndexLifecycle", () => {
         expect(buildLocalIndex).toHaveBeenCalledTimes(1);
         unlockedMailboxes.add("mb2");
         await tick();
-        expect(buildLocalIndex).toHaveBeenLastCalledWith("mb2", expect.anything(), folders);
+        expect(buildLocalIndex).toHaveBeenLastCalledWith("mb2", expect.anything(), folders, undefined, undefined);
         late.unmount();
     });
 
@@ -143,5 +145,36 @@ describe("LocalIndexLifecycle", () => {
         render(<LocalIndexLifecycle folders={folders} />);
         await tick();
         expect(buildLocalIndex).not.toHaveBeenCalled();
+    });
+});
+
+// A native, multi-account host mounts this component under its own account's `ApiClientContext.Provider` (see `useApiClient()`'s own doc
+// comment), which must reach `buildLocalIndex()`'s own trailing `client` argument - both for the mailbox/folders-driven build and for one the
+// long-lived poll interval starts later (the interval closure reads the latest client from `latestRef`, not the one captured at mount). Every
+// test above renders with no provider at all, proving the other half: `client` is `undefined` there throughout.
+describe("LocalIndexLifecycle - an explicit ApiClient is threaded through", () => {
+    it("passes the provided client to the build it starts directly", async () => {
+        const client: ApiClient = { fetch: vi.fn(), setUnauthorizedObserver: vi.fn() };
+        unlockedMailboxes.add("mb1");
+        render(
+            <ApiClientContext.Provider value={client}>
+                <LocalIndexLifecycle mailboxUid="mb1" folders={folders} />
+            </ApiClientContext.Provider>,
+        );
+        await tick();
+        expect(buildLocalIndex).toHaveBeenCalledWith("mb1", expect.anything(), folders, undefined, client);
+    });
+
+    it("passes the current client to a build the poll interval starts once the mailbox unlocks later", async () => {
+        const client: ApiClient = { fetch: vi.fn(), setUnauthorizedObserver: vi.fn() };
+        render(
+            <ApiClientContext.Provider value={client}>
+                <LocalIndexLifecycle mailboxUid="mb1" folders={folders} />
+            </ApiClientContext.Provider>,
+        );
+        expect(buildLocalIndex).not.toHaveBeenCalled();
+        unlockedMailboxes.add("mb1");
+        await tick();
+        expect(buildLocalIndex).toHaveBeenCalledWith("mb1", expect.anything(), folders, undefined, client);
     });
 });

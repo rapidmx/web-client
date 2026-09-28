@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { describeSendFailure } from "@rapidmx/react-shared/mail/sendFailure.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { describeSendFailure } from "../../../lib/mail/sendFailure.js";
 import { NotificationAction, notify } from "./store.js";
 
 /** Whether `err` is a request that was cancelled (`AbortError`) - by name, since a `DOMException` is not always an `Error` (jsdom's is not). */

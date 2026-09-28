@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import ContactsShellBase, { useContactsShell } from "../../../apps/shared/components/contacts/layout/ContactsShell.js";
 import { latestRouter, withTestRouter } from "../routerTestUtils.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
 const ContactsShell = withTestRouter(ContactsShellBase);
@@ -266,5 +268,51 @@ describe("ContactsShell", () => {
         );
 
         expect(await screen.findByText("mb-a/f-contacts/1")).toBeInTheDocument();
+    });
+
+    // Round: under an `ApiClientContext.Provider` (e.g. `tauri-client`), the shell's own mailbox/folder
+    // resolution must route through that client's `baseUrl`/token instead of the default cookie-based `apiFetch()`.
+    // Matched by `.includes()` rather than `mockMailboxesAndFolders()`'s own `.startsWith()` prefixes, since an
+    // explicit client's requests carry an absolute `https://acct-a.example.com/...` URL, not a relative one -
+    // the unrelated `/api/system/branding` call AppShell always makes (regardless of this provider) is left to
+    // fall through to `mockMailboxesAndFolders()`'s "unexpected" throw, exactly as every other test in this file
+    // already relies on it doing silently.
+    function mockMailboxesAndFoldersAnyOrigin(mailboxes: unknown[], folders: unknown[]) {
+        return mockFetch((url) => {
+            if (url.includes("/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.includes("/mail/mailboxes")) return jsonResponse(200, mailboxes);
+            if (url.includes("/mail/folders")) return jsonResponse(200, folders);
+            throw new Error(`unexpected ${url}`);
+        });
+    }
+
+    describe("under an ApiClientContext.Provider", () => {
+        it("resolves mailboxes/folders through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const fetchMock = mockMailboxesAndFoldersAnyOrigin([mailboxA], [contactsFolder]);
+            render(<ContactsShell userUid="u1">content</ContactsShell>);
+
+            await screen.findByText("content");
+            const mailboxesCall = fetchMock.mock.calls.find(([url]) => (url as string).includes("/mail/mailboxes"))!;
+            expect(mailboxesCall[0]).toMatch(/^\/api\/mail\/mailboxes/);
+            expect(new Headers((mailboxesCall[1] as RequestInit).headers).get("Authorization")).toBeNull();
+        });
+
+        it("resolves mailboxes/folders through the provided ApiClient's own baseUrl and bearer token", async () => {
+            const fetchMock = mockMailboxesAndFoldersAnyOrigin([mailboxA], [contactsFolder]);
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <ContactsShell userUid="u1">content</ContactsShell>
+                </ApiClientContext.Provider>,
+            );
+
+            await screen.findByText("content");
+            const mailboxesCall = fetchMock.mock.calls.find(([url]) => (url as string).includes("/mail/mailboxes"))!;
+            expect(mailboxesCall[0]).toMatch(/^https:\/\/acct-a\.example\.com\/api\/mail\/mailboxes\?/);
+            expect(new Headers((mailboxesCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+            const foldersCall = fetchMock.mock.calls.find(([url]) => (url as string).includes("/mail/folders"))!;
+            expect(foldersCall[0]).toMatch(/^https:\/\/acct-a\.example\.com\/api\/mail\/folders/);
+            expect(new Headers((foldersCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        });
     });
 });

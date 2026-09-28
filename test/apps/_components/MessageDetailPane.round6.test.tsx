@@ -18,8 +18,8 @@ const { evaluateMessageSecurity, getUnlockedKeys, getPinnedSignerFingerprints } 
     getUnlockedKeys: vi.fn(),
     getPinnedSignerFingerprints: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({
     getPinnedSignerFingerprints,
     // No recorded key conflicts - see MessageDetailPane.keyChange.test.tsx for those.

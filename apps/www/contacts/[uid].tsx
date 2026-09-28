@@ -5,12 +5,13 @@
 import { pageTitle } from "../../shared/navigation/pageTitle.js";
 import { useNavigate } from "../../shared/navigation/index.js";
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Contact, deleteContact, getContact } from "@rapidmx/react-shared/contacts/contactsApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { Contact, deleteContact, getContact } from "../../../lib/contacts/contactsApi.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import ContactsShell, { ContactsShellProps } from "../../shared/components/contacts/layout/ContactsShell.js";
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
 import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigners.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 
@@ -32,6 +33,7 @@ type Mode = "view" | "edit";
 
 function ContactDetailContent({ uid }: { uid: string }) {
     const navigate = useNavigate();
+    const client = useApiClient();
     const [contact, setContact] = useState<Contact | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -40,7 +42,7 @@ function ContactDetailContent({ uid }: { uid: string }) {
     useEffect(() => {
         setLoading(true);
         setError(null);
-        getContact(uid)
+        getContact(uid, client)
             .then(setContact)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this contact."))
             .finally(() => setLoading(false));
@@ -52,7 +54,7 @@ function ContactDetailContent({ uid }: { uid: string }) {
     // never runs with a stale/absent contact — no redundant null check needed here.
     async function handleDelete(contact: Contact) {
         try {
-            await deleteContact(contact.uid, contact.version);
+            await deleteContact(contact.uid, contact.version, client);
             // A deleted contact's pinned signing keys must stop vouching for signatures.
             clearPinnedSignerCache();
             navigate("/contacts");
@@ -64,7 +66,7 @@ function ContactDetailContent({ uid }: { uid: string }) {
 
     // After a key change was resolved (or found stale): re-read the contact, keeping the one shown if that fails.
     function handleKeysChanged() {
-        getContact(uid).then(setContact, () => undefined);
+        getContact(uid, client).then(setContact, () => undefined);
     }
 
     if (loading) {

@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useCallback, useEffect, useReducer } from "react";
-import { MessageInvite, getMessageInvite } from "@rapidmx/react-shared/calendar/inviteApi.js";
+import { MessageInvite, getMessageInvite } from "../../../../../lib/calendar/inviteApi.js";
+import { ApiClient } from "../../../../../lib/util/api.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
 
 /**
  * A per-message cache of the calendar invitation the server reads out of a message, shared by everything that draws one: the reading pane's
@@ -41,15 +43,20 @@ function normalize(invite: MessageInvite | null): MessageInvite | null {
     return { ...invite, attendees: partial.attendees ?? [], conflicts: partial.conflicts ?? [], schedule: partial.schedule ?? [] };
 }
 
-/** Reads a message's invitation, from the cache when it is fresh. Rejects when the lookup fails. */
-export function loadInvite(uid: string): Promise<MessageInvite | null> {
+/**
+ * Reads a message's invitation, from the cache when it is fresh. Rejects when the lookup fails. `client` (see
+ * `useApiClient()`) is only consulted for a lookup this call actually makes - a fresh entry already in flight or
+ * cached keeps whichever client (or lack of one) started it, same as every other cache-by-uid shortcut here; the
+ * cache itself is keyed only by `uid`, not by account, so it assumes distinct accounts never share one.
+ */
+export function loadInvite(uid: string, client?: ApiClient): Promise<MessageInvite | null> {
     const existing = entries.get(uid);
     if (existing && (existing.value === undefined || Date.now() - existing.at < INVITE_TTL_MS)) {
         return existing.promise;
     }
     const entry: Entry = {
         at: Date.now(),
-        promise: getMessageInvite(uid).then(
+        promise: getMessageInvite(uid, client).then(
             (invite) => {
                 entry.value = normalize(invite);
                 entry.at = Date.now();
@@ -87,6 +94,7 @@ export function clearInviteCache(): void {
  */
 export function useMessageInvite(uid: string, enabled = true): { invite: MessageInvite | null; settled: boolean; setInvite: (invite: MessageInvite) => void } {
     const [, rerender] = useReducer((n: number) => n + 1, 0);
+    const client = useApiClient();
     useEffect(() => {
         if (!enabled) {
             return;
@@ -100,14 +108,14 @@ export function useMessageInvite(uid: string, enabled = true): { invite: Message
         const set = listeners.get(uid) ?? new Set();
         set.add(update);
         listeners.set(uid, set);
-        loadInvite(uid).then(update, () => {
+        loadInvite(uid, client).then(update, () => {
             // Nothing to show, and nothing worth interrupting the reader with: the message reads the same without it.
         });
         return () => {
             cancelled = true;
             set.delete(update);
         };
-    }, [uid, enabled]);
+    }, [uid, enabled, client]);
     const setInvite = useCallback((invite: MessageInvite) => storeInvite(uid, invite), [uid]);
     const value = enabled ? entries.get(uid)?.value : undefined;
     return { invite: value ?? null, settled: value !== undefined, setInvite };

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { authApiFetch } from "@rapidmx/react-shared/util/api.js";
+import { authApiFetch } from "../../../lib/util/api.js";
 
 /**
  * Whether the signed-in user holds an administrator role, learned without elevating.

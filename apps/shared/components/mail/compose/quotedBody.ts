@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { apiUrl } from "@rapidmx/react-shared/util/api.js";
-import { Message, Recipient, getMessageRawContent } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { QuotedBody } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
-import type { MessageSecurityResult } from "@rapidmx/react-shared/crypto/messageSecurity.js";
-import { decodeHeaderText, extractDisplayBody, parseMimeEntity } from "@rapidmx/react-shared/crypto/mime.js";
+import { apiUrl } from "../../../../../lib/util/api.js";
+import { Message, Recipient, getMessageRawContent } from "../../../../../lib/mail/mailApi.js";
+import type { QuotedBody } from "../../../../../lib/mail/compose/composeQuoting.js";
+import type { MessageSecurityResult } from "../../../../../lib/crypto/messageSecurity.js";
+import { decodeHeaderText, extractDisplayBody, parseMimeEntity } from "../../../../../lib/crypto/mime.js";
 import { parseRecipientList } from "./recipients.js";
 
 /** What a Reply/Reply All/Forward needs from the message being answered, beyond what its `Message` record holds. */

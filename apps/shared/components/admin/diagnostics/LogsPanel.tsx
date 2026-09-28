@@ -15,8 +15,8 @@ import {
     HiOutlineStop,
     HiOutlineTrash,
 } from "react-icons/hi2";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
 import Badge, { BadgeTone } from "./Badge.js";
 import { SaveFile, timestampedFilename } from "./download.js";
 import { formatUptime } from "./format.js";

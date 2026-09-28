@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { Message, cancelScheduledSend, getMessage, listAttachments, listFolders, queueMessageSend } from "@rapidmx/react-shared/mail/mailApi.js";
-import { SendEvent, describeSendEventError } from "@rapidmx/react-shared/mail/sendEvents.js";
+import { Message, cancelScheduledSend, getMessage, listAttachments, listFolders, queueMessageSend } from "../../../../lib/mail/mailApi.js";
+import { SendEvent, describeSendEventError } from "../../../../lib/mail/sendEvents.js";
+import type { ApiClient } from "../../../../lib/util/api.js";
 import { formatRecipient } from "../../components/mail/compose/recipients.js";
 import { loadOriginalMessage } from "../../components/mail/compose/quotedBody.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
@@ -29,13 +30,13 @@ function summary(recipients: string[]): string {
 }
 
 /** Moves a message the server failed to relay back into Drafts (the only place it can be edited or sent again), and returns it as it is there. */
-async function moveBackToDrafts(uid: string, mailboxUid: string): Promise<Message> {
-    const message = await getMessage(uid);
-    const drafts = (await listFolders(mailboxUid)).find((folder) => folder.type === "drafts");
+async function moveBackToDrafts(uid: string, mailboxUid: string, client: ApiClient | undefined): Promise<Message> {
+    const message = await getMessage(uid, client);
+    const drafts = (await listFolders(mailboxUid, client)).find((folder) => folder.type === "drafts");
     if (!drafts || message.folderUid === drafts.uid) {
         return message;
     }
-    return cancelScheduledSend(message, drafts.uid);
+    return cancelScheduledSend(message, drafts.uid, client);
 }
 
 function escapeHtml(text: string): string {
@@ -43,9 +44,9 @@ function escapeHtml(text: string): string {
 }
 
 /** "Open draft" for a message the server failed to relay: back into Drafts, and into a compose window with what was written. */
-async function openFailedDraft(event: SendEvent): Promise<void> {
+async function openFailedDraft(event: SendEvent, client: ApiClient | undefined): Promise<void> {
     try {
-        const moved = await moveBackToDrafts(event.uid, event.mailboxUid ?? "");
+        const moved = await moveBackToDrafts(event.uid, event.mailboxUid ?? "", client);
         // Back in Drafts it is no longer a message on its way in its conversation.
         forgetOutgoing(event.uid);
         const request = retainedRequest(event.uid);
@@ -63,8 +64,10 @@ async function openFailedDraft(event: SendEvent): Promise<void> {
             });
             return;
         }
+        // loadOriginalMessage() (quotedBody.ts) does not yet accept an explicit ApiClient itself - out of scope here (that module is not one of
+        // this task's files); it still falls back to the default global session even under an ApiClientContext.Provider.
         const original = await loadOriginalMessage(moved, null);
-        const attachments = await listAttachments(moved.folderUid, moved.uid).catch(() => []);
+        const attachments = await listAttachments(moved.folderUid, moved.uid, client).catch(() => []);
         const byType = (type: "to" | "cc" | "bcc") => moved.recipients.filter((recipient) => recipient.type === type).map(formatRecipient).join(", ");
         openComposeFromOutside({
             mailboxUid: moved.mailboxUid,
@@ -88,7 +91,7 @@ async function openFailedDraft(event: SendEvent): Promise<void> {
 }
 
 /** "Retry" for a message the server failed to relay: the same send call again - a failed message stays in Outbox and the server queues it afresh (with a new retry budget). */
-async function retryFailed(event: SendEvent): Promise<void> {
+async function retryFailed(event: SendEvent, client: ApiClient | undefined): Promise<void> {
     if (!beginPendingSend({ draftUid: event.uid, mailboxUid: event.mailboxUid ?? "", subject: event.subject, recipients: event.recipients, scheduled: false })) {
         return;
     }
@@ -96,7 +99,7 @@ async function retryFailed(event: SendEvent): Promise<void> {
     markOutgoingSending(event.uid);
     try {
         setPendingStage(event.uid, "queuing");
-        const result = await queueMessageSend(event.uid);
+        const result = await queueMessageSend(event.uid, client);
         if (!result.queued) {
             notifySent();
         }
@@ -107,8 +110,10 @@ async function retryFailed(event: SendEvent): Promise<void> {
     }
 }
 
-/** Shows what a send event means to the user. */
-export function handleSendEvent(event: SendEvent): void {
+/** Shows what a send event means to the user. `client` is the explicit `ApiClient` (from `useApiClient()`) whichever code observed this push
+ * event was rendered under - `undefined` (the default) for every existing caller, which keeps using the default global cookie-based session
+ * exactly as before. */
+export function handleSendEvent(event: SendEvent, client?: ApiClient): void {
     if (event.action === "send-succeeded") {
         dismiss(retryId(event.uid));
         dismiss(failedId(event.uid));
@@ -139,8 +144,8 @@ export function handleSendEvent(event: SendEvent): void {
     }
     dismiss(retryId(event.uid));
     const actions = [
-        { label: "Retry", onClick: () => void retryFailed(event) },
-        { label: "Open draft", onClick: () => void openFailedDraft(event) },
+        { label: "Retry", onClick: () => void retryFailed(event, client) },
+        { label: "Open draft", onClick: () => void openFailedDraft(event, client) },
     ];
     notify({
         id: failedId(event.uid),

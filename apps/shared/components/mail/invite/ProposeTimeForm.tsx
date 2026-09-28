@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useId, useState } from "react";
-import type { MessageInvite, ProposedTime } from "@rapidmx/react-shared/calendar/inviteApi.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import type { MessageInvite, ProposedTime } from "../../../../../lib/calendar/inviteApi.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
 import { isoDay, validDate } from "./inviteFormat.js";
 
 const INPUT_CLASS = "w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface text-text";

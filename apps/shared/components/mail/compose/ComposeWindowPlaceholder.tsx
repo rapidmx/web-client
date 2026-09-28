@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect } from "react";
 import { HiOutlineMinus, HiOutlineXMark } from "react-icons/hi2";
-import Skeleton from "@rapidmx/react-shared/components/feedback/Skeleton.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import Skeleton from "../../../../../lib/components/feedback/Skeleton.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import useIsMobile from "../../../../../lib/util/useIsMobile.js";
 import type { ComposeSession } from "./ComposeContext.js";
 import { markComposePhase } from "./composePerf.js";
 

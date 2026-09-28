@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useEffect, useRef } from "react";
-import type { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import { getCurrentSignEnrollment } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import type { Mailbox } from "../../../lib/mail/mailApi.js";
+import { getCurrentSignEnrollment } from "../../../lib/crypto/keyvaultApi.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import { notify } from "../notifications/store.js";
 import { readStoredSignEnrollment, storeSignEnrollment } from "./enrollmentStorage.js";
 import { EnrollmentSnapshot, onEnrollmentEnded, watchCurrentEnrollment, watchEnrollment } from "./enrollmentTracker.js";
@@ -22,6 +23,7 @@ export const SIGNING_SETTINGS_HREF = "/settings/encryption";
  * was seen pending - never for a certificate issued long ago.
  */
 export function useSigningEnrollmentWatcher({ userUid, mailboxes, enabled }: { userUid?: string; mailboxes: Mailbox[]; enabled: boolean }): void {
+    const client = useApiClient();
     const mailboxesRef = useRef(mailboxes);
     mailboxesRef.current = mailboxes;
     // Keyed on the uids of the mailboxes the user owns: a refreshed list of the same mailboxes must not start over.
@@ -45,7 +47,7 @@ export function useSigningEnrollmentWatcher({ userUid, mailboxes, enabled }: { u
             // Never throws or rejects: a lookup that cannot be made (an older server, offline, anything) is "nothing is pending", and the frame goes on.
             void (async () => {
                 try {
-                    const current = await getCurrentSignEnrollment(mailboxUid);
+                    const current = await getCurrentSignEnrollment(mailboxUid, client);
                     if (!cancelled && current?.status === "pending") {
                         storeSignEnrollment(mailboxUid, current.enrollmentId);
                         releases.push(watchCurrentEnrollment(mailboxUid, current));
@@ -61,7 +63,7 @@ export function useSigningEnrollmentWatcher({ userUid, mailboxes, enabled }: { u
             stopListening();
             releases.forEach((release) => release());
         };
-    }, [enabled, userUid, ownedKey]);
+    }, [enabled, userUid, ownedKey, client]);
 }
 
 /** The pop-up for an enrollment that just ended - issued or failed (the tracker announces nothing else, and always with its answer). */

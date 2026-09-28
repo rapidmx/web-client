@@ -4,12 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
 import { HiChevronDown, HiChevronRight, HiOutlineFlag, HiOutlinePaperClip } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { Message } from "../../../../lib/mail/mailApi.js";
+import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
 import MailAddress from "./MailAddress.js";
 import { EncryptedPreview, conversationLooksEncrypted } from "./reading/EncryptedPreview.js";
-import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
+import { ConversationSummary, listConversationMessages } from "../../../../lib/mail/conversationsApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "./unreadStyle.js";
 import SwipeRow from "./SwipeRow.js";
 import InviteRowChip from "./invite/InviteRowChip.js";
@@ -96,6 +97,7 @@ export default function ConversationList({
     swipe,
     newestFirst,
 }: ConversationListProps) {
+    const client = useApiClient();
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     const [messagesById, setMessagesById] = useState<Record<string, Message[]>>({});
     const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
@@ -127,7 +129,7 @@ export default function ConversationList({
             delete next[id];
             return next;
         });
-        listConversationMessages(conversation.mailboxUid ?? mailboxUid, conversation.conversationId)
+        listConversationMessages(conversation.mailboxUid ?? mailboxUid, conversation.conversationId, {}, client)
             .then((loaded) => setMessagesById((prev) => ({ ...prev, [id]: loaded })))
             .catch((err) =>
                 setErrorsById((prev) => ({

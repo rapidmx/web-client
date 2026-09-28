@@ -10,9 +10,9 @@
  *
  * A search of one mailbox is the same code with a list of one: nothing here changes what that returns.
  */
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import type { SearchResult } from "@rapidmx/react-shared/search/searchApi.js";
-import { normalizeServerScores } from "@rapidmx/react-shared/search/searchScoring.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import type { SearchResult } from "../../../lib/search/searchApi.js";
+import { normalizeServerScores } from "../../../lib/search/searchScoring.js";
 
 /**
  * How far a cross-mailbox search fans out. Exported (and mutable) so a test can shrink them instead of building 26 mailboxes or waiting a

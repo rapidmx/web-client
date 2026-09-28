@@ -8,7 +8,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ContactForm from "../../../apps/shared/components/contacts/ContactForm.js";
-import { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
+import { Contact } from "../../../lib/contacts/contactsApi.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 // Most of ContactForm's behavior is exercised through the Contacts page tests (test/apps/contacts); this
 // file covers the round-3 fixes: every address is kept, and cleared fields are sent as null on update.
@@ -103,5 +105,42 @@ describe("ContactForm", () => {
         const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
         expect(body).toMatchObject({ mailboxUid: "mb1", folderUid: "f1", displayName: "New Person", addresses: [] });
         expect("givenName" in body).toBe(false);
+    });
+
+    // Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+    // client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`.
+    describe("under an ApiClientContext.Provider", () => {
+        it("saves through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const fetchMock = mockFetch((_url, init) => jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string) }));
+            const onSaved = vi.fn();
+            const user = userEvent.setup();
+            render(<ContactForm mailboxUid="mb1" folderUid="f1" onSaved={onSaved} onCancel={vi.fn()} />);
+
+            await user.type(screen.getByLabelText("Display name"), "New Person");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            await waitFor(() => expect(onSaved).toHaveBeenCalled());
+            expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/contacts");
+            expect((fetchMock.mock.calls[0][1] as RequestInit).headers).not.toHaveProperty("Authorization");
+        });
+
+        it("saves through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+            const fetchMock = mockFetch((_url, init) => jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string) }));
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            const onSaved = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <ContactForm mailboxUid="mb1" folderUid="f1" onSaved={onSaved} onCancel={vi.fn()} />
+                </ApiClientContext.Provider>,
+            );
+
+            await user.type(screen.getByLabelText("Display name"), "New Person");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            await waitFor(() => expect(onSaved).toHaveBeenCalled());
+            expect(fetchMock.mock.calls[0][0]).toBe("https://acct-a.example.com/api/mail/contacts");
+            expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        });
     });
 });

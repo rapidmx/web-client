@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import SettingsAutoReplyPageBase from "../../../../apps/www/settings/auto-reply/index.js";
 import { withTestRouter } from "../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const SettingsAutoReplyPage = withTestRouter(SettingsAutoReplyPageBase);
@@ -221,5 +223,36 @@ describe("SettingsAutoReplyPage", () => {
 
         expect(await screen.findByText("Couldn't save the automatic reply settings")).toBeInTheDocument();
         expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
+    });
+
+    it("targets the ApiClient from ApiClientContext (baseUrl + bearer token), not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/mail/mailboxes/mb1" && init?.method === "PUT") {
+                return jsonResponse(200, mailbox({ oofEnabled: true }));
+            }
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) {
+                return jsonResponse(200, [mailbox()]);
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SettingsAutoReplyPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+
+        await user.click(await screen.findByRole("checkbox", { name: "Automatic replies are on" }));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        const call = fetchMock.mock.calls.find(([url]) => url === "https://account-a.example.com/api/mail/mailboxes/mb1");
+        expect(call).toBeDefined();
+        const headers = new Headers((call![1] as RequestInit).headers);
+        expect(headers.get("Authorization")).toBe("jwt tok-a");
     });
 });

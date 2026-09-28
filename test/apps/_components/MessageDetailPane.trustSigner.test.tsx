@@ -9,8 +9,8 @@ import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { SignerKeyConflictError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { SignerKeyConflictError } from "../../../lib/crypto/keyvaultApi.js";
 import { mockFetchWithServerBody as mockFetch } from "./paneFetch.js";
 import MessageDetailPane, {
     TRUST_SIGNER_CONFLICT_MESSAGE,
@@ -28,10 +28,10 @@ const { evaluateMessageSecurity, getUnlockedKeys, getPinnedSignerFingerprints, c
     clearPinnedSignerCache: vi.fn(),
     trustSigner: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     trustSigner,
 }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({
@@ -208,7 +208,9 @@ describe("MessageDetailPane: Trust this signer", () => {
         await user.click(screen.getByRole("button", { name: "Trust" }));
 
         expect(await screen.findByText("Signed & verified")).toBeInTheDocument();
-        expect(trustSigner).toHaveBeenCalledWith("mb-shared", { address: "sender@example.com", certificate: "Y2VydA==" });
+        // `undefined`: no `ApiClientContext.Provider` is mounted here, so this goes through the default
+        // global fetch, the same as before this call started passing its (optional) `client` through.
+        expect(trustSigner).toHaveBeenCalledWith("mb-shared", { address: "sender@example.com", certificate: "Y2VydA==" }, undefined);
         expect(clearPinnedSignerCache).toHaveBeenCalled();
         expect(evaluateMessageSecurity).toHaveBeenCalledTimes(2);
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

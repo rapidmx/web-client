@@ -3,14 +3,15 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { getMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
-import { LeftoverConflict, leftoverConflictOf } from "@rapidmx/react-shared/admin/leftoverMailboxApi.js";
-import { createMailbox, listMailboxDomains, Mailbox, resolveMailboxOwner, ResolvedPrincipal } from "@rapidmx/react-shared/mail/mailApi.js";
-import { deviceTimeZone } from "@rapidmx/react-shared/util/timeZone.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { getMailboxPolicy } from "../../../../../lib/admin/mailboxPolicyApi.js";
+import { LeftoverConflict, leftoverConflictOf } from "../../../../../lib/admin/leftoverMailboxApi.js";
+import { createMailbox, listMailboxDomains, Mailbox, resolveMailboxOwner, ResolvedPrincipal } from "../../../../../lib/mail/mailApi.js";
+import { deviceTimeZone } from "../../../../../lib/util/timeZone.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../../lib/components/forms/FormField.js";
 import PrincipalResolver, { describePerson } from "../../sharing/PrincipalResolver.js";
 import EraseLeftoverDataDialog from "../mailboxes/EraseLeftoverDataDialog.js";
 
@@ -32,6 +33,7 @@ export interface MailboxCreateFormProps {
  * policy's default.
  */
 export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "Create mailbox", cancelHref }: MailboxCreateFormProps) {
+    const client = useApiClient();
     const [primarySmtpAddress, setPrimarySmtpAddress] = useState("");
     const [localPart, setLocalPart] = useState(defaults?.localPart ?? "");
     const [domains, setDomains] = useState<string[]>([]);
@@ -64,13 +66,13 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
     // `BaseMailboxRoute.create()`), so the form switches to a local-part input + domain dropdown to
     // make that restriction visible rather than let an admin discover it only via a rejected submit.
     useEffect(() => {
-        listMailboxDomains()
+        listMailboxDomains(client)
             .then((list) => {
                 setDomains(list);
                 setDomain(defaults?.domain && list.includes(defaults.domain) ? defaults.domain : (list[0] ?? ""));
             })
             .catch(() => undefined);
-        getMailboxPolicy()
+        getMailboxPolicy(client)
             .then((policy) => {
                 if (!quotaTouched.current) {
                     setQuotaGb(Math.round(policy.defaultQuotaBytes / 1_000_000_000));
@@ -115,22 +117,25 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
         try {
             // "Shared mailbox" creates a true ownerless mailbox (e.g. support@example.com); delegates are then
             // granted access from the mailbox's detail page. A resource mailbox is ownerless the same way.
-            const mailbox = await createMailbox({
-                primarySmtpAddress: address,
-                displayName: displayName.trim(),
-                ownerUserUid: ownerMode === "owned" ? resolvedOwner!.userUid : undefined,
-                timezone,
-                quotaBytes: Math.round(quotaGb * 1_000_000_000),
-                ...(isResource && {
-                    isResource: true,
-                    resourceType,
-                    resourceCapacity: resourceCapacity ? Number(resourceCapacity) : undefined,
-                    autoAcceptBookings,
-                    allowConflicts,
-                    bookingWindowDays: bookingWindowDays ? Number(bookingWindowDays) : undefined,
-                    maxDurationMinutes: maxDurationMinutes ? Number(maxDurationMinutes) : undefined,
-                }),
-            });
+            const mailbox = await createMailbox(
+                {
+                    primarySmtpAddress: address,
+                    displayName: displayName.trim(),
+                    ownerUserUid: ownerMode === "owned" ? resolvedOwner!.userUid : undefined,
+                    timezone,
+                    quotaBytes: Math.round(quotaGb * 1_000_000_000),
+                    ...(isResource && {
+                        isResource: true,
+                        resourceType,
+                        resourceCapacity: resourceCapacity ? Number(resourceCapacity) : undefined,
+                        autoAcceptBookings,
+                        allowConflicts,
+                        bookingWindowDays: bookingWindowDays ? Number(bookingWindowDays) : undefined,
+                        maxDurationMinutes: maxDurationMinutes ? Number(maxDurationMinutes) : undefined,
+                    }),
+                },
+                client,
+            );
             onCreated(mailbox);
         } catch (err) {
             const conflict = leftoverConflictOf(err);
@@ -265,7 +270,7 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
                                 </div>
                             ) : (
                                 <PrincipalResolver
-                                    resolve={resolveMailboxOwner}
+                                    resolve={(principal) => resolveMailboxOwner(principal, client)}
                                     onResolved={(person) => {
                                         setResolvedOwner(person);
                                     }}

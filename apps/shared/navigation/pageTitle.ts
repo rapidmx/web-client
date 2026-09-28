@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import type { Branding } from "@rapidmx/react-shared/branding/brandingApi.js";
+import type { Branding } from "../../../lib/branding/brandingApi.js";
 
 /** The name the deployment goes by in the browser tab: its branding title, else its company name, else RapidMX. */
 export function brandName(branding?: Pick<Branding, "title" | "companyName"> | null): string {

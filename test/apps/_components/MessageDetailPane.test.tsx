@@ -16,6 +16,8 @@ import { clearViewedOriginal } from "../../../apps/shared/components/mail/readin
 import { FRAME_SANDBOX } from "../../../apps/shared/components/mail/reading/frameDocument.js";
 import { dismissAll, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import { clearInviteCache } from "../../../apps/shared/components/mail/invite/inviteStore.js";
+import { createApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 
 // The real CMS/S-MIME crypto behind evaluateMessageSecurity() is already exercised end to end (against
 // real WebCrypto, under react-shared's own "node" test environment - see that repo's
@@ -29,8 +31,8 @@ const { evaluateMessageSecurity, getUnlockedKeys, keySessionListeners } = vi.hoi
     getUnlockedKeys: vi.fn(),
     keySessionListeners: new Set<(event: { mailboxUid: string; state: "locked" | "unlocked" }) => void>(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({
     getUnlockedKeys,
     subscribeKeySession: (listener: (event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) => {
         keySessionListeners.add(listener);
@@ -2822,5 +2824,43 @@ describe("MessageDetailPane", () => {
             await vi.waitFor(() => expect(trackMessageChange).toHaveBeenCalledWith(original, back));
             expect(tracker.settle).toHaveBeenCalledTimes(1);
         });
+    });
+});
+
+// Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+// client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`.
+describe("under an ApiClientContext.Provider", () => {
+    it("recalls the message through the default global fetch with no provider above it (unchanged behavior)", async () => {
+        const updated = messageFixture({ recallRequestedAt: "2026-01-02T00:00:00.000Z" });
+        const fetchMock = mockFetch(() => jsonResponse(200, updated));
+        const user = userEvent.setup();
+        render(<MessageDetailPane message={messageFixture() as any} attachments={[]} isSentItems />);
+
+        await user.click(screen.getByRole("button", { name: "Recall this message" }));
+        await user.click(screen.getByRole("button", { name: "Recall message" }));
+
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1/recall", expect.objectContaining({ method: "POST" })));
+        expect((fetchMock.mock.calls[0][1] as RequestInit).headers).not.toHaveProperty("Authorization");
+    });
+
+    it("recalls the message through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+        const updated = messageFixture({ recallRequestedAt: "2026-01-02T00:00:00.000Z" });
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, updated));
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <MessageDetailPane message={messageFixture() as any} attachments={[]} isSentItems />
+            </ApiClientContext.Provider>,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Recall this message" }));
+        await user.click(screen.getByRole("button", { name: "Recall message" }));
+
+        await waitFor(() =>
+            expect(fetchMock).toHaveBeenCalledWith("https://acct-a.example.com/api/mail/messages/m1/recall", expect.objectContaining({ method: "POST" })),
+        );
+        const call = fetchMock.mock.calls.find(([url]) => String(url) === "https://acct-a.example.com/api/mail/messages/m1/recall")!;
+        expect(new Headers((call[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

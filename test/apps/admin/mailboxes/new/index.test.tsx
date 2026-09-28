@@ -9,13 +9,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../../testUtils.js";
 import NewMailboxPageBase from "../../../../../apps/admin/mailboxes/new/index.js";
 import { latestRouter, withTestRouter } from "../../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../../lib/util/api.js";
 
 // Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
 const NewMailboxPage = withTestRouter(NewMailboxPageBase);
 
 // A fixed device zone, so the form's starting zone doesn't depend on the machine the tests run on.
-vi.mock("@rapidmx/react-shared/util/timeZone.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/util/timeZone.js")>()),
+vi.mock("../../../../../lib/util/timeZone.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../../../lib/util/timeZone.js")>()),
     deviceTimeZone: () => "Europe/Berlin",
 }));
 
@@ -410,6 +412,34 @@ describe("NewMailboxPage", () => {
         await vi.waitFor(() => expect(requestBody).toBeDefined());
         expect(requestBody.isResource).toBeUndefined();
         expect(requestBody.resourceType).toBeUndefined();
+    });
+
+    it("creates the mailbox via the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+            if (url === "https://account-a.example.com/api/system/mailbox-policy") return jsonResponse(200, { defaultQuotaBytes: 5_000_000_000 });
+            if (url === "https://account-a.example.com/api/mail/mailboxes" && init?.method === "POST") {
+                return jsonResponse(200, { uid: "mb-client" });
+            }
+            return jsonResponse(200, {});
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />
+            </ApiClientContext.Provider>,
+        );
+        await screen.findByText("New mailbox");
+
+        await user.type(screen.getByLabelText("Primary SMTP address"), "support@example.com");
+        await user.type(screen.getByLabelText("Display name"), "Support");
+        await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+        await vi.waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin/mailboxes/mb-client"));
+        const post = fetchMock.mock.calls.find(([url, init]) => url === "https://account-a.example.com/api/mail/mailboxes" && init?.method === "POST")!;
+        expect(new Headers((post[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 
     describe("an address a deleted mailbox left data at", () => {

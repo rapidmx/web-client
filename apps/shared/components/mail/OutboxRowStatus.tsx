@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../../lib/mail/mailApi.js";
 import { outboxItemStatus } from "../../mail/outbox/outboxState.js";
 
 /**

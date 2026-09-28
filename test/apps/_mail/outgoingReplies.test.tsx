@@ -6,7 +6,7 @@ import React from "react";
 import { act, render, screen } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Mailbox, Message } from "../../../lib/mail/mailApi.js";
 import {
     MAX_SETTLE_MISSES,
     adoptedOutgoing,

@@ -7,7 +7,7 @@ import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import PrincipalResolver, { describePerson } from "../../../apps/shared/components/sharing/PrincipalResolver.js";
 
 afterEach(() => {

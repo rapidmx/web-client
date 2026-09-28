@@ -11,15 +11,15 @@ import React from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PinnedKeyChangedError, type PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { PinnedKeyChangedError, type PublicKey } from "../../../lib/crypto/keyvaultApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import ContactDetailPane from "../../../apps/shared/components/contacts/ContactDetailPane.js";
 import { KEY_CHANGE_FORBIDDEN_MESSAGE, KEY_CHANGE_STALE_MESSAGE } from "../../../apps/shared/components/contacts/contactKeys.js";
-import type { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
+import type { Contact } from "../../../lib/contacts/contactsApi.js";
 
 const { resolveKeyConflict, clearPinnedSignerCache } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn(), clearPinnedSignerCache: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     resolveKeyConflict,
 }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));

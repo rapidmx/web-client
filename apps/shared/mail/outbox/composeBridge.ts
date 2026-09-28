@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import type { Attachment, Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import type { Attachment, Message } from "../../../../lib/mail/mailApi.js";
+import type { PublicKey } from "../../../../lib/crypto/keyvaultApi.js";
 
 /**
  * A compose window to re-open around a message that was already composed: a failed send's "Open draft". The message keeps its uid - the

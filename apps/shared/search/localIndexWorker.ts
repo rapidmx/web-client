@@ -31,7 +31,7 @@
  */
 import SQLiteESMFactory from "@journeyapps/wa-sqlite/dist/wa-sqlite-async.mjs";
 import * as SQLite from "@journeyapps/wa-sqlite";
-import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
+import type { ParsedSearchQuery } from "../../../lib/search/queryGrammar.js";
 import { EncryptingVFS } from "./localIndexVFS.js";
 import { listLocalIndexMailboxUids, poolNameFor, removeLocalIndexDirectory } from "./localIndexStorage.js";
 import {

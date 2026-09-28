@@ -8,7 +8,7 @@ import type {
     AppearanceMode,
     AppearancePreferences,
     ColorKey,
-} from "@rapidmx/react-shared/appearance/preferencesApi.js";
+} from "../../../lib/appearance/preferencesApi.js";
 import type { ResolvedTheme } from "./resolvedTheme.js";
 import type { PhotoRange } from "./theme.js";
 

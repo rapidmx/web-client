@@ -7,9 +7,9 @@ import { DndContext, useSensors } from "@dnd-kit/core";
 import { render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MonthView from "../../../apps/shared/components/calendar/MonthView.js";
-import { CalendarEvent } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { dayDropId, eventDragId, resolveDragAction } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
-import { expandAllOccurrences } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
+import { dayDropId, eventDragId, resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
+import { expandAllOccurrences } from "../../../lib/calendar/recurrence.js";
 
 // Round-4: all-day recurrences (weekly/monthly) and all-day drags in the month grid, viewed west of UTC
 // (America/New_York, UTC-4/-5) - react-shared now expands all-day series in UTC and drags them by UTC date.

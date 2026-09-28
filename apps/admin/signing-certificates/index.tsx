@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ChangeEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     AdminSigningEnrollment,
     getSigningEnrollmentInfo,
@@ -13,11 +13,11 @@ import {
     signingEnrollmentCsrUrl,
     SigningEnrollmentInfo,
     uploadSigningEnrollmentCertificate,
-} from "@rapidmx/react-shared/crypto/signingProviderApi.js";
+} from "../../../lib/crypto/signingProviderApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 import { notify } from "../../shared/notifications/store.js";
 
 const INPUT_CLASS = "text-sm border border-border rounded-sm py-1.5 px-2 bg-surface";

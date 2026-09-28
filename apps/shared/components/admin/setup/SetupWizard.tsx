@@ -5,18 +5,19 @@
 import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
 import { HiCheck } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { getRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
-import { getMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
-import { createDomain, Domain, listDomains } from "@rapidmx/react-shared/admin/domainsApi.js";
-import { completeSetup, getSetupStatus, saveSetupStep, SetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
-import { getBranding } from "@rapidmx/react-shared/branding/brandingApi.js";
-import { EncryptionPolicy, getEncryptionPolicy } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { getRetentionPolicy } from "../../../../../lib/admin/retentionPolicyApi.js";
+import { getMailboxPolicy } from "../../../../../lib/admin/mailboxPolicyApi.js";
+import { createDomain, Domain, listDomains } from "../../../../../lib/admin/domainsApi.js";
+import { completeSetup, getSetupStatus, saveSetupStep, SetupStatus } from "../../../../../lib/admin/setupApi.js";
+import { getBranding } from "../../../../../lib/branding/brandingApi.js";
+import { EncryptionPolicy, getEncryptionPolicy } from "../../../../../lib/crypto/keyvaultApi.js";
+import { listMailboxes, Mailbox } from "../../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../../lib/components/forms/FormField.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
 import BrandingForm from "../settings/BrandingForm.js";
 import DomainDnsSetup from "../settings/DomainDnsSetup.js";
 import EncryptionPolicyForm, { isEncryptionEnabled } from "../settings/EncryptionPolicyForm.js";
@@ -62,6 +63,7 @@ export interface SetupWizardProps {
  * except the domain can be passed over and configured later from the admin console.
  */
 export default function SetupWizard({ userUid }: SetupWizardProps) {
+    const client = useApiClient();
     const { navigate } = useRouter();
     const [step, setStep] = useState<SetupStepId | null>(null);
     const [status, setStatus] = useState<SetupStatus | undefined>();
@@ -79,7 +81,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
     const progress = useRef<{ running: Promise<void> | null; next: SetupStepId | null }>({ running: null, next: null });
 
     function loadDomains(): Promise<void> {
-        return listDomains({ limit: 25 })
+        return listDomains({ limit: 25 }, client)
             .then((list) => {
                 setDomains(list);
                 setDomainsError(null);
@@ -88,7 +90,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
     }
 
     useEffect(() => {
-        void Promise.all([getSetupStatus().catch(() => undefined), loadDomains()]).then(([loaded]) => {
+        void Promise.all([getSetupStatus(client).catch(() => undefined), loadDomains()]).then(([loaded]) => {
             setStatus(loaded);
             setStep(isStepId(loaded?.currentStep) ? loaded.currentStep : "plugins");
         });
@@ -96,7 +98,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
 
     useEffect(() => {
         if (step === "escrow" || step === "settings") {
-            getEncryptionPolicy()
+            getEncryptionPolicy(client)
                 .then(setEncryption)
                 .catch(() => setEncryption(null));
         }
@@ -122,7 +124,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                 const target: SetupStepId = queue.next;
                 queue.next = null;
                 try {
-                    await saveSetupStep(target);
+                    await saveSetupStep(target, client);
                     setProgressFailed(false);
                 } catch (err) {
                     console.warn("Could not save setup progress", err);
@@ -163,7 +165,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
         try {
             // Let a step still being recorded land first, so it can't arrive after setup is marked finished.
             await progress.current.running;
-            await completeSetup();
+            await completeSetup(client);
             void navigate("/admin");
         } catch (err) {
             setError(errorMessage(err, "Could not finish setup."));
@@ -247,7 +249,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                 {step === "settings" && (
                     <div className="flex flex-col gap-6 max-w-3xl">
                         <div className={CARD_CLASS}>
-                            <LoadedSettingsForm load={getEncryptionPolicy} loadErrorMessage="Could not load the encryption policy.">
+                            <LoadedSettingsForm load={() => getEncryptionPolicy(client)} loadErrorMessage="Could not load the encryption policy.">
                                 {(policy, onChange) => (
                                     <EncryptionPolicyForm
                                         embedded
@@ -262,14 +264,14 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                             </LoadedSettingsForm>
                         </div>
                         <div className={CARD_CLASS}>
-                            <LoadedSettingsForm load={getRetentionPolicy} loadErrorMessage="Could not load the retention policy.">
+                            <LoadedSettingsForm load={() => getRetentionPolicy(client)} loadErrorMessage="Could not load the retention policy.">
                                 {(policy, onChange) => (
                                     <RetentionPolicyForm embedded policy={policy} onChange={onChange} onDirtyChange={trackUnsaved("retention")} />
                                 )}
                             </LoadedSettingsForm>
                         </div>
                         <div className={CARD_CLASS}>
-                            <LoadedSettingsForm load={getMailboxPolicy} loadErrorMessage="Could not load the mailbox policy.">
+                            <LoadedSettingsForm load={() => getMailboxPolicy(client)} loadErrorMessage="Could not load the mailbox policy.">
                                 {(policy, onChange) => (
                                     <MailboxPolicyForm embedded policy={policy} onChange={onChange} onDirtyChange={trackUnsaved("mailbox")} />
                                 )}
@@ -288,7 +290,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
                     ))}
                 {step === "branding" && (
                     <div className={`${CARD_CLASS} max-w-3xl`}>
-                        <LoadedSettingsForm load={getBranding} loadErrorMessage="Could not load branding.">
+                        <LoadedSettingsForm load={() => getBranding(client)} loadErrorMessage="Could not load branding.">
                             {(branding, onChange) => <BrandingForm embedded branding={branding} onChange={onChange} />}
                         </LoadedSettingsForm>
                     </div>
@@ -336,6 +338,7 @@ export default function SetupWizard({ userUid }: SetupWizardProps) {
 }
 
 function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (domain: Domain) => void }) {
+    const client = useApiClient();
     const [name, setName] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
@@ -349,7 +352,7 @@ function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (dom
         }
         setSaving(true);
         try {
-            onCreated(await createDomain({ name: name.trim() }));
+            onCreated(await createDomain({ name: name.trim() }, client));
             setName("");
         } catch (err) {
             setError(errorMessage(err, "Could not add the domain."));
@@ -387,6 +390,7 @@ function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (dom
 }
 
 function MailboxesStep({ userUid, domain }: { userUid: string; domain?: string }) {
+    const client = useApiClient();
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
     const [loaded, setLoaded] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -394,7 +398,7 @@ function MailboxesStep({ userUid, domain }: { userUid: string; domain?: string }
 
     useEffect(() => {
         // The administration scope: every mailbox that exists (administrative metadata), not only the administrator's own.
-        listMailboxes({ limit: 100, scope: "admin" })
+        listMailboxes({ limit: 100, scope: "admin" }, client)
             .then((list) =>
                 // Keep any mailbox created here while the list was loading.
                 setMailboxes((prev) => [...list, ...prev.filter((mine) => !list.some((mailbox) => mailbox.uid === mine.uid))]),

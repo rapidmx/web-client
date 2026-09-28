@@ -7,7 +7,7 @@
 import React from "react";
 import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Folder } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Folder } from "../../../lib/mail/mailApi.js";
 
 const state = vi.hoisted(() => ({ loads: 0, failures: 0, builds: [] as string[] }));
 
@@ -16,7 +16,7 @@ beforeEach(() => {
     state.loads = 0;
     state.failures = 0;
     state.builds = [];
-    vi.doMock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys: () => ({ masterKey: new Uint8Array(32) }) }));
+    vi.doMock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: () => ({ masterKey: new Uint8Array(32) }) }));
     vi.doMock("../../../apps/shared/search/localIndexRpcClient.js", () => ({
         destroyLocalIndex: vi.fn().mockResolvedValue(true),
         pruneInaccessibleLocalIndexes: vi.fn().mockResolvedValue(undefined),

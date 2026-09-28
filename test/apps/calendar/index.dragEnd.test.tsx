@@ -17,12 +17,21 @@ import { MouseSensor, TouchSensor } from "@dnd-kit/core";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { dayDropId, resizeDragId, slotDropId } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
+import { dayDropId, resizeDragId, slotDropId } from "../../../lib/calendar/calendarDragIds.js";
 import CalendarPageBase from "../../../apps/www/calendar/index.js";
 import { withTestRouter } from "../routerTestUtils.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const CalendarPage = withTestRouter(CalendarPageBase);
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 let capturedOnDragEnd: ((event: { active: { id: string }; over: { id: string } | null }) => Promise<void>) | undefined;
 const capturedSensorCalls: { sensor: unknown; options: unknown }[] = [];
@@ -217,6 +226,38 @@ describe("CalendarPage handleDragEnd", () => {
 
         expect(await screen.findByText("resize failed")).toBeInTheDocument();
         expect(screen.getByText("Couldn't resize the event")).toBeInTheDocument();
+    });
+
+    it("moves an occurrence through the provided ApiClient from context, not the global fetch", async () => {
+        // Anything outside `/mail/...` (e.g. `AppShell`'s own branding fetch) is unrelated to this
+        // component's own wiring and still goes through the global `apiFetch()`.
+        const fetchMock = mockFetch((url) => (url.startsWith("/api/mail/") ? undefined : jsonResponse(404, {})));
+        const client = fakeApiClient((path, init) => {
+            const method = init?.method ?? "GET";
+            if (path.startsWith("/mail/mailboxes")) return [mailbox];
+            if (path.startsWith("/mail/folders")) return [calendarFolder];
+            if (path === "/mail/calendar-events/e1" && method === "PUT") {
+                return { ...event, startDate: "2026-06-16T15:00:00.000Z", endDate: "2026-06-16T15:30:00.000Z" };
+            }
+            if (path.startsWith("/mail/calendar-events")) return [event];
+            throw new Error(`unexpected ${method} ${path}`);
+        });
+
+        render(
+            <ApiClientContext.Provider value={client}>
+                <CalendarPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+        await screen.findByText(/Standup/);
+
+        await act(async () => {
+            await capturedOnDragEnd!({ active: { id: "e1" }, over: { id: dayDropId(new Date("2026-06-16T00:00:00.000Z")) } });
+        });
+
+        await waitFor(() =>
+            expect(client.fetch).toHaveBeenCalledWith("/mail/calendar-events/e1", expect.objectContaining({ method: "PUT" })),
+        );
+        expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/"))).toBe(false);
     });
 
     it("shows a generic error message when the mutation fails with a non-API error", async () => {

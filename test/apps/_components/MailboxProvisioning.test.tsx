@@ -8,7 +8,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import MailboxProvisioning from "../../../apps/shared/components/layout/MailboxProvisioning.js";
-import { deviceTimeZone } from "@rapidmx/react-shared/util/timeZone.js";
+import { deviceTimeZone } from "../../../lib/util/timeZone.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -245,5 +247,28 @@ describe("MailboxProvisioning", () => {
         await user.click(screen.getByRole("button", { name: "Continue" }));
 
         expect(await screen.findByText("Could not create your mailbox.")).toBeInTheDocument();
+    });
+
+    it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/mail/mailboxes/auto-provision" && init?.method === "POST") {
+                return jsonResponse(200, { status: "created", mailbox: { uid: "mb1" } });
+            }
+            return emptyResponse(500);
+        });
+        const location = mockLocation();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <MailboxProvisioning />
+            </ApiClientContext.Provider>,
+        );
+
+        await waitFor(() => expect(location.reload).toHaveBeenCalled());
+        const call = fetchMock.mock.calls.find(([url]) => url === "https://account-a.example.com/api/mail/mailboxes/auto-provision")!;
+        expect(new Headers((call[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

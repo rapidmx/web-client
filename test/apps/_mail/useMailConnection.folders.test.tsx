@@ -6,13 +6,15 @@
 // mailbox is made) and says so with push events; whatever the events miss, every refresh of the counts lists the folders again and files new ones.
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
+import { resetPushClient } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { MAIL_FOLDER_TYPES, useMailConnection } from "../../../apps/shared/mail/useMailConnection.js";
 import { LIVE_EVENT_DEBOUNCE_MS } from "../../../apps/shared/mail/useMailLiveUpdates.js";
 import { badgeFor, countOfFolder } from "../../../apps/shared/mail/folderCounts.js";
 import { folderRows } from "../../../apps/shared/mail/folderTree.js";
 import { sendState } from "../../../apps/shared/mail/outbox/sendState.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 class FakeWebSocket {
     static instances: FakeWebSocket[] = [];
@@ -271,5 +273,29 @@ describe("a folder renamed or deleted elsewhere", () => {
         });
         expect(uids(view)).toEqual(["de"]);
         expect(socket().subscribed()).not.toContain("in");
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("lists mailboxes and folders through the given client's own fetch instead of the default global one", async () => {
+        const fetchMock = serve();
+        const clientFetch = vi.fn(async (path: string) => {
+            if (path.startsWith("/mail/mailboxes")) return [mailbox];
+            if (path.startsWith("/mail/folders")) return server;
+            return [];
+        });
+        const client = { fetch: clientFetch, setUnauthorizedObserver: vi.fn() } as ApiClient;
+
+        const view = renderHook(() => useMailConnection({ userUid: "u1", enabled: true }), {
+            wrapper: ({ children }) => <ApiClientContext.Provider value={client}>{children}</ApiClientContext.Provider>,
+        });
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(0);
+        });
+
+        expect(view.result.current.mailboxFolders[0]?.folders).toHaveLength(3);
+        expect(clientFetch).toHaveBeenCalled();
+        // The default global fetch was never touched.
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 });

@@ -5,8 +5,8 @@
 import React from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { addDays, eachDayOfInterval, endOfMonth, endOfWeek, format, isSameMonth, isToday, startOfMonth, startOfWeek } from "date-fns";
-import { dayDropId, eventDragId } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { dayDropId, eventDragId } from "../../../../lib/calendar/calendarDragIds.js";
+import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { occursOnDay, startsOnDay } from "./allDay.js";
 import { EventAnchor, anchorOf } from "./EventShell.js";
 

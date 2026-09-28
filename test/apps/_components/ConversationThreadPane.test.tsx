@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ConversationThreadPane from "../../../apps/shared/components/mail/ConversationThreadPane.js";
 import MailAddress from "../../../apps/shared/components/mail/MailAddress.js";
+import { createApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 
 // `MessageDetailPane`'s own rendering is exhaustively tested in its own file - mocked here so this file
 // only exercises the thread pane's own concerns: loading the thread, which messages are expanded, where it
@@ -1009,5 +1011,41 @@ describe("ConversationThreadPane", () => {
         resolveFirst!(jsonResponse(200, THREAD));
         await waitFor(() => expect(screen.getByTestId("detail-z1")).toBeInTheDocument());
         expect(screen.queryByTestId("detail-m3")).not.toBeInTheDocument();
+    });
+});
+
+// Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+// client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`.
+describe("under an ApiClientContext.Provider", () => {
+    it("loads the thread through the default global fetch with no provider above it (unchanged behavior)", async () => {
+        const { fetchMock } = renderThread();
+
+        await screen.findByTestId("detail-m3");
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/messages/conversations/c1?mailboxUid=mb1&page=0&limit=100");
+        expect((fetchMock.mock.calls[0][1] as RequestInit).headers).not.toHaveProperty("Authorization");
+    });
+
+    it("loads the thread through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("https://acct-a.example.com/api/mail/messages/conversations/")) return jsonResponse(200, THREAD);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        render(
+            <ApiClientContext.Provider value={client}>
+                <ConversationThreadPane
+                    conversation={conversationFixture()}
+                    mailboxUid="mb1"
+                    selectedUid="m3"
+                    folders={FOLDERS}
+                    onMessagePatched={vi.fn()}
+                    onMessageRemoved={vi.fn()}
+                />
+            </ApiClientContext.Provider>,
+        );
+
+        await screen.findByTestId("detail-m3");
+        expect(fetchMock.mock.calls[0][0]).toBe("https://acct-a.example.com/api/mail/messages/conversations/c1?mailboxUid=mb1&page=0&limit=100");
+        expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

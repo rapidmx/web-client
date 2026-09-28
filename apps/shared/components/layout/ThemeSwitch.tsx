@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useContext, useId, useRef } from "react";
 import { HiOutlineComputerDesktop, HiOutlineMoon, HiOutlineSun } from "react-icons/hi2";
-import type { AppearanceMode } from "@rapidmx/react-shared/appearance/preferencesApi.js";
+import type { AppearanceMode } from "../../../../lib/appearance/preferencesApi.js";
 import { AppearanceContext, INERT_APPEARANCE } from "../../appearance/appearanceContext.js";
 
 const CHOICES: { mode: AppearanceMode; label: string; hint: string; Icon: typeof HiOutlineSun }[] = [

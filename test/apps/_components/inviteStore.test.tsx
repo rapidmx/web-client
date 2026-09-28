@@ -6,7 +6,7 @@
 import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MessageInvite } from "@rapidmx/react-shared/calendar/inviteApi.js";
+import type { MessageInvite } from "../../../lib/calendar/inviteApi.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { INVITE_TTL_MS, clearInviteCache, loadInvite, storeInvite, useMessageInvite } from "../../../apps/shared/components/mail/invite/inviteStore.js";
 

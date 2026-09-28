@@ -6,7 +6,7 @@ import React from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Plugin, PluginStatus } from "@rapidmx/react-shared/admin/pluginsApi.js";
+import type { Plugin, PluginStatus } from "../../../../lib/admin/pluginsApi.js";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import ComponentsTable, { imageReference, mainContainer } from "../../../../apps/shared/components/admin/diagnostics/ComponentsTable.js";
 import InstalledPlugins, {

@@ -4,11 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { MailFilterRule, listMailFilterRules } from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { MailFilterRule, listMailFilterRules } from "../../../../lib/mail/mailFilterRulesApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 
 export type SettingsFiltersPageProps = Omit<SettingsShellProps, "active">;
 

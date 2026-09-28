@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { Message, setMessageRead, setMessagesRead } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Message, setMessageRead, setMessagesRead } from "../../../lib/mail/mailApi.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 import type { CountTracker } from "./folderCounts.js";
 
 /**
@@ -38,7 +39,7 @@ function needsChange(message: Message, read: boolean): boolean {
  * doing (it already was that way) or the server refused - in which case everything has already been put back as it was.
  * Never rejects: like the old mark-as-read, a failure must not get in the way of reading the message.
  */
-export async function setReadState(message: Message, read: boolean, sink: ReadStateSink): Promise<Message | undefined> {
+export async function setReadState(message: Message, read: boolean, sink: ReadStateSink, client?: ApiClient): Promise<Message | undefined> {
     if (!needsChange(message, read)) {
         return undefined;
     }
@@ -46,7 +47,7 @@ export async function setReadState(message: Message, read: boolean, sink: ReadSt
     sink.patch(optimistic, message);
     const tracker = sink.track(message, optimistic);
     try {
-        const updated = await setMessageRead(message, read);
+        const updated = await setMessageRead(message, read, client);
         sink.patch(updated);
         tracker.settle();
         return updated;
@@ -62,14 +63,14 @@ export async function setReadState(message: Message, read: boolean, sink: ReadSt
  * it rejects when the server refuses (after putting everything back), because a bulk update is not atomic - some of it may
  * have landed - and the caller's own handling reloads the list and says so (see `bulkUpdateMessages()`).
  */
-export async function setReadStateMany(messages: Message[], read: boolean, sink: ReadStateSink): Promise<Message[]> {
+export async function setReadStateMany(messages: Message[], read: boolean, sink: ReadStateSink, client?: ApiClient): Promise<Message[]> {
     const changes = messages.filter((message) => needsChange(message, read)).map((message) => ({ message, optimistic: withRead(message, read) }));
     const trackers = changes.map(({ message, optimistic }) => {
         sink.patch(optimistic, message);
         return sink.track(message, optimistic);
     });
     try {
-        const updated = await setMessagesRead(messages, read);
+        const updated = await setMessagesRead(messages, read, client);
         for (const message of updated) {
             sink.patch(message);
         }

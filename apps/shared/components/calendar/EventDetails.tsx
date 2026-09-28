@@ -15,15 +15,16 @@ import {
     HiOutlineVideoCamera,
     HiOutlineXMark,
 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { AttendeeResponseInput, guestPermissionsOf, respondToEvent, visibilityOf } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { htmlToPlainText } from "@rapidmx/react-shared/calendar/eventDescription.js";
-import { deleteEventOccurrence, deleteEventSeries } from "@rapidmx/react-shared/calendar/calendarMutations.js";
-import { CalendarOccurrence, describeRecurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
-import { getVideoMeeting } from "@rapidmx/react-shared/videoconf/videoMeetingsApi.js";
-import { deviceTimeZone } from "@rapidmx/react-shared/util/timeZone.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import { AttendeeResponseInput, guestPermissionsOf, respondToEvent, visibilityOf } from "../../../../lib/calendar/calendarApi.js";
+import { htmlToPlainText } from "../../../../lib/calendar/eventDescription.js";
+import { deleteEventOccurrence, deleteEventSeries } from "../../../../lib/calendar/calendarMutations.js";
+import { CalendarOccurrence, describeRecurrence } from "../../../../lib/calendar/recurrence.js";
+import { getVideoMeeting } from "../../../../lib/videoconf/videoMeetingsApi.js";
+import { deviceTimeZone } from "../../../../lib/util/timeZone.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
 import EventDescriptionView from "./EventDescriptionView.js";
 import RequestChangeForm from "./RequestChangeForm.js";
@@ -84,6 +85,7 @@ export default function EventDetails({
     onSaved,
     onDeleted,
 }: EventDetailsProps) {
+    const client = useApiClient();
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -99,7 +101,7 @@ export default function EventDetails({
             return;
         }
         let cancelled = false;
-        void getVideoMeeting(videoMeetingUid)
+        void getVideoMeeting(videoMeetingUid, client)
             .then((meeting) => meeting.organizerJoinUrl ?? null)
             .catch(() => null)
             .then((url) => {
@@ -110,7 +112,7 @@ export default function EventDetails({
         return () => {
             cancelled = true;
         };
-    }, [videoMeetingUid]);
+    }, [videoMeetingUid, client]);
     // The same scheme allow-list a reminder's own location gets: a hostile or malformed join link never reaches `window.open()`.
     const joinUrl = joinMeetingUrl(organizerJoinUrl);
 
@@ -119,9 +121,9 @@ export default function EventDetails({
         setBusy(true);
         try {
             if (occurrence.isRecurringOccurrence && scope === "occurrence") {
-                await deleteEventOccurrence(occurrence);
+                await deleteEventOccurrence(occurrence, client);
             } else {
-                await deleteEventSeries(occurrence);
+                await deleteEventSeries(occurrence, client);
             }
             onDeleted();
         } catch (err) {
@@ -136,7 +138,7 @@ export default function EventDetails({
         setError(null);
         setBusy(true);
         try {
-            await respondToEvent(occurrence.uid, responseStatus);
+            await respondToEvent(occurrence.uid, responseStatus, client);
             // A decline soft-deletes the mailbox's own copy server-side - treat it the same as a
             // delete rather than a save so the calendar view drops it immediately.
             if (responseStatus === "declined") {

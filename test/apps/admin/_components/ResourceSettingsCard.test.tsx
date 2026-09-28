@@ -8,6 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import ResourceSettingsCard from "../../../../apps/shared/components/admin/mailboxes/ResourceSettingsCard.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 const mailbox = {
     uid: "room1@example.com",
@@ -145,5 +147,30 @@ describe("ResourceSettingsCard", () => {
         await user.click(screen.getByRole("button", { name: "Save resource settings" }));
 
         expect(await screen.findByText("Could not save resource settings.")).toBeInTheDocument();
+    });
+
+    it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/mail/mailboxes/room1%40example.com") {
+                return jsonResponse(200, { ...mailbox, version: 1 });
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <ResourceSettingsCard mailbox={mailbox} onUpdate={vi.fn()} />
+            </ApiClientContext.Provider>,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Save resource settings" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        const put = fetchMock.mock.calls.find(([url]) => url === "https://account-a.example.com/api/mail/mailboxes/room1%40example.com")!;
+        expect(new Headers((put[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

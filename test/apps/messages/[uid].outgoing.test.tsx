@@ -7,7 +7,7 @@
 import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MessageDetailPageBase from "../../../apps/www/messages/[uid].js";
 import { withTestRouter } from "../routerTestUtils.js";
@@ -16,7 +16,7 @@ import { handleSendEvent } from "../../../apps/shared/mail/outbox/sendOutcomes.j
 import { getOutgoingReplies } from "../../../apps/shared/mail/outbox/outgoingReplies.js";
 
 const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../apps/shared/search/localIndexRpcClient.js")>()),
     moveLocalEntity: vi.fn(),

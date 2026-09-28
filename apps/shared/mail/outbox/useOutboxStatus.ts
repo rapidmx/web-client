@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useEffect, useMemo, useState } from "react";
-import { listMessages } from "@rapidmx/react-shared/mail/mailApi.js";
+import { listMessages } from "../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import type { MailboxFolders } from "../../components/mail/layout/MailShell.js";
 import { FolderCount, countOfFolder } from "../folderCounts.js";
 import { OutboxFolderStatus, summarizeOutbox } from "./outboxState.js";
@@ -17,6 +18,7 @@ export const OUTBOX_STATUS_LIMIT = 50;
  * whenever that count or the live updates change, so an empty Outbox - almost always - is free. A failed read keeps what was known.
  */
 export function useOutboxStatus(mailboxFolders: MailboxFolders[], counts: Record<string, FolderCount>, liveTick: number, enabled: boolean): Record<string, OutboxFolderStatus> {
+    const client = useApiClient();
     const [statuses, setStatuses] = useState<Record<string, OutboxFolderStatus>>({});
     const outboxes = useMemo(
         () =>
@@ -43,7 +45,7 @@ export function useOutboxStatus(mailboxFolders: MailboxFolders[], counts: Record
         });
         let cancelled = false;
         for (const outbox of occupied) {
-            listMessages(outbox.uid, { limit: OUTBOX_STATUS_LIMIT }).then(
+            listMessages(outbox.uid, { limit: OUTBOX_STATUS_LIMIT }, client).then(
                 (messages) => {
                     if (!cancelled) {
                         setStatuses((previous) => ({ ...previous, [outbox.uid]: summarizeOutbox(messages) }));
@@ -55,7 +57,7 @@ export function useOutboxStatus(mailboxFolders: MailboxFolders[], counts: Record
         return () => {
             cancelled = true;
         };
-    }, [enabled, key, liveTick]);
+    }, [enabled, key, liveTick, client]);
 
     return statuses;
 }

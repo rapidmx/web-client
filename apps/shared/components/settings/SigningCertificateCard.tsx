@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { HiOutlineCheckCircle, HiOutlineExclamationTriangle, HiOutlineXCircle } from "react-icons/hi2";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import CopyButton from "@rapidmx/react-shared/components/buttons/CopyButton.js";
-import type { EnrollmentResult, SignEnrollmentStep } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import CopyButton from "../../../../lib/components/buttons/CopyButton.js";
+import type { EnrollmentResult, SignEnrollmentStep } from "../../../../lib/crypto/keyvaultApi.js";
 import type { EnrollmentSnapshot } from "../../signing/enrollmentTracker.js";
 import type { SigningEnrollmentInfo } from "../../signing/signingInfo.js";
 import {

@@ -5,14 +5,14 @@
 import React from "react";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 
 const { checkSignEnrollmentStatus, checkSignEnrollmentNow } = vi.hoisted(() => ({
     checkSignEnrollmentStatus: vi.fn(),
     checkSignEnrollmentNow: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     checkSignEnrollmentStatus,
     checkSignEnrollmentNow,
 }));

@@ -10,7 +10,7 @@
  * so the few fields this popover writes are mirrored here. The plugin's `BaseBookingTypeRoute` is the authority: it normalizes the slug,
  * assigns the uids, refuses a taken slug with a 409 and validates the availability, durations and calendar folder.
  */
-import { apiFetch } from "@rapidmx/react-shared/util/api.js";
+import { apiFetch } from "../../../lib/util/api.js";
 import { PluginNav, isSafePluginHref } from "../plugins/pluginNav.js";
 
 /** The id of the Settings section the booking plugin's manifest contributes (`ui.settingsSections`) - what tells the client it is running. */

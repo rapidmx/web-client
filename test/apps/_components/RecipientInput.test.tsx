@@ -6,7 +6,7 @@ import React, { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RecipientSuggestion } from "@rapidmx/react-shared/mail/directoryApi.js";
+import type { RecipientSuggestion } from "../../../lib/mail/directoryApi.js";
 import RecipientInput, { RecipientInputProps } from "../../../apps/shared/components/mail/compose/RecipientInput.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 

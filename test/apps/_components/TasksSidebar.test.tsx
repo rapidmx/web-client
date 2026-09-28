@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import TasksSidebar, { tasksViewKey, TasksView } from "../../../apps/shared/components/tasks/TasksSidebar.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
-import type { Task } from "@rapidmx/react-shared/tasks/tasksApi.js";
+import type { Task } from "../../../lib/tasks/tasksApi.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 function task(overrides: Partial<Task> = {}): Task {
     return {
@@ -112,7 +114,7 @@ describe("TasksSidebar", () => {
     });
 
     it("shows the ApiRequestError message when loading task lists fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockFetch(() => {
             throw new ApiRequestError("nope", 500);
         });
@@ -224,7 +226,7 @@ describe("TasksSidebar", () => {
     });
 
     it("shows the ApiRequestError message when creating a new list fails with an API error.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockFetch((url, init) => {
             if (init?.method === "POST") throw new ApiRequestError("list name already taken", 409);
             return jsonResponse(200, []);
@@ -241,5 +243,45 @@ describe("TasksSidebar", () => {
                 { kind: "error", title: "Couldn't create the list", message: "list name already taken" },
             ]),
         );
+    });
+
+    // Round: under an `ApiClientContext.Provider` (e.g. `tauri-client`), this component's own list-loading/creating
+    // must route through that client's `baseUrl`/token instead of the default cookie-based `apiFetch()`.
+    describe("under an ApiClientContext.Provider", () => {
+        it("fetches task lists through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(200, []));
+            render(<TasksSidebar mailboxUid="mb1" tasks={[]} active={{ type: "all" }} onSelect={vi.fn()} />);
+
+            await screen.findByText("Lists");
+            expect(fetchMock.mock.calls[0][0]).toMatch(/^\/api\/mail\/task-lists/);
+        });
+
+        it("fetches and creates task lists through the provided ApiClient's own baseUrl and bearer token", async () => {
+            const fetchMock = mockFetch((url, init) => {
+                if (init?.method === "POST") {
+                    return jsonResponse(200, { uid: "l2", version: 0, dateCreated: "", dateModified: "", mailboxUid: "mb1", name: "Aardvarks" });
+                }
+                return jsonResponse(200, []);
+            });
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <TasksSidebar mailboxUid="mb1" tasks={[]} active={{ type: "all" }} onSelect={vi.fn()} />
+                </ApiClientContext.Provider>,
+            );
+
+            await screen.findByText("Lists");
+            expect(fetchMock.mock.calls[0][0]).toMatch(/^https:\/\/acct-a\.example\.com\/api\/mail\/task-lists/);
+            expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+
+            await user.click(screen.getByLabelText("New list"));
+            await user.type(screen.getByLabelText("New list name"), "Aardvarks");
+            await user.click(screen.getByRole("button", { name: "Add" }));
+
+            const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
+            expect(post[0]).toBe("https://acct-a.example.com/api/mail/task-lists");
+            expect(new Headers((post[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        });
     });
 });

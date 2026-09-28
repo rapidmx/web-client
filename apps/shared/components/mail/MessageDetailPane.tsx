@@ -16,7 +16,7 @@ import {
     HiOutlineNoSymbol,
     HiOutlineSun,
 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
     Attachment,
     Folder,
@@ -34,8 +34,8 @@ import {
     moveMessage,
     recallMessage,
     setMessageLabels,
-} from "@rapidmx/react-shared/mail/mailApi.js";
-import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
+} from "../../../../lib/mail/mailApi.js";
+import { Label } from "../../../../lib/mail/labelsApi.js";
 import {
     buildForwardQuote,
     buildReplyQuote,
@@ -43,25 +43,26 @@ import {
     buildReplyThreading,
     forwardSubject,
     replySubject,
-} from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
+} from "../../../../lib/mail/compose/composeQuoting.js";
 import MoveToFolderDialog from "./MoveToFolderDialog.js";
 import InviteCard from "./InviteCard.js";
 import { isCalendarAttachment } from "./invite/inviteFormat.js";
 import { useMessageInvite } from "./invite/inviteStore.js";
-import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
-import type { MessageSecurityResult, SignatureFailureReason } from "@rapidmx/react-shared/crypto/messageSecurity.js";
-import { extractAddresses, type MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
-import { SignerKeyConflictError, signingKeyFingerprints, trustSigner } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { isLikelyMailingList } from "@rapidmx/react-shared/crypto/composeSecurity.js";
+import { getUnlockedKeys, subscribeKeySession } from "../../../../lib/crypto/keySession.js";
+import type { MessageSecurityResult, SignatureFailureReason } from "../../../../lib/crypto/messageSecurity.js";
+import { extractAddresses, type MimeAttachment } from "../../../../lib/crypto/mime.js";
+import { SignerKeyConflictError, signingKeyFingerprints, trustSigner } from "../../../../lib/crypto/keyvaultApi.js";
+import { isLikelyMailingList } from "../../../../lib/crypto/composeSecurity.js";
 import { SenderKeyState, clearPinnedSignerCache, getPinnedSignerFingerprints, getSignerKeyState } from "./pinnedSigners.js";
 import { currentVerificationSeal, getVaultGeneration, sendVerificationSeal } from "./verificationSeals.js";
-import { getMyMailboxAccess } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
+import { getMyMailboxAccess } from "../../../../lib/mail/mailboxAccessApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import KeyChangeReview from "../contacts/KeyChangeReview.js";
 import { KEY_CHANGE_STALE_MESSAGE, sameFingerprint } from "../contacts/contactKeys.js";
 import { ComposeLateInput, prefetchComposeWindow, useCompose } from "./compose/ComposeContext.js";
 import { loadOriginalMessage, prefetchOriginalMessage } from "./compose/quotedBody.js";
 import { formatRecipient } from "./compose/recipients.js";
-import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
+import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
 import MailAddress, { RecipientLine } from "./MailAddress.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { ariaKeyShortcuts, withHint } from "../../keyboard/format.js";
@@ -74,10 +75,10 @@ import { useNavigate } from "../../navigation/index.js";
 import { notify } from "../../notifications/store.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import { useMailboxUpdateAccess } from "../../mail/useMailboxUpdateAccess.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
 import LabelMenuButton from "./labelMenu.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import EncryptedBody from "./reading/EncryptedBody.js";
 import { displaySubject } from "./reading/EncryptedPreview.js";
 import MessageBody, { BodySkeleton } from "./reading/MessageBody.js";
@@ -508,6 +509,7 @@ function MessageDetailContent({
     const [nowMs, setNowMs] = useState(() => Date.now());
     const { mailboxes, trackMessageChange } = useMailShell();
     const { requestUnlock } = useUnlockPrompt();
+    const client = useApiClient();
     // Bumped after a successful on-demand unlock to re-run the effect below - it's not a dependency the
     // effect could read reactively otherwise (getUnlockedKeys() is a plain module-level read, not React
     // state; see keySession.ts's own doc comment).
@@ -556,7 +558,7 @@ function MessageDetailContent({
         // mailbox's own signing keys when it sent the message itself. A failed lookup means no pins, which can only
         // ever make a signature "signer not verified", never verified.
         const senderAddress = message.from.address;
-        const pinsPromise = getPinnedSignerFingerprints(message.mailboxUid, senderAddress).then(
+        const pinsPromise = getPinnedSignerFingerprints(message.mailboxUid, senderAddress, client).then(
             (fingerprints) => ({ loaded: true, fingerprints }),
             () => ({ loaded: false, fingerprints: [] as string[] }),
         );
@@ -564,9 +566,9 @@ function MessageDetailContent({
         // generation; without either the message is evaluated exactly as before, with no seal. The sender's key records
         // are loaded alongside, so a seal can say when the signer key was later revoked as compromised.
         let keyStatePromise: Promise<SenderKeyState | undefined> | undefined;
-        const loadKeyState = () => (keyStatePromise ??= getSignerKeyState(message.mailboxUid, senderAddress).catch(() => undefined));
+        const loadKeyState = () => (keyStatePromise ??= getSignerKeyState(message.mailboxUid, senderAddress, client).catch(() => undefined));
         const sealContextPromise = getUnlockedKeys(message.mailboxUid)
-            ? getVaultGeneration(message.mailboxUid).then(async (generation) =>
+            ? getVaultGeneration(message.mailboxUid, client).then(async (generation) =>
                   generation === undefined ? undefined : { generation, keyState: await loadKeyState() },
               )
             : undefined;
@@ -577,7 +579,7 @@ function MessageDetailContent({
                 }
                 // The S/MIME code (PKI.js and the ASN.1/X.509 libraries) loads here, only for a message that is signed or
                 // encrypted - it is over half a megabyte, and the pane opens plain messages without it.
-                const messageSecurity = await import("@rapidmx/react-shared/crypto/messageSecurity.js");
+                const messageSecurity = await import("../../../../lib/crypto/messageSecurity.js");
                 const [primaryAddress, ...aliasAddresses] = readerAddressesKey ? readerAddressesKey.split(" ") : [];
                 const ownAddresses = readerAddressesKey.toLowerCase().split(" ");
                 const ownKeys = ownAddresses.includes(senderAddress.toLowerCase()) ? (readerMailbox!.keys ?? []) : [];
@@ -607,7 +609,7 @@ function MessageDetailContent({
                     );
                     if (result.sealToWrite) {
                         // Best effort and in the background: never awaited, never shown.
-                        void sendVerificationSeal(message.uid, result.sealToWrite);
+                        void sendVerificationSeal(message.uid, result.sealToWrite, client);
                     }
                 } else {
                     result = await messageSecurity.evaluateMessageSecurity(rawMime, unlocked, pinned, primaryAddress);
@@ -625,7 +627,7 @@ function MessageDetailContent({
                 const keyChanged = signerKeyChanged(result);
                 const [keyState, access] = await Promise.all([
                     keyChanged || (unpinned && UNVERIFIED_SIGNER_STATES.has(result.state)) ? loadKeyState() : undefined,
-                    keyChanged ? getMyMailboxAccess(message.mailboxUid).then((a) => a.canUpdate, () => undefined) : undefined,
+                    keyChanged ? getMyMailboxAccess(message.mailboxUid, client).then((a) => a.canUpdate, () => undefined) : undefined,
                 ]);
                 if (!cancelled) {
                     setSecurity(result);
@@ -644,7 +646,7 @@ function MessageDetailContent({
         return () => {
             cancelled = true;
         };
-    }, [message.uid, message.mailboxUid, message.from.address, message.encrypted, rawEvaluationNeeded, unlockRefresh, readerAddressesKey]);
+    }, [message.uid, message.mailboxUid, message.from.address, message.encrypted, rawEvaluationNeeded, unlockRefresh, readerAddressesKey, client]);
 
     // Whether the body is the locked state right now (an encrypted message this device holds no unlocked keys for), for the subscription below.
     const lockedRef = useRef(false);
@@ -697,7 +699,7 @@ function MessageDetailContent({
 
     async function reloadMessage() {
         try {
-            setReloaded(await getMessage(message.uid));
+            setReloaded(await getMessage(message.uid, client));
             setNowMs(Date.now());
         } catch {
             // Keep showing what we have - the next refused action or lease expiry tries again.
@@ -731,7 +733,7 @@ function MessageDetailContent({
         setTrusting(true);
         setTrustError(null);
         try {
-            await trustSigner(message.mailboxUid, { address, certificate });
+            await trustSigner(message.mailboxUid, { address, certificate }, client);
             clearPinnedSignerCache();
             setTrustConfirmOpen(false);
             setUnlockRefresh((n) => n + 1);
@@ -758,7 +760,7 @@ function MessageDetailContent({
     /** The replying mailbox's own addresses (primary and aliases), which a reply never goes to - from the mail shell's
      * mailbox list, else fetched; none when neither is available. */
     async function ownAddresses(): Promise<string[]> {
-        const mailbox = readerMailbox ?? (await getMailbox(message.mailboxUid).catch(() => undefined));
+        const mailbox = readerMailbox ?? (await getMailbox(message.mailboxUid, {}, client).catch(() => undefined));
         return mailbox ? [mailbox.primarySmtpAddress, ...(mailbox.aliasAddresses ?? [])] : [];
     }
 
@@ -845,7 +847,7 @@ function MessageDetailContent({
         setRecalling(true);
         setError(null);
         try {
-            const updated = await recallMessage(message.uid);
+            const updated = await recallMessage(message.uid, client);
             setConfirming(false);
             onRecalled?.(updated);
         } catch (err) {
@@ -863,7 +865,7 @@ function MessageDetailContent({
         setCanceling(true);
         setCancelError(null);
         try {
-            const updated = await cancelScheduledSend(message, draftsFolderUid!);
+            const updated = await cancelScheduledSend(message, draftsFolderUid!, client);
             // Keeps a `folder:`-scoped Tier 2 local search from still finding it in its old folder.
             void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
             // Out of Outbox, into Drafts: both folders' badges.
@@ -889,7 +891,7 @@ function MessageDetailContent({
         setArchiving(true);
         setArchiveError(null);
         try {
-            const updated = await archiveMessage(message.uid);
+            const updated = await archiveMessage(message.uid, client);
             void moveLocalEntity(updated.mailboxUid, updated.uid, updated.folderUid);
             trackMessageChange(message, updated).settle();
             onArchived?.(updated);
@@ -912,7 +914,7 @@ function MessageDetailContent({
         setLabelsError(null);
         try {
             const base = message.version >= latestLabelsMessageRef.current.version ? message : latestLabelsMessageRef.current;
-            const updated = await setMessageLabels(base, labelUids);
+            const updated = await setMessageLabels(base, labelUids, client);
             latestLabelsMessageRef.current = updated;
             setLabelsMessage(updated);
             onLabelsChanged?.(updated);
@@ -933,7 +935,7 @@ function MessageDetailContent({
      * passes no `onMoved` would have had nothing moved while the prompt closed as if it had.
      */
     async function handleMove(folderUid: string) {
-        const updated = await moveMessage(message, folderUid);
+        const updated = await moveMessage(message, folderUid, client);
         // Move to, Delete and Report junk are all this: the source folder's badge goes down, the target's up.
         trackMessageChange(message, updated).settle();
         onMoved?.(updated);
@@ -988,7 +990,7 @@ function MessageDetailContent({
         setReceiptBusy(type);
         setReceiptError(null);
         try {
-            const updated = await (action === "approve" ? approveReceipt : declineReceipt)(message.uid, type);
+            const updated = await (action === "approve" ? approveReceipt : declineReceipt)(message.uid, type, client);
             onReceiptHandled?.(updated);
         } catch (err) {
             setReceiptError(err instanceof ApiRequestError ? err.message : "Could not handle this receipt request.");

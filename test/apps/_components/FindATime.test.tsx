@@ -6,11 +6,20 @@ import React from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { Attendee } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { FreeBusyResult } from "@rapidmx/react-shared/calendar/freeBusyApi.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { Attendee } from "../../../lib/calendar/calendarApi.js";
+import { FreeBusyResult } from "../../../lib/calendar/freeBusyApi.js";
+import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 import FindATime, { FIND_TIME_DEBOUNCE_MS } from "../../../apps/shared/components/calendar/FindATime.js";
 import { EventFormController, EventFormValues } from "../../../apps/shared/components/calendar/eventForm.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // The Find a time tab: a day of the guests' calendars side by side, and suggested times. Runs with TZ=UTC (see vitest.config.ts).
 
@@ -488,5 +497,36 @@ describe("FindATime choosing a time", () => {
         const suggestions = within(screen.getByRole("region", { name: "Suggested times" })).getAllByRole("button");
         // 9:30am is over by the time the look-up has been made (the pause counts), and 9:00am long before.
         expect(suggestions[0]).toHaveTextContent(/June 10\s+10:00am – 10:30am/);
+    });
+});
+
+describe("FindATime with an explicit ApiClient from context (e.g. tauri-client's multi-account mode)", () => {
+    it("looks up availability through the provided client's own fetch, not the global one", async () => {
+        const fetchMock = mockFetch(() => {
+            throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+        });
+        const client = fakeApiClient((path, init) => {
+            const body = JSON.parse((init as RequestInit).body as string) as { addresses: string[]; start: string; end: string };
+            return { start: body.start, end: body.end, results: body.addresses.map((address) => ({ address, status: "available", busy: [] })) };
+        });
+
+        render(
+            <ApiClientContext.Provider value={client}>
+                <FindATime c={controller()} />
+            </ApiClientContext.Provider>,
+        );
+        await settle();
+
+        expect(client.fetch).toHaveBeenCalledWith("/mail/calendar-events/free-busy", expect.objectContaining({ method: "POST" }));
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(screen.getByText("Everyone is free")).toBeInTheDocument();
+    });
+
+    it("still behaves exactly as before with no provider above it (the default global-fetch path)", async () => {
+        const fetchMock = answer();
+        render(<FindATime c={controller()} />);
+        await settle();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(screen.getByText("Everyone is free")).toBeInTheDocument();
     });
 });

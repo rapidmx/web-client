@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import type { MessageReportKind, MessageReportResult } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { MessageReportKind, MessageReportResult } from "../../../lib/mail/mailApi.js";
 
 /** Where a notification's "Manage blocked senders" goes: the Blocked and safe senders page of the mailbox. */
 export function senderListsHref(mailboxUid: string): string {

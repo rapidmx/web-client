@@ -3,15 +3,15 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useSyncExternalStore } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     CurrentSignEnrollment,
     EnrollmentResult,
     checkNowRetryAfterSeconds,
     checkSignEnrollmentNow,
     checkSignEnrollmentStatus,
-} from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { SIGNING_ENROLLMENT_UNKNOWN } from "@rapidmx/react-shared/crypto/signingProviderApi.js";
+} from "../../../lib/crypto/keyvaultApi.js";
+import { SIGNING_ENROLLMENT_UNKNOWN } from "../../../lib/crypto/signingProviderApi.js";
 import { storeSignEnrollment } from "./enrollmentStorage.js";
 import { resetSigningInfo } from "./signingInfo.js";
 

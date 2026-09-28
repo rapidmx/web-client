@@ -4,9 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { KeyboardEvent, useRef, useState } from "react";
 import { HiOutlineBriefcase, HiOutlineCalendarDays, HiOutlineXMark } from "react-icons/hi2";
-import { BusyStatus } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { BusyStatus } from "../../../../lib/calendar/calendarApi.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import FindATime from "./FindATime.js";
 import {
     CalendarField,

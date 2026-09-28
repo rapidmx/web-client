@@ -6,15 +6,16 @@ import React from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
+import { ApiRequestError, type ApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import { usePermanentDelete } from "../../../apps/shared/mail/usePermanentDelete.js";
 import type { EmptyFolderOutcome, PurgeOutcome } from "../../../apps/shared/mail/permanentDelete.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 
 // The server, and the rest of the page the hook reports to, stood in for.
 const api = vi.hoisted(() => ({ purgeMessage: vi.fn(), emptyFolder: vi.fn(), listMessages: vi.fn() }));
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", () => api);
+vi.mock("../../../lib/mail/mailApi.js", () => api);
 const shell = vi.hoisted(() => ({ settle: vi.fn(), track: vi.fn(), refreshFolderCounts: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/layout/MailShell.js", () => ({
     useMailShell: () => ({ trackMessageChange: shell.track, refreshFolderCounts: shell.refreshFolderCounts }),
@@ -238,7 +239,7 @@ describe("usePermanentDelete - empty folder", () => {
         await user.click(within(dialog()).getByRole("button", { name: "Delete all permanently" }));
 
         await waitFor(() => expect(results.folder).toEqual({ emptied: true, deleted: [], failed: [] }));
-        expect(api.emptyFolder).toHaveBeenCalledWith("trash");
+        expect(api.emptyFolder).toHaveBeenCalledWith("trash", undefined);
         expect(shell.refreshFolderCounts).toHaveBeenCalledTimes(1);
         expect(titles()).toEqual(["12 messages permanently deleted"]);
         dialogGone();
@@ -300,5 +301,27 @@ describe("usePermanentDelete - empty folder", () => {
         expect(titles()).toEqual(["Couldn't empty Deleted Items"]);
         expect(shell.refreshFolderCounts).toHaveBeenCalledTimes(1);
         dialogGone();
+    });
+});
+
+describe("usePermanentDelete - with an explicit ApiClient", () => {
+    it("threads it through to purgeMessage and emptyFolder, unchanged from the default (undefined) path otherwise", async () => {
+        const client = {} as ApiClient;
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <Harness messages={[message("a")]} count={1} />
+            </ApiClientContext.Provider>,
+        );
+
+        await user.click(screen.getByRole("button", { name: "ask messages" }));
+        await user.click(await within(await screen.findByRole("dialog")).findByRole("button", { name: "Delete permanently" }));
+        await waitFor(() => expect(results.messages).toMatchObject({ deleted: [{ uid: "a" }] }));
+        expect(api.purgeMessage).toHaveBeenCalledWith("a", client);
+
+        await user.click(screen.getByRole("button", { name: "ask folder", hidden: true }));
+        await user.click(within(dialog()).getByRole("button", { name: "Delete all permanently" }));
+        await waitFor(() => expect(results.folder).toEqual({ emptied: true, deleted: [], failed: [] }));
+        expect(api.emptyFolder).toHaveBeenCalledWith("trash", client);
     });
 });

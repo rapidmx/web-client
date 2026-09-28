@@ -23,7 +23,7 @@ import type {
     AppearanceBackground,
     AppearanceColors,
     AppearancePreferences,
-} from "@rapidmx/react-shared/appearance/preferencesApi.js";
+} from "../../../lib/appearance/preferencesApi.js";
 import {
     AA_CONTRAST,
     BLACK,

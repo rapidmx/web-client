@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { RefObject, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Mailbox, listResourceMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
-import PopoverPortal from "@rapidmx/react-shared/components/overlays/PopoverPortal.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import { Mailbox, listResourceMailboxes } from "../../../../lib/mail/mailApi.js";
+import PopoverPortal from "../../../../lib/components/overlays/PopoverPortal.js";
 
 export interface ResourcePickerProps {
     anchorRef: RefObject<HTMLElement | null>;
@@ -25,15 +26,16 @@ export interface ResourcePickerProps {
  * endpoint for mailboxes and the resource-mailbox count in any one org is expected to be small.
  */
 export default function ResourcePicker({ anchorRef, onClose, onSelect, excludeAddresses }: ResourcePickerProps) {
+    const client = useApiClient();
     const [resources, setResources] = useState<Mailbox[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [query, setQuery] = useState("");
 
     useEffect(() => {
-        listResourceMailboxes({ limit: 100 })
+        listResourceMailboxes({ limit: 100 }, client)
             .then(setResources)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load resources."));
-    }, []);
+    }, [client]);
 
     const excluded = new Set(excludeAddresses);
     const filtered = (resources ?? []).filter((mailbox) => {

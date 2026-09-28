@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import type { EnrollmentResult, SignEnrollmentStage, SignEnrollmentStep } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import type { EnrollmentResult, SignEnrollmentStage, SignEnrollmentStep } from "../../../lib/crypto/keyvaultApi.js";
 import type { SigningEnrollmentInfo } from "./signingInfo.js";
 
 /** Warn about an expiring certificate this many days ahead. */

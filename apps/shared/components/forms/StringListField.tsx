@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 
 export interface StringListFieldProps {
     label: string;

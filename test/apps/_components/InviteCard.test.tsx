@@ -6,12 +6,14 @@ import React from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MessageInvite } from "@rapidmx/react-shared/calendar/inviteApi.js";
+import type { MessageInvite } from "../../../lib/calendar/inviteApi.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import InviteCard, { formatInviteWhen, isCalendarAttachment } from "../../../apps/shared/components/mail/InviteCard.js";
 import { clearInviteCache } from "../../../apps/shared/components/mail/invite/inviteStore.js";
 import { conflictSummary } from "../../../apps/shared/components/mail/invite/inviteFormat.js";
 import { dismissAll, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 // The suite runs in UTC (vitest.config.ts), so the reader's own zone is UTC below.
 
@@ -790,5 +792,43 @@ describe("InviteCard", () => {
     it("draws a method it does not know as a plain calendar event", async () => {
         await renderCard(inviteFixture({ method: "x-custom", canRespond: false }));
         expect(screen.getByRole("region", { name: "Calendar event" })).toBeInTheDocument();
+    });
+
+    describe("with an explicit ApiClient (multi-account: tauri-client)", () => {
+        /** A fake `ApiClient` routing the same invite lookup/respond routes `mockInviteServer()` does over the global
+         * fetch, but through `client.fetch()` instead - paths have no `/api` prefix, matching what `withClient()`
+         * actually passes (a real client adds that prefix itself - see `createApiClient()`). */
+        function fakeInviteClient(invite: MessageInvite, action: (path: string, init?: RequestInit) => unknown) {
+            const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+                if ((init?.method ?? "GET") === "GET") return invite;
+                return action(path, init);
+            });
+            return { client: { fetch: fetchMock, setUnauthorizedObserver: vi.fn() } as ApiClient, fetch: fetchMock };
+        }
+
+        it("looks up and answers the invitation through the explicit client, never the global fetch", async () => {
+            const globalFetch = mockFetch(() => {
+                throw new Error("must not use the global fetch when an explicit client is provided");
+            });
+            const { client, fetch: clientFetch } = fakeInviteClient(inviteFixture(), () =>
+                inviteFixture({ response: "accepted", onCalendar: true, calendarEventUid: "ev1" }),
+            );
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <InviteCard messageUid="m1" />
+                </ApiClientContext.Provider>,
+            );
+
+            await user.click(await screen.findByRole("button", { name: "Accept" }));
+
+            await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("You accepted this meeting."));
+            expect(clientFetch).toHaveBeenCalledWith("/mail/calendar-events/invite/m1", undefined);
+            expect(clientFetch).toHaveBeenCalledWith(
+                "/mail/calendar-events/invite/m1/respond",
+                expect.objectContaining({ method: "POST", body: JSON.stringify({ responseStatus: "accepted" }) }),
+            );
+            expect(globalFetch).not.toHaveBeenCalled();
+        });
     });
 });

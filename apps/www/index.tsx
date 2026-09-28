@@ -9,7 +9,7 @@ import { prefetchComposeWindow } from "../shared/components/mail/compose/Compose
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HiOutlineFlag, HiOutlineLockClosed, HiOutlinePaperClip } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiClient, ApiRequestError } from "../../lib/util/api.js";
 import {
     Folder,
     Mailbox,
@@ -25,16 +25,17 @@ import {
     listMessages,
     moveMessages,
     setMessagesFlagged,
-} from "@rapidmx/react-shared/mail/mailApi.js";
-import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
+} from "../../lib/mail/mailApi.js";
+import { Label, listLabels } from "../../lib/mail/labelsApi.js";
 import {
     ConversationListParams,
     ConversationSummary,
     listConversationMessages,
     listConversations,
-} from "@rapidmx/react-shared/mail/conversationsApi.js";
-import { SearchResult, search as searchMailbox } from "@rapidmx/react-shared/search/searchApi.js";
-import { parseSearchQuery, type ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
+} from "../../lib/mail/conversationsApi.js";
+import { SearchResult, search as searchMailbox } from "../../lib/search/searchApi.js";
+import { useApiClient } from "../../lib/util/apiClientContext.js";
+import { parseSearchQuery, type ParsedSearchQuery } from "../../lib/search/queryGrammar.js";
 import { searchLocalIndex } from "../shared/search/searchTier2.js";
 import {
     MailboxFailure,
@@ -50,9 +51,9 @@ import {
     withTimeout,
 } from "../shared/search/crossMailboxSearch.js";
 import type { Coverage } from "../shared/search/localIndexWorker.js";
-import { getUnlockedKeys, subscribeKeySession, UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
-import { useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import { getUnlockedKeys, subscribeKeySession, UnlockedKeys } from "../../lib/crypto/keySession.js";
+import { useMessageAttachments } from "../../lib/mail/mailDetailHooks.js";
+import useIsMobile from "../../lib/util/useIsMobile.js";
 import MailShell, {
     AggregateFolderType,
     MailboxFolders,
@@ -89,8 +90,8 @@ import {
     setMailListPreferences,
     sortConversations,
 } from "../shared/components/mail/listPreferences.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import Alert from "../../lib/components/feedback/Alert.js";
+import Skeleton, { SkeletonList } from "../../lib/components/feedback/Skeleton.js";
 import { useUnlockPrompt } from "../shared/components/layout/UnlockPromptProvider.js";
 import { SHORTCUTS } from "../shared/keyboard/keymap.js";
 import { isActivatable } from "../shared/keyboard/targets.js";
@@ -145,14 +146,14 @@ function stripHtmlToText(html: string): string {
 async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys): Promise<Record<string, DecryptedRow>> {
     const encrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER);
     // Imported once for all the rows, by whichever needs it first.
-    let securityModule: Promise<typeof import("@rapidmx/react-shared/crypto/messageSecurity.js")> | undefined;
+    let securityModule: Promise<typeof import("../../lib/crypto/messageSecurity.js")> | undefined;
     const entries = await Promise.all(
         encrypted.map(async (message): Promise<[string, DecryptedRow] | null> => {
             try {
                 const rawMime = await getMessageRawContent(message.uid);
                 // Loaded here, on first use: the S/MIME code (PKI.js, ASN.1, X.509) is over half a megabyte and an inbox with
                 // no encrypted mail in it never needs it.
-                const { evaluateMessageSecurity } = await (securityModule ??= import("@rapidmx/react-shared/crypto/messageSecurity.js"));
+                const { evaluateMessageSecurity } = await (securityModule ??= import("../../lib/crypto/messageSecurity.js"));
                 const security = await evaluateMessageSecurity(rawMime, unlocked);
                 if (!security.subject && !security.html) {
                     return null;
@@ -297,7 +298,7 @@ async function searchTier3Windows(
     windows: ParsedSearchQuery[],
     unlocked: UnlockedKeys | undefined,
     mailboxUid: string,
-    loadTier3: () => Promise<typeof import("@rapidmx/react-shared/search/searchTier3.js")>,
+    loadTier3: () => Promise<typeof import("../../lib/search/searchTier3.js")>,
 ): Promise<SearchResult[]> {
     // Loaded on first use, with the S/MIME code it decrypts through (see `decryptEncryptedRows()`) - once for however many mailboxes a search
     // covers: `loadTier3` hands every one of them the same import.
@@ -382,11 +383,12 @@ function mailboxesWithMore(cursor: SearchCursor): string[] {
 async function resolveHitsToMessages(
     hits: SearchResult[],
     cache: Map<string, Message | null>,
+    client?: ApiClient,
 ): Promise<{ messages: Message[]; snippets: Record<string, string> }> {
     const toFetch = hits.filter((hit) => !cache.has(hit.entityUid));
     await Promise.all(
         toFetch.map(async (hit) => {
-            const message = await getMessage(hit.entityUid).catch(() => null);
+            const message = await getMessage(hit.entityUid, client).catch(() => null);
             cache.set(hit.entityUid, message);
         }),
     );
@@ -489,6 +491,7 @@ async function fetchAggregateMessages(
     mailboxFolders: MailboxFolders[],
     type: AggregateFolderType,
     filter: MessageListFilter,
+    client?: ApiClient,
 ): Promise<Message[]> {
     const perMailbox = await Promise.all(
         mailboxFolders.map(async ({ mailbox, folders }) => {
@@ -500,7 +503,7 @@ async function fetchAggregateMessages(
             // this function's own pagination scope trim) - each mailbox contributes its own newest page and
             // they're merged newest-first, which a different sort key couldn't be made honest across an
             // arbitrary number of independently-paged folders.
-            const messages = await listMessages(folder.uid, { limit: MESSAGE_PAGE_SIZE, filter }).catch(() => [] as Message[]);
+            const messages = await listMessages(folder.uid, { limit: MESSAGE_PAGE_SIZE, filter }, client).catch(() => [] as Message[]);
             return { mailbox, messages };
         }),
     );
@@ -517,6 +520,7 @@ async function fetchAggregateConversations(
     mailboxFolders: MailboxFolders[],
     type: AggregateFolderType,
     params: ConversationListParams,
+    client?: ApiClient,
 ): Promise<ListedConversation[]> {
     const perMailbox = await Promise.all(
         mailboxFolders.map(async ({ mailbox, folders }): Promise<ListedConversation[]> => {
@@ -524,7 +528,7 @@ async function fetchAggregateConversations(
             if (!folder) {
                 return [];
             }
-            const rows = await listConversations(mailbox.uid, { ...params, folderUid: folder.uid, page: 0 }).catch(() => [] as ConversationSummary[]);
+            const rows = await listConversations(mailbox.uid, { ...params, folderUid: folder.uid, page: 0 }, client).catch(() => [] as ConversationSummary[]);
             return rows.map((row) => ({ ...row, mailboxUid: mailbox.uid }));
         }),
     );
@@ -570,6 +574,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const isMobile = useIsMobile();
     const navigate = useNavigate();
     const { requestUnlock } = useUnlockPrompt();
+    const client = useApiClient();
     const [messages, setMessages] = useState<Message[]>([]);
     const [conversations, setConversations] = useState<ListedConversation[]>([]);
     const [loading, setLoading] = useState(true);
@@ -940,7 +945,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
         let cancelled = false;
         setOtherMailboxLabels([]);
-        listLabels(labelsMailboxUid, { limit: 200 })
+        listLabels(labelsMailboxUid, { limit: 200 }, client)
             .then((result) => {
                 if (!cancelled) {
                     setOtherMailboxLabels(result);
@@ -950,12 +955,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return () => {
             cancelled = true;
         };
-    }, [labelsMailboxUid, otherMailbox]);
+    }, [labelsMailboxUid, otherMailbox, client]);
 
     useEffect(() => {
         let cancelled = false;
         setMailboxLabels([]);
-        listLabels(activeMailboxUid, { limit: 200 })
+        listLabels(activeMailboxUid, { limit: 200 }, client)
             .then((result) => {
                 if (!cancelled) {
                     setMailboxLabels(result);
@@ -965,7 +970,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return () => {
             cancelled = true;
         };
-    }, [activeMailboxUid]);
+    }, [activeMailboxUid, client]);
 
     // Debounce the raw input into the query actually searched, so every keystroke doesn't fire a request.
     useEffect(() => {
@@ -1083,7 +1088,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             setLoading(true);
             setError(null);
             setHasMore(false);
-            void fetchAggregateConversations(mailboxFolders, aggregateFolderType, conversationParams(0))
+            void fetchAggregateConversations(mailboxFolders, aggregateFolderType, conversationParams(0), client)
                 .then((results) => {
                     if (isCurrentRun()) {
                         setConversations(results);
@@ -1111,7 +1116,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 setLoading(true);
             }
             setError(null);
-            listConversations(activeMailboxUid, conversationParams(0))
+            listConversations(activeMailboxUid, conversationParams(0), client)
                 .then((result) => {
                     if (isCurrentRun()) {
                         shownListKeyRef.current = listKey;
@@ -1145,7 +1150,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             setLoading(true);
             setError(null);
             // hasMore stays false (set above) - see fetchAggregateMessages()'s own pagination scope trim.
-            void fetchAggregateMessages(mailboxFolders, aggregateFolderType, effectiveFilter)
+            void fetchAggregateMessages(mailboxFolders, aggregateFolderType, effectiveFilter, client)
                 .then((results) => {
                     if (isCurrentRun()) {
                         setMessages(results);
@@ -1180,8 +1185,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
             const mailboxNames = new Map(searchedMailboxes.map((mb) => [mb.uid, mb.displayName]));
             const isSuperseded = () => searchRunIdRef.current !== myRunId;
             // Tier 3's code, imported when the first mailbox needs it and shared by the rest.
-            let tier3Module: Promise<typeof import("@rapidmx/react-shared/search/searchTier3.js")> | undefined;
-            const loadTier3 = () => (tier3Module ??= import("@rapidmx/react-shared/search/searchTier3.js"));
+            let tier3Module: Promise<typeof import("../../lib/search/searchTier3.js")> | undefined;
+            const loadTier3 = () => (tier3Module ??= import("../../lib/search/searchTier3.js"));
             const failures: MailboxFailure[] = [];
             /** The failed mailbox's notice entry. A search of one mailbox has none: its failure fails the search. */
             const noteFailure = (uid: string, encrypted: boolean, err: unknown) => {
@@ -1229,6 +1234,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 const { messages: resolved, snippets: resolvedSnippets } = await resolveHitsToMessages(
                     merged,
                     resolvedMessageCacheRef.current,
+                    client,
                 );
                 if (isSuperseded() || revealId < revealsApplied) {
                     return;
@@ -1259,7 +1265,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                             const run = runs.get(uid)!;
                             try {
                                 const [tier1Page, tier2Page] = await Promise.all([
-                                    withTimeout(searchMailbox(parsed.text, tier1SearchParams(parsed, undefined, uid, pageSize)), tier1TimeoutMs),
+                                    withTimeout(searchMailbox(parsed.text, tier1SearchParams(parsed, undefined, uid, pageSize), client), tier1TimeoutMs),
                                     searchLocalIndex(uid, parsed, run.unlocked, pageSize, 0),
                                 ]);
                                 if (isSuperseded()) {
@@ -1377,7 +1383,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             shownListKeyRef.current = listKey;
             pendingScrollRef.current = snapshot.scrollTop;
         }
-        listMessages(folderUid!, listParams)
+        listMessages(folderUid!, listParams, client)
             .then((results) => {
                 if (isCurrentRun()) {
                     shownListKeyRef.current = listKey;
@@ -1436,6 +1442,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         crossMailbox,
         searchTargetKey,
         activeMailboxUid,
+        client,
     ]);
 
     // Which folders the messages on screen live in: one the sidebar does not know (the Outbox and Sent Items are made by the server on first use) is looked for -
@@ -1473,12 +1480,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
             try {
                 if (asConversations && aggregateFolderType) {
                     // No paging here either: the fresh merged first pages are the list.
-                    const fresh = await fetchAggregateConversations(mailboxFolders, aggregateFolderType, conversationParams(0));
+                    const fresh = await fetchAggregateConversations(mailboxFolders, aggregateFolderType, conversationParams(0), client);
                     if (isCurrent()) {
                         setConversations(fresh);
                     }
                 } else if (asConversations) {
-                    const fresh = await listConversations(activeMailboxUid, conversationParams(0));
+                    const fresh = await listConversations(activeMailboxUid, conversationParams(0), client);
                     if (!isCurrent()) {
                         return;
                     }
@@ -1488,12 +1495,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     setHasMore(!merged.complete);
                 } else if (aggregateFolderType) {
                     // No paging here (see `fetchAggregateMessages()`): the fresh merged first pages are the list.
-                    const fresh = await fetchAggregateMessages(mailboxFolders, aggregateFolderType, effectiveFilter);
+                    const fresh = await fetchAggregateMessages(mailboxFolders, aggregateFolderType, effectiveFilter, client);
                     if (isCurrent()) {
                         setMessages(fresh);
                     }
                 } else {
-                    const fresh = await listMessages(folderUid!, listParams);
+                    const fresh = await listMessages(folderUid!, listParams, client);
                     if (!isCurrent()) {
                         return;
                     }
@@ -1567,7 +1574,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         try {
             if (asConversations) {
                 const page = Math.floor(listedOffsetRef.current / MESSAGE_PAGE_SIZE);
-                const more = await listConversations(activeMailboxUid, conversationParams(page));
+                const more = await listConversations(activeMailboxUid, conversationParams(page), client);
                 if (!isCurrentRun()) {
                     return;
                 }
@@ -1592,7 +1599,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         try {
                             const [tier1Page, tier2Page] = await Promise.all([
                                 withTimeout(
-                                    searchMailbox(parsed.text, tier1SearchParams(parsed, mailboxCursor.tier1Cursor, uid, cursor.pageSize)),
+                                    searchMailbox(parsed.text, tier1SearchParams(parsed, mailboxCursor.tier1Cursor, uid, cursor.pageSize), client),
                                     tier1TimeoutMs,
                                 ),
                                 searchLocalIndex(uid, parsed, getUnlockedKeys(uid), cursor.pageSize, mailboxCursor.tier2Offset),
@@ -1644,7 +1651,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     answered.flatMap((page) => page.tier2),
                     answered.flatMap((page) => page.tier3),
                 );
-                const { messages: more, snippets: moreSnippets } = await resolveHitsToMessages(merged, resolvedMessageCacheRef.current);
+                const { messages: more, snippets: moreSnippets } = await resolveHitsToMessages(merged, resolvedMessageCacheRef.current, client);
                 if (!isCurrentRun()) {
                     return;
                 }
@@ -1682,7 +1689,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 // no longer a page boundary, so this page overlaps rows already shown - `appendUnseenRows()`
                 // drops those - rather than skipping the message that shifted back across the boundary.
                 const page = Math.floor(listedOffsetRef.current / MESSAGE_PAGE_SIZE);
-                const more = await listMessages(folderUid!, { ...listParams, page });
+                const more = await listMessages(folderUid!, { ...listParams, page }, client);
                 if (!isCurrentRun()) {
                     return;
                 }
@@ -1716,6 +1723,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         activeMailboxUid,
         crossMailbox,
         searchTargetKey,
+        client,
     ]);
 
     // Always calls the latest `loadMore` closure so the effect below doesn't need `loadMore` itself in its
@@ -1884,7 +1892,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         setResolvingSelection((n) => n + 1);
         try {
             const loaded = await Promise.all(
-                missing.map(async (id) => [id, await listConversationMessages(activeMailboxUid, id)] as const),
+                missing.map(async (id) => [id, await listConversationMessages(activeMailboxUid, id, {}, client)] as const),
             );
             setConversationMessagesById((prev) => ({ ...prev, ...Object.fromEntries(loaded) }));
         } catch (err) {
@@ -1989,11 +1997,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return inEachMailbox(chosen, async (ofMailbox, group) => {
             const archiveFolderUid = foldersOf(ofMailbox).find((f) => f.type === "archive")?.uid;
             if (archiveFolderUid) {
-                return moveMessages(group, archiveFolderUid);
+                return moveMessages(group, archiveFolderUid, client);
             }
-            const first = await archiveMessage(group[0].uid);
+            const first = await archiveMessage(group[0].uid, client);
             const rest = group.slice(1);
-            return rest.length === 0 ? [first] : [first, ...(await moveMessages(rest, first.folderUid))];
+            return rest.length === 0 ? [first] : [first, ...(await moveMessages(rest, first.folderUid, client))];
         });
     }
 
@@ -2025,20 +2033,20 @@ function InboxContent({ userUid }: { userUid?: string }) {
         if (known) {
             return known;
         }
-        const listed = (await listFolders(ofMailbox)).find((f) => f.type === type);
+        const listed = (await listFolders(ofMailbox, client)).find((f) => f.type === type);
         if (listed) {
             onFolderCreated(listed);
             lazyFoldersRef.current.set(key, listed.uid);
             return listed.uid;
         }
-        const created = await createFolder({ mailboxUid: ofMailbox, name, type });
+        const created = await createFolder({ mailboxUid: ofMailbox, name, type }, client);
         lazyFoldersRef.current.set(key, created.uid);
         return created.uid;
     }
 
     /** Moves `chosen` into each of its mailbox's own folder of `type` (Deleted Items, Junk), making it where the server has none yet. */
     function moveToFolderOfType(chosen: Message[], type: Folder["type"], name: string): Promise<Message[]> {
-        return inEachMailbox(chosen, async (ofMailbox, group) => moveMessages(group, await resolveFolderOfType(type, name, ofMailbox)));
+        return inEachMailbox(chosen, async (ofMailbox, group) => moveMessages(group, await resolveFolderOfType(type, name, ofMailbox), client));
     }
 
     /**
@@ -2059,6 +2067,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         );
                         return { uid: message.uid, version: message.version, labelUids: [...new Set([...labelUids, ...kept])] };
                     }),
+                    client,
                 ),
             false,
         );
@@ -2151,7 +2160,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
             setMoveDialog(null);
             return;
         }
-        await runBulkAction((moving) => moveMessages(moving, folderUidToMoveTo), true, chosen);
+        await runBulkAction((moving) => moveMessages(moving, folderUidToMoveTo, client), true, chosen);
         setMoveDialog(null);
     }
 
@@ -2412,7 +2421,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         const cacheKey = ofMailbox === activeMailboxUid ? id : `${ofMailbox}\u0000${id}`;
         let all = conversationMessagesById[cacheKey];
         if (!all) {
-            all = await listConversationMessages(ofMailbox, id);
+            all = await listConversationMessages(ofMailbox, id, {}, client);
             const loaded = all;
             setConversationMessagesById((prev) => ({ ...prev, [cacheKey]: loaded }));
         }
@@ -2517,7 +2526,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         SHORTCUTS.mail.flag,
         () =>
             // Flags them all unless every one already is - what the bar's Flag and Unflag would do on this selection.
-            void runOnKeyboardTargets((chosen) => setMessagesFlagged(chosen, !chosen.every((m) => m.flags.flagged)), false),
+            void runOnKeyboardTargets((chosen) => setMessagesFlagged(chosen, !chosen.every((m) => m.flags.flagged), client), false),
         { enabled: keyboardActions && keyboardTargetExists },
     );
     useShortcut(
@@ -2630,11 +2639,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                 false,
                             )
                         }
-                        onSetFlagged={(flagged) => void runBulkAction((chosen) => setMessagesFlagged(chosen, flagged), false)}
+                        onSetFlagged={(flagged) => void runBulkAction((chosen) => setMessagesFlagged(chosen, flagged, client), false)}
                         shortcuts={keyboardActions}
                         onArchive={() => void runBulkAction(bulkArchive, true)}
                         onMoveTo={async (targetFolderUid) => {
-                            await runBulkAction((chosen) => moveMessages(chosen, targetFolderUid), true);
+                            await runBulkAction((chosen) => moveMessages(chosen, targetFolderUid, client), true);
                         }}
                         onReportJunk={() => void moveSelectionToType("junk", "Junk Email")}
                         onDelete={() =>

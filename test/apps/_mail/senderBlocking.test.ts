@@ -12,6 +12,7 @@ import {
     normalizeAddresses,
     removeSenderRule,
 } from "../../../apps/shared/mail/senderBlocking.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 // Block and Never block are mail filter rules; the rules API is the server, stood in for here.
 const api = vi.hoisted(() => ({
@@ -20,7 +21,7 @@ const api = vi.hoisted(() => ({
     updateMailFilterRule: vi.fn(),
     deleteMailFilterRule: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/mail/mailFilterRulesApi.js", () => api);
+vi.mock("../../../lib/mail/mailFilterRulesApi.js", () => api);
 
 const MAILBOX = "mb1";
 const JUNK = "f-junk";
@@ -61,20 +62,23 @@ describe("blockSender", () => {
         api.listMailFilterRules.mockResolvedValue([rule({ uid: "other", sequence: 4, name: "Files", conditions: { subjectContains: ["x"] } }), rule({ uid: "low", sequence: -3, conditions: { fromContains: ["z@z.com"] } })]);
         const result = await blockSender(MAILBOX, ["a@x.com", "bounce@list.x.com"], JUNK, INBOX);
         expect(result.outcome).toBe("created");
-        expect(api.listMailFilterRules).toHaveBeenCalledWith(MAILBOX, { limit: 500 });
-        expect(api.createMailFilterRule).toHaveBeenCalledWith({
-            mailboxUid: MAILBOX,
-            name: `${BLOCK_RULE_PREFIX}a@x.com`,
-            sequence: -4,
-            stopProcessingRules: true,
-            conditions: { fromContains: ["a@x.com", "bounce@list.x.com"] },
-            actions: [{ type: "move_to_folder", folderUid: JUNK }],
-        });
+        expect(api.listMailFilterRules).toHaveBeenCalledWith(MAILBOX, { limit: 500 }, undefined);
+        expect(api.createMailFilterRule).toHaveBeenCalledWith(
+            {
+                mailboxUid: MAILBOX,
+                name: `${BLOCK_RULE_PREFIX}a@x.com`,
+                sequence: -4,
+                stopProcessingRules: true,
+                conditions: { fromContains: ["a@x.com", "bounce@list.x.com"] },
+                actions: [{ type: "move_to_folder", folderUid: JUNK }],
+            },
+            undefined,
+        );
     });
 
     it("starts a mailbox with no rules below zero, so it is still first", async () => {
         await blockSender(MAILBOX, ["a@x.com"], JUNK, INBOX);
-        expect(api.createMailFilterRule).toHaveBeenCalledWith(expect.objectContaining({ sequence: -1 }));
+        expect(api.createMailFilterRule).toHaveBeenCalledWith(expect.objectContaining({ sequence: -1 }), undefined);
     });
 
     it("makes nothing when the sender is already blocked, whatever the rule is called or the case of its address", async () => {
@@ -90,16 +94,19 @@ describe("blockSender", () => {
         api.listMailFilterRules.mockResolvedValue([rule({ enabled: false })]);
         const result = await blockSender(MAILBOX, ["a@x.com"], JUNK, INBOX);
         expect(result.outcome).toBe("enabled");
-        expect(api.updateMailFilterRule).toHaveBeenCalledWith({
-            uid: "r1",
-            version: 3,
-            name: "Block a@x.com",
-            enabled: true,
-            sequence: -1,
-            stopProcessingRules: true,
-            conditions: { fromContains: ["a@x.com"] },
-            actions: [{ type: "move_to_folder", folderUid: JUNK }],
-        });
+        expect(api.updateMailFilterRule).toHaveBeenCalledWith(
+            {
+                uid: "r1",
+                version: 3,
+                name: "Block a@x.com",
+                enabled: true,
+                sequence: -1,
+                stopProcessingRules: true,
+                conditions: { fromContains: ["a@x.com"] },
+                actions: [{ type: "move_to_folder", folderUid: JUNK }],
+            },
+            undefined,
+        );
     });
 
     it.each([
@@ -119,8 +126,20 @@ describe("blockSender", () => {
         const keep = rule({ uid: "keep", version: 8, name: "Never block a@x.com", actions: [{ type: "move_to_folder", folderUid: INBOX }] });
         api.listMailFilterRules.mockResolvedValue([keep]);
         const result = await blockSender(MAILBOX, ["a@x.com"], JUNK, INBOX);
-        expect(api.deleteMailFilterRule).toHaveBeenCalledWith("keep", 8);
+        expect(api.deleteMailFilterRule).toHaveBeenCalledWith("keep", 8, undefined);
         expect(result.outcome).toBe("created");
+    });
+
+    it("threads an explicit ApiClient through to every mail-filter-rules call, unchanged from the default (undefined) path otherwise", async () => {
+        const client = {} as ApiClient;
+        const keep = rule({ uid: "keep", version: 8, name: "Never block a@x.com", actions: [{ type: "move_to_folder", folderUid: INBOX }] });
+        api.listMailFilterRules.mockResolvedValue([keep]);
+
+        await blockSender(MAILBOX, ["a@x.com"], JUNK, INBOX, client);
+
+        expect(api.listMailFilterRules).toHaveBeenCalledWith(MAILBOX, { limit: 500 }, client);
+        expect(api.deleteMailFilterRule).toHaveBeenCalledWith("keep", 8, client);
+        expect(api.createMailFilterRule).toHaveBeenCalledWith(expect.objectContaining({ mailboxUid: MAILBOX }), client);
     });
 });
 
@@ -128,14 +147,17 @@ describe("neverBlockSender", () => {
     it("makes a rule that keeps the sender's mail in the Inbox and stops, first", async () => {
         const result = await neverBlockSender(MAILBOX, ["a@x.com"], JUNK, INBOX);
         expect(result).toMatchObject({ outcome: "created", removed: [] });
-        expect(api.createMailFilterRule).toHaveBeenCalledWith({
-            mailboxUid: MAILBOX,
-            name: `${NEVER_BLOCK_RULE_PREFIX}a@x.com`,
-            sequence: -1,
-            stopProcessingRules: true,
-            conditions: { fromContains: ["a@x.com"] },
-            actions: [{ type: "move_to_folder", folderUid: INBOX }],
-        });
+        expect(api.createMailFilterRule).toHaveBeenCalledWith(
+            {
+                mailboxUid: MAILBOX,
+                name: `${NEVER_BLOCK_RULE_PREFIX}a@x.com`,
+                sequence: -1,
+                stopProcessingRules: true,
+                conditions: { fromContains: ["a@x.com"] },
+                actions: [{ type: "move_to_folder", folderUid: INBOX }],
+            },
+            undefined,
+        );
         expect(api.deleteMailFilterRule).not.toHaveBeenCalled();
     });
 
@@ -143,11 +165,11 @@ describe("neverBlockSender", () => {
         const block = rule({ uid: "block", version: 5 });
         api.listMailFilterRules.mockResolvedValue([block]);
         const result = await neverBlockSender(MAILBOX, ["a@x.com"], JUNK, INBOX);
-        expect(api.deleteMailFilterRule).toHaveBeenCalledWith("block", 5);
+        expect(api.deleteMailFilterRule).toHaveBeenCalledWith("block", 5, undefined);
         expect(result.removed).toEqual([block]);
         expect(result.outcome).toBe("created");
         // The new rule goes ahead of the rules that are left, not of the one just removed.
-        expect(api.createMailFilterRule).toHaveBeenCalledWith(expect.objectContaining({ sequence: -1 }));
+        expect(api.createMailFilterRule).toHaveBeenCalledWith(expect.objectContaining({ sequence: -1 }), undefined);
     });
 
     it("makes nothing when the sender is already never blocked", async () => {
@@ -156,11 +178,24 @@ describe("neverBlockSender", () => {
         expect(result).toMatchObject({ outcome: "existing", removed: [] });
         expect(api.createMailFilterRule).not.toHaveBeenCalled();
     });
+
+    it("threads an explicit ApiClient through, unchanged from the default (undefined) path otherwise", async () => {
+        const client = {} as ApiClient;
+        await neverBlockSender(MAILBOX, ["a@x.com"], JUNK, INBOX, client);
+        expect(api.listMailFilterRules).toHaveBeenCalledWith(MAILBOX, { limit: 500 }, client);
+        expect(api.createMailFilterRule).toHaveBeenCalledWith(expect.objectContaining({ mailboxUid: MAILBOX }), client);
+    });
 });
 
 describe("removeSenderRule", () => {
     it("deletes the rule at the version it was made", async () => {
         await removeSenderRule(rule({ uid: "r9", version: 2 }) as never);
-        expect(api.deleteMailFilterRule).toHaveBeenCalledWith("r9", 2);
+        expect(api.deleteMailFilterRule).toHaveBeenCalledWith("r9", 2, undefined);
+    });
+
+    it("threads an explicit ApiClient through, unchanged from the default (undefined) path otherwise", async () => {
+        const client = {} as ApiClient;
+        await removeSenderRule(rule({ uid: "r9", version: 2 }) as never, client);
+        expect(api.deleteMailFilterRule).toHaveBeenCalledWith("r9", 2, client);
     });
 });

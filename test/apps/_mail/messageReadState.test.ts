@@ -4,10 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setReadState, setReadStateMany } from "../../../apps/shared/mail/messageReadState.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 const { setMessageRead, setMessagesRead } = vi.hoisted(() => ({ setMessageRead: vi.fn(), setMessagesRead: vi.fn() }));
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/mail/mailApi.js")>()),
+vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     setMessageRead,
     setMessagesRead,
 }));
@@ -48,7 +49,7 @@ describe("setReadState", () => {
         const pending = setReadState(original, true, s);
         // Before the server has said anything:
         expect(s.events).toEqual(["patch:m1:true:v1<-false", "track:false->true"]);
-        expect(setMessageRead).toHaveBeenCalledWith(original, true);
+        expect(setMessageRead).toHaveBeenCalledWith(original, true, undefined);
 
         answer(message("m1", true, 2));
         expect(await pending).toEqual(message("m1", true, 2));
@@ -71,7 +72,7 @@ describe("setReadState", () => {
         setMessageRead.mockResolvedValue(message("m1", false, 2));
         await setReadState(message("m1", true), false, s);
         expect(s.events[0]).toBe("patch:m1:false:v1<-true");
-        expect(setMessageRead).toHaveBeenCalledWith(expect.anything(), false);
+        expect(setMessageRead).toHaveBeenCalledWith(expect.anything(), false, undefined);
     });
 
     it("does nothing for a message already in the state asked for - one with no read flag is unread", async () => {
@@ -81,6 +82,15 @@ describe("setReadState", () => {
         expect(await setReadState(message("m3", undefined), false, s)).toBeUndefined();
         expect(s.events).toEqual([]);
         expect(setMessageRead).not.toHaveBeenCalled();
+    });
+
+    it("threads an explicit ApiClient through to setMessageRead, unchanged from the default (undefined) path otherwise", async () => {
+        const s = sink();
+        const client = {} as ApiClient;
+        setMessageRead.mockResolvedValue(message("m1", true, 2));
+
+        await setReadState(message("m1", false), true, s, client);
+        expect(setMessageRead).toHaveBeenCalledWith(expect.objectContaining({ uid: "m1" }), true, client);
     });
 });
 
@@ -94,7 +104,7 @@ describe("setReadStateMany", () => {
         const pending = setReadStateMany(selection, true, s);
         // `b` was already read: no change to show or count.
         expect(s.events).toEqual(["patch:a:true:v1<-false", "track:false->true", "patch:c:true:v1<-undefined", "track:undefined->true"]);
-        expect(setMessagesRead).toHaveBeenCalledWith(selection, true);
+        expect(setMessagesRead).toHaveBeenCalledWith(selection, true, undefined);
 
         const updated = [message("a", true, 2), message("b", true, 2), message("c", true, 2)];
         answer(updated);
@@ -125,5 +135,15 @@ describe("setReadStateMany", () => {
         await setReadStateMany([message("a", true)], true, s);
         expect(s.track).not.toHaveBeenCalled();
         expect(s.patch).toHaveBeenCalledTimes(1);
+    });
+
+    it("threads an explicit ApiClient through to setMessagesRead, unchanged from the default (undefined) path otherwise", async () => {
+        const s = sink();
+        const client = {} as ApiClient;
+        const selection = [message("a", false)];
+        setMessagesRead.mockResolvedValue([message("a", true, 2)]);
+
+        await setReadStateMany(selection, true, s, client);
+        expect(setMessagesRead).toHaveBeenCalledWith(selection, true, client);
     });
 });

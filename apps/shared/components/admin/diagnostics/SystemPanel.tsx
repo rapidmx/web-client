@@ -4,8 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { HiOutlinePause, HiOutlinePlay } from "react-icons/hi2";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
 import { formatDateTime } from "./format.js";
 import HostCard from "./HostCard.js";
 import KubernetesNotice from "./KubernetesNotice.js";

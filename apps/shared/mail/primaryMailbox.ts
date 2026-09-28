@@ -17,7 +17,7 @@
  *
  * `orderMailboxes()` puts the primary mailbox first, then the caller's other mailboxes, then the shared ones, each group alphabetical.
  */
-import { isSharedWithMe, type Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { isSharedWithMe, type Mailbox } from "../../../lib/mail/mailApi.js";
 
 /** Whether `mailbox` is the signed-in user's own. */
 export function isOwnMailbox(mailbox: Mailbox, userUid: string | undefined): boolean {

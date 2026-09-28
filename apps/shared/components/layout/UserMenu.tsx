@@ -4,10 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import useIsMobile from "../../../../lib/util/useIsMobile.js";
 import { HiOutlineArrowUturnLeft, HiOutlineShieldCheck } from "react-icons/hi2";
-import { formatProfileName, getMyProfile, getMyUsername, Profile, profileInitials } from "@rapidmx/react-shared/auth/profileApi.js";
-import { listMailboxes, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { formatProfileName, getMyProfile, getMyUsername, Profile, profileInitials } from "../../../../lib/auth/profileApi.js";
+import { listMailboxes, Mailbox } from "../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { accountUrlOf } from "../../auth/accountUrl.js";
 import { DEFAULT_TRUSTED_ROLES, lookUpAdminAccess } from "../../auth/adminAccess.js";
 import { ariaKeyShortcuts } from "../../keyboard/format.js";
@@ -114,6 +115,7 @@ export default function UserMenu({
     unseenErrors = 0,
 }: UserMenuProps) {
     const env = useKeyEnvironment();
+    const client = useApiClient();
     // A phone has no keyboard to speak of, so the shortcuts list (and the dialog it opens) has nothing to offer there.
     const isMobile = useIsMobile();
     const [open, setOpen] = useState(false);
@@ -167,7 +169,7 @@ export default function UserMenu({
         }
         let cancelled = false;
         // A failure (no mail server, no access) is just "no mailbox name" - the username is asked for next.
-        listMailboxes({ limit: 50 }).then(
+        listMailboxes({ limit: 50 }, client).then(
             (list) => !cancelled && setOwnListing(Array.isArray(list) ? list : []),
             () => !cancelled && setOwnListing([]),
         );

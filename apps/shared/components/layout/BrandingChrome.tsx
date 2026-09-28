@@ -5,7 +5,7 @@
 import React, { ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import DOMPurify from "dompurify";
-import type { Branding } from "@rapidmx/react-shared/branding/brandingApi.js";
+import type { Branding } from "../../../../lib/branding/brandingApi.js";
 import { useHeaderHeightRef } from "../../notifications/headerOffset.js";
 
 /** Elements that could run script, restyle the whole page, collect input, or embed another page - stripped on

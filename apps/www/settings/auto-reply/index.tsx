@@ -4,10 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useState } from "react";
-import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
-import { updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
+import { updateMailbox } from "../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
@@ -29,6 +30,7 @@ function AutoReplyContent() {
     // resolved to one of them (a mailbox-less caller sees `MailboxProvisioning` instead) — this lookup
     // can't miss, same established non-null pattern as `apps/www/contacts/index.tsx`'s `mailboxUid!`.
     const mailbox = mailboxes.find((mb) => mb.uid === mailboxUid)!;
+    const client = useApiClient();
 
     const [oofEnabled, setOofEnabled] = useState(mailbox.oofEnabled ?? false);
     const [oofMessage, setOofMessage] = useState(mailbox.oofMessage ?? "");
@@ -53,7 +55,7 @@ function AutoReplyContent() {
                 // `null` (not omitted) clears a previously saved window - an omitted field is left as-is.
                 oofStartTime: oofStartTime ? new Date(oofStartTime).toISOString() : null,
                 oofEndTime: oofEndTime ? new Date(oofEndTime).toISOString() : null,
-            });
+            }, client);
             setVersion(updated.version);
             setSaved(true);
         } catch (err) {

@@ -8,17 +8,22 @@
   "license": "MPL-2.0",
   "files": [
     "apps",
+    "lib",
     "dist"
   ],
   "exports": {
     "./*.js": {
       "import": "./dist/apps/*.js"
     },
+    "./lib/*.js": {
+      "types": "./dist/lib/*.d.ts",
+      "import": "./dist/lib/*.js"
+    },
     "./shared/styles/app.css": "./apps/shared/styles/app.css"
   },
   "scripts": {
     "build": "yarn lint && rimraf dist && tsc -p tsconfig.json && shx mkdir -p dist/apps/shared/styles && shx cp apps/shared/styles/app.css dist/apps/shared/styles/app.css && node scripts/checkDistReferences.mjs",
-    "lint": "eslint ./apps ./test",
+    "lint": "eslint ./apps ./lib ./test",
     "test": "vitest run --coverage",
     "test:watch": "vitest --watch --coverage",
     "release": "npx @rapidrest/cli release",
@@ -38,9 +43,9 @@
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
+    "@emoji-mart/data": "^1.2.1",
     "@journeyapps/wa-sqlite": "^2.0.4",
     "@peculiar/x509": "^2.1.0",
-    "@rapidmx/react-shared": "^0.22.0",
     "@tiptap/core": "^3.31.3",
     "@tiptap/extension-highlight": "^3.31.3",
     "@tiptap/extension-image": "^3.31.3",
@@ -58,7 +63,8 @@
     "hash-wasm": "^4.12.0",
     "pkijs": "^3.4.0",
     "react-icons": "^5.7.0",
-    "reflect-metadata": "^0.2.2"
+    "reflect-metadata": "^0.2.2",
+    "rrule": "^2.8.1"
   },
   "devDependencies": {
     "@rapidrest/react": "^2.1.0",

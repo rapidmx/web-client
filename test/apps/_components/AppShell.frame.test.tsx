@@ -14,7 +14,7 @@ import { jsonResponse, mockFetch } from "../testUtils.js";
 import AppShell, { AppChrome } from "../../../apps/shared/components/layout/AppShell.js";
 import { AppFrameContext } from "../../../apps/shared/navigation/frameContext.js";
 
-vi.mock("@rapidmx/react-shared/crypto/useIdleKeyTimeout.js", () => ({ useIdleKeyTimeout: vi.fn() }));
+vi.mock("../../../lib/crypto/useIdleKeyTimeout.js", () => ({ useIdleKeyTimeout: vi.fn() }));
 
 const originalTitle = document.title;
 

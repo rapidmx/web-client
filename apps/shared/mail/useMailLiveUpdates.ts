@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import { getPushClient, PushEvent } from "@rapidmx/react-shared/mail/pushClient.js";
-import { SendEvent, parseSendEvent } from "@rapidmx/react-shared/mail/sendEvents.js";
+import { Folder, Mailbox, Message } from "../../../lib/mail/mailApi.js";
+import { getPushClient, PushEvent } from "../../../lib/mail/pushClient.js";
+import { SendEvent, parseSendEvent } from "../../../lib/mail/sendEvents.js";
 import type { MailboxFolders } from "../components/mail/layout/MailShell.js";
 import { SIGN_OUT_CHANNEL } from "../search/localIndexRpcClient.js";
 import { FolderCounts, useFolderCounts } from "./folderCounts.js";

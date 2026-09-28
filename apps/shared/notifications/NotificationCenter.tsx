@@ -13,7 +13,7 @@ import {
     HiOutlineInformationCircle,
     HiOutlineXMark,
 } from "react-icons/hi2";
-import CopyButton from "@rapidmx/react-shared/components/buttons/CopyButton.js";
+import CopyButton from "../../../lib/components/buttons/CopyButton.js";
 import { NotificationAction, NotificationKind, NotificationView, dismiss, setAllPaused, setPaused } from "./store.js";
 import { useNotifications } from "./useNotifications.js";
 import { useSystemErrorNotifications } from "./systemErrors.js";

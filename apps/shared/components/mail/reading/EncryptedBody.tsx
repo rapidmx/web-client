@@ -4,8 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { HiOutlineExclamationTriangle, HiOutlineLockClosed } from "react-icons/hi2";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
 import { useResolvedTheme } from "../../../appearance/resolvedTheme.js";
 import { formatColour } from "./color.js";
 import { useThemeSurface } from "./themeSurface.js";

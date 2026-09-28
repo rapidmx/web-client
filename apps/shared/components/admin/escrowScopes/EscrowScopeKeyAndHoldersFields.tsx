@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
-import { resolveEscrowScopeHolder } from "@rapidmx/react-shared/admin/escrowScopesApi.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { toDatetimeLocal } from "../../../../../lib/util/dateInput.js";
+import { resolveEscrowScopeHolder } from "../../../../../lib/admin/escrowScopesApi.js";
+import FormField from "../../../../../lib/components/forms/FormField.js";
 import PrincipalListField from "../../sharing/PrincipalListField.js";
 
 const INPUT_CLASS =

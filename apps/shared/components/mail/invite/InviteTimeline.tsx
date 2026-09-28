@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import type { InviteScheduleEntry, MessageInvite } from "@rapidmx/react-shared/calendar/inviteApi.js";
+import type { InviteScheduleEntry, MessageInvite } from "../../../../../lib/calendar/inviteApi.js";
 import { validDate } from "./inviteFormat.js";
 
 /** How tall one hour is drawn, in px. */

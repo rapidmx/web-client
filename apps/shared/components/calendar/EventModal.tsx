@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useRef, useState } from "react";
-import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import { Mailbox } from "../../../../lib/mail/mailApi.js";
+import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import useIsMobile from "../../../../lib/util/useIsMobile.js";
 import EventDetails from "./EventDetails.js";
 import EventEditor from "./EventEditor.js";
 import EventShell, { EventAnchor, EventShellVariant } from "./EventShell.js";

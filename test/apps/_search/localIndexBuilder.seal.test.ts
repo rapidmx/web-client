@@ -6,9 +6,9 @@
 // and the bounds on seal writes (concurrency, per-pass cap, locks, aborts, errors). The rest of the pass is covered in
 // localIndexBuilder.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Folder, Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import type { Folder, Message } from "../../../lib/mail/mailApi.js";
+import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     MAX_SEAL_WRITES_PER_PASS,
     SEAL_WRITE_CONCURRENCY,
@@ -23,16 +23,16 @@ const { listMessages, listFolders, getMessageRawContent, setMessageVerificationS
     getMessageRawContent: vi.fn(),
     setMessageVerificationSeal: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", () => ({ listMessages, listFolders, getMessageRawContent, setMessageVerificationSeal }));
+vi.mock("../../../lib/mail/mailApi.js", () => ({ listMessages, listFolders, getMessageRawContent, setMessageVerificationSeal }));
 
 const { evaluateMessageSecurity, evaluateMessageSecurityWithSeal } = vi.hoisted(() => ({
     evaluateMessageSecurity: vi.fn(),
     evaluateMessageSecurityWithSeal: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity, evaluateMessageSecurityWithSeal }));
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity, evaluateMessageSecurityWithSeal }));
 
 const { getKeyVault, getPinnedSignerFingerprints } = vi.hoisted(() => ({ getKeyVault: vi.fn(), getPinnedSignerFingerprints: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault }));
+vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({ getKeyVault }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints }));
 
 const rpc = vi.hoisted(() => ({
@@ -127,14 +127,17 @@ describe("buildLocalIndex: verification seals", () => {
         ]);
         expect(evaluateMessageSecurity).toHaveBeenCalledWith("raw current", unlocked);
         expect(getPinnedSignerFingerprints).toHaveBeenCalledTimes(2);
-        expect(getPinnedSignerFingerprints).toHaveBeenCalledWith("mb1", "alice@example.com");
-        expect(getPinnedSignerFingerprints).toHaveBeenCalledWith("mb1", "Carol@example.com");
+        expect(getPinnedSignerFingerprints).toHaveBeenCalledWith("mb1", "alice@example.com", undefined);
+        expect(getPinnedSignerFingerprints).toHaveBeenCalledWith("mb1", "Carol@example.com", undefined);
         expect(getKeyVault).toHaveBeenCalledTimes(1);
+        // A trailing `undefined` client arg - createPassSealer()/sendVerificationSeal() now thread the pass's
+        // own (here, unset) ApiClient through, so the default global path calls with client explicitly undefined
+        // rather than omitting the argument.
         expect(setMessageVerificationSeal.mock.calls.sort(byUid)).toEqual([
-            ["carol", "seal-carol", 2],
-            ["carol2", "seal-carol2", 2],
-            ["none", "seal-none", 2],
-            ["older", "seal-older", 2],
+            ["carol", "seal-carol", 2, undefined],
+            ["carol2", "seal-carol2", 2, undefined],
+            ["none", "seal-none", 2, undefined],
+            ["older", "seal-older", 2, undefined],
         ]);
         // Sealing never changes what is indexed.
         expect(indexedUids()).toEqual(["none", "older", "current", "carol", "carol2"]);

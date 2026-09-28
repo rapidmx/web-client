@@ -9,11 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import SettingsProfilePageBase from "../../../../apps/www/settings/profile/index.js";
 import { withTestRouter } from "../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 // The device's zone, fixed so the tests don't depend on the machine they run on.
 const device = vi.hoisted(() => ({ zone: "Asia/Tokyo" }));
-vi.mock("@rapidmx/react-shared/util/timeZone.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/util/timeZone.js")>()),
+vi.mock("../../../../lib/util/timeZone.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../../lib/util/timeZone.js")>()),
     deviceTimeZone: () => device.zone,
 }));
 
@@ -350,6 +352,37 @@ describe("SettingsProfilePage", () => {
 
             expect(await screen.findByText("Couldn't save your profile")).toBeInTheDocument();
             expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
+        });
+
+        it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+            const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+            const fetchMock = mockFetch((url, init) => {
+                if (url.startsWith("/api/")) {
+                    throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+                }
+                if (url.startsWith("https://account-a.example.com/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url === "https://account-a.example.com/api/mail/mailboxes/mb1" && init?.method === "PUT") {
+                    const body = JSON.parse(init.body as string);
+                    return jsonResponse(200, { ...mailbox, ...body, version: body.version + 1 });
+                }
+                if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <SettingsProfilePage userUid="u1" />
+                </ApiClientContext.Provider>,
+            );
+            const input = await screen.findByLabelText("Display name");
+
+            await user.clear(input);
+            await user.type(input, "Jane Doe");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            expect(await screen.findByText("Saved.")).toBeInTheDocument();
+            const put = fetchMock.mock.calls.find(([url, init]) => url === "https://account-a.example.com/api/mail/mailboxes/mb1" && init?.method === "PUT")!;
+            expect(new Headers((put[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
         });
     });
 });

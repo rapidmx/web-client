@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { apiUrl } from "@rapidmx/react-shared/util/api.js";
+import { apiUrl } from "../../../../../lib/util/api.js";
 import { isControlFrame, LogEntry, parseLogFrame } from "./logLines.js";
 
 /**

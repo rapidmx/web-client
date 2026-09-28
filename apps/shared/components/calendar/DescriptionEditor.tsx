@@ -8,7 +8,7 @@ import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import type { IconType } from "react-icons";
 import { BsEraser, BsLink45Deg, BsListOl, BsListUl, BsTypeBold, BsTypeItalic, BsTypeUnderline } from "react-icons/bs";
-import { safeDescriptionHref } from "@rapidmx/react-shared/calendar/eventDescription.js";
+import { safeDescriptionHref } from "../../../../lib/calendar/eventDescription.js";
 
 export interface DescriptionEditorProps {
     /** The description to start with, as HTML. Read once, when the editor is created: TipTap owns the document from then on. */

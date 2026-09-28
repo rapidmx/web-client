@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar.js";
+import { Contact } from "../../../../lib/contacts/contactsApi.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import ContactAvatar from "../../../../lib/components/avatar/ContactAvatar.js";
 import KeyChangeReview from "./KeyChangeReview.js";
 import { KEY_CHANGE_STALE_MESSAGE, formatDate, keyPinnedSince, revocationLabel } from "./contactKeys.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";

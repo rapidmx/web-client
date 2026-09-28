@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 import { clickModify, openTimeControls, setWhen } from "./eventModalHelpers.js";
 
 // Round-3 review fixes: occurrence vs. series saves, organizer preservation, invited (read-only) events,

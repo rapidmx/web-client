@@ -35,9 +35,10 @@
  * seals nothing. Signed-only (unencrypted) messages aren't sealed here: this pass never fetches their raw MIME (see
  * above), and fetching it only to seal would cost a download per message; they are sealed when opened.
  */
-import { getMessageRawContent, listFolders, listMessages, type Folder, type Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import { type MessageSecurityResult, evaluateMessageSecurity, evaluateMessageSecurityWithSeal } from "@rapidmx/react-shared/crypto/messageSecurity.js";
-import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { getMessageRawContent, listFolders, listMessages, type Folder, type Message } from "../../../lib/mail/mailApi.js";
+import { type MessageSecurityResult, evaluateMessageSecurity, evaluateMessageSecurityWithSeal } from "../../../lib/crypto/messageSecurity.js";
+import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 import { getPinnedSignerFingerprints } from "../components/mail/pinnedSigners.js";
 import { currentVerificationSeal, readVaultGeneration, sendVerificationSeal, verificationSealPending } from "../components/mail/verificationSeals.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
@@ -111,7 +112,7 @@ interface PassSealer {
     drain(): Promise<void>;
 }
 
-function createPassSealer(mailboxUid: string, unlocked: UnlockedKeys, signal: AbortSignal): PassSealer {
+function createPassSealer(mailboxUid: string, unlocked: UnlockedKeys, signal: AbortSignal, client: ApiClient | undefined): PassSealer {
     let generation: Promise<number | undefined> | undefined;
     const pins = new Map<string, Promise<string[] | undefined>>();
     const queue: (() => Promise<unknown>)[] = [];
@@ -120,13 +121,13 @@ function createPassSealer(mailboxUid: string, unlocked: UnlockedKeys, signal: Ab
     let idle: (() => void) | undefined;
     const stopped = () => signal.aborted || !!unlocked.destroyed;
 
-    const vaultGeneration = () => (generation ??= readVaultGeneration(mailboxUid));
+    const vaultGeneration = () => (generation ??= readVaultGeneration(mailboxUid, client));
 
     const pinsFor = (address: string) => {
         const key = address.toLowerCase();
         let entry = pins.get(key);
         if (!entry) {
-            entry = getPinnedSignerFingerprints(mailboxUid, address).then(
+            entry = getPinnedSignerFingerprints(mailboxUid, address, client).then(
                 (fingerprints) => (fingerprints.length > 0 ? fingerprints : undefined),
                 () => undefined,
             );
@@ -169,7 +170,7 @@ function createPassSealer(mailboxUid: string, unlocked: UnlockedKeys, signal: Ab
             const sealToWrite = result.sealToWrite;
             if (sealToWrite && queued < MAX_SEAL_WRITES_PER_PASS) {
                 queued++;
-                queue.push(() => sendVerificationSeal(message.uid, sealToWrite));
+                queue.push(() => sendVerificationSeal(message.uid, sealToWrite, client));
                 pump();
             }
             return result;
@@ -229,6 +230,9 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
 async function buildEntity(message: Message, sealer: PassSealer): Promise<LocalIndexEntity | undefined | typeof FETCH_FAILED> {
     let rawMime: Awaited<ReturnType<typeof getMessageRawContent>>;
     try {
+        // getMessageRawContent() bypasses apiFetch() entirely (it streams message/rfc822, not JSON - see its own doc comment) and does not
+        // yet accept an explicit ApiClient at all; threading a per-account client through it is out of scope here (mailApi.ts is not one of
+        // this task's files). It still falls back to the default global session even under an ApiClientContext.Provider.
         rawMime = await getMessageRawContent(message.uid);
     } catch {
         // Distinct from "undecryptable": a message that couldn't even be fetched may well be searchable,
@@ -296,6 +300,7 @@ export async function buildLocalIndex(
     unlocked: UnlockedKeys,
     folders: Folder[],
     windowConfig: LocalIndexWindowConfig = { timeFloorMonths: WEB_TIME_FLOOR_MONTHS, byteBudgetBytes: getLocalIndexByteBudget() },
+    client?: ApiClient,
 ): Promise<void> {
     // At most one pass per mailbox: a newer one cancels the older and waits for it to wind down first.
     const previous = activeBuilds.get(mailboxUid);
@@ -305,7 +310,7 @@ export async function buildLocalIndex(
             previous.controller.abort();
             await previous.settled;
         }
-        await runBuildPass(mailboxUid, unlocked, folders, windowConfig, controller.signal);
+        await runBuildPass(mailboxUid, unlocked, folders, windowConfig, controller.signal, client);
     })();
     const entry: ActiveBuild = { controller, settled: run.catch(() => undefined) };
     activeBuilds.set(mailboxUid, entry);
@@ -350,7 +355,14 @@ type WalkOutcome =
     /** A listing failed - nothing can be concluded about the rest of the folder. */
     | "failed";
 
-async function runBuildPass(mailboxUid: string, unlocked: UnlockedKeys, folders: Folder[], windowConfig: LocalIndexWindowConfig, signal: AbortSignal): Promise<void> {
+async function runBuildPass(
+    mailboxUid: string,
+    unlocked: UnlockedKeys,
+    folders: Folder[],
+    windowConfig: LocalIndexWindowConfig,
+    signal: AbortSignal,
+    client: ApiClient | undefined,
+): Promise<void> {
     const generation = nextLocalIndexGeneration();
     const indexKey = await deriveLocalIndexKey(unlocked.masterKey, mailboxUid);
     signal.throwIfAborted();
@@ -368,7 +380,7 @@ async function runBuildPass(mailboxUid: string, unlocked: UnlockedKeys, folders:
     // count, no listing/fetch failure and no budget cut-off - the only case where coverage can be used to
     // narrow Tier 3.
     let complete = true;
-    const sealer = createPassSealer(mailboxUid, unlocked, signal);
+    const sealer = createPassSealer(mailboxUid, unlocked, signal, client);
     try {
         if (folders.some((f) => !MESSAGE_FOLDER_TYPES.has(f.type) && !NON_MESSAGE_FOLDER_TYPES.has(f.type))) {
             complete = false;
@@ -383,7 +395,7 @@ async function runBuildPass(mailboxUid: string, unlocked: UnlockedKeys, folders:
                 signal.throwIfAborted();
                 let messages: Message[];
                 try {
-                    messages = await listMessages(folder.uid, { page, limit: PAGE_SIZE });
+                    messages = await listMessages(folder.uid, { page, limit: PAGE_SIZE }, client);
                 } catch {
                     return "failed";
                 }
@@ -427,7 +439,7 @@ async function runBuildPass(mailboxUid: string, unlocked: UnlockedKeys, folders:
         /** Each folder's current total, or `undefined` if the listing failed. */
         async function folderTotals(): Promise<Map<string, number> | undefined> {
             try {
-                return new Map((await listFolders(mailboxUid)).map((f) => [f.uid, f.totalCount]));
+                return new Map((await listFolders(mailboxUid, client)).map((f) => [f.uid, f.totalCount]));
             } catch {
                 return undefined;
             }

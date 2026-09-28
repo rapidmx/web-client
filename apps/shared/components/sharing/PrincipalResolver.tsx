@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { KeyboardEvent, ReactNode, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { ResolvedPrincipal } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { ResolvedPrincipal } from "../../../../lib/mail/mailboxAccessApi.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 
 export interface PrincipalResolverProps {
     /** Resolves what was typed - a mailbox address, an auth-server username or e-mail alias, or a user uid - to

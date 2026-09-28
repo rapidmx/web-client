@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     VAULT_GENERATION_TTL_MS,
     clearVerificationSealCache,
@@ -19,9 +19,9 @@ const { getKeyVault, setMessageVerificationSeal, keySessionListeners } = vi.hois
     setMessageVerificationSeal: vi.fn(),
     keySessionListeners: new Set<(event: { mailboxUid: string; state: "locked" | "unlocked" }) => void>(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault }));
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", () => ({ setMessageVerificationSeal }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({ getKeyVault }));
+vi.mock("../../../lib/mail/mailApi.js", () => ({ setMessageVerificationSeal }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({
     subscribeKeySession: (listener: (event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) => {
         keySessionListeners.add(listener);
         return () => keySessionListeners.delete(listener);
@@ -36,6 +36,15 @@ afterEach(() => {
 });
 
 describe("vault generation", () => {
+    it("threads an optional ApiClient through to getKeyVault, for a multi-account host app", async () => {
+        const client = {} as never;
+        getKeyVault.mockResolvedValue({ masterKeyGeneration: 7 });
+        expect(await readVaultGeneration("mb1", client)).toBe(7);
+        expect(getKeyVault).toHaveBeenCalledWith("mb1", client);
+        expect(await getVaultGeneration("mb2", client)).toBe(7);
+        expect(getKeyVault).toHaveBeenCalledWith("mb2", client);
+    });
+
     it("reads a non-negative integer generation, and nothing else", async () => {
         getKeyVault.mockResolvedValueOnce({ masterKeyGeneration: 0 }).mockResolvedValueOnce({ masterKeyGeneration: 1.5 }).mockRejectedValueOnce(new Error("down"));
         expect(await readVaultGeneration("mb1")).toBe(0);
@@ -77,6 +86,13 @@ describe("vault generation", () => {
 });
 
 describe("seal writes", () => {
+    it("threads an optional ApiClient through to setMessageVerificationSeal, for a multi-account host app", async () => {
+        const client = {} as never;
+        setMessageVerificationSeal.mockResolvedValue({});
+        expect(await sendVerificationSeal("m9", { seal: "s9", masterKeyGeneration: 1 }, client)).toBe(true);
+        expect(setMessageVerificationSeal).toHaveBeenCalledWith("m9", "s9", 1, client);
+    });
+
     it("writes once per message and generation, and remembers the stored seal", async () => {
         setMessageVerificationSeal.mockResolvedValue({});
         expect(verificationSealPending("m1", 2)).toBe(true);
@@ -84,7 +100,9 @@ describe("seal writes", () => {
         expect(verificationSealPending("m1", 2)).toBe(false);
         expect(await sendVerificationSeal("m1", { seal: "s2b", masterKeyGeneration: 2 })).toBe(false);
         expect(setMessageVerificationSeal).toHaveBeenCalledTimes(1);
-        expect(setMessageVerificationSeal).toHaveBeenCalledWith("m1", "s2", 2);
+        // `undefined`: no explicit `ApiClient` was passed, the same as before this call started passing
+        // its (optional) `client` through.
+        expect(setMessageVerificationSeal).toHaveBeenCalledWith("m1", "s2", 2, undefined);
 
         expect(currentVerificationSeal({ uid: "m1" })).toEqual({ seal: "s2", sealGeneration: 2 });
         expect(currentVerificationSeal({ uid: "m1", verificationSeal: "old", verificationSealGeneration: 1 })).toEqual({ seal: "s2", sealGeneration: 2 });

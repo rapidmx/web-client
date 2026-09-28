@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { getEncryptionPolicy } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { getEncryptionPolicy } from "../../../lib/crypto/keyvaultApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import EncryptionPolicyForm from "../../shared/components/admin/settings/EncryptionPolicyForm.js";
 import LoadedSettingsForm from "../../shared/components/admin/settings/LoadedSettingsForm.js";

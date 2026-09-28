@@ -6,12 +6,14 @@ import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MessageInvite } from "@rapidmx/react-shared/calendar/inviteApi.js";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { MessageInvite } from "../../../lib/calendar/inviteApi.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import InviteRowChip, { showsInviteChip } from "../../../apps/shared/components/mail/invite/InviteRowChip.js";
 import { clearInviteCache } from "../../../apps/shared/components/mail/invite/inviteStore.js";
 import { dismissAll, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 // The suite runs in UTC (vitest.config.ts), so the reader's own zone is UTC below.
 
@@ -569,5 +571,42 @@ describe("InviteRowChip", () => {
             await user.keyboard("{Escape}");
             expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
         });
+    });
+});
+
+describe("InviteRowChip / RSVP popover with an explicit ApiClient (multi-account: tauri-client)", () => {
+    /** A fake `ApiClient` routing the invite lookup (GET, via `useMessageInvite()`/`inviteStore.ts`) and the RSVP
+     * answer (POST, via `InviteRsvpPopover.tsx`) through `client.fetch()` instead of the global fetch - paths have
+     * no `/api` prefix, matching what `withClient()` actually passes (a real client adds that prefix itself). */
+    function fakeInviteClient(
+        lookup: () => unknown = () => inviteFixture(),
+        action: (path: string, init?: RequestInit) => unknown = () => inviteFixture({ response: "accepted" }),
+    ) {
+        const fetchMock = vi.fn(async (path: string, init?: RequestInit) => ((init?.method ?? "GET") === "GET" ? lookup() : action(path, init)));
+        return { client: { fetch: fetchMock, setUnauthorizedObserver: vi.fn() } as ApiClient, fetch: fetchMock };
+    }
+
+    it("looks up the invitation and sends the RSVP answer through the explicit client, never the global fetch", async () => {
+        const globalFetch = mockFetch(() => {
+            throw new Error("must not use the global fetch when an explicit client is provided");
+        });
+        const { client, fetch: clientFetch } = fakeInviteClient();
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <InviteRowChip message={message()} />
+            </ApiClientContext.Provider>,
+        );
+
+        await user.click(await screen.findByRole("button", { name: /RSVP/ }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Accept" }));
+
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        expect(clientFetch).toHaveBeenCalledWith("/mail/calendar-events/invite/m1", undefined);
+        expect(clientFetch).toHaveBeenCalledWith(
+            "/mail/calendar-events/invite/m1/respond",
+            expect.objectContaining({ method: "POST", body: JSON.stringify({ responseStatus: "accepted" }) }),
+        );
+        expect(globalFetch).not.toHaveBeenCalled();
     });
 });

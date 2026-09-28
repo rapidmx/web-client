@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar.js";
-import Skeleton from "@rapidmx/react-shared/components/feedback/Skeleton.js";
-import type { MailAddressLike } from "@rapidmx/react-shared/mail/mailAddress.js";
+import ContactAvatar from "../../../../../lib/components/avatar/ContactAvatar.js";
+import Skeleton from "../../../../../lib/components/feedback/Skeleton.js";
+import type { MailAddressLike } from "../../../../../lib/mail/mailAddress.js";
 import MailAddress from "../MailAddress.js";
 import { UnreadBar, UnreadLabel } from "../unreadStyle.js";
 

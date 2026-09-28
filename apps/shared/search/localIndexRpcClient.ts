@@ -38,7 +38,7 @@
  * plain exports, not part of the swappable interface - they name this one transport's own cross-tab/localStorage
  * mechanics, which a different transport has no reason to share.
  */
-import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
+import type { ParsedSearchQuery } from "../../../lib/search/queryGrammar.js";
 import type {
     Coverage,
     DestroyParams,

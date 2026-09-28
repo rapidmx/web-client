@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { binaryStringToBytes, extractAddresses, parseMimeEntity } from "@rapidmx/react-shared/crypto/mime.js";
+import { binaryStringToBytes, extractAddresses, parseMimeEntity } from "../../../../../lib/crypto/mime.js";
 
 /**
  * What the reading pane does with a message's raw RFC 5322 source (`getMessageRawContent()`, a binary string): show it, save it as a

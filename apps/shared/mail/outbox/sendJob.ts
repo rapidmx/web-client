@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError, type ApiClient } from "../../../../lib/util/api.js";
 import {
     Attachment,
     ComposeRecipientInput,
@@ -16,13 +16,13 @@ import {
     queueMessageSend,
     sendMessage,
     setMessageRequestReceipt,
-} from "@rapidmx/react-shared/mail/mailApi.js";
-import { describeSendFailure } from "@rapidmx/react-shared/mail/sendFailure.js";
-import { RecipientEncryptionStatus, resolveRecipientEncryption } from "@rapidmx/react-shared/crypto/composeSecurity.js";
-import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
-import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
-import type { ProtectedHeaders } from "@rapidmx/react-shared/crypto/smimeMessage.js";
+} from "../../../../lib/mail/mailApi.js";
+import { describeSendFailure } from "../../../../lib/mail/sendFailure.js";
+import { RecipientEncryptionStatus, resolveRecipientEncryption } from "../../../../lib/crypto/composeSecurity.js";
+import { getUnlockedKeys } from "../../../../lib/crypto/keySession.js";
+import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "../../../../lib/crypto/keyvaultApi.js";
+import { fromBase64 } from "../../../../lib/crypto/encoding.js";
+import type { ProtectedHeaders } from "../../../../lib/crypto/smimeMessage.js";
 import { policyCanAutoEncrypt } from "../../components/mail/compose/encryptionRequirement.js";
 import { NotificationAction, dismiss, notify } from "../../notifications/store.js";
 import { INLINE_IMAGE_PATTERN, SendBlock, SendDecisionInput, decideSend } from "./sendDecision.js";
@@ -157,16 +157,16 @@ type Outcome = { kind: "queued" | "sent" | "scheduled" } | { kind: "failed"; fai
 const OPEN_POLICY: EncryptionPolicy = { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" };
 
 /** The mailbox and policy this send is missing, loaded now: the sender is not waiting, so a slow answer costs nothing - but it is not waited on for ever. */
-async function completeContext(request: SendRequest): Promise<{ mailbox: Mailbox | undefined; policy: EncryptionPolicy | undefined }> {
+async function completeContext(request: SendRequest, client: ApiClient | undefined): Promise<{ mailbox: Mailbox | undefined; policy: EncryptionPolicy | undefined }> {
     let mailbox = request.mailbox;
     let policy = request.policy;
     const keysNow = readSendKeys(request.mailboxUid, request.signEnabled, mailbox);
     const loads: Promise<unknown>[] = [];
     if (!mailbox) {
-        loads.push(getMailbox(request.mailboxUid).then((loaded) => void (mailbox = loaded)));
+        loads.push(getMailbox(request.mailboxUid, undefined, client).then((loaded) => void (mailbox = loaded)));
     }
     if (!policy && (!mailbox || senderHasEncryptionKey({ mailbox, offeredEncrypt: request.offeredEncrypt }, keysNow.canEncryptSelf))) {
-        loads.push(getEncryptionPolicy().then((loaded) => void (policy = loaded)));
+        loads.push(getEncryptionPolicy(client).then((loaded) => void (policy = loaded)));
     }
     if (loads.length > 0) {
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -186,10 +186,11 @@ async function assemble(
     mode: "plain" | "sign" | "encrypt",
     statuses: (RecipientEncryptionStatus | undefined)[],
     withSignature: boolean,
+    client: ApiClient | undefined,
 ): Promise<Message> {
     const { draft, to, cc, bcc, subject, html } = request;
     if (mode === "plain") {
-        return assembleDraft(draft.uid, { to, cc, bcc, subject, html });
+        return assembleDraft(draft.uid, { to, cc, bcc, subject, html }, client);
     }
     const keys = readSendKeys(request.mailboxUid, request.signEnabled, mailbox);
     const own = mailbox!;
@@ -208,7 +209,7 @@ async function assemble(
     // The S/MIME code (PKI.js and the ASN.1/X.509 libraries, over half a megabyte) is only needed here, to sign or encrypt - a plain message
     // never loads it, and it is kept out of the compose window's own chunk.
     const { applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } = await import(
-        "@rapidmx/react-shared/crypto/smimeMessage.js"
+        "../../../../lib/crypto/smimeMessage.js"
     );
     const encrypt = mode === "encrypt";
     const outerHeaders = encrypt ? applyBaselineOuterHeaders(protectedHeaders) : protectedHeaders;
@@ -223,7 +224,7 @@ async function assemble(
           )
         : await buildSignedOnlyMessage(bodyContentType, html, protectedHeaders, signing!.certDer, signing!.privateKey);
     const rawMime = assembleOutboundMime(outerHeaders, mimePart);
-    return assembleDraftRaw(draft.uid, { to, cc, bcc, subject: outerHeaders.subject, rawMime });
+    return assembleDraftRaw(draft.uid, { to, cc, bcc, subject: outerHeaders.subject, rawMime }, client);
 }
 
 function failureOf(err: unknown, fallback: string): Failure {
@@ -232,17 +233,18 @@ function failureOf(err: unknown, fallback: string): Failure {
 }
 
 /** Whether the server already holds `request`'s message as accepted (out of Drafts, or leased) - the answer to "did that request that never returned actually land?". */
-async function alreadyAccepted(request: SendRequest): Promise<boolean> {
+async function alreadyAccepted(request: SendRequest, client: ApiClient | undefined): Promise<boolean> {
     try {
-        const fresh = await getMessage(request.draft.uid);
+        const fresh = await getMessage(request.draft.uid, client);
         return fresh.folderUid !== request.draft.folderUid || !!fresh.scheduledSendLeaseExpiresAt || !!fresh.scheduledSendRelayedAt;
     } catch {
         return false;
     }
 }
 
-/** The whole client-side path of one send: settle, decide, assemble, hand over. Never rejects. */
-async function attempt(request: SendRequest): Promise<Outcome> {
+/** The whole client-side path of one send: settle, decide, assemble, hand over. Never rejects. `client` is the explicit `ApiClient` (from
+ * `useApiClient()`) the window that built `request` was rendered under, `undefined` for the default global cookie-based session. */
+async function attempt(request: SendRequest, client: ApiClient | undefined): Promise<Outcome> {
     try {
         await request.saved?.catch(() => undefined);
         const all = [...request.to, ...request.cc, ...request.bcc];
@@ -252,7 +254,7 @@ async function attempt(request: SendRequest): Promise<Outcome> {
         let lookupsComplete = false;
 
         if (!request.forcePlaintext) {
-            ({ mailbox, policy } = await completeContext(request));
+            ({ mailbox, policy } = await completeContext(request, client));
             const keys = readSendKeys(request.mailboxUid, request.signEnabled, mailbox);
             const hasKey = senderHasEncryptionKey({ mailbox, offeredEncrypt: request.offeredEncrypt }, keys.canEncryptSelf);
             // Recipients' keys are only looked up when the answer can matter: encryption was asked for, or the loaded policy auto-applies.
@@ -261,7 +263,7 @@ async function attempt(request: SendRequest): Promise<Outcome> {
                 const ownPrefersMutual = own.encryptPreference?.preferEncrypt === "mutual";
                 const lookups = await Promise.all(
                     all.map((recipient) =>
-                        lookupKeys(request.mailboxUid, recipient.address).then(
+                        lookupKeys(request.mailboxUid, recipient.address, client).then(
                             (lookup) => ({ lookup }),
                             () => null,
                         ),
@@ -283,19 +285,19 @@ async function attempt(request: SendRequest): Promise<Outcome> {
             return { kind: "failed", failure: { message: decision.message, details: [] } };
         }
 
-        const assembled = await assemble(request, mailbox, decision.action, statuses, decision.action === "sign" || (decision.action === "encrypt" && decision.sign));
-        const withReceipt = request.requestReceipt ? await setMessageRequestReceipt(assembled, true) : assembled;
+        const assembled = await assemble(request, mailbox, decision.action, statuses, decision.action === "sign" || (decision.action === "encrypt" && decision.sign), client);
+        const withReceipt = request.requestReceipt ? await setMessageRequestReceipt(assembled, true, client) : assembled;
         setPendingStage(request.draft.uid, "queuing");
         try {
             if (request.scheduledSendTime) {
-                await sendMessage(withReceipt.uid, { scheduledSendTime: request.scheduledSendTime });
+                await sendMessage(withReceipt.uid, { scheduledSendTime: request.scheduledSendTime }, client);
                 return { kind: "scheduled" };
             }
-            const result = await queueMessageSend(withReceipt.uid);
+            const result = await queueMessageSend(withReceipt.uid, client);
             return { kind: result.queued ? "queued" : "sent" };
         } catch (err) {
             // A request that never came back may still have landed: never offer to send it twice if it did.
-            if (!(err instanceof ApiRequestError) && (await alreadyAccepted(request))) {
+            if (!(err instanceof ApiRequestError) && (await alreadyAccepted(request, client))) {
                 return { kind: request.scheduledSendTime ? "scheduled" : "queued" };
             }
             throw err;
@@ -345,7 +347,7 @@ function failureNotificationId(draftUid: string): string {
 }
 
 /** The sticky "This message wasn't sent" pop-up for a send that failed on this side, with what can be done about it. */
-function notifyFailure(request: SendRequest, failure: Failure): void {
+function notifyFailure(request: SendRequest, failure: Failure, client: ApiClient | undefined): void {
     const uid = request.draft.uid;
     const actions: NotificationAction[] = [];
     const { block } = failure;
@@ -354,16 +356,16 @@ function notifyFailure(request: SendRequest, failure: Failure): void {
             label: "Unlock",
             onClick: () => {
                 void requestUnlockFromOutside(request.mailboxUid, request.mailbox!.keys!).then(
-                    () => void retrySend(request),
+                    () => void retrySend(request, client),
                     () => undefined,
                 );
             },
         });
     }
     if (block) {
-        actions.push({ label: block.overrideLabel, onClick: () => void retrySend({ ...request, forcePlaintext: true }) });
+        actions.push({ label: block.overrideLabel, onClick: () => void retrySend({ ...request, forcePlaintext: true }, client) });
     } else {
-        actions.push({ label: "Retry", onClick: () => void retrySend(request) });
+        actions.push({ label: "Retry", onClick: () => void retrySend(request, client) });
     }
     actions.push({ label: "Open draft", onClick: () => void openDraftFromRequest(request) });
     notify({
@@ -393,8 +395,11 @@ export function notifySent(message = "Message sent"): void {
  * under way here. The outcome is shown as pop-ups and the Outbox indicator, never as a window that waits: a failure at any stage (assembling,
  * encrypting, the request) is a sticky "This message wasn't sent" with the reason, and Retry / Open draft; the server's own later outcome
  * (`send-succeeded`, `send-failed`, `send-retrying`) is `handleSendEvent()`'s.
+ *
+ * `client` is the explicit `ApiClient` (from `useApiClient()`) the compose window that built `request` was rendered under - `undefined` (the
+ * default) for every existing caller, which keeps using the default global cookie-based session exactly as before.
  */
-export function startSend(request: SendRequest): boolean {
+export function startSend(request: SendRequest, client?: ApiClient): boolean {
     const uid = request.draft.uid;
     const recipients = [...request.to, ...request.cc, ...request.bcc].map((recipient) => recipient.address);
     if (!beginPendingSend({ draftUid: uid, mailboxUid: request.mailboxUid, subject: request.subject, recipients, scheduled: !!request.scheduledSendTime })) {
@@ -405,11 +410,11 @@ export function startSend(request: SendRequest): boolean {
     // A reply or forward is on screen in its conversation from this moment, before any of the work below.
     trackOutgoing(request);
     const tracker = sendState.countTracker?.(request.mailboxUid);
-    void attempt(request).then((outcome) => {
+    void attempt(request, client).then((outcome) => {
         finishPendingSend(uid);
         if (outcome.kind === "failed") {
             tracker?.revert();
-            notifyFailure(request, outcome.failure);
+            notifyFailure(request, outcome.failure, client);
             return;
         }
         tracker?.settle();
@@ -434,12 +439,12 @@ export function startSend(request: SendRequest): boolean {
 }
 
 /** Tries a failed send again - unless the server already has the message (an earlier request that seemed to fail did land), which it must not send twice. */
-export async function retrySend(request: SendRequest): Promise<void> {
-    if (await alreadyAccepted(request)) {
+export async function retrySend(request: SendRequest, client?: ApiClient): Promise<void> {
+    if (await alreadyAccepted(request, client)) {
         dismiss(failureNotificationId(request.draft.uid));
         markOutgoingSending(request.draft.uid);
         notify({ id: `already-sent:${request.draft.uid}`, kind: "info", title: "This message is already on its way", timeoutMs: 5_000 });
         return;
     }
-    startSend({ ...request, saved: undefined });
+    startSend({ ...request, saved: undefined }, client);
 }

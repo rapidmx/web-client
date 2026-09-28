@@ -14,8 +14,9 @@ import {
     suggestTimes,
     summarizeAvailability,
     withoutOwnBlock,
-} from "@rapidmx/react-shared/calendar/freeBusyApi.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+} from "../../../../lib/calendar/freeBusyApi.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { addDaysToKey } from "./allDay.js";
 import { EventFormController } from "./eventForm.js";
 import { formatFormWhen, localDateFromKey, msToWallString, wallStringToMs } from "./eventFormat.js";
@@ -90,6 +91,7 @@ function stateText(state: AvailabilityState | undefined, status: PersonAvailabil
  */
 export default function FindATime({ c }: { c: EventFormController }) {
     const { values, deviceZone, organizerAddress, occurrence } = c;
+    const client = useApiClient();
     const { start, end, allDay, formZone } = values;
     const startDay = start.slice(0, 10);
     const [dayKey, setDayKey] = useState(() => (isDayKey(startDay) ? startDay : format(new Date(), "yyyy-MM-dd")));
@@ -133,7 +135,7 @@ export default function FindATime({ c }: { c: EventFormController }) {
         let current = true;
         setLookUp((previous) => ({ status: "loading", people: previous.people }));
         const timer = setTimeout(() => {
-            getFreeBusy(addresses, new Date(rangeStart), new Date(rangeEnd)).then(
+            getFreeBusy(addresses, new Date(rangeStart), new Date(rangeEnd), client).then(
                 (response) => current && setLookUp({ status: "ready", people: availabilityOf(response) }),
                 (err: unknown) => current && setLookUp({ status: "error", people: [], message: freeBusyErrorMessage(err) }),
             );
@@ -143,7 +145,7 @@ export default function FindATime({ c }: { c: EventFormController }) {
             clearTimeout(timer);
         };
         // `addresses` is what `addressesKey` says.
-    }, [addressesKey, rangeStart, rangeEnd, allDay, retry]);
+    }, [addressesKey, rangeStart, rangeEnd, allDay, retry, client]);
 
     // The event's own time, when it is being rescheduled, is on the calendars of the people already invited: not their conflict with themselves.
     const people = useMemo(() => {

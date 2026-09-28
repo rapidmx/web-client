@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../../testUtils.js";
 import SettingsLabelsPageBase from "../../../../apps/www/settings/labels/index.js";
 import { withTestRouter } from "../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const SettingsLabelsPage = withTestRouter(SettingsLabelsPageBase);
@@ -323,5 +325,34 @@ describe("SettingsLabelsPage", () => {
 
         await user.type(screen.getByLabelText("Name"), "Urgent");
         expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
+    });
+
+    it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url.startsWith("https://account-a.example.com/api/mail/labels") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
+            if (url === "https://account-a.example.com/api/mail/labels" && init?.method === "POST") return jsonResponse(200, label(1, { name: "Urgent" }));
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SettingsLabelsPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+        await screen.findByText("No labels yet.");
+
+        await user.click(screen.getByRole("button", { name: "+ New label" }));
+        await user.type(screen.getByLabelText("Name"), "Urgent");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Urgent")).toBeInTheDocument();
+        const post = fetchMock.mock.calls.find(([url]) => url === "https://account-a.example.com/api/mail/labels")!;
+        expect(new Headers((post[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

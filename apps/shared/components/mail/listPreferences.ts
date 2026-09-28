@@ -22,8 +22,8 @@ import {
     MessageListFilter,
     MessageListSort,
     MessageSortOrder,
-} from "@rapidmx/react-shared/mail/mailApi.js";
-import { ConversationSummary } from "@rapidmx/react-shared/mail/conversationsApi.js";
+} from "../../../../lib/mail/mailApi.js";
+import { ConversationSummary } from "../../../../lib/mail/conversationsApi.js";
 
 const STORAGE_KEY_PREFIX = "rapidmx:mail-list-preferences:";
 

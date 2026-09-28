@@ -14,7 +14,7 @@
  * reason: it is newer than the stale page's idea of a background. Every access is in try/catch: storage can be blocked, full or
  * absent (private windows, server-side rendering).
  */
-import { AppearanceMode, AppearancePreferences, normalizeAppearance } from "@rapidmx/react-shared/appearance/preferencesApi.js";
+import { AppearanceMode, AppearancePreferences, normalizeAppearance } from "../../../lib/appearance/preferencesApi.js";
 import { rangeFromLevels, rangeToLevels } from "./photo.js";
 import type { PhotoRange } from "./theme.js";
 

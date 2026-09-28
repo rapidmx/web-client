@@ -2,12 +2,23 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import React from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse } from "../testUtils.js";
+import { jsonResponse, mockFetch } from "../testUtils.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import { mailboxOptions, mockTaskApi, param, renderNew, sentBody } from "./quickCreateHelpers.js";
+import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // The Task tab of a new event's popover: a task created in the mailbox's Tasks folder through `POST /api/mail/tasks`.
 
@@ -333,5 +344,48 @@ describe("the card", () => {
         await waitFor(() => expect(onClose).toHaveBeenCalled());
         expect(sentBody(fetchMock, "/api/mail/tasks")).not.toHaveProperty("reminderDate");
         expect(sentBody(fetchMock, "/api/mail/tasks")).not.toHaveProperty("myDay");
+    });
+});
+
+describe("the quick form with an explicit ApiClient from context (e.g. tauri-client's multi-account mode)", () => {
+    it("resolves the Tasks folder, lists task lists, and creates the task through the provided client's own fetch, not the global one", async () => {
+        const fetchMock = mockFetch(() => {
+            throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+        });
+        const client = fakeApiClient((path, init) => {
+            const method = init?.method ?? "GET";
+            if (path.startsWith("/mail/folders")) return [{ uid: "tasks-jane@example.com", type: "tasks" }];
+            if (path.startsWith("/mail/task-lists")) return [];
+            if (path === "/mail/tasks" && method === "POST") return { uid: "t1", title: "Buy milk" };
+            throw new Error(`unexpected ${method} ${path}`);
+        });
+        const onClose = vi.fn();
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <EventModal
+                    open
+                    onClose={onClose}
+                    onSaved={vi.fn()}
+                    onDeleted={vi.fn()}
+                    mailboxUid="jane@example.com"
+                    folderUid="f1"
+                    calendars={[{ uid: "f1", name: "Work" }]}
+                    organizerAddress="jane@example.com"
+                    occurrence={null}
+                    initialStart={new Date("2026-06-10T09:00:00.000Z")}
+                    initialEnd={new Date("2026-06-10T10:00:00.000Z")}
+                />
+            </ApiClientContext.Provider>,
+        );
+        await user.type(screen.getByLabelText("Title"), "Buy milk");
+        await openTaskTab(user);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onClose).toHaveBeenCalled());
+        expect(client.fetch).toHaveBeenCalledWith(expect.stringContaining("/mail/folders"), undefined);
+        expect(client.fetch).toHaveBeenCalledWith(expect.stringContaining("/mail/task-lists"), undefined);
+        expect(client.fetch).toHaveBeenCalledWith("/mail/tasks", expect.objectContaining({ method: "POST" }));
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 });

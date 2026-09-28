@@ -8,8 +8,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import AppShell, { LOGOUT_TIMEOUT_MS } from "../../../apps/shared/components/layout/AppShell.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import { clearSigningOut, isSigningOut, registerComposeFlush } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
-import { apiFetch } from "@rapidmx/react-shared/util/api.js";
+import { apiFetch, createApiClient } from "../../../lib/util/api.js";
 import { dismissAll, getNotificationsSnapshot, notify } from "../../../apps/shared/notifications/store.js";
 import { createFakeRouter, TestRouter } from "../routerTestUtils.js";
 
@@ -17,15 +18,15 @@ import { createFakeRouter, TestRouter } from "../routerTestUtils.js";
 // already exercised end to end in react-shared's own test suite - this file only needs to confirm
 // AppShell actually mounts it, which is its own orchestration responsibility.
 const { useIdleKeyTimeout } = vi.hoisted(() => ({ useIdleKeyTimeout: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/useIdleKeyTimeout.js", () => ({ useIdleKeyTimeout }));
+vi.mock("../../../lib/crypto/useIdleKeyTimeout.js", () => ({ useIdleKeyTimeout }));
 
 // The destroy mechanics themselves are covered in test/apps/_search/localIndexRpcClient.test.ts.
 const { destroyAllLocalIndexes } = vi.hoisted(() => ({ destroyAllLocalIndexes: vi.fn() }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ destroyAllLocalIndexes, SIGN_OUT_CHANNEL: "test-sign-out" }));
 
 const { destroyUnlockedKeys } = vi.hoisted(() => ({ destroyUnlockedKeys: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keySession.js")>()),
+vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keySession.js")>()),
     destroyUnlockedKeys,
 }));
 
@@ -92,6 +93,28 @@ describe("AppShell", () => {
         await Promise.resolve();
         expect(impersonating).not.toHaveBeenCalledWith("/api/system/setup", expect.anything());
         expect(location.href).toBe("https://mail.example.com/");
+    });
+
+    it("checks setup status against the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const location = mockLocation();
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/system/setup") return jsonResponse(200, { required: true });
+            return jsonResponse(404, {});
+        });
+        render(
+            <ApiClientContext.Provider value={client}>
+                <AppShell active="mail" userUid="admin-1" trusted>
+                    content
+                </AppShell>
+            </ApiClientContext.Provider>,
+        );
+        await waitFor(() => expect(location.href).toBe("/admin/setup"));
+        const call = fetchMock.mock.calls.find(([url]) => url === "https://account-a.example.com/api/system/setup")!;
+        expect(new Headers((call[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 
     it("mounts the idle-key-timeout hook", () => {

@@ -5,13 +5,13 @@
 import { pageTitle } from "../../../../shared/navigation/pageTitle.js";
 import { useNavigate } from "../../../../shared/navigation/index.js";
 import React, { FormEvent, useState } from "react";
-import { createMailSignature, listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
+import { createMailSignature, listMailSignatures } from "../../../../../lib/mail/mailSignaturesApi.js";
 import { clearPreviousDefaults } from "../signatureDefaults.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../../shared/components/settings/layout/SettingsShell.js";
 import RichTextEditor from "../../../../shared/components/mail/compose/RichTextEditor.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../../lib/components/forms/FormField.js";
 import { notifyApiError } from "../../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =

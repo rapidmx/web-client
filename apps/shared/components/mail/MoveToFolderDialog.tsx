@@ -4,11 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { HiOutlineFolder, HiOutlineFolderPlus } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Folder, createFolder } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { Folder, createFolder } from "../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
 
 /**
  * The folder types a message can be moved *into* - Outbox is a transient send queue the server owns, and
@@ -95,6 +96,7 @@ export default function MoveToFolderDialog({
     onMove,
     onFolderCreated,
 }: MoveToFolderDialogProps) {
+    const client = useApiClient();
     const [filter, setFilter] = useState("");
     const [creating, setCreating] = useState(false);
     const [newName, setNewName] = useState("");
@@ -152,7 +154,7 @@ export default function MoveToFolderDialog({
         setError(null);
         let created: Folder;
         try {
-            created = await createFolder({ mailboxUid, name: newName.trim(), type: "user" });
+            created = await createFolder({ mailboxUid, name: newName.trim(), type: "user" }, client);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create that folder.");
             setBusy(false);

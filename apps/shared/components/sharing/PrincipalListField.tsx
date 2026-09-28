@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { ResolvedPrincipal } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
+import { ResolvedPrincipal } from "../../../../lib/mail/mailboxAccessApi.js";
 import PrincipalResolver, { describePerson } from "./PrincipalResolver.js";
 
 export interface PrincipalListFieldProps {

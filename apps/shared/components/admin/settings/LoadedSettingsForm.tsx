@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
 
 export interface LoadedSettingsFormProps<T> {
     load: () => Promise<T>;

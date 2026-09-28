@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { SendEvent } from "@rapidmx/react-shared/mail/sendEvents.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
+import type { SendEvent } from "../../../lib/mail/sendEvents.js";
 
 const mocks = vi.hoisted(() => ({
     getMessage: vi.fn(),
@@ -17,8 +17,8 @@ const mocks = vi.hoisted(() => ({
     getUnlockedKeys: vi.fn(),
 }));
 
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/mail/mailApi.js")>()),
+vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     getMessage: mocks.getMessage,
     listFolders: mocks.listFolders,
     cancelScheduledSend: mocks.cancelScheduledSend,
@@ -26,7 +26,7 @@ vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
     listAttachments: mocks.listAttachments,
     assembleDraft: mocks.assembleDraft,
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys: mocks.getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: mocks.getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/components/mail/compose/quotedBody.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../apps/shared/components/mail/compose/quotedBody.js")>()),
     loadOriginalMessage: mocks.loadOriginalMessage,
@@ -151,7 +151,7 @@ describe("handleSendEvent - failed", () => {
         toasts()[0].actions[0].onClick!();
         expect(isSendPending("m1")).toBe(true);
         await vi.waitFor(() => expect(isSendPending("m1")).toBe(false));
-        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1");
+        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", undefined);
         expect(mocks.cancelScheduledSend).not.toHaveBeenCalled();
         expect(mocks.getMessage).not.toHaveBeenCalled();
         expect(toasts()).toEqual([]);
@@ -277,5 +277,33 @@ describe("handleSendEvent - failed", () => {
         toasts()[0].actions[1].onClick!();
         await vi.waitFor(() => expect(mocks.loadOriginalMessage).toHaveBeenCalled());
         notify({ kind: "info", title: "settle" });
+    });
+});
+
+// A caller observing this push event under an `ApiClientContext.Provider` (e.g. useMailConnection.ts's own useApiClient()) passes that value as
+// handleSendEvent()'s trailing `client` argument, which must reach every REST call Retry/Open draft make - never falling back to the default
+// global cookie-based session. Every test above calls handleSendEvent() with no client at all, proving the other half: that path is untouched.
+describe("handleSendEvent - an explicit ApiClient is threaded through", () => {
+    const client = { fetch: vi.fn(), setUnauthorizedObserver: vi.fn() };
+
+    it("passes it to Retry's queueMessageSend call", async () => {
+        handleSendEvent(event("send-failed"), client);
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(isSendPending("m1")).toBe(false));
+        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", client);
+    });
+
+    it("passes it to Open draft's whole move-back-to-Drafts and re-open path", async () => {
+        const open = vi.fn();
+        const off = registerComposeOpener(open);
+        mocks.listAttachments.mockResolvedValue([{ uid: "att1" }]);
+        handleSendEvent(event("send-failed"), client);
+        toasts()[0].actions[1].onClick!();
+        await vi.waitFor(() => expect(open).toHaveBeenCalled());
+        expect(mocks.getMessage).toHaveBeenCalledWith("m1", client);
+        expect(mocks.listFolders).toHaveBeenCalledWith("mb1", client);
+        expect(mocks.cancelScheduledSend).toHaveBeenCalledWith(expect.anything(), "drafts", client);
+        expect(mocks.listAttachments).toHaveBeenCalledWith(expect.anything(), expect.anything(), client);
+        off();
     });
 });

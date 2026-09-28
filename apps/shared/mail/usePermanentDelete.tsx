@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactElement, useRef, useState } from "react";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import PermanentDeleteDialog from "../components/mail/PermanentDeleteDialog.js";
 import { useMailShell } from "../components/mail/layout/MailShell.js";
 import { notifyApiError } from "../notifications/apiErrors.js";
@@ -60,6 +61,7 @@ interface Pending {
  */
 export function usePermanentDelete(): PermanentDelete {
     const { trackMessageChange, refreshFolderCounts } = useMailShell();
+    const client = useApiClient();
     const [pending, setPending] = useState<Pending | null>(null);
     const [running, setRunning] = useState(false);
     // Set at once (state is a render later), so a key pressed twice does not open two dialogs.
@@ -105,7 +107,7 @@ export function usePermanentDelete(): PermanentDelete {
         const { request } = pendingRef.current!;
         setRunning(true);
         if (request.kind === "messages") {
-            const outcome = await purgeMessages(request.messages);
+            const outcome = await purgeMessages(request.messages, client);
             afterDeleted(outcome.deleted);
             notifyPurged(outcome);
             finish(outcome);
@@ -113,7 +115,7 @@ export function usePermanentDelete(): PermanentDelete {
         }
         let outcome: EmptyFolderOutcome;
         try {
-            outcome = await purgeFolder(request.folder.uid);
+            outcome = await purgeFolder(request.folder.uid, undefined, client);
         } catch (err) {
             notifyApiError(err, `Couldn't empty ${request.folder.name}`);
             // Part of it may have gone before the failure: the caller reloads rather than assume nothing did.

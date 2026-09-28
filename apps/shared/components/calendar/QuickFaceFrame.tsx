@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, ReactNode, useContext } from "react";
 import { HiOutlineBars2, HiOutlineXMark } from "react-icons/hi2";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
 import { EventShellContext } from "./EventShell.js";
 import { EventFormController } from "./eventForm.js";
 import { QuickTab, quickPanelProps } from "./QuickCreateTabs.js";

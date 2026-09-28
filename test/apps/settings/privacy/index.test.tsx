@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import SettingsPrivacyPageBase from "../../../../apps/www/settings/privacy/index.js";
 import { withTestRouter } from "../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const SettingsPrivacyPage = withTestRouter(SettingsPrivacyPageBase);
@@ -725,5 +727,38 @@ describe("SettingsPrivacyPage", () => {
         render(<SettingsPrivacyPage userUid="u1" />);
 
         expect(await screen.findByText("Could not load this mailbox's folders.")).toBeInTheDocument();
+    });
+
+    it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/mail/data-export-requests" && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
+            if (url === "https://account-a.example.com/api/mail/data-export-requests" && init?.method === "POST") return jsonResponse(200, exportRequest());
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.startsWith("https://account-a.example.com/api/mail/folders")) return jsonResponse(200, [folder, secondFolder]);
+            if (url.startsWith("https://account-a.example.com/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
+            if (url.startsWith("https://account-a.example.com/api/mail/erasure-requests") && (init?.method ?? "GET") === "GET") return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SettingsPrivacyPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+        await screen.findByText("No export requests yet.");
+
+        await user.click(screen.getByRole("button", { name: "Request export" }));
+
+        const postCall = await vi.waitFor(() => {
+            const call = fetchMock.mock.calls.find(([url, init]) => url === "https://account-a.example.com/api/mail/data-export-requests" && init?.method === "POST");
+            expect(call).toBeDefined();
+            return call!;
+        });
+        expect(new Headers((postCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

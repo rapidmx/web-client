@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import type { Attendee } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import type { ContactSuggestionOptions, RecipientSuggestion } from "@rapidmx/react-shared/mail/directoryApi.js";
+import type { Attendee } from "../../../../lib/calendar/calendarApi.js";
+import type { ContactSuggestionOptions, RecipientSuggestion } from "../../../../lib/mail/directoryApi.js";
 import RecipientInput from "../mail/compose/RecipientInput.js";
 import { applyGuestChips, guestChip } from "./eventFormat.js";
 

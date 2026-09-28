@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { SendEvent } from "@rapidmx/react-shared/mail/sendEvents.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
+import type { SendEvent } from "../../../lib/mail/sendEvents.js";
 
 const mocks = vi.hoisted(() => ({
     assembleDraft: vi.fn(),
@@ -17,8 +17,8 @@ const mocks = vi.hoisted(() => ({
     getUnlockedKeys: vi.fn(),
 }));
 
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/mail/mailApi.js")>()),
+vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     assembleDraft: mocks.assembleDraft,
     getMessage: mocks.getMessage,
     listFolders: mocks.listFolders,
@@ -26,7 +26,7 @@ vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
     queueMessageSend: mocks.queueMessageSend,
     listAttachments: mocks.listAttachments,
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys: mocks.getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: mocks.getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/components/mail/compose/quotedBody.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../apps/shared/components/mail/compose/quotedBody.js")>()),
     loadOriginalMessage: mocks.loadOriginalMessage,

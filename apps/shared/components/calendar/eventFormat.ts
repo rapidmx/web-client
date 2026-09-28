@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { format } from "date-fns";
-import { Attendee, AttendeeResponseStatus, BusyStatus, EventVisibility, GuestPermissions } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { fromEventWallClock, toEventWallClock } from "@rapidmx/react-shared/calendar/recurrence.js";
-import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
+import { Attendee, AttendeeResponseStatus, BusyStatus, EventVisibility, GuestPermissions } from "../../../../lib/calendar/calendarApi.js";
+import { fromEventWallClock, toEventWallClock } from "../../../../lib/calendar/recurrence.js";
+import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
 import { formatRecipient, isValidRecipientAddress, parseRecipient, splitRecipientList } from "../mail/compose/recipients.js";
 import { addDaysToKey, allDayDateKey } from "./allDay.js";
 

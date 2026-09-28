@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { format } from "date-fns";
-import { WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { CalendarOccurrence, toEventWallClock } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { WeekdayCode } from "../../../../lib/calendar/calendarApi.js";
+import { CalendarOccurrence, toEventWallClock } from "../../../../lib/calendar/recurrence.js";
 
 const MS_PER_DAY = 86_400_000;
 

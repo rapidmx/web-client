@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ApiRequestError, apiUrl } from "@rapidmx/react-shared/util/api.js";
-import type { Attachment } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Skeleton from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import { ApiRequestError, apiUrl } from "../../../../../lib/util/api.js";
+import type { Attachment } from "../../../../../lib/mail/mailApi.js";
+import type { MimeAttachment } from "../../../../../lib/crypto/mime.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import Skeleton from "../../../../../lib/components/feedback/Skeleton.js";
 import { useResolvedTheme } from "../../../appearance/resolvedTheme.js";
 import { BodyContent, attachmentSource, cachedBodyContent, fetchBodyContent, makeCidResolver } from "./bodyContent.js";
 import { prepareBodyHtml } from "./bodyHtml.js";

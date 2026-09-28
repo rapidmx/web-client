@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import type { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import { formatMailAddress, splitMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
+import type { Folder, Mailbox, Message } from "../../../lib/mail/mailApi.js";
+import { formatMailAddress, splitMailAddress } from "../../../lib/mail/mailAddress.js";
 
 /**
  * What decides whether a new message is announced, what the announcement says, and the setting behind it (per browser, in

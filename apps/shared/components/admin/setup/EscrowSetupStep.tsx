@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { createEscrowScope, EscrowScope, listEscrowScopes } from "@rapidmx/react-shared/admin/escrowScopesApi.js";
-import { generateEscrowKeyPair, GeneratedEscrowKeys } from "@rapidmx/react-shared/crypto/escrowKeys.js";
-import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { createEscrowScope, EscrowScope, listEscrowScopes } from "../../../../../lib/admin/escrowScopesApi.js";
+import { generateEscrowKeyPair, GeneratedEscrowKeys } from "../../../../../lib/crypto/escrowKeys.js";
+import { toDatetimeLocal } from "../../../../../lib/util/dateInput.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../../lib/components/forms/FormField.js";
 import EscrowScopeKeyAndHoldersFields, {
     emptyEscrowScopeKeyAndHoldersValue,
     EscrowScopeKeyAndHoldersValue,

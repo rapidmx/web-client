@@ -12,7 +12,7 @@ import {
     moveMessage,
     reportMessage,
     setMessageFlagged,
-} from "@rapidmx/react-shared/mail/mailApi.js";
+} from "../../../../../lib/mail/mailApi.js";
 import {
     SenderListsChange,
     addBlockedSender,
@@ -20,8 +20,9 @@ import {
     checkSenderEntry,
     removeBlockedSender,
     removeSafeSender,
-} from "@rapidmx/react-shared/mail/senderListsApi.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+} from "../../../../../lib/mail/senderListsApi.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
 import type { CountTracker } from "../../../mail/folderCounts.js";
 import { resolveFolderOfType } from "../../../mail/folderOfType.js";
 import { setReadStateMany } from "../../../mail/messageReadState.js";
@@ -100,6 +101,7 @@ function isNotFound(err: unknown): boolean {
 export function useMessageActions(params: MessageActionsParams): MessageActions {
     const { message, newest, remember, folders, inJunk, inDeletedItems, ownAddresses = [], trackMessageChange, onMoved, onChanged, onFolderCreated } = params;
     const [busy, setBusy] = useState(false);
+    const client = useApiClient();
     const permanent = usePermanentDelete();
 
     /** Runs one action with the card's other actions held meanwhile. */
@@ -113,7 +115,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
     }
 
     function folderOf(type: Folder["type"], name: string): Promise<string> {
-        return resolveFolderOfType(message.mailboxUid, type, name, folders, onFolderCreated);
+        return resolveFolderOfType(message.mailboxUid, type, name, folders, onFolderCreated, client);
     }
 
     /** The card's part of a message having left its folder for `updated`'s: the folder badges and the local search index. */
@@ -126,7 +128,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
     /** Moves the message into its mailbox's folder of `type`, and tells the folder badges and the local search index. */
     async function moveToType(type: Folder["type"], name: string): Promise<Message> {
         const before = newest();
-        const updated = await moveMessage(before, await folderOf(type, name));
+        const updated = await moveMessage(before, await folderOf(type, name), client);
         relocated(before, updated);
         return updated;
     }
@@ -154,7 +156,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
                       {
                           label: "Undo",
                           onClick: () => {
-                              removeSafeSender(message.mailboxUid, safeSender).then(
+                              removeSafeSender(message.mailboxUid, safeSender, client).then(
                                   () => notify({ kind: "info", title: `${safeSender} is no longer a safe sender`, message: "This message stays in the Inbox." }),
                                   (err) => notifyApiError(err, "Couldn't undo trusting this sender"),
                               );
@@ -188,7 +190,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
         await exclusive(async () => {
             let result: MessageReportResult;
             try {
-                result = await reportMessage(message.uid, kind, { alwaysTrustSender });
+                result = await reportMessage(message.uid, kind, { alwaysTrustSender }, client);
             } catch (err) {
                 if (isNotFound(err)) {
                     await reportByMoving(kind, alwaysTrustSender);
@@ -225,13 +227,18 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
         await exclusive(async () => {
             const before = newest();
             try {
-                await setReadStateMany([before], before.flags.read !== true, {
-                    patch: (updated, previous) => {
-                        remember(updated);
-                        onChanged?.(updated, previous);
+                await setReadStateMany(
+                    [before],
+                    before.flags.read !== true,
+                    {
+                        patch: (updated, previous) => {
+                            remember(updated);
+                            onChanged?.(updated, previous);
+                        },
+                        track: trackMessageChange,
                     },
-                    track: trackMessageChange,
-                });
+                    client,
+                );
             } catch (err) {
                 notifyApiError(err, "Couldn't update the message");
             }
@@ -242,7 +249,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
         await exclusive(async () => {
             const before = newest();
             try {
-                const updated = await setMessageFlagged(before, before.flags.flagged !== true);
+                const updated = await setMessageFlagged(before, before.flags.flagged !== true, client);
                 remember(updated);
                 onChanged?.(updated, before);
             } catch (err) {
@@ -289,7 +296,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
         let result: Awaited<ReturnType<typeof blockSender>>;
         try {
             const [junkUid, inboxUid] = await Promise.all([folderOf("junk", "Junk Email"), folderOf("inbox", "Inbox")]);
-            result = await blockSender(message.mailboxUid, addresses, junkUid, inboxUid);
+            result = await blockSender(message.mailboxUid, addresses, junkUid, inboxUid, client);
         } catch (err) {
             notifyApiError(err, "Couldn't block this sender");
             return;
@@ -306,7 +313,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
                           {
                               label: "Undo",
                               onClick: () => {
-                                  removeSenderRule(result.rule).then(
+                                  removeSenderRule(result.rule, client).then(
                                       () => notify({ kind: "info", title: `Unblocked ${address}`, message: "The block was removed. This message stays where it is." }),
                                       (err) => notifyApiError(err, "Couldn't undo the block"),
                                   );
@@ -331,7 +338,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
             }
             let added: SenderListsChange;
             try {
-                added = await addBlockedSender(message.mailboxUid, listed);
+                added = await addBlockedSender(message.mailboxUid, listed, client);
             } catch (err) {
                 if (isNotFound(err)) {
                     await blockWithRules(all, message.from.address);
@@ -351,7 +358,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
                               {
                                   label: "Undo",
                                   onClick: () => {
-                                      removeBlockedSender(message.mailboxUid, listed).then(
+                                      removeBlockedSender(message.mailboxUid, listed, client).then(
                                           () => notify({ kind: "info", title: `Unblocked ${listed}`, message: "The block was removed. This message stays where it is." }),
                                           (err) => notifyApiError(err, "Couldn't undo the block"),
                                       );
@@ -370,7 +377,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
         let result: Awaited<ReturnType<typeof neverBlockSender>>;
         try {
             const [junkUid, inboxUid] = await Promise.all([folderOf("junk", "Junk Email"), folderOf("inbox", "Inbox")]);
-            result = await neverBlockSender(message.mailboxUid, addresses, junkUid, inboxUid);
+            result = await neverBlockSender(message.mailboxUid, addresses, junkUid, inboxUid, client);
         } catch (err) {
             notifyApiError(err, "Couldn't stop blocking this sender");
             return;
@@ -392,7 +399,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
             }
             let added: SenderListsChange;
             try {
-                added = await addSafeSender(message.mailboxUid, listed);
+                added = await addSafeSender(message.mailboxUid, listed, client);
             } catch (err) {
                 if (isNotFound(err)) {
                     await neverBlockWithRules(all, message.from.address);
@@ -413,7 +420,7 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
                               {
                                   label: "Undo",
                                   onClick: () => {
-                                      removeSafeSender(message.mailboxUid, listed).then(
+                                      removeSafeSender(message.mailboxUid, listed, client).then(
                                           () => notify({ kind: "info", title: `${listed} is no longer a safe sender`, message: "Its mail is filtered as usual again." }),
                                           (err) => notifyApiError(err, "Couldn't undo the change"),
                                       );

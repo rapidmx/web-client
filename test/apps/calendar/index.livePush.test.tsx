@@ -5,11 +5,20 @@
 import React from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PushEvent } from "@rapidmx/react-shared/mail/pushClient.js";
+import type { PushEvent } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import CalendarPageBase from "../../../apps/www/calendar/index.js";
 import { withTestRouter } from "../routerTestUtils.js";
 import { redactedEventUidOf } from "../../../apps/shared/calendar/calendarLiveUpdates.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // The calendar page and what the push connection tells it about a private or confidential event: a busy block, to be fetched again by its uid.
 
@@ -18,7 +27,7 @@ const CalendarPage = withTestRouter(CalendarPageBase);
 
 // The shared push connection: the page adds a listener, and the tests are the server.
 const listeners = new Set<(event: PushEvent) => void>();
-vi.mock("@rapidmx/react-shared/mail/pushClient.js", () => ({
+vi.mock("../../../lib/mail/pushClient.js", () => ({
     getPushClient: () => ({
         onEvent: (listener: (event: PushEvent) => void) => {
             listeners.add(listener);
@@ -214,6 +223,32 @@ describe("CalendarPage live updates for a private event", () => {
 
         unmount();
         expect(listeners.size).toBe(0);
+    });
+
+    it("re-fetches a pushed event through the provided ApiClient from context, not the global fetch", async () => {
+        // Anything outside `/mail/...` (e.g. `AppShell`'s own branding fetch) is unrelated to this
+        // component's own wiring and still goes through the global `apiFetch()`.
+        const fetchMock = mockFetch((url) => (url.startsWith("/api/mail/") ? undefined : jsonResponse(404, {})));
+        const client = fakeApiClient((path) => {
+            if (path.startsWith("/mail/mailboxes")) return [mailbox];
+            if (path.startsWith("/mail/folders")) return [calendarFolder];
+            if (path === "/mail/calendar-events/e2") return calendarEvent({ uid: "e2", title: "Therapy" });
+            if (path.startsWith("/mail/calendar-events")) return events;
+            throw new Error(`unexpected ${path}`);
+        });
+
+        render(
+            <ApiClientContext.Provider value={client}>
+                <CalendarPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+        await screen.findByText(/Standup/);
+
+        push({ type: "CalendarEventMongo", action: "create", data: busyBlock() });
+
+        expect(await screen.findByText(/Therapy/)).toBeInTheDocument();
+        expect(client.fetch).toHaveBeenCalledWith("/mail/calendar-events/e2", undefined);
+        expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/"))).toBe(false);
     });
 });
 

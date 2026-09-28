@@ -21,8 +21,8 @@ vi.mock("../../../apps/shared/components/mail/reading/MessageBody.js", () => ({
 }));
 vi.mock("../../../apps/shared/components/mail/compose/ComposeContext.js", () => ({ useCompose: () => ({ openCompose: vi.fn() }), prefetchComposeWindow: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/compose/quotedBody.js", () => ({ loadOriginalMessage: vi.fn(), prefetchOriginalMessage: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys: vi.fn(), subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity: vi.fn() }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: vi.fn(), subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock: vi.fn() }) }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ moveLocalEntity: vi.fn(), removeLocalEntity: vi.fn() }));
 

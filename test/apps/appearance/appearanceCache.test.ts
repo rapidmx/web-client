@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AppearancePreferences } from "@rapidmx/react-shared/appearance/preferencesApi.js";
+import type { AppearancePreferences } from "../../../lib/appearance/preferencesApi.js";
 import {
     APPEARANCE_CACHE_KEY,
     cacheKeyOf,

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { MailAddressLike, formatMailAddress, splitMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
+import { MailAddressLike, formatMailAddress, splitMailAddress } from "../../../../lib/mail/mailAddress.js";
 
 export interface MailAddressProps {
     /** A message's `from`, a recipient, a conversation participant. */

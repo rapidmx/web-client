@@ -8,7 +8,7 @@ import {
     ResolvedPrincipal,
     resolveMailboxPrincipal,
     setMailboxAccess,
-} from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
+} from "../../../../lib/mail/mailboxAccessApi.js";
 import PrincipalResolver, { describePerson } from "./PrincipalResolver.js";
 
 export { describePerson };

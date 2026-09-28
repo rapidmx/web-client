@@ -4,9 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 /** Display and error helpers for a contact's pinned keys and key changes (`KeyChangeReview`, `ContactDetailPane`,
  * `MessageDetailPane`). */
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import type { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
-import { PinnedKeyChangedError, type KeyConflict, type PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import type { Contact } from "../../../../lib/contacts/contactsApi.js";
+import { PinnedKeyChangedError, type KeyConflict, type PublicKey } from "../../../../lib/crypto/keyvaultApi.js";
 
 export const KEY_CHANGE_STALE_MESSAGE = "This contact's keys changed while you were looking; reload to see the latest.";
 export const KEY_CHANGE_INVALID_MESSAGE =

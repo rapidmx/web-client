@@ -3,16 +3,16 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { apiFetch, ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { apiFetch, ApiRequestError } from "../../../lib/util/api.js";
 import {
     EscrowAuditLogEntry,
     EscrowAuditVerificationResult,
     listAuditLogEntries,
     verifyAuditChain,
-} from "@rapidmx/react-shared/admin/escrowAuditLogApi.js";
+} from "../../../lib/admin/escrowAuditLogApi.js";
 import EscrowShell, { EscrowShellProps } from "../../shared/components/escrow/layout/EscrowShell.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
 
 const PAGE_SIZE = 25;
 

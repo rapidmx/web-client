@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { KeyboardEvent, useEffect, useRef, useState } from "react";
 import { HiOutlineArrowDownTray, HiOutlineArrowPath } from "react-icons/hi2";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
 import { DiagnosticsMetrics, getDiagnosticsMetrics, getDiagnosticsRuntime, getDiagnosticsVersions } from "./diagnosticsApi.js";
 import { saveTextFile, SaveFile, timestampedFilename } from "./download.js";
 import { describeError } from "./format.js";

@@ -4,11 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { RefObject, useEffect, useId, useRef, useState } from "react";
 import { HiOutlineCheck, HiOutlineEllipsisHorizontal } from "react-icons/hi2";
-import { InviteResponse, MessageInvite, ProposedTime, proposeNewTime, respondToMessageInvite } from "@rapidmx/react-shared/calendar/inviteApi.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import PopoverPortal from "@rapidmx/react-shared/components/overlays/PopoverPortal.js";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import { InviteResponse, MessageInvite, ProposedTime, proposeNewTime, respondToMessageInvite } from "../../../../../lib/calendar/inviteApi.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
+import PopoverPortal from "../../../../../lib/components/overlays/PopoverPortal.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import useIsMobile from "../../../../../lib/util/useIsMobile.js";
 import { notifyApiError } from "../../../notifications/apiErrors.js";
 import { calendarHref, conflictSummary, formatInviteWhen } from "./inviteFormat.js";
 import InviteTimeline from "./InviteTimeline.js";
@@ -58,6 +59,7 @@ interface RsvpPanelProps {
 /** What is inside the RSVP popover (or dialog): the meeting, a day view around it and the buttons that answer it. */
 function RsvpPanel({ messageUid, invite, onDone, onClose, onProposingChange }: RsvpPanelProps) {
     const titleId = useId();
+    const client = useApiClient();
     const [pending, setPending] = useState<InviteResponse | "propose" | null>(null);
     const [proposing, setProposingState] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
@@ -80,7 +82,7 @@ function RsvpPanel({ messageUid, invite, onDone, onClose, onProposingChange }: R
     async function answer(response: InviteResponse, failure: string) {
         setPending(response);
         try {
-            onDone(await respondToMessageInvite(messageUid, response));
+            onDone(await respondToMessageInvite(messageUid, response, client));
         } catch (err) {
             notifyApiError(err, failure);
             setPending(null);
@@ -90,7 +92,7 @@ function RsvpPanel({ messageUid, invite, onDone, onClose, onProposingChange }: R
     async function propose(proposal: ProposedTime) {
         setPending("propose");
         try {
-            onDone(await proposeNewTime(messageUid, proposal));
+            onDone(await proposeNewTime(messageUid, proposal, client));
         } catch (err) {
             notifyApiError(err, "Couldn't send the proposed time");
             setPending(null);

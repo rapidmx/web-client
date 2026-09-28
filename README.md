@@ -2,22 +2,55 @@
 
 [![npm version](https://img.shields.io/npm/v/@rapidmx/web-client)](https://www.npmjs.com/package/@rapidmx/web-client)
 
-RapidMX's webmail (`apps/www`), admin console (`apps/admin`) and escrow console (`apps/escrow`) React UI. The pages are
-served and hydrated by [`rapidmx/server`](https://github.com/RapidMX/server) through `@rapidrest/react`'s file-convention
-routes, and `@rapidmx/electron-client` reuses the same components. Platform-agnostic API clients, hooks and generic UI
-primitives live in [`@rapidmx/react-shared`](https://github.com/RapidMX/react-shared).
+RapidMX's webmail (`apps/www`), admin console (`apps/admin`) and escrow console (`apps/escrow`) React UI, plus the
+platform-agnostic API clients, hooks and generic UI primitives (`lib/`) that back them. The pages are served and
+hydrated by [`rapidmx/server`](https://github.com/RapidMX/server) through `@rapidrest/react`'s file-convention routes,
+and `@rapidmx/electron-client` reuses the same components. `lib/` was `@rapidmx/react-shared`, a separate package,
+until it was merged in here on 2026-09-27 - see `.claude/NOTES.md`'s entry of that date for why (every real consumer
+of react-shared already depended on this package too) and `CHANGELOG.md` for the merge's own history.
 
 ## Package layout
 
-The package ships the TSX sources (`apps/`) and a compiled mirror (`dist/apps/`, JavaScript plus `.d.ts` declarations).
-There is no root export. Every module is its own subpath, mapped by `package.json`'s `exports` from
-`@rapidmx/web-client/<path>.js` to `dist/apps/<path>.js`:
+The package ships the TSX/TS sources (`apps/`, `lib/`) and a compiled mirror (`dist/apps/`, `dist/lib/`, JavaScript
+plus `.d.ts` declarations). There is no root export. Every module is its own subpath, mapped by `package.json`'s
+`exports` from `@rapidmx/web-client/<path>.js` to `dist/apps/<path>.js`, and from `@rapidmx/web-client/lib/<path>.js`
+to `dist/lib/<path>.js`:
 
 ```ts
 import SettingsShell from "@rapidmx/web-client/shared/components/settings/layout/SettingsShell.js";
+import { apiFetch, configureApiBaseUrl } from "@rapidmx/web-client/lib/util/api.js";
+import { getMailboxes } from "@rapidmx/web-client/lib/mail/mailApi.js";
+import { useSessionRefresh } from "@rapidmx/web-client/lib/auth/session.js";
+import Button from "@rapidmx/web-client/lib/components/buttons/Button.js";
 ```
 
 `@rapidmx/web-client/shared/styles/app.css` is the Tailwind entry point and design tokens.
+
+### `lib/` - platform-agnostic API clients, hooks and generic UI primitives
+
+`lib/` is deliberately framework-free beyond React itself - no router, no HTTP client, no state management library -
+and is organized by feature/system, mirroring `@rapidmx/restapi`'s own `src/<feature>/` convention: `mail/`,
+`calendar/`, `contacts/`, `tasks/`, `admin/`, `branding/`, `search/`, `auth/`, `videoconf/`, `crypto/`, and `util/` for
+the small set of things every feature depends on (`util/api.ts`'s `apiFetch()`, `util/apiQuery.ts`'s pagination
+helper, `util/dateInput.ts`, `util/useIsMobile.ts`, `util/clipboard.ts`'s `copyTextToClipboard()` and its
+`util/useCopyToClipboard.ts` hook). Each `*Api.ts` module is a thin `fetch` wrapper around one
+[`@rapidmx/restapi`](https://github.com/RapidMX/restapi) resource, and a handful of `use*` hooks and pure utilities
+(recurrence expansion, vCard/ICS helpers, emoji data, calendar color assignment, `mail/mailAddress.ts`'s
+`Name <address>` formatting) back the UI components in `apps/`. `mail/pushClient.ts` is the one real-time connection a
+tab keeps to the server's `/push` WebSocket (subscribe to folder/mailbox uids, reconnect with backoff, close on
+sign-out) - a consumer must still poll, since events published while it was disconnected are never replayed.
+
+`lib/components/` holds genuinely generic UI primitives - ones with no RapidMX/webmail-domain knowledge baked in -
+usable by any consumer: `buttons/Button`+`CopyButton`, `feedback/Alert`+`Skeleton`, `forms/FormField`,
+`overlays/Modal`+`Drawer`+`PopoverPortal`, `avatar/ContactAvatar`, `pickers/MiniDatePicker`, and
+`navigation/BottomTabBar`. Domain-specific components (calendar views, mail compose, contact/task/admin UI, etc.) stay
+in `apps/shared/components/`, which depends on `lib/` rather than the other way around.
+
+`apiFetch()` targets a same-origin relative path (`/api/...`) by default, matching every consumer that's
+server-rendered or otherwise served from the same origin as the API it calls. A consumer whose own origin genuinely
+differs from the RapidMX server's - e.g. `@rapidmx/electron-client`'s renderer - calls `configureApiBaseUrl()` once at
+startup to target an absolute origin instead; see `lib/util/api.ts` for the CORS/cookie configuration that requires
+on the server side.
 
 ## Navigation without page loads
 
@@ -280,7 +313,7 @@ and the server is asked once the page is up.
   background nothing changes.
 - **Hooks:** `useResolvedTheme()` (`appearance/resolvedTheme.js`) is `"light"` or `"dark"`, live, needing no provider; `useAppearance()` gives
   `{ prefs, resolved, setPrefs(patch), uploadBackground(file), removeBackground(), reset(), saving, error, ... }`.
-- **API** (`@rapidmx/react-shared/appearance/preferencesApi.js`): `GET/PUT /mail/preferences/appearance` (a merge), `POST/DELETE
+- **API** (`@rapidmx/web-client/lib/appearance/preferencesApi.js`): `GET/PUT /mail/preferences/appearance` (a merge), `POST/DELETE
   /mail/preferences/appearance/background`, `GET .../background/:version`; a change is also pushed as `AppearancePreferences...` `update` events on
   the user's own uid channel.
 
@@ -309,7 +342,7 @@ and the expiry maths; `SigningCertificateCard` draws them. The account menu's **
 ## Plugin UI surface
 
 Server plugins can ship their own pages (see the plugin manifest's `ui` field in `@rapidmx/restapi`). The server builds
-them together with this package, so they share one React, one `@rapidmx/react-shared` state and one stylesheet. The
+them together with this package, so they share one React, one `@rapidmx/web-client/lib` state and one stylesheet. The
 modules below are the **supported surface for plugin pages**. Anything else under `apps/` is internal and may change in
 any release.
 
@@ -351,10 +384,11 @@ function RemindersSettings() {
 
 Public and escrow pages get no `pluginNav`.
 
-### From `@rapidmx/react-shared`
+### From `@rapidmx/web-client/lib`
 
-Plugin pages import these directly from `@rapidmx/react-shared`, which the server resolves to the same copy the shells
-use:
+Plugin pages import these directly from `@rapidmx/web-client/lib`, which the server resolves to the same copy the
+shells use (until 2026-09-27 these were imported from the separate `@rapidmx/react-shared` package - see `lib/`'s own
+section above):
 
 - `branding/useBranding.js`: `useBranding()`, for the branding and icon of pages outside a shell;
 - `auth/session.js`: `useSessionRefresh()`, already called by every shell, which renews the sign-in before its hour is up;
@@ -369,7 +403,7 @@ use:
 
 The admin console's Plugins page (`PluginsManager`, also embedded in the setup wizard) uninstalls a plugin through a dialog with an unchecked **Also delete all data this plugin stored** box. Ticking it lists what will be deleted (collections and tables, saved settings, cached package and pages, whatever the plugin cleans up itself), says **This can't be undone**, turns the confirm button into the red **Uninstall and delete data** and keeps it disabled until the plugin's display name is typed (case and surrounding spaces ignored). The dialog is a `Modal` (focus moves in and stays in, Escape closes, the checkbox is described by the list) and a `<form>`, so Enter in the name field confirms once it matches; at 390 px it keeps the modal's 20 px gutters and the list wraps.
 
-The request is `removePlugin(uid, { purgeData: true })` (`@rapidmx/react-shared/admin/pluginsApi.js`); the server accepts it only from an elevated administrator, and an `api-104` answer is shown as a request to reload or sign in again. Deletion happens on the servers after the last copy stops running the plugin, so `GET /api/system/plugins/status` carries each deletion as `purges` and the page lists the uninstalled plugin with its state - *Uninstalled - data will be deleted after servers restart* (and how many servers still run it), *Data deleted <date>*, or *Data deletion failed: <reason>* with the failed steps and a Retry button. It reads the status every 5 seconds while a deletion is waiting or running, and raises an `apps/shared/notifications` pop-up when one that was under way is deleted or fails, and a warning when adding a plugin cancels one. A plugin that is installed is never shown as uninstalled, whatever the server still lists about an earlier deletion.
+The request is `removePlugin(uid, { purgeData: true })` (`@rapidmx/web-client/lib/admin/pluginsApi.js`); the server accepts it only from an elevated administrator, and an `api-104` answer is shown as a request to reload or sign in again. Deletion happens on the servers after the last copy stops running the plugin, so `GET /api/system/plugins/status` carries each deletion as `purges` and the page lists the uninstalled plugin with its state - *Uninstalled - data will be deleted after servers restart* (and how many servers still run it), *Data deleted <date>*, or *Data deletion failed: <reason>* with the failed steps and a Retry button. It reads the status every 5 seconds while a deletion is waiting or running, and raises an `apps/shared/notifications` pop-up when one that was under way is deleted or fails, and a warning when adding a plugin cancels one. A plugin that is installed is never shown as uninstalled, whatever the server still lists about an earlier deletion.
 
 ## Development
 
@@ -377,5 +411,5 @@ The request is `removePlugin(uid, { purgeData: true })` (`@rapidmx/react-shared/
 yarn install
 yarn test        # vitest with coverage gates
 yarn lint
-yarn build       # tsc into dist/apps
+yarn build       # tsc into dist/apps and dist/lib
 ```

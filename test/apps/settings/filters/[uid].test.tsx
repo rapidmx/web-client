@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import MailFilterDetailPageBase from "../../../../apps/www/settings/filters/[uid].js";
 import { withTestRouter } from "../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const MailFilterDetailPage = withTestRouter(MailFilterDetailPageBase);
@@ -233,5 +235,39 @@ describe("MailFilterDetailPage", () => {
         mockShell((url) => (url === "/api/mail/mail-filter-rules/mfr1" ? jsonResponse(200, null) : undefined));
         render(<MailFilterDetailPage userUid="u1" params={{ uid: "mfr1" }} />);
         expect(await screen.findByText("Mail filter not found.")).toBeInTheDocument();
+    });
+
+    it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/mail/mail-filter-rules/mfr1" && (init?.method ?? "GET") === "GET") {
+                return jsonResponse(200, rule);
+            }
+            if (url === "https://account-a.example.com/api/mail/mail-filter-rules/mfr1" && init?.method === "PUT") {
+                return jsonResponse(200, { ...rule, version: 1, name: "Renamed filter" });
+            }
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.startsWith("https://account-a.example.com/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <MailFilterDetailPage userUid="u1" params={{ uid: "mfr1" }} />
+            </ApiClientContext.Provider>,
+        );
+        await screen.findByLabelText("Name");
+
+        await user.clear(screen.getByLabelText("Name"));
+        await user.type(screen.getByLabelText("Name"), "Renamed filter");
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        const put = fetchMock.mock.calls.find(([url, init]) => url === "https://account-a.example.com/api/mail/mail-filter-rules/mfr1" && init?.method === "PUT")!;
+        expect(new Headers((put[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

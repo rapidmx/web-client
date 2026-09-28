@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Mailbox, Message } from "../../../lib/mail/mailApi.js";
 import type { MailboxFolders } from "../components/mail/layout/MailShell.js";
 import {
     DesktopPermission,

@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { eraseLeftoverMailbox } from "@rapidmx/react-shared/admin/leftoverMailboxApi.js";
-import { DataSubjectErasureStatus, getErasureRequest } from "@rapidmx/react-shared/mail/erasureRequestApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { eraseLeftoverMailbox } from "../../../../../lib/admin/leftoverMailboxApi.js";
+import { DataSubjectErasureStatus, getErasureRequest } from "../../../../../lib/mail/erasureRequestApi.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
 import { notify } from "../../../notifications/store.js";
 
 const INPUT_CLASS =

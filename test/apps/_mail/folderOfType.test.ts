@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { clearResolvedFolders, resolveFolderOfType } from "../../../apps/shared/mail/folderOfType.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 function folder(uid: string, type: string, mailboxUid = "mb1") {
     return { uid, version: 0, dateCreated: "", dateModified: "", mailboxUid, name: type, type, unreadCount: 0, totalCount: 0 };
@@ -50,5 +51,24 @@ describe("resolveFolderOfType", () => {
         expect(JSON.parse(post[1].body as string)).toMatchObject({ mailboxUid: "mb1", name: "Junk Email", type: "junk" });
         expect(await resolveFolderOfType("mb1", "junk", "Junk Email")).toBe("j9");
         expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    describe("with an explicit ApiClient", () => {
+        it("lists and creates through the given client's own fetch instead of the default global one", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(500, {}));
+            const clientFetch = vi.fn(async (path: string, init?: RequestInit) =>
+                init?.method === "POST" ? folder("j9", "junk") : [folder("i1", "inbox")],
+            );
+            const client = { fetch: clientFetch, setUnauthorizedObserver: vi.fn() } as ApiClient;
+
+            expect(await resolveFolderOfType("mb1", "junk", "Junk Email", [], undefined, client)).toBe("j9");
+            expect(clientFetch).toHaveBeenCalledTimes(2);
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it("behaves exactly as the default path with no client given", async () => {
+            mockFetch(() => jsonResponse(200, [folder("j1", "junk")]));
+            expect(await resolveFolderOfType("mb1", "junk", "Junk Email")).toBe("j1");
+        });
     });
 });

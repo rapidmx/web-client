@@ -10,8 +10,8 @@ import React from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { PinnedKeyChangedError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { PinnedKeyChangedError } from "../../../lib/crypto/keyvaultApi.js";
 import { mockFetchWithServerBody as mockFetch } from "./paneFetch.js";
 import MessageDetailPane, { KEPT_CURRENT_SIGNING_KEY_MESSAGE } from "../../../apps/shared/components/mail/MessageDetailPane.js";
 import {
@@ -32,13 +32,13 @@ const { evaluateMessageSecurity, getUnlockedKeys, getPinnedSignerFingerprints, g
         resolveKeyConflict: vi.fn(),
         getMyMailboxAccess: vi.fn(),
     }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     resolveKeyConflict,
 }));
-vi.mock("@rapidmx/react-shared/mail/mailboxAccessApi.js", () => ({ getMyMailboxAccess }));
+vi.mock("../../../lib/mail/mailboxAccessApi.js", () => ({ getMyMailboxAccess }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints, getSignerKeyState, clearPinnedSignerCache }));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock: vi.fn() }) }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ moveLocalEntity: vi.fn() }));
@@ -138,8 +138,10 @@ describe("MessageDetailPane: signing key changed", () => {
         expect(screen.getByText("Signature failed")).toBeInTheDocument();
         expect(screen.queryByText(/signed with a different key than the one you trust/)).not.toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "Trust this signer" })).not.toBeInTheDocument();
-        expect(getSignerKeyState).toHaveBeenCalledWith("mb1", "sender@example.com");
-        expect(getMyMailboxAccess).toHaveBeenCalledWith("mb1");
+        expect(getSignerKeyState).toHaveBeenCalledWith("mb1", "sender@example.com", undefined);
+        // `undefined`: no `ApiClientContext.Provider` is mounted here, so this goes through the default
+        // global fetch, the same as before this call started passing its (optional) `client` through.
+        expect(getMyMailboxAccess).toHaveBeenCalledWith("mb1", undefined);
     });
 
     it("dates the new key and offers Keep current key when a conflict for that key is recorded", async () => {

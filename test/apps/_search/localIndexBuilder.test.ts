@@ -3,8 +3,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Folder, Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import type { Folder, Message } from "../../../lib/mail/mailApi.js";
+import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
 import {
     CLOCK_SKEW_MARGIN_MS,
     FETCH_CONCURRENCY,
@@ -18,10 +18,10 @@ const { listMessages, listFolders, getMessageRawContent } = vi.hoisted(() => ({
     listFolders: vi.fn(),
     getMessageRawContent: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", () => ({ listMessages, listFolders, getMessageRawContent }));
+vi.mock("../../../lib/mail/mailApi.js", () => ({ listMessages, listFolders, getMessageRawContent }));
 
 const { evaluateMessageSecurity } = vi.hoisted(() => ({ evaluateMessageSecurity: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
 
 const rpc = vi.hoisted(() => ({
     initLocalIndex: vi.fn(),
@@ -35,7 +35,7 @@ const rpc = vi.hoisted(() => ({
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => rpc);
 
 // No readable vault generation, so these passes never seal - see localIndexBuilder.seal.test.ts.
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault: vi.fn(async () => Promise.reject(new Error("no vault"))) }));
+vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({ getKeyVault: vi.fn(async () => Promise.reject(new Error("no vault"))) }));
 
 vi.mock("../../../apps/shared/search/localIndexKey.js", () => ({ deriveLocalIndexKey: vi.fn(async () => new Uint8Array(32)) }));
 
@@ -370,5 +370,22 @@ describe("buildLocalIndex", () => {
             await cancelled;
             expect(rpc.initLocalIndex).not.toHaveBeenCalled();
         });
+    });
+});
+
+// A pass started from a component rendered under an `ApiClientContext.Provider` (e.g. `LocalIndexLifecycle.tsx`, a native multi-account host's
+// per-account index build) passes that `useApiClient()` value through as `buildLocalIndex()`'s own trailing `client` argument, which must reach
+// every real (non-local-index-transport) REST call the pass makes - listMessages() and listFolders(). Every test above calls buildLocalIndex()
+// with no client at all, proving the other half: that path is untouched, `client` staying `undefined` all the way down.
+describe("buildLocalIndex - an explicit ApiClient is threaded through", () => {
+    const client = { fetch: vi.fn(), setUnauthorizedObserver: vi.fn() };
+
+    it("passes it to listMessages() and listFolders()", async () => {
+        listMessages.mockImplementation(async (folderUid: string) => (folderUid === "inbox" ? [message("m1")] : []));
+
+        await buildLocalIndex("mb1", unlocked, [folder("archive", "archive"), folder("inbox", "inbox")], WINDOW, client);
+
+        expect(listMessages).toHaveBeenCalledWith("inbox", { page: 0, limit: 100 }, client);
+        expect(listFolders).toHaveBeenCalledWith("mb1", client);
     });
 });

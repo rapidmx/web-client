@@ -4,12 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
 import { HiOutlineTag } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Label, createLabel } from "@rapidmx/react-shared/mail/labelsApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { Label, createLabel } from "../../../../lib/mail/labelsApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../lib/components/forms/FormField.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
 import MenuButton, { MenuSectionSpec } from "./MenuButton.js";
 
 /**
@@ -159,6 +160,7 @@ export interface NewLabelDialogProps {
  * has no place for a text field. Colour is left to Settings > Labels; this is the quick path from a
  * message, so it only asks for the name. */
 export function NewLabelDialog({ open, onClose, mailboxUid, onCreated }: NewLabelDialogProps) {
+    const client = useApiClient();
     const [name, setName] = useState("");
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -167,7 +169,7 @@ export function NewLabelDialog({ open, onClose, mailboxUid, onCreated }: NewLabe
         setSaving(true);
         setError(null);
         try {
-            onCreated(await createLabel({ mailboxUid, name: name.trim() }));
+            onCreated(await createLabel({ mailboxUid, name: name.trim() }, client));
             setName("");
             onClose();
         } catch (err) {

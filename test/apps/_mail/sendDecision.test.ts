@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import type { RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
-import type { EncryptionPolicy } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import type { RecipientEncryptionStatus } from "../../../lib/crypto/composeSecurity.js";
+import type { EncryptionPolicy } from "../../../lib/crypto/keyvaultApi.js";
 import {
     ATTACHMENTS_UNSUPPORTED_MESSAGE,
     BCC_ENCRYPTED_MESSAGE,

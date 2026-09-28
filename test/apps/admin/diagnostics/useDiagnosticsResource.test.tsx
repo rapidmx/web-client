@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
 import { ELEVATION_MESSAGE } from "../../../../apps/shared/components/admin/diagnostics/format.js";
 import { useDiagnosticsResource } from "../../../../apps/shared/components/admin/diagnostics/useDiagnosticsResource.js";
 

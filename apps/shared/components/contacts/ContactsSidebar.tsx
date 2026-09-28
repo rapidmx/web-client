@@ -4,9 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Contact, ContactList, createContactList, listContactLists } from "@rapidmx/react-shared/contacts/contactsApi.js";
-import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { Contact, ContactList, createContactList, listContactLists } from "../../../../lib/contacts/contactsApi.js";
+import Drawer from "../../../../lib/components/overlays/Drawer.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 
 export type ContactsView =
@@ -97,6 +98,7 @@ function NavItem({
  * `ContactsShellContext` itself minimal (mailbox/folder resolution only).
  */
 export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect, refreshToken, showDeleted = true }: ContactsSidebarProps) {
+    const client = useApiClient();
     const [lists, setLists] = useState<ContactList[]>([]);
     const [listsError, setListsError] = useState<string | null>(null);
     const [addingList, setAddingList] = useState(false);
@@ -109,7 +111,7 @@ export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect
             return;
         }
         setListsError(null);
-        listContactLists(mailboxUid, { limit: 200 })
+        listContactLists(mailboxUid, { limit: 200 }, client)
             .then(setLists)
             .catch((err) => setListsError(err instanceof ApiRequestError ? err.message : "Could not load contact lists."));
     }, [mailboxUid, refreshToken]);
@@ -140,7 +142,7 @@ export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect
             return;
         }
         try {
-            const created = await createContactList({ mailboxUid, name: newListName.trim() });
+            const created = await createContactList({ mailboxUid, name: newListName.trim() }, client);
             setLists((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
             setNewListName("");
             setAddingList(false);

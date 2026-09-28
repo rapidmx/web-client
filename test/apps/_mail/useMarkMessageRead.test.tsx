@@ -5,10 +5,12 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useMarkMessageRead } from "../../../apps/shared/mail/useMarkMessageRead.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 const { setMessageRead } = vi.hoisted(() => ({ setMessageRead: vi.fn() }));
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/mail/mailApi.js")>()),
+vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     setMessageRead,
 }));
 
@@ -85,5 +87,17 @@ describe("useMarkMessageRead", () => {
 
         rerender({ current: message("m2", false) });
         await waitFor(() => expect(setMessageRead).toHaveBeenCalledTimes(2));
+    });
+
+    it("threads an explicit ApiClient through to setMessageRead, and behaves exactly as the default path without a provider", async () => {
+        setMessageRead.mockResolvedValue(message("m1", true, 2));
+        const client = {} as ApiClient;
+        const onPatched = vi.fn();
+        renderHook(({ current }) => useMarkMessageRead(current, onPatched), {
+            initialProps: { current: message("m1", false) },
+            wrapper: ({ children }) => <ApiClientContext.Provider value={client}>{children}</ApiClientContext.Provider>,
+        });
+
+        await waitFor(() => expect(setMessageRead).toHaveBeenCalledWith(expect.objectContaining({ uid: "m1" }), true, client));
     });
 });

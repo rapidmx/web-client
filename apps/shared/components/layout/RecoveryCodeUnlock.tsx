@@ -12,19 +12,19 @@
  * on the unlock straight away, and then show `RecoveryFollowUpModal` for the follow-up steps.
  */
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { getUnlockedKeys, unlockWithRecoveryCode } from "@rapidmx/react-shared/crypto/keySession.js";
-import { getKeyVault, type PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { KeysLockedError } from "@rapidmx/react-shared/crypto/masterKey.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { getUnlockedKeys, unlockWithRecoveryCode } from "../../../../lib/crypto/keySession.js";
+import { getKeyVault, type PublicKey } from "../../../../lib/crypto/keyvaultApi.js";
+import { KeysLockedError } from "../../../../lib/crypto/masterKey.js";
 import {
     PasswordWrapReplaceError,
     consumeRecoveryCode,
     replacePasswordWrap,
-} from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+} from "../../../../lib/crypto/masterKeyWraps.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../lib/components/forms/FormField.js";
 
 /** The same minimum every other "set an encryption password" form in this app uses. */
 export const MIN_PASSWORD_LENGTH = 8;

@@ -8,7 +8,8 @@ import {
     deleteMailFilterRule,
     listMailFilterRules,
     updateMailFilterRule,
-} from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
+} from "../../../lib/mail/mailFilterRulesApi.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 /**
  * "Block sender" and "Never block sender", expressed as the mailbox's own mail filter rules - the server has no blocked-senders list.
@@ -75,6 +76,7 @@ async function ensureRule(
     addresses: string[],
     folderUid: string,
     prefix: string,
+    client?: ApiClient,
 ): Promise<{ outcome: "created" | "existing" | "enabled"; rule: MailFilterRule }> {
     const found = rules.find((rule) => isSenderRule(rule, addresses, folderUid));
     if (found) {
@@ -83,24 +85,30 @@ async function ensureRule(
         }
         // The whole rule, as the filters page saves one: the update replaces the record.
         const { uid, version, name, sequence, stopProcessingRules, conditions, actions } = found;
-        return { outcome: "enabled", rule: await updateMailFilterRule({ uid, version, name, enabled: true, sequence, stopProcessingRules, conditions, actions }) };
+        return {
+            outcome: "enabled",
+            rule: await updateMailFilterRule({ uid, version, name, enabled: true, sequence, stopProcessingRules, conditions, actions }, client),
+        };
     }
-    const rule = await createMailFilterRule({
-        mailboxUid,
-        name: `${prefix}${addresses[0]}`,
-        sequence: firstSequence(rules),
-        stopProcessingRules: true,
-        conditions: { fromContains: addresses },
-        actions: [{ type: "move_to_folder", folderUid }],
-    });
+    const rule = await createMailFilterRule(
+        {
+            mailboxUid,
+            name: `${prefix}${addresses[0]}`,
+            sequence: firstSequence(rules),
+            stopProcessingRules: true,
+            conditions: { fromContains: addresses },
+            actions: [{ type: "move_to_folder", folderUid }],
+        },
+        client,
+    );
     return { outcome: "created", rule };
 }
 
 /** Takes away every rule that is `folderUid` for `addresses`. */
-async function removeRules(rules: MailFilterRule[], addresses: string[], folderUid: string): Promise<MailFilterRule[]> {
+async function removeRules(rules: MailFilterRule[], addresses: string[], folderUid: string, client?: ApiClient): Promise<MailFilterRule[]> {
     const doomed = rules.filter((rule) => isSenderRule(rule, addresses, folderUid));
     for (const rule of doomed) {
-        await deleteMailFilterRule(rule.uid, rule.version);
+        await deleteMailFilterRule(rule.uid, rule.version, client);
     }
     return doomed;
 }
@@ -110,10 +118,16 @@ async function removeRules(rules: MailFilterRule[], addresses: string[], folderU
  * usually has both) goes to `junkFolderUid` from now on. Idempotent: the rule is made once, and a rule that was turned off is turned on.
  * A "Never block" rule for the same sender is taken away, since the two would fight.
  */
-export async function blockSender(mailboxUid: string, addresses: string[], junkFolderUid: string, inboxFolderUid: string): Promise<BlockResult> {
-    const rules = await listMailFilterRules(mailboxUid, { limit: RULE_LIMIT });
-    await removeRules(rules, addresses, inboxFolderUid);
-    return ensureRule(rules, mailboxUid, addresses, junkFolderUid, BLOCK_RULE_PREFIX);
+export async function blockSender(
+    mailboxUid: string,
+    addresses: string[],
+    junkFolderUid: string,
+    inboxFolderUid: string,
+    client?: ApiClient,
+): Promise<BlockResult> {
+    const rules = await listMailFilterRules(mailboxUid, { limit: RULE_LIMIT }, client);
+    await removeRules(rules, addresses, inboxFolderUid, client);
+    return ensureRule(rules, mailboxUid, addresses, junkFolderUid, BLOCK_RULE_PREFIX, client);
 }
 
 /** Never blocks a sender: takes away the block rule for `addresses` and makes (once) the rule that keeps their mail in the Inbox. */
@@ -122,20 +136,22 @@ export async function neverBlockSender(
     addresses: string[],
     junkFolderUid: string,
     inboxFolderUid: string,
+    client?: ApiClient,
 ): Promise<NeverBlockResult> {
-    const rules = await listMailFilterRules(mailboxUid, { limit: RULE_LIMIT });
-    const removed = await removeRules(rules, addresses, junkFolderUid);
+    const rules = await listMailFilterRules(mailboxUid, { limit: RULE_LIMIT }, client);
+    const removed = await removeRules(rules, addresses, junkFolderUid, client);
     const kept = await ensureRule(
         rules.filter((rule) => !removed.includes(rule)),
         mailboxUid,
         addresses,
         inboxFolderUid,
         NEVER_BLOCK_RULE_PREFIX,
+        client,
     );
     return { removed, ...kept };
 }
 
 /** Takes back a rule this module made (the notification's Undo). */
-export function removeSenderRule(rule: MailFilterRule): Promise<void> {
-    return deleteMailFilterRule(rule.uid, rule.version);
+export function removeSenderRule(rule: MailFilterRule, client?: ApiClient): Promise<void> {
+    return deleteMailFilterRule(rule.uid, rule.version, client);
 }

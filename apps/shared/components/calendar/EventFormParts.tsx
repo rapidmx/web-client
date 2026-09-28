@@ -4,8 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useRef, useState } from "react";
 import { HiOutlineBars3BottomLeft, HiOutlineBell, HiOutlineMapPin, HiOutlineUserGroup, HiOutlineVideoCamera, HiOutlineXMark } from "react-icons/hi2";
-import { AttendeeRole, EventVisibility, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { AttendeeRole, EventVisibility, RecurrenceRule, WeekdayCode } from "../../../../lib/calendar/calendarApi.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import GuestInput from "./GuestInput.js";
 import LazyDescriptionEditor from "./LazyDescriptionEditor.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
 import {
     addPlugin,
     expectedPlanOf,
@@ -31,10 +31,10 @@ import {
     retryPluginPurge,
     searchPlugins,
     updatePlugin,
-} from "@rapidmx/react-shared/admin/pluginsApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+} from "../../../../../lib/admin/pluginsApi.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
 import { notify } from "../../../notifications/store.js";
 import { isElevationRequired } from "../elevation.js";
 import { getAllowPrerelease, setAllowPrerelease } from "./pluginPreferences.js";

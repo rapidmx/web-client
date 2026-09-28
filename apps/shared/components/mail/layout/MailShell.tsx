@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { createContext, PropsWithChildren, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3, HiOutlinePencilSquare } from "react-icons/hi2";
-import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
-import { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import Drawer from "../../../../../lib/components/overlays/Drawer.js";
+import { Folder, Mailbox, Message } from "../../../../../lib/mail/mailApi.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Skeleton, { SkeletonList } from "../../../../../lib/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import FloatingActionButton from "../../layout/FloatingActionButton.js";
 import { useLocation, useNavigate } from "../../../navigation/index.js";

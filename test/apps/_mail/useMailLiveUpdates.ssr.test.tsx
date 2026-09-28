@@ -8,7 +8,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { getPushClient, pushUrl } from "@rapidmx/react-shared/mail/pushClient.js";
+import { getPushClient, pushUrl } from "../../../lib/mail/pushClient.js";
 import { NO_LIVE_UPDATES, useMailLiveUpdates } from "../../../apps/shared/mail/useMailLiveUpdates.js";
 import MailAddress, { RecipientLine } from "../../../apps/shared/components/mail/MailAddress.js";
 import MailShell from "../../../apps/shared/components/mail/layout/MailShell.js";

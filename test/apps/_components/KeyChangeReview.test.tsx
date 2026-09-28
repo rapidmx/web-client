@@ -8,8 +8,8 @@ import React from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { PinnedKeyChangedError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { PinnedKeyChangedError } from "../../../lib/crypto/keyvaultApi.js";
 import KeyChangeReview, { type KeyChangeReviewProps } from "../../../apps/shared/components/contacts/KeyChangeReview.js";
 import {
     KEY_CHANGE_FORBIDDEN_MESSAGE,
@@ -19,8 +19,8 @@ import {
 } from "../../../apps/shared/components/contacts/contactKeys.js";
 
 const { resolveKeyConflict } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     resolveKeyConflict,
 }));
 

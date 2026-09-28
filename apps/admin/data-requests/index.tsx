@@ -3,30 +3,30 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     DataExportFormat,
     createExportRequest,
     exportRequestDownloadUrl,
     listExportRequests,
-} from "@rapidmx/react-shared/mail/dataExportApi.js";
+} from "../../../lib/mail/dataExportApi.js";
 import {
     MailboxImportFormat,
     listImportRequests,
     uploadMailboxImport,
-} from "@rapidmx/react-shared/mail/mailboxImportApi.js";
+} from "../../../lib/mail/mailboxImportApi.js";
 import {
     DataSubjectErasureRequest,
     approveErasureRequest,
     denyErasureRequest,
     listErasureRequests,
-} from "@rapidmx/react-shared/mail/erasureRequestApi.js";
-import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
+} from "../../../lib/mail/erasureRequestApi.js";
+import { Folder, listFolders } from "../../../lib/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import { LoadMoreButton, usePagedList } from "../../shared/components/admin/usePagedList.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 
 const INPUT_CLASS = "text-sm border border-border rounded-sm py-1.5 px-2 bg-surface";
 const NON_MAIL_FOLDER_TYPES = new Set(["calendar", "contacts", "tasks", "notes"]);

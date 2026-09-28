@@ -9,6 +9,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MessageDetailPageBase from "../../../apps/www/messages/[uid].js";
 import { withTestRouter } from "../routerTestUtils.js";
+import { createApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 
 // Archiving and moving a message update the on-device search index through a worker, which jsdom doesn't have.
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", async (importOriginal) => ({
@@ -511,6 +513,49 @@ describe("MessageDetailPage", () => {
 
             await user.click(await screen.findByRole("button", { name: "Send receipt" }));
             await waitFor(() => expect(screen.queryByRole("button", { name: "Send receipt" })).not.toBeInTheDocument());
+        });
+    });
+
+    // Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+    // client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`.
+    describe("under an ApiClientContext.Provider", () => {
+        it("loads the message and its labels through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const fetchMock = mockShell((url) => {
+                if (url === "/api/mail/messages/m1") return jsonResponse(200, message);
+                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                return undefined;
+            });
+            render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);
+
+            await screen.findByRole("heading", { name: "Hello there" });
+            const messageCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/mail/messages/m1")!;
+            expect((messageCall[1] as RequestInit | undefined)?.headers).not.toHaveProperty("Authorization");
+        });
+
+        it("loads the message and its labels through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            const fetchMock = mockFetch((url, init) => {
+                // The mail shell's own mailbox/folder listing (`useMailConnection`) is already wired
+                // elsewhere in this multi-agent pass, so it too now goes through the provided client.
+                if (url.includes("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.includes("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.includes("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (url === "https://acct-a.example.com/api/mail/messages/m1") return jsonResponse(200, message);
+                if (url.startsWith("https://acct-a.example.com/api/mail/labels")) return jsonResponse(200, []);
+                if (url === "/api/system/branding") return jsonResponse(404, { message: "not configured" });
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <MessageDetailPage userUid="u1" params={{ uid: "m1" }} />
+                </ApiClientContext.Provider>,
+            );
+
+            await screen.findByRole("heading", { name: "Hello there" });
+            const messageCall = fetchMock.mock.calls.find(([url]) => String(url) === "https://acct-a.example.com/api/mail/messages/m1")!;
+            expect(new Headers((messageCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+            const labelsCall = fetchMock.mock.calls.find(([url]) => String(url).startsWith("https://acct-a.example.com/api/mail/labels"))!;
+            expect(new Headers((labelsCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
         });
     });
 });

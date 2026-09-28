@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { addDays, addMinutes, format, startOfDay } from "date-fns";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { occursOnDay } from "./allDay.js";
 import { EventAnchor, anchorOf } from "./EventShell.js";
 

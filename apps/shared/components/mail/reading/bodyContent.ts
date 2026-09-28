@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ApiRequestError, apiUrl } from "@rapidmx/react-shared/util/api.js";
-import { Attachment, attachmentContentUrl } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { MimeAttachment } from "@rapidmx/react-shared/crypto/mime.js";
+import { ApiRequestError, apiUrl } from "../../../../../lib/util/api.js";
+import { Attachment, attachmentContentUrl } from "../../../../../lib/mail/mailApi.js";
+import type { MimeAttachment } from "../../../../../lib/crypto/mime.js";
 
 /** What a message's body is: server-sanitized HTML, or plain text (a message with no HTML part, or the server's plain-text fallback). */
 export type BodyContent = { kind: "html"; html: string } | { kind: "text"; text: string };

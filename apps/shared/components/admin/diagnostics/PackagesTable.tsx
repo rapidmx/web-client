@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useMemo, useState } from "react";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
 import type { DiagnosticsVersions } from "./diagnosticsApi.js";
 import Badge from "./Badge.js";
 

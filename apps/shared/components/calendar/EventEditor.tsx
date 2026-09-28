@@ -4,7 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, MutableRefObject, useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiClient, ApiRequestError } from "../../../../lib/util/api.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import {
     Attendee,
     CalendarEvent,
@@ -14,18 +15,18 @@ import {
     guestPermissionsOf,
     updateCalendarEvent,
     visibilityOf,
-} from "@rapidmx/react-shared/calendar/calendarApi.js";
+} from "../../../../lib/calendar/calendarApi.js";
 import {
     VideoMeetingInvitee,
     createVideoMeeting,
     getVideoMeeting,
     updateVideoMeeting,
-} from "@rapidmx/react-shared/videoconf/videoMeetingsApi.js";
-import { detachOccurrence, saveEventSeries } from "@rapidmx/react-shared/calendar/calendarMutations.js";
-import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
-import { deviceTimeZone, timeZoneOptions } from "@rapidmx/react-shared/util/timeZone.js";
-import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import { CalendarOccurrence, fromEventWallClock, toEventWallClock } from "@rapidmx/react-shared/calendar/recurrence.js";
+} from "../../../../lib/videoconf/videoMeetingsApi.js";
+import { detachOccurrence, saveEventSeries } from "../../../../lib/calendar/calendarMutations.js";
+import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
+import { deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
+import { Mailbox } from "../../../../lib/mail/mailApi.js";
+import { CalendarOccurrence, fromEventWallClock, toEventWallClock } from "../../../../lib/calendar/recurrence.js";
 import { addDaysToKey, allDayDateKey, allDayInstant, recurrenceUntilDateKey, recurrenceUntilInstant, startWeekdayCode } from "./allDay.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
 import EventExpandedForm from "./EventExpandedForm.js";
@@ -81,7 +82,7 @@ function wallTimeOfDayMs(instantMs: number, timezone: string | undefined): numbe
  * hours later (into the next day), never 22 hours earlier. The master's new start is converted back from
  * that wall clock, so a master on the other side of a DST change keeps the chosen local time.
  */
-async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventFields): Promise<EventFields> {
+async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventFields, client?: ApiClient): Promise<EventFields> {
     const { startDate, endDate, ...rest } = fields;
     if (sameMinute(startDate as string, occurrence.startDate) && sameMinute(endDate as string, occurrence.endDate)) {
         // `saveEventSeries()` treats *any* `timezone`/`allDay` in the update as a possible reinterpretation of
@@ -90,7 +91,7 @@ async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventField
         const { timezone, allDay, ...others } = rest;
         return timezone === occurrence.timezone && allDay === occurrence.allDay ? others : rest;
     }
-    const master = await getCalendarEvent(occurrence.uid);
+    const master = await getCalendarEvent(occurrence.uid, client);
     const timezone = fields.timezone as string;
     const newStart = new Date(startDate as string).getTime();
     const durationMs = new Date(endDate as string).getTime() - newStart;
@@ -173,6 +174,7 @@ export default function EventEditor({
     initialAllDay,
     quickCreate,
 }: EventEditorProps) {
+    const client = useApiClient();
     const [deviceZone] = useState(() => deviceTimeZone());
     const [values, setValues] = useState<EventFormValues>(() => {
         let start: string;
@@ -256,7 +258,7 @@ export default function EventEditor({
             return;
         }
         let cancelled = false;
-        void getVideoMeeting(uid)
+        void getVideoMeeting(uid, client)
             .then((meeting) => meeting.organizerJoinUrl ?? null)
             .catch(() => null)
             .then((url) => {
@@ -267,7 +269,7 @@ export default function EventEditor({
         return () => {
             cancelled = true;
         };
-    }, [occurrence?.videoMeetingUid]);
+    }, [occurrence?.videoMeetingUid, client]);
 
     // "This event only" detaches a standalone, non-repeating copy - the series' rule doesn't apply to it.
     const editingSingleOccurrence = !!occurrence?.isRecurringOccurrence && editScope === "occurrence";
@@ -407,32 +409,38 @@ export default function EventEditor({
                     setVideoError("Add at least one attendee other than yourself to add video conferencing.");
                     return { event: saved, failed: true };
                 }
-                const result = await createVideoMeeting({
-                    mailboxUid: saved.mailboxUid,
-                    title: saved.title.slice(0, MAX_MEETING_TITLE_LENGTH),
-                    visibility: "private",
-                    calendarEventUid: saved.uid,
-                    startTime: saved.startDate,
-                    endTime: saved.endDate,
-                    invitees,
-                });
-                const patched = await updateCalendarEvent({
-                    uid: saved.uid,
-                    version: saved.version,
-                    location: VIDEO_LOCATION_PLACEHOLDER,
-                    videoMeetingUid: result.meeting.uid,
-                });
+                const result = await createVideoMeeting(
+                    {
+                        mailboxUid: saved.mailboxUid,
+                        title: saved.title.slice(0, MAX_MEETING_TITLE_LENGTH),
+                        visibility: "private",
+                        calendarEventUid: saved.uid,
+                        startTime: saved.startDate,
+                        endTime: saved.endDate,
+                        invitees,
+                    },
+                    client,
+                );
+                const patched = await updateCalendarEvent(
+                    {
+                        uid: saved.uid,
+                        version: saved.version,
+                        location: VIDEO_LOCATION_PLACEHOLDER,
+                        videoMeetingUid: result.meeting.uid,
+                    },
+                    client,
+                );
                 setVideoMeetingUid(result.meeting.uid);
                 setOrganizerJoinUrl(result.organizerJoinUrl ?? null);
                 update({ location: VIDEO_LOCATION_PLACEHOLDER });
                 return { event: patched, failed: false };
             }
-            await updateVideoMeeting(videoMeetingUid!, { status: "cancelled" });
+            await updateVideoMeeting(videoMeetingUid!, { status: "cancelled" }, client);
             const restoredLocation = location.trim() === VIDEO_LOCATION_PLACEHOLDER ? "" : location.trim();
             // A stored event clears a field with an explicit `null` (see `EventFields`) - an omitted one would
             // leave the placeholder (and the link to the now-cancelled meeting) in place.
             const patch: EventFields = { location: restoredLocation || null, videoMeetingUid: null };
-            const patched = await updateCalendarEvent({ uid: saved.uid, version: saved.version, ...(patch as Partial<CalendarEventInput>) });
+            const patched = await updateCalendarEvent({ uid: saved.uid, version: saved.version, ...(patch as Partial<CalendarEventInput>) }, client);
             setVideoMeetingUid(undefined);
             setOrganizerJoinUrl(undefined);
             update({ location: restoredLocation });
@@ -536,23 +544,30 @@ export default function EventEditor({
                 // update exactly the record the first attempt left behind, whichever branch below created it.
                 // A series' own exception/detached-occurrence re-pointing already ran on that attempt and has
                 // nothing left to shift - the dates being sent again are the ones it moved everything to.
-                saved = await updateCalendarEvent({ uid: savedEvent.uid, version: savedEvent.version, ...(fields as Partial<CalendarEventInput>) });
+                saved = await updateCalendarEvent({ uid: savedEvent.uid, version: savedEvent.version, ...(fields as Partial<CalendarEventInput>) }, client);
             } else if (!occurrence) {
                 // The organizer is only ever set on create - an edit keeps the event's own organizer.
-                saved = await createCalendarEvent({
-                    mailboxUid: values.targetMailboxUid,
-                    folderUid: values.targetFolderUid,
-                    ...fields,
-                    organizer: { address: effectiveOrganizerAddress, type: "to" },
-                } as CalendarEventInput);
+                saved = await createCalendarEvent(
+                    {
+                        mailboxUid: values.targetMailboxUid,
+                        folderUid: values.targetFolderUid,
+                        ...fields,
+                        organizer: { address: effectiveOrganizerAddress, type: "to" },
+                    } as CalendarEventInput,
+                    client,
+                );
             } else if (editingSingleOccurrence) {
-                saved = await detachOccurrence(occurrence, fields as Partial<CalendarEventInput>);
+                saved = await detachOccurrence(occurrence, fields as Partial<CalendarEventInput>, client);
             } else if (occurrence.isRecurringOccurrence) {
-                const series = await saveEventSeries(occurrence, (await toSeriesFields(occurrence, fields)) as Partial<CalendarEventInput>);
+                const series = await saveEventSeries(
+                    occurrence,
+                    (await toSeriesFields(occurrence, fields, client)) as Partial<CalendarEventInput>,
+                    client,
+                );
                 saved = series;
                 detachedSyncFailed = !!series.detachedOccurrenceSyncFailed;
             } else {
-                saved = await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) });
+                saved = await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) }, client);
             }
             const video = await applyVideoConferencing(saved, merged.attendees);
             if (video.failed) {

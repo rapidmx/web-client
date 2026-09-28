@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { MutableRefObject, useEffect, useRef, useState } from "react";
-import { deviceTimeZone } from "@rapidmx/react-shared/util/timeZone.js";
+import { deviceTimeZone } from "../../../../lib/util/timeZone.js";
 import AppointmentQuickForm, { initialAppointmentDraft } from "./AppointmentQuickForm.js";
 import EventExpandedForm from "./EventExpandedForm.js";
 import EventQuickForm from "./EventQuickForm.js";

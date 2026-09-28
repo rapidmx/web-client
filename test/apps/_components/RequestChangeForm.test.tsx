@@ -10,6 +10,15 @@ import type { Editor } from "@tiptap/core";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import RequestChangeForm, { ChangeSubject } from "../../../apps/shared/components/calendar/RequestChangeForm.js";
 import { getNotificationsSnapshot, resetNotifications } from "../../../apps/shared/notifications/store.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // A guest's request to the organizer: what it starts from, what it refuses, and what it sends. Runs with TZ=UTC (see vitest.config.ts).
 
@@ -351,5 +360,39 @@ describe("RequestChangeForm sending", () => {
         expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
         finish(jsonResponse(200, { requested: true, changes: ["title"], addAttendees: [] }));
         await waitFor(() => expect(onSent).toHaveBeenCalled());
+    });
+});
+
+describe("RequestChangeForm with an explicit ApiClient from context (e.g. tauri-client's multi-account mode)", () => {
+    it("sends the request through the provided client's own fetch, not the global one", async () => {
+        const fetchMock = mockFetch(() => {
+            throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+        });
+        const client = fakeApiClient(() => ({ requested: true, changes: ["title"], addAttendees: [] }));
+        const onSent = vi.fn();
+
+        render(
+            <ApiClientContext.Provider value={client}>
+                <RequestChangeForm subject={subject()} canChange canInvite onSent={onSent} onCancel={vi.fn()} />
+            </ApiClientContext.Provider>,
+        );
+        fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Planning, again" } });
+        send();
+
+        await waitFor(() => expect(onSent).toHaveBeenCalled());
+        expect(client.fetch).toHaveBeenCalledWith(
+            "/mail/calendar-events/e%2F1/request-change",
+            expect.objectContaining({ method: "POST", body: JSON.stringify({ title: "Planning, again" }) }),
+        );
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("still behaves exactly as before with no provider above it (the default global-fetch path)", async () => {
+        const fetchMock = mockRequest();
+        const { onSent } = renderForm();
+        fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Planning, again" } });
+        send();
+        await waitFor(() => expect(onSent).toHaveBeenCalled());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/e%2F1/request-change", expect.objectContaining({ method: "POST" }));
     });
 });

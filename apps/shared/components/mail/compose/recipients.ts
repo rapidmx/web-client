@@ -7,7 +7,7 @@
  * semicolons, each either a bare address or `Display Name <address>` (the name optionally quoted, so it can hold a comma
  * or semicolon itself). Separators inside quotes or angle brackets don't split.
  */
-import type { ComposeRecipientInput } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { ComposeRecipientInput } from "../../../../../lib/mail/mailApi.js";
 
 /** One plain address: something, one `@`, something - no whitespace, brackets, quotes or separators. */
 const ADDRESS_PATTERN = /^[^\s@<>()",;]+@[^\s@<>()",;]+$/;

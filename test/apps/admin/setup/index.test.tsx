@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
 import SetupPageBase from "../../../../apps/admin/setup/index.js";
 import { latestRouter, withTestRouter } from "../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 // Rendered inside a router: what the page does after a save is navigate through it (see routerTestUtils.tsx).
 const SetupPage = withTestRouter(SetupPageBase);
@@ -415,6 +417,53 @@ describe("SetupPage", () => {
         renderPage();
         expect(await screen.findByRole("heading", { name: "Step 1 of 6: Plugins" })).toBeInTheDocument();
         expect(screen.queryByRole("link", { name: "Exit setup" })).not.toBeInTheDocument();
+    });
+
+    it("threads the ApiClient from ApiClientContext through the wizard's own calls (setup status, mailbox list, mailbox creation), not the default cookie-based fetch", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const CLIENT_BASE = "https://account-a.example.com/api";
+        const created: unknown[] = [];
+        const fetchMock = mockFetch((url, init) => {
+            const method = init?.method ?? "GET";
+            // AdminShell's own release-notes lookup is out of this task's scope (it calls `apiFetch()`
+            // directly, not a converted `lib/**Api.ts` function) and always stays on the default relative path.
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === `${CLIENT_BASE}/system/setup` && method === "GET") return jsonResponse(200, { required: true, currentStep: "mailboxes" });
+            if (url === `${CLIENT_BASE}/system/setup` && method === "PUT") return jsonResponse(200, { required: true, currentStep: "mailboxes" });
+            if (url.startsWith(`${CLIENT_BASE}/mail/domains?`)) return jsonResponse(200, [{ ...domain, verified: true }]);
+            if (url.startsWith(`${CLIENT_BASE}/mail/mailboxes/domains`)) return jsonResponse(200, ["example.com"]);
+            if (url.startsWith(`${CLIENT_BASE}/mail/mailboxes/resolve-owner`)) {
+                const principal = new URL(url).searchParams.get("principal");
+                return jsonResponse(200, { userUid: principal, displayName: "Administrator", address: "admin@example.com" });
+            }
+            if (url.startsWith(`${CLIENT_BASE}/mail/mailboxes?`)) return jsonResponse(200, []);
+            if (url === `${CLIENT_BASE}/system/mailbox-policy`) return jsonResponse(200, { defaultQuotaBytes: 2_000_000_000, autoProvisionEnabled: false, autoProvisionQuotaBytes: 1_000_000_000 });
+            if (url === `${CLIENT_BASE}/mail/mailboxes` && method === "POST") {
+                const body = JSON.parse(init.body as string);
+                created.push(body);
+                return jsonResponse(200, { ...mailbox(body.primarySmtpAddress.split("@")[0], body.ownerUserUid), primarySmtpAddress: body.primarySmtpAddress, displayName: body.displayName });
+            }
+            throw new Error(`unexpected default-fetch or unhandled call: ${method} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SetupPage userUid="admin-1" authServerUrl="https://auth.example.com" />
+            </ApiClientContext.Provider>,
+        );
+
+        expect(await screen.findByRole("heading", { name: "Your mailbox" })).toBeInTheDocument();
+        expect(await screen.findByLabelText("Mailbox owner")).toHaveValue("admin-1");
+        expect(await screen.findByText("Administrator <admin@example.com>")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Use this owner" }));
+        await waitFor(() => expect(screen.getByLabelText("Quota (GB)")).toHaveValue(2));
+        await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+        await waitFor(() => expect(created).toHaveLength(1));
+        const post = fetchMock.mock.calls.find(([url, init]) => url === `${CLIENT_BASE}/mail/mailboxes` && init?.method === "POST")!;
+        expect(new Headers((post[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        const setupGet = fetchMock.mock.calls.find(([url, init]) => url === `${CLIENT_BASE}/system/setup` && (init?.method ?? "GET") === "GET")!;
+        expect(new Headers((setupGet[1] as RequestInit | undefined)?.headers).get("Authorization")).toBe("jwt tok-a");
     });
 
     it("shows an error when finishing fails", async () => {

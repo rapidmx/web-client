@@ -18,11 +18,11 @@
  * evaluation try again, never a retry loop. A stored seal is remembered (`currentVerificationSeal()`) so a message
  * reopened before its list copy is refreshed opens that seal instead of building another.
  */
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { getKeyVault } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
-import { type Message, setMessageVerificationSeal } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { SealToWrite } from "@rapidmx/react-shared/crypto/messageSecurity.js";
+import { ApiClient, ApiRequestError } from "../../../../lib/util/api.js";
+import { getKeyVault } from "../../../../lib/crypto/keyvaultApi.js";
+import { subscribeKeySession } from "../../../../lib/crypto/keySession.js";
+import { type Message, setMessageVerificationSeal } from "../../../../lib/mail/mailApi.js";
+import type { SealToWrite } from "../../../../lib/crypto/messageSecurity.js";
 
 /** How long one mailbox's vault generation is reused before it is read again. */
 export const VAULT_GENERATION_TTL_MS = 60_000;
@@ -59,23 +59,27 @@ function subscribeToLocksOnce(): void {
 
 /** Reads `mailboxUid`'s current vault `masterKeyGeneration`, uncached: `undefined` when the vault can't be read or
  * reports none. Never rejects. */
-export async function readVaultGeneration(mailboxUid: string): Promise<number | undefined> {
+export async function readVaultGeneration(mailboxUid: string, client?: ApiClient): Promise<number | undefined> {
     try {
-        const { masterKeyGeneration } = await getKeyVault(mailboxUid);
+        const { masterKeyGeneration } = await getKeyVault(mailboxUid, client);
         return Number.isSafeInteger(masterKeyGeneration) && masterKeyGeneration! >= 0 ? masterKeyGeneration : undefined;
     } catch {
         return undefined;
     }
 }
 
-/** `mailboxUid`'s current vault `masterKeyGeneration`, or `undefined` when it can't be read. Never rejects. */
-export function getVaultGeneration(mailboxUid: string): Promise<number | undefined> {
+/** `mailboxUid`'s current vault `masterKeyGeneration`, or `undefined` when it can't be read. Never rejects.
+ *
+ * The cache below is keyed by `mailboxUid` alone, not by `client` - fine for every caller today (a
+ * `mailboxUid` belongs to one account's own `ApiClient`), but worth knowing if a future caller ever reused
+ * the same `mailboxUid` string across two different `ApiClient`s. */
+export function getVaultGeneration(mailboxUid: string, client?: ApiClient): Promise<number | undefined> {
     subscribeToLocksOnce();
     const entry = generationCache.get(mailboxUid);
     if (entry && Date.now() - entry.loadedAt <= VAULT_GENERATION_TTL_MS) {
         return entry.generation;
     }
-    const created = { loadedAt: Date.now(), generation: readVaultGeneration(mailboxUid) };
+    const created = { loadedAt: Date.now(), generation: readVaultGeneration(mailboxUid, client) };
     generationCache.set(mailboxUid, created);
     void created.generation.then((generation) => {
         // Only a readable generation is reused; an unavailable one is read again next time.
@@ -106,14 +110,14 @@ export function verificationSealPending(messageUid: string, generation: number):
 
 /** Stores `sealToWrite` on `messageUid`, best effort - see this module's doc comment. Resolves `true` when a request was
  * sent, `false` when the write was skipped as already attempted. Never rejects. */
-export async function sendVerificationSeal(messageUid: string, sealToWrite: SealToWrite): Promise<boolean> {
+export async function sendVerificationSeal(messageUid: string, sealToWrite: SealToWrite, client?: ApiClient): Promise<boolean> {
     const key = `${messageUid}:${sealToWrite.masterKeyGeneration}`;
     if (attemptedWrites.has(key)) {
         return false;
     }
     attemptedWrites.add(key);
     try {
-        await setMessageVerificationSeal(messageUid, sealToWrite.seal, sealToWrite.masterKeyGeneration);
+        await setMessageVerificationSeal(messageUid, sealToWrite.seal, sealToWrite.masterKeyGeneration, client);
         storedSeals.set(messageUid, sealToWrite);
     } catch (err) {
         // `VerificationSealConflictError` is an `ApiRequestError` with status 409.

@@ -13,7 +13,7 @@ import {
     HiOutlineTrash,
     HiOutlineXMark,
 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
 import {
     Attachment,
     ComposeRecipientInput,
@@ -28,16 +28,16 @@ import {
     listFolders,
     listMailboxes,
     uploadAttachment,
-} from "@rapidmx/react-shared/mail/mailApi.js";
-import { listMailSignatures } from "@rapidmx/react-shared/mail/mailSignaturesApi.js";
-import { buildComposeBodyHtml } from "@rapidmx/react-shared/mail/compose/composeQuoting.js";
+} from "../../../../../lib/mail/mailApi.js";
+import { listMailSignatures } from "../../../../../lib/mail/mailSignaturesApi.js";
+import { buildComposeBodyHtml } from "../../../../../lib/mail/compose/composeQuoting.js";
 import { peekMailboxWritability, useMailboxWritability } from "../writableMailboxes.js";
 import { orderMailboxes, primaryMailboxUid } from "../../../mail/primaryMailbox.js";
-import { resolveRecipientEncryption, RecipientEncryptionStatus } from "@rapidmx/react-shared/crypto/composeSecurity.js";
-import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
-import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { resolveRecipientEncryption, RecipientEncryptionStatus } from "../../../../../lib/crypto/composeSecurity.js";
+import { getUnlockedKeys, subscribeKeySession } from "../../../../../lib/crypto/keySession.js";
+import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "../../../../../lib/crypto/keyvaultApi.js";
 import { useUnlockPrompt } from "../../layout/UnlockPromptProvider.js";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import useIsMobile from "../../../../../lib/util/useIsMobile.js";
 import { notify } from "../../../notifications/store.js";
 import { evaluateEncryptionRequirement } from "./encryptionRequirement.js";
 import { decideSend, SendBlock } from "../../../mail/outbox/sendDecision.js";
@@ -53,9 +53,9 @@ import RecipientInput from "./RecipientInput.js";
 import { parseRecipientList } from "./recipients.js";
 import RichTextEditor from "./RichTextEditor.js";
 import ScheduleSendPicker from "./ScheduleSendPicker.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
 
 export interface ComposeWindowProps {
     session: ComposeSession;
@@ -221,7 +221,11 @@ export default function ComposeWindow({
     const [hasUploads, setHasUploads] = useState(!!resume && resume.attachments.length > 0);
     const isMobile = useIsMobile();
     const { requestUnlock } = useUnlockPrompt();
-    const { openCompose } = useCompose();
+    // Resolved once by `ComposeProvider` (see `ComposeContext.tsx`'s own doc comment on `ComposeContextValue.client`)
+    // rather than calling `useApiClient()` again here - every REST call below (including `startSend()`'s own,
+    // see `sendJob.ts`) passes it through as the trailing `client` argument, `undefined` (the default global
+    // cookie-based fetch) for every existing caller.
+    const { openCompose, client } = useCompose();
     const keyEnv = useKeyEnvironment();
     // Bumped after a successful on-demand unlock to force a re-render - `getUnlockedKeys()` below is a
     // plain read from a module-level store, not React state, so nothing else would pick up the change.
@@ -325,7 +329,7 @@ export default function ComposeWindow({
 
     useEffect(() => {
         let cancelled = false;
-        listMailboxes({ limit: 100 })
+        listMailboxes({ limit: 100 }, client)
             .then((result) => {
                 if (cancelled) {
                     return;
@@ -363,7 +367,7 @@ export default function ComposeWindow({
         async function load() {
             await Promise.all([
                 mailboxLoaded ||
-                    getMailbox(mailboxUid!).then(
+                    getMailbox(mailboxUid!, {}, client).then(
                         (result) => {
                             mailboxLoaded = true;
                             if (!cancelled) {
@@ -373,7 +377,7 @@ export default function ComposeWindow({
                         () => undefined,
                     ),
                 policyLoaded ||
-                    getEncryptionPolicy().then(
+                    getEncryptionPolicy(client).then(
                         (result) => {
                             policyLoaded = true;
                             if (!cancelled) {
@@ -401,7 +405,7 @@ export default function ComposeWindow({
         // Cancellable so a slow response for a mailbox the user has since switched away from can't point
         // the new draft at the wrong mailbox's Drafts folder.
         let cancelled = false;
-        listFolders(mailboxUid)
+        listFolders(mailboxUid, client)
             .then((folders) => {
                 if (!cancelled) {
                     setDraftsFolderUid(folders.find((f) => f.type === "drafts")?.uid);
@@ -441,7 +445,7 @@ export default function ComposeWindow({
         for (const recipient of unchecked) {
             const key = addressCacheKey(recipient.address);
             inFlight.add(key);
-            void lookupKeys(mailbox.uid, recipient.address)
+            void lookupKeys(mailbox.uid, recipient.address, client)
                 .then(
                     (lookup) => ({ lookup }),
                     () => null,
@@ -512,7 +516,7 @@ export default function ComposeWindow({
         if (!mailboxUid || contentReady || defaultSignature) {
             return;
         }
-        listMailSignatures(mailboxUid)
+        listMailSignatures(mailboxUid, {}, client)
             .then((signatures) => {
                 const signature = signatures.find((s) =>
                     signatureContext === "new" ? s.isDefaultForNewMessages : s.isDefaultForReplyForward,
@@ -548,11 +552,11 @@ export default function ComposeWindow({
         // `In-Reply-To`/`References` and groups the message into the thread being answered. Recorded on
         // every draft this window creates, including the replacement one a From switch makes - the thread
         // doesn't change because the sending mailbox did.
-        createDraft(mailboxUid, draftsFolderUid, session.threading)
+        createDraft(mailboxUid, draftsFolderUid, session.threading, client)
             .then((created) => {
                 if (cancelled) {
                     // The sender changed while this was in flight - discard the now-orphaned draft.
-                    void deleteMessage(created.uid, created.version).catch(() => undefined);
+                    void deleteMessage(created.uid, created.version, client).catch(() => undefined);
                     return;
                 }
                 setDraft(created);
@@ -597,12 +601,12 @@ export default function ComposeWindow({
         // Once it's out of `supersededDraftsRef` a landing save can't update `superseded.version` any more.
         const version = saved?.uid === superseded.uid ? saved.version : superseded.version;
         try {
-            await deleteMessage(superseded.uid, version);
+            await deleteMessage(superseded.uid, version, client);
         } catch {
             try {
-                const fresh = await getMessage(superseded.uid);
+                const fresh = await getMessage(superseded.uid, client);
                 if (isStillDraft(fresh, superseded.folderUid)) {
-                    await deleteMessage(fresh.uid, fresh.version);
+                    await deleteMessage(fresh.uid, fresh.version, client);
                 }
             } catch {
                 // Already gone, or the server is unreachable - nothing more to do from here.
@@ -741,7 +745,7 @@ export default function ComposeWindow({
      * current version. */
     async function refreshDraftVersion(uid: string) {
         try {
-            const fresh = await getMessage(uid);
+            const fresh = await getMessage(uid, client);
             setDraft((prev) => (prev?.uid === fresh.uid && fresh.version > prev.version ? { ...prev, version: fresh.version } : prev));
         } catch {
             // Discard's own retry covers a version this couldn't refresh.
@@ -851,7 +855,7 @@ export default function ComposeWindow({
             }
             pendingSaveRef.current = false;
             finishedRef.current = true;
-            if (!startSend(request)) {
+            if (!startSend(request, client)) {
                 finishedRef.current = false;
                 setSendError("This message is already being sent.");
                 return;
@@ -917,7 +921,7 @@ export default function ComposeWindow({
                     bcc: parseAddresses(current.bcc),
                     subject: current.subject,
                     html: current.html,
-                });
+                }, client);
                 lastSavedRef.current = savedKey;
                 saveErrorRef.current = null;
                 // A From switch may have replaced the draft while this was in flight - never resurrect it,
@@ -958,12 +962,12 @@ export default function ComposeWindow({
         const saved = await saveInFlightRef.current;
         const version = Math.max(current.version, saved?.uid === current.uid ? saved.version : 0);
         try {
-            await deleteMessage(current.uid, version);
+            await deleteMessage(current.uid, version, client);
         } catch (err) {
             if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status !== 409)) {
                 throw err;
             }
-            const fresh = await getMessage(current.uid).catch((getErr: unknown) => {
+            const fresh = await getMessage(current.uid, client).catch((getErr: unknown) => {
                 if (getErr instanceof ApiRequestError && getErr.status === 404) {
                     return null;
                 }
@@ -976,7 +980,7 @@ export default function ComposeWindow({
             if (!isStillDraft(fresh, current.folderUid)) {
                 throw new ApiRequestError(NO_LONGER_A_DRAFT_MESSAGE, 409);
             }
-            await deleteMessage(fresh.uid, fresh.version);
+            await deleteMessage(fresh.uid, fresh.version, client);
         }
     }
 
@@ -1130,7 +1134,7 @@ export default function ComposeWindow({
             await previous;
             try {
                 // Its answer (the new version) is what a later delete waits for through `saveInFlightRef`, like any save's.
-                return await assembleDraft(target.uid, { to: [], cc: [], bcc: [], subject: "", html: "" });
+                return await assembleDraft(target.uid, { to: [], cc: [], bcc: [], subject: "", html: "" }, client);
             } catch {
                 notify({
                     id: `scrub-draft:${target.uid}`,

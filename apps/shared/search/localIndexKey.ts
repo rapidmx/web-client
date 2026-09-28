@@ -14,7 +14,7 @@
  * already uniformly random) and avoids needing to persist, transmit, or ever lose a random salt just to
  * re-derive the same key on the next unlock.
  */
-import { hkdfDerive } from "@rapidmx/react-shared/crypto/masterKey.js";
+import { hkdfDerive } from "../../../lib/crypto/masterKey.js";
 
 /** Fixed, non-secret HKDF salt - see this module's own doc comment for why a fixed salt is fine here. */
 const FIXED_SALT = new TextEncoder().encode("rapidmx-local-search-index-v1");

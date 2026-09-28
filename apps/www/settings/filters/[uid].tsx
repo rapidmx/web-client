@@ -4,21 +4,22 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { Folder, listFolders } from "../../../../lib/mail/mailApi.js";
 import {
     MailFilterAction,
     MailFilterConditions,
     MailFilterRule,
     getMailFilterRule,
     updateMailFilterRule,
-} from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
+} from "../../../../lib/mail/mailFilterRulesApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import RuleBuilder, { hasConditions, RuleBuilderValue } from "../../../shared/components/rules/RuleBuilder.js";
 import { MAIL_FILTER_CONDITION_FIELDS, buildMailFilterActionTypes } from "./_mailFilterRuleConfig.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../lib/components/forms/FormField.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
@@ -36,6 +37,7 @@ function MailFilterDetailPage(props: MailFilterDetailPageProps) {
 
 function MailFilterDetailContent({ uid }: { uid: string }) {
     const { mailboxUid } = useSettingsShell();
+    const client = useApiClient();
     const [original, setOriginal] = useState<MailFilterRule | null>(null);
     const [name, setName] = useState("");
     const [rule, setRule] = useState<RuleBuilderValue<MailFilterConditions, MailFilterAction> | null>(null);
@@ -54,13 +56,13 @@ function MailFilterDetailContent({ uid }: { uid: string }) {
         if (!ruleMailboxUid) {
             return;
         }
-        listFolders(ruleMailboxUid).then(setFolders).catch(() => setFolders([]));
+        listFolders(ruleMailboxUid, client).then(setFolders).catch(() => setFolders([]));
     }, [ruleMailboxUid]);
 
     useEffect(() => {
         setLoading(true);
         setError(null);
-        getMailFilterRule(uid)
+        getMailFilterRule(uid, client)
             .then((loaded) => {
                 setOriginal(loaded);
                 if (loaded) {
@@ -98,12 +100,15 @@ function MailFilterDetailContent({ uid }: { uid: string }) {
         setSaving(true);
         setSaved(false);
         try {
-            const updated = await updateMailFilterRule({
-                uid: original!.uid,
-                version: original!.version,
-                name: name.trim(),
-                ...rule!,
-            });
+            const updated = await updateMailFilterRule(
+                {
+                    uid: original!.uid,
+                    version: original!.version,
+                    name: name.trim(),
+                    ...rule!,
+                },
+                client,
+            );
             setOriginal(updated);
             setSaved(true);
         } catch (err) {

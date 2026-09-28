@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { AuditLogEntry, AuditLogFilters, listAuditLog } from "@rapidmx/react-shared/admin/auditLogApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { AuditLogEntry, AuditLogFilters, listAuditLog } from "../../../lib/admin/auditLogApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
 
 const PAGE_SIZE = 25;
 /** How long typing in a filter box has to pause before the log is re-fetched. */

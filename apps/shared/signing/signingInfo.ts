@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useEffect, useState } from "react";
-import { SigningEnrollmentInfo, getSigningEnrollmentInfo } from "@rapidmx/react-shared/crypto/signingProviderApi.js";
+import { SigningEnrollmentInfo, getSigningEnrollmentInfo } from "../../../lib/crypto/signingProviderApi.js";
 
 // The type and the request both come from react-shared's `signingProviderApi.js` (R6's) - this module only adds the caching, the
 // never-rejects contract and the hook that Settings > Encryption and its card want. Re-exported so the rest of `signing/` and

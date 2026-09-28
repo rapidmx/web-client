@@ -5,5 +5,5 @@
         "outDir": "dist",
         "types": ["vitest/globals", "vite/client", "node"]
     },
-    "include": ["apps", "test"]
+    "include": ["apps", "lib", "test"]
 }

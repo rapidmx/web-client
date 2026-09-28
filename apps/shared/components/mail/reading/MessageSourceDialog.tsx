@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useMemo } from "react";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import CopyButton from "@rapidmx/react-shared/components/buttons/CopyButton.js";
-import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import CopyButton from "../../../../../lib/components/buttons/CopyButton.js";
+import Drawer from "../../../../../lib/components/overlays/Drawer.js";
 import { MAX_SOURCE_DISPLAY_CHARS, headerText, sourceText } from "./messageExport.js";
 
 /** What the dialog is showing a message's source for: the whole of it, or only its header lines ("Message details"). */

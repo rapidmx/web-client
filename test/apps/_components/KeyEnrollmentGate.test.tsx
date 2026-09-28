@@ -6,7 +6,7 @@ import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import KeyEnrollmentGate from "../../../apps/shared/components/layout/KeyEnrollmentGate.js";
 
 // jsdom's `navigator.clipboard` is a getter-only property — `Object.assign` throws against it, so
@@ -25,16 +25,16 @@ const { getKeyVault, enrollKey, getUnlockedKeys, unlockWithPassword, unlockWithR
     consumeRecoveryCode: vi.fn(),
 }));
 
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
     // The real error classes (VaultAlreadyInitializedError) - only the network calls are mocked.
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     getKeyVault,
     enrollKey,
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => ({
+vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
-    UnopenableEncryptionKeyError: (await importOriginal<typeof import("@rapidmx/react-shared/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
+    UnopenableEncryptionKeyError: (await importOriginal<typeof import("../../../lib/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
     getUnlockedKeys,
     unlockWithPassword,
     unlockWithRecoveryCode,
@@ -43,12 +43,12 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => 
 // The real crypto primitives are exercised end to end by react-shared's own test suite (real WebCrypto/
 // Argon2id) - this component's own tests care about its orchestration/UI logic, not re-proving those
 // primitives, and running real Argon2id on every test here would also be needlessly slow.
-vi.mock("@rapidmx/react-shared/crypto/masterKey.js", () => ({
+vi.mock("../../../lib/crypto/masterKey.js", () => ({
     generateMasterKey: () => new Uint8Array(32),
     buildAad: (mailboxUid: string, purpose: string) => new TextEncoder().encode(`${mailboxUid}:${purpose}`),
     sealWithKey: async () => ({ ciphertext: "ct", nonce: "n" }),
 }));
-vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({
+vi.mock("../../../lib/crypto/masterKeyWraps.js", () => ({
     consumeRecoveryCode,
     replacePasswordWrap: vi.fn(),
     buildPasswordWrap: async () => ({
@@ -77,7 +77,7 @@ vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({
         };
     },
 }));
-vi.mock("@rapidmx/react-shared/crypto/keys.js", () => ({
+vi.mock("../../../lib/crypto/keys.js", () => ({
     generateKeyPairWithCsr: async () => ({ keyPair: { privateKey: {}, publicKey: {} }, csrPem: "csr-pem" }),
     exportPrivateKeyPkcs8: async () => new Uint8Array(10),
 }));
@@ -250,7 +250,7 @@ describe("KeyEnrollmentGate", () => {
         });
 
         it("keeps the unopenable-key explanation for a correct code", async () => {
-            const { UnopenableEncryptionKeyError } = await import("@rapidmx/react-shared/crypto/keySession.js");
+            const { UnopenableEncryptionKeyError } = await import("../../../lib/crypto/keySession.js");
             getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
             unlockWithRecoveryCode.mockRejectedValue(new UnopenableEncryptionKeyError("enc-fp"));
             const user = userEvent.setup();
@@ -309,7 +309,7 @@ describe("KeyEnrollmentGate", () => {
     });
 
     it("says the encryption key couldn't be opened, not 'Incorrect password', when the password was right (round 5)", async () => {
-        const { UnopenableEncryptionKeyError } = await import("@rapidmx/react-shared/crypto/keySession.js");
+        const { UnopenableEncryptionKeyError } = await import("../../../lib/crypto/keySession.js");
         getKeyVault.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
         unlockWithPassword.mockRejectedValue(new UnopenableEncryptionKeyError("enc-fp", new Error("bad tag")));
         const user = userEvent.setup();
@@ -593,7 +593,7 @@ describe("KeyEnrollmentGate", () => {
         });
 
         it("treats enrollKey's VaultAlreadyInitializedError (a vault that gained wraps meanwhile) the same way", async () => {
-            const { VaultAlreadyInitializedError } = await import("@rapidmx/react-shared/crypto/keyvaultApi.js");
+            const { VaultAlreadyInitializedError } = await import("../../../lib/crypto/keyvaultApi.js");
             getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
             enrollKey.mockRejectedValue(new VaultAlreadyInitializedError("This mailbox already has master key wraps."));
             const user = userEvent.setup();

@@ -5,19 +5,20 @@
 import { pageTitle } from "../../../../shared/navigation/pageTitle.js";
 import { useNavigate } from "../../../../shared/navigation/index.js";
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { Folder, listFolders } from "../../../../../lib/mail/mailApi.js";
 import {
     MailFilterAction,
     MailFilterConditions,
     createMailFilterRule,
-} from "@rapidmx/react-shared/mail/mailFilterRulesApi.js";
+} from "../../../../../lib/mail/mailFilterRulesApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../../shared/components/settings/layout/SettingsShell.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
 import RuleBuilder, { hasConditions, RuleBuilderValue } from "../../../../shared/components/rules/RuleBuilder.js";
 import { MAIL_FILTER_CONDITION_FIELDS, buildMailFilterActionTypes } from "../_mailFilterRuleConfig.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../../lib/components/forms/FormField.js";
 import { notifyApiError } from "../../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
@@ -54,6 +55,7 @@ function prefillFromSearch(search: string): { name: string; conditions: MailFilt
 function NewMailFilterForm() {
     const navigate = useNavigate();
     const { mailboxUid } = useSettingsShell();
+    const client = useApiClient();
     // Read once, when the form opens, and what the reader then edits is theirs. From the browser's own location rather than the router's (which a shallow
     // navigation could change under the form): this form is only mounted once the shell has fetched the mailbox, in the browser, so there is no
     // server render for the two to disagree with.
@@ -75,7 +77,7 @@ function NewMailFilterForm() {
     // `SettingsShell` only ever renders its children once `mailboxUid` has resolved — same established
     // non-null pattern as `apps/www/settings/auto-reply/index.tsx`.
     useEffect(() => {
-        listFolders(mailboxUid!)
+        listFolders(mailboxUid!, client)
             .then(setFolders)
             .catch((err) => setFolderError(err instanceof ApiRequestError ? err.message : "Could not load this mailbox's folders."));
     }, [mailboxUid]);
@@ -96,7 +98,7 @@ function NewMailFilterForm() {
 
         setSaving(true);
         try {
-            const created = await createMailFilterRule({ mailboxUid: mailboxUid!, name: name.trim(), ...rule });
+            const created = await createMailFilterRule({ mailboxUid: mailboxUid!, name: name.trim(), ...rule }, client);
             navigate(`/settings/filters/${encodeURIComponent(created.uid)}?mailboxUid=${encodeURIComponent(mailboxUid!)}`);
         } catch (err) {
             // A pop-up: `error` above is only the form's own validation.

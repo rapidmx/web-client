@@ -4,9 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, ReactNode, useState } from "react";
 import { HiOutlineArrowTopRightOnSquare, HiOutlineCalendar, HiOutlineCalendarDays, HiOutlineClock, HiOutlineLink, HiOutlineMapPin } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import CopyButton from "@rapidmx/react-shared/components/buttons/CopyButton.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import CopyButton from "../../../../lib/components/buttons/CopyButton.js";
 import {
     BookingLocationType,
     CreateBookingTypeInput,

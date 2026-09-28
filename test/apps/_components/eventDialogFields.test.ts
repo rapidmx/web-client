@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 import { EventFormValues } from "../../../apps/shared/components/calendar/eventForm.js";
 import {
     descriptionProblem,

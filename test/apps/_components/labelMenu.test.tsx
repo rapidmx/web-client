@@ -8,6 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import LabelMenuButton from "../../../apps/shared/components/mail/labelMenu.js";
+import { createApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 
 function labelFixture(uid: string, name: string, color?: string) {
     return {
@@ -257,5 +259,61 @@ describe("LabelMenuButton", () => {
 
         expect(onClear).toHaveBeenCalled();
         expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    });
+
+    // Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+    // client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`.
+    describe("under an ApiClientContext.Provider", () => {
+        it("creates a new label through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const created = labelFixture("l9", "Receipts");
+            const fetchMock = mockFetch(() => jsonResponse(200, created));
+            const user = userEvent.setup();
+            renderMenu({ mailboxUid: "mb1", onLabelCreated: vi.fn() });
+
+            await user.click(screen.getByRole("button", { name: "Apply label" }));
+            await user.click(screen.getByRole("menuitem", { name: "New label…" }));
+            const dialog = await screen.findByRole("dialog", { name: "New label" });
+            await user.type(within(dialog).getByLabelText("Name"), "Receipts");
+            await user.click(within(dialog).getByRole("button", { name: "Create" }));
+
+            await waitFor(() => expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/labels"));
+            expect((fetchMock.mock.calls[0][1] as RequestInit).headers).not.toHaveProperty("Authorization");
+            vi.unstubAllGlobals();
+        });
+
+        it("creates a new label through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+            const created = labelFixture("l9", "Receipts");
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            const fetchMock = mockFetch(() => jsonResponse(200, created));
+            const onLabelCreated = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <LabelMenuButton
+                        aria-label="Apply label"
+                        label="Apply label"
+                        labels={LABELS}
+                        applied={[]}
+                        onCommit={vi.fn()}
+                        emptyNote="This mailbox has no labels yet."
+                        commit={{ label: "Apply" }}
+                        clear={{ label: "Remove all labels" }}
+                        mailboxUid="mb1"
+                        onLabelCreated={onLabelCreated}
+                    />
+                </ApiClientContext.Provider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Apply label" }));
+            await user.click(screen.getByRole("menuitem", { name: "New label…" }));
+            const dialog = await screen.findByRole("dialog", { name: "New label" });
+            await user.type(within(dialog).getByLabelText("Name"), "Receipts");
+            await user.click(within(dialog).getByRole("button", { name: "Create" }));
+
+            await waitFor(() => expect(onLabelCreated).toHaveBeenCalledWith(created));
+            expect(fetchMock.mock.calls[0][0]).toBe("https://acct-a.example.com/api/mail/labels");
+            expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+            vi.unstubAllGlobals();
+        });
     });
 });

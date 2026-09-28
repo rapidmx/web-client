@@ -14,7 +14,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RouterProvider, startRouter, type ClientRoute } from "@rapidrest/react/client";
-import { resetPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
+import { resetPushClient } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import WwwShell from "../../../apps/www/_shell.js";
 import MailShell, { useMailShell } from "../../../apps/shared/components/mail/layout/MailShell.js";
@@ -22,14 +22,14 @@ import { FrameTakeover } from "../../../apps/shared/navigation/frameContext.js";
 import { useNavigate } from "../../../apps/shared/navigation/index.js";
 import { pageTitle } from "../../../apps/shared/navigation/pageTitle.js";
 
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
+vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({
     getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
     enrollKey: vi.fn(),
     getEncryptionPolicy: vi.fn().mockResolvedValue({ encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" }),
     lookupKeys: vi.fn().mockResolvedValue({ keys: [] }),
     findActivePublicKey: vi.fn().mockReturnValue(undefined),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../lib/crypto/keySession.js", () => ({
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     getUnlockedKeys: vi.fn().mockReturnValue({ masterKey: new Uint8Array(32) }),
@@ -37,7 +37,7 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
     destroyUnlockedKeys: vi.fn(),
     subscribeKeySession: vi.fn(() => () => undefined),
 }));
-vi.mock("@rapidmx/react-shared/crypto/useIdleKeyTimeout.js", () => ({ useIdleKeyTimeout: vi.fn() }));
+vi.mock("../../../lib/crypto/useIdleKeyTimeout.js", () => ({ useIdleKeyTimeout: vi.fn() }));
 vi.mock("../../../apps/shared/search/LocalIndexLifecycle.js", () => ({ default: () => null }));
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;

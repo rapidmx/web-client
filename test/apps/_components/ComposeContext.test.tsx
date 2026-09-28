@@ -8,6 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import ComposeProvider, { ComposeLateInput, useCompose } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 // The compose window is a chunk of its own, imported when the first window opens; the first render to need it transforms it on demand, which
 // takes seconds on a busy machine. It is brought in here, once, rather than inside whichever test happens to open the first window.
@@ -401,5 +403,33 @@ describe("ComposeProvider / useCompose", () => {
         await user.click(screen.getByRole("button", { name: "Open mb1" }));
 
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    describe("ComposeContextValue.client", () => {
+        function ClientReader() {
+            const { client } = useCompose();
+            return <span data-testid="client">{client ? "has-client" : "no-client"}</span>;
+        }
+
+        it("is undefined with no ApiClientContext.Provider above it - every existing caller", () => {
+            render(
+                <ComposeProvider>
+                    <ClientReader />
+                </ComposeProvider>,
+            );
+            expect(screen.getByTestId("client").textContent).toBe("no-client");
+        });
+
+        it("is the nearest ApiClientContext.Provider's own client, resolved once and handed down alongside openCompose", () => {
+            const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <ComposeProvider>
+                        <ClientReader />
+                    </ComposeProvider>
+                </ApiClientContext.Provider>,
+            );
+            expect(screen.getByTestId("client").textContent).toBe("has-client");
+        });
     });
 });

@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { createContext, useCallback, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Folder, Mailbox, Message, listFolders, listMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
+import { Folder, Mailbox, Message, listFolders, listMailboxes } from "../../../lib/mail/mailApi.js";
 import { FOLDER_ORDER, FolderChange, MAIL_FOLDER_TYPES, isMailFolder, knownFolderUids, reconcileFolders, removeFolder, upsertFolder } from "./folderTree.js";
 import type { MailboxFolders } from "../components/mail/layout/MailShell.js";
 import { orderMailboxes } from "./primaryMailbox.js";
@@ -75,6 +76,7 @@ export interface UseMailConnectionOptions {
  * state from `MailConnectionContext` when there is a frame, and runs this hook itself when there isn't (a page rendered outside the router).
  */
 export function useMailConnection({ userUid, enabled, open }: UseMailConnectionOptions): MailConnection {
+    const client = useApiClient();
     const [status, setStatus] = useState<MailConnectionStatus>("checking");
     const [error, setError] = useState<string | null>(null);
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
@@ -85,7 +87,7 @@ export function useMailConnection({ userUid, enabled, open }: UseMailConnectionO
         if (!userUid || !enabled) {
             return;
         }
-        listMailboxes({ limit: MAILBOX_LIST_LIMIT })
+        listMailboxes({ limit: MAILBOX_LIST_LIMIT }, client)
             .then((result) => {
                 // The caller's own mailbox first, then the others: every sidebar, picker and default below follows this order.
                 setMailboxes(orderMailboxes(result, userUid));
@@ -95,7 +97,7 @@ export function useMailConnection({ userUid, enabled, open }: UseMailConnectionO
                 setError(err instanceof ApiRequestError ? err.message : "Could not load your mailboxes.");
                 setStatus("error");
             });
-    }, [userUid, enabled]);
+    }, [userUid, enabled, client]);
 
     // Fans out one listFolders() call per accessible mailbox in parallel - each call catches its own failure into a MailboxFolders.error
     // rather than letting Promise.all reject, so one mailbox's fetch failure renders that section's own inline Alert instead of blanking out
@@ -111,7 +113,7 @@ export function useMailConnection({ userUid, enabled, open }: UseMailConnectionO
         setFoldersLoading(true);
         void Promise.all(
             mailboxes.map((mailbox) =>
-                listFolders(mailbox.uid)
+                listFolders(mailbox.uid, client)
                     .then((result): MailboxFolders => ({ mailbox, folders: result.filter(isMailFolder) }))
                     .catch(
                         (err): MailboxFolders => ({
@@ -124,7 +126,7 @@ export function useMailConnection({ userUid, enabled, open }: UseMailConnectionO
         )
             .then(setMailboxFolders)
             .finally(() => setFoldersLoading(false));
-    }, [mailboxes]);
+    }, [mailboxes, client]);
 
     /** Files a newly created folder under its own mailbox, leaving every other mailbox's list untouched - and ignoring a type the
      * sidebar doesn't list at all, the same filter the fetch above applies. One already there (another client's create event can arrive
@@ -154,7 +156,7 @@ export function useMailConnection({ userUid, enabled, open }: UseMailConnectionO
         onFolderDeleted,
         onFoldersListed,
         onMessageCreated: notifications.announce,
-        onSendEvent: handleSendEvent,
+        onSendEvent: (event) => handleSendEvent(event, client),
     });
     const noteFolderUids = useCallback(
         (folderUids: Iterable<string>) => {
@@ -179,8 +181,8 @@ export function useMailConnection({ userUid, enabled, open }: UseMailConnectionO
 
     // The Outbox indicator: a message being sent from this tab counts at once (before the server has heard of it), settled - or taken back - when
     // the server answers (see `sendJob.ts`); once it accepted one, the folders are read again, since the Outbox may not have existed yet.
-    const latestRef = useRef({ mailboxFolders, folderCounts });
-    latestRef.current = { mailboxFolders, folderCounts };
+    const latestRef = useRef({ mailboxFolders, folderCounts, client });
+    latestRef.current = { mailboxFolders, folderCounts, client };
     useEffect(() => {
         if (!userUid || !enabled) {
             return;
@@ -195,7 +197,7 @@ export function useMailConnection({ userUid, enabled, open }: UseMailConnectionO
                 // The server accepted a message: the Outbox (and, on an older server, Sent Items) may just have been made. The counts' read-back lists
                 // every mailbox's folders and files the new ones (`onFoldersListed`); this reads the one mailbox at once.
                 latestRef.current.folderCounts.refresh(0);
-                listFolders(mailboxUid).then(onFoldersListed, () => undefined);
+                listFolders(mailboxUid, latestRef.current.client).then(onFoldersListed, () => undefined);
             },
         );
     }, [userUid, enabled, onFoldersListed]);

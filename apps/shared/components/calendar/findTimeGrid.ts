@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { format } from "date-fns";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { AvailabilitySummary } from "@rapidmx/react-shared/calendar/freeBusyApi.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { AvailabilitySummary } from "../../../../lib/calendar/freeBusyApi.js";
 import { addDaysToKey } from "./allDay.js";
 import { msToWallString, wallStringToMs } from "./eventFormat.js";
 

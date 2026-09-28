@@ -6,9 +6,9 @@ import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import type { Folder, Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { SendEvent } from "@rapidmx/react-shared/mail/sendEvents.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import type { Folder, Mailbox, Message } from "../../../lib/mail/mailApi.js";
+import type { SendEvent } from "../../../lib/mail/sendEvents.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 
 // What the thread does with the messages this tab sends: `MessageDetailPane` is drawn by a stand-in (its own tests are elsewhere) and the shell's
@@ -16,15 +16,15 @@ import { jsonResponse, mockFetch } from "../testUtils.js";
 const shell: { live: { tick: number; folderUids: ReadonlySet<string> | null } } = vi.hoisted(() => ({ live: { tick: 0, folderUids: null } }));
 const api = vi.hoisted(() => ({ assembleDraft: vi.fn(), queueMessageSend: vi.fn(), getMessage: vi.fn(), listFolders: vi.fn(), cancelScheduledSend: vi.fn(), getUnlockedKeys: vi.fn() }));
 
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/mail/mailApi.js")>()),
+vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     assembleDraft: api.assembleDraft,
     queueMessageSend: api.queueMessageSend,
     getMessage: api.getMessage,
     listFolders: api.listFolders,
     cancelScheduledSend: api.cancelScheduledSend,
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys: api.getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: api.getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/components/mail/layout/MailShell.js", async (importOriginal) => {
     const actual = await importOriginal<typeof import("../../../apps/shared/components/mail/layout/MailShell.js")>();
     return { ...actual, useMailShell: () => ({ ...actual.useMailShell(), live: shell.live }) };

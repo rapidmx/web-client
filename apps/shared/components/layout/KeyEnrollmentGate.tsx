@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import { enrollKey, getKeyVault, PublicKey, VaultAlreadyInitializedError } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../lib/components/forms/FormField.js";
+import { enrollKey, getKeyVault, PublicKey, VaultAlreadyInitializedError } from "../../../../lib/crypto/keyvaultApi.js";
 import { UnopenableKeysNotice, unlockErrorMessage } from "./UnlockPromptProvider.js";
 import { FrameTakeover } from "../../navigation/frameContext.js";
 import { RecoveryFollowUp, RecoveryFollowUpModal, UnlockModeToggle, startRecoveryUnlock } from "./RecoveryCodeUnlock.js";
@@ -16,10 +16,10 @@ import {
     getUnlockedKeys,
     unlockWithPassword,
     type UnlockResult,
-} from "@rapidmx/react-shared/crypto/keySession.js";
-import { buildAad, generateMasterKey, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
-import { buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
-import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
+} from "../../../../lib/crypto/keySession.js";
+import { buildAad, generateMasterKey, sealWithKey } from "../../../../lib/crypto/masterKey.js";
+import { buildPasswordWrap, buildRecoveryWraps } from "../../../../lib/crypto/masterKeyWraps.js";
+import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "../../../../lib/crypto/keys.js";
 
 type Status = "checking" | "setup_password" | "enrolling" | "already_set_up" | "show_recovery_codes" | "unlock" | "unlocking" | "ready";
 

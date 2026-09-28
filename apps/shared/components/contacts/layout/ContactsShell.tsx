@@ -4,11 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
-import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import Drawer from "../../../../../lib/components/overlays/Drawer.js";
+import { Folder, Mailbox, listFolders, listMailboxes } from "../../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Skeleton, { SkeletonList } from "../../../../../lib/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import { useLocation, useNavigate } from "../../../navigation/index.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
@@ -50,6 +51,7 @@ export default function ContactsShell({
     pluginNav,
     children,
 }: PropsWithChildren<ContactsShellProps>) {
+    const client = useApiClient();
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
@@ -75,7 +77,7 @@ export default function ContactsShell({
         if (!userUid) {
             return;
         }
-        listMailboxes({ limit: 100 })
+        listMailboxes({ limit: 100 }, client)
             .then((result) => {
                 setMailboxes(orderMailboxes(result, userUid));
                 setStatus("ready");
@@ -96,7 +98,7 @@ export default function ContactsShell({
             return;
         }
         setFolderError(null);
-        listFolders(mailboxUid)
+        listFolders(mailboxUid, client)
             .then(setFolders)
             .catch((err) => setFolderError(err instanceof ApiRequestError ? err.message : "Could not load this mailbox's contacts folder."));
     }, [mailboxUid]);

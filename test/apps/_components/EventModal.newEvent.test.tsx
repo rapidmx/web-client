@@ -8,8 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
-import { RecurrenceRule } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { RecurrenceRule } from "../../../lib/calendar/calendarApi.js";
+import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 import { addGuest, clickModify, openMoreOptions, openTimeControls, setWhen } from "./eventModalHelpers.js";
 
 // A new event: the quick-create popover, "More options" growing it into the full card with the same values, and the fields both share.

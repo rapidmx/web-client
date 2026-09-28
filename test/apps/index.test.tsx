@@ -11,6 +11,8 @@ import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.
 import { clearInviteCache } from "../../apps/shared/components/mail/invite/inviteStore.js";
 import InboxPageBase from "../../apps/www/index.js";
 import { latestRouter, TestRouter, withTestRouter } from "./routerTestUtils.js";
+import { createApiClient } from "../../lib/util/api.js";
+import { ApiClientContext } from "../../lib/util/apiClientContext.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const InboxPage = withTestRouter(InboxPageBase);
@@ -42,7 +44,7 @@ function emitKeySession(event: { mailboxUid: string; state: "unlocked" | "locked
         listener(event);
     }
 }
-vi.mock("@rapidmx/react-shared/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
+vi.mock("../../lib/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
 
 // Tier 2 (the local encrypted index) is mocked at the same module boundary and for the same reason as
 // Tier 3 above - its own real behavior (Worker/WASM/OPFS/FTS5) is exercised elsewhere
@@ -53,7 +55,7 @@ vi.mock("../../apps/shared/search/searchTier2.js", () => ({ searchLocalIndex }))
 // unlockWithPassword is real UnlockPromptProvider's own dependency (mounted for real by the real
 // AppShell this file renders through, via MailShell/KeyEnrollmentGate) - needed so the "unlock" tests
 // below (list/search banners) can actually complete a real unlock, not just getUnlockedKeys' read side.
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
+vi.mock("../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
 
 // evaluateMessageSecurity() does real WebCrypto decryption against real unlocked keys - already
 // exercised end to end in react-shared's own test suite (see the Tier 3 comment above for the identical
@@ -61,7 +63,7 @@ vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, 
 // decryptEncryptedRows() orchestration (which rows it decrypts, how it renders the result), not
 // re-proving decryption correctness.
 const { evaluateMessageSecurity } = vi.hoisted(() => ({ evaluateMessageSecurity: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
 
 // `MessageDetailPane`'s own exhaustive rendering (header fields, attachments, back link, iframe,
 // formatting) is tested in its own `MessageDetailPane.test.tsx` — mocked here to a thin stand-in so this
@@ -4010,7 +4012,7 @@ describe("InboxPage", () => {
         });
 
         // Tier 3 (specs/search.md - server-assisted narrowing over encrypted mail) is mocked at the
-        // module boundary (see the file-level `vi.mock("@rapidmx/react-shared/search/searchTier3.js")`
+        // module boundary (see the file-level `vi.mock("../../lib/search/searchTier3.js")`
         // above) - real decryption is already covered end to end with real crypto in react-shared's own
         // test suite. These tests only verify InboxContent's own responsibility: merging whatever Tier 3
         // returns with Tier 1's results.
@@ -6564,5 +6566,41 @@ describe("InboxPage", () => {
             resolvePageOne!(jsonResponse(200, [messageFixture({ uid: "m99", subject: "Message 99" })]));
             expect(await screen.findByText("Message 99")).toBeInTheDocument();
         });
+    });
+});
+
+// Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+// client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`.
+describe("InboxPage under an ApiClientContext.Provider", () => {
+    it("lists the folder's messages through the default global fetch with no provider above it (unchanged behavior)", async () => {
+        const fetchMock = mockShellAndInbox([messageFixture()]);
+        render(<InboxPage userUid="u1" />);
+
+        expect(await screen.findByText("Hello there")).toBeInTheDocument();
+        const messagesCall = fetchMock.mock.calls.find(([url]) => String(url).startsWith("/api/mail/messages?"))!;
+        expect((messagesCall[1] as RequestInit | undefined)?.headers).not.toHaveProperty("Authorization");
+    });
+
+    it("lists the folder's messages through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.includes("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.includes("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+            if (url.includes("/api/mail/labels")) return jsonResponse(200, LABELS);
+            if (url.includes("/api/mail/messages")) return jsonResponse(200, [messageFixture()]);
+            if (url === "/api/system/branding") return jsonResponse(404, { message: "not configured" });
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        render(
+            <ApiClientContext.Provider value={client}>
+                <InboxPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+
+        expect(await screen.findByText("Hello there")).toBeInTheDocument();
+        const messagesCall = fetchMock.mock.calls.find(([url]) => String(url).startsWith("https://acct-a.example.com/api/mail/messages?"))!;
+        expect(new Headers((messagesCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        const labelsCall = fetchMock.mock.calls.find(([url]) => String(url).startsWith("https://acct-a.example.com/api/mail/labels"))!;
+        expect(new Headers((labelsCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

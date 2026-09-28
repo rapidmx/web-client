@@ -2,10 +2,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
+import React from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Mailbox } from "../../../lib/mail/mailApi.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import {
     clearMailboxWritabilityCache,
     getMailboxWritability,
@@ -99,5 +102,30 @@ describe("writableMailboxes", () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
 
         expect(result.current).toEqual({ "mb-own": true, "mb-manager": undefined });
+    });
+
+    // Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+    // client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`.
+    describe("under an ApiClientContext.Provider", () => {
+        it("useMailboxWritability asks through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const fetchMock = mockAccess();
+            const { result } = renderHook(() => useMailboxWritability([manager], "u1"));
+            await waitFor(() => expect(result.current).toEqual({ "mb-manager": true }));
+            expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/mailboxes/mb-manager/access/me");
+            expect((fetchMock.mock.calls[0][1] as RequestInit | undefined)?.headers).not.toHaveProperty("Authorization");
+        });
+
+        it("useMailboxWritability asks through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            const fetchMock = mockFetch((url) =>
+                url === "https://acct-a.example.com/api/mail/mailboxes/mb-manager/access/me" ? jsonResponse(200, access(true)) : jsonResponse(404, {}),
+            );
+            const { result } = renderHook(() => useMailboxWritability([manager], "u1"), {
+                wrapper: ({ children }) => <ApiClientContext.Provider value={client}>{children}</ApiClientContext.Provider>,
+            });
+            await waitFor(() => expect(result.current).toEqual({ "mb-manager": true }));
+            expect(fetchMock.mock.calls[0][0]).toBe("https://acct-a.example.com/api/mail/mailboxes/mb-manager/access/me");
+            expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        });
     });
 });

@@ -18,8 +18,10 @@
  * answer arrives.
  */
 import { useEffect, useMemo, useState } from "react";
-import type { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import { getMyMailboxAccess } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
+import type { Mailbox } from "../../../../lib/mail/mailApi.js";
+import { getMyMailboxAccess } from "../../../../lib/mail/mailboxAccessApi.js";
+import type { ApiClient } from "../../../../lib/util/api.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 
 /** `true` writable, `false` known view-only, `undefined` couldn't tell (treated as writable). */
 export type MailboxWritability = boolean | undefined;
@@ -42,15 +44,19 @@ export function peekMailboxWritability(mailbox: Mailbox, userUid: string | undef
     return isImplicitlyWritable(mailbox, userUid, trusted) ? true : settled.get(mailbox.uid);
 }
 
-/** Whether the caller can create items in `mailbox`. Never rejects. */
-export function getMailboxWritability(mailbox: Mailbox, userUid: string | undefined, trusted?: boolean): Promise<MailboxWritability> {
+/** Whether the caller can create items in `mailbox`. Never rejects.
+ *
+ * `inFlight`/`settled` are keyed by `mailbox.uid` alone, not by `client` - fine for every caller today (a
+ * mailbox uid belongs to one account's own `ApiClient`), but worth knowing if a future caller ever reused
+ * the same mailbox uid across two different `ApiClient`s. */
+export function getMailboxWritability(mailbox: Mailbox, userUid: string | undefined, trusted?: boolean, client?: ApiClient): Promise<MailboxWritability> {
     const known = peekMailboxWritability(mailbox, userUid, trusted);
     if (known !== undefined) {
         return Promise.resolve(known);
     }
     let request = inFlight.get(mailbox.uid);
     if (!request) {
-        request = getMyMailboxAccess(mailbox.uid).then(
+        request = getMyMailboxAccess(mailbox.uid, client).then(
             (access) => {
                 settled.set(mailbox.uid, access.canCreate);
                 inFlight.delete(mailbox.uid);
@@ -70,11 +76,12 @@ export function getMailboxWritability(mailbox: Mailbox, userUid: string | undefi
 /** Per-mailbox writability answers for `mailboxes`, filled in as each one arrives (already-known answers are
  * present from the first render). */
 export function useMailboxWritability(mailboxes: Mailbox[], userUid: string | undefined, trusted?: boolean): Record<string, MailboxWritability> {
+    const client = useApiClient();
     const [answers, setAnswers] = useState<Record<string, MailboxWritability>>({});
     useEffect(() => {
         let cancelled = false;
         for (const mailbox of mailboxes) {
-            void getMailboxWritability(mailbox, userUid, trusted).then((writable) => {
+            void getMailboxWritability(mailbox, userUid, trusted, client).then((writable) => {
                 if (!cancelled) {
                     setAnswers((prev) => ({ ...prev, [mailbox.uid]: writable }));
                 }
@@ -83,7 +90,7 @@ export function useMailboxWritability(mailboxes: Mailbox[], userUid: string | un
         return () => {
             cancelled = true;
         };
-    }, [mailboxes, userUid, trusted]);
+    }, [mailboxes, userUid, trusted, client]);
     return useMemo(() => {
         const merged: Record<string, MailboxWritability> = {};
         for (const mailbox of mailboxes) {

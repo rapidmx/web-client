@@ -4,11 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Attachment, Folder, Message, listAttachments } from "@rapidmx/react-shared/mail/mailApi.js";
-import { ConversationSummary, listConversationMessages } from "@rapidmx/react-shared/mail/conversationsApi.js";
-import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import { ApiClient, ApiRequestError } from "../../../../lib/util/api.js";
+import { Attachment, Folder, Message, listAttachments } from "../../../../lib/mail/mailApi.js";
+import { ConversationSummary, listConversationMessages } from "../../../../lib/mail/conversationsApi.js";
+import { Label } from "../../../../lib/mail/labelsApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
 import MessageDetailPane from "./MessageDetailPane.js";
 import { EncryptedPreview, displaySubject } from "./reading/EncryptedPreview.js";
 import { CollapsedCard, SkeletonCards, SubjectCard } from "./reading/MessageCard.js";
@@ -108,14 +109,23 @@ function scrollingAncestor(node: HTMLElement): HTMLElement {
  * The pane reads newest first always, whatever the *list* is sorted by: it is the reading order for mail,
  * and it means the message a conversation row stands for is the entry at the top.
  */
-async function loadThread(mailboxUid: string, conversationId: string): Promise<{ messages: Message[]; truncated: boolean }> {
+async function loadThread(
+    mailboxUid: string,
+    conversationId: string,
+    client?: ApiClient,
+): Promise<{ messages: Message[]; truncated: boolean }> {
     const messages: Message[] = [];
     let more = true;
     while (more && messages.length < THREAD_MESSAGE_LIMIT) {
-        const page = await listConversationMessages(mailboxUid, conversationId, {
-            page: messages.length / THREAD_PAGE_SIZE,
-            limit: THREAD_PAGE_SIZE,
-        });
+        const page = await listConversationMessages(
+            mailboxUid,
+            conversationId,
+            {
+                page: messages.length / THREAD_PAGE_SIZE,
+                limit: THREAD_PAGE_SIZE,
+            },
+            client,
+        );
         messages.push(...page);
         // A short page is the last one; a full page means asking for another.
         more = page.length === THREAD_PAGE_SIZE;
@@ -179,6 +189,7 @@ export default function ConversationThreadPane({
     shortcuts,
 }: ConversationThreadPaneProps) {
     const { trackMessageChange, live } = useMailShell();
+    const client = useApiClient();
     // The replies and forwards this tab has sent, drawn at the top of the thread they continue until the server's own copy is in it.
     const outgoing = useOutgoingReplies();
     const [messages, setMessages] = useState<Message[]>([]);
@@ -240,7 +251,7 @@ export default function ConversationThreadPane({
             return;
         }
         setLoading(true);
-        loadThread(mailboxUid, conversationId)
+        loadThread(mailboxUid, conversationId, client)
             .then((loaded) => {
                 if (generation !== generationRef.current) return;
                 loadedIdRef.current = conversationId;
@@ -256,7 +267,7 @@ export default function ConversationThreadPane({
             .finally(() => {
                 if (generation === generationRef.current) setLoading(false);
             });
-    }, [conversationId, mailboxUid]);
+    }, [conversationId, mailboxUid, client]);
 
     // Opening the thread, and opening a different message of the same thread, both set the run of expanded
     // messages and ask for that message to be scrolled to. `messages` is a dependency because the thread's
@@ -332,7 +343,7 @@ export default function ConversationThreadPane({
             if (!expandedUids.has(uid)) continue;
             if (message.hasAttachments && !attachmentsRequestedRef.current.has(uid)) {
                 attachmentsRequestedRef.current.add(uid);
-                listAttachments(message.folderUid, uid)
+                listAttachments(message.folderUid, uid, client)
                     .then((loaded) => {
                         if (generation === generationRef.current) {
                             setAttachmentsByUid((prev) => ({ ...prev, [uid]: loaded }));
@@ -366,7 +377,7 @@ export default function ConversationThreadPane({
                 });
             }
         }
-    }, [expandedUids, messages]);
+    }, [expandedUids, messages, client]);
 
     /**
      * Reads the thread again, quietly: what is on screen stays until the answer is here (a read that fails changes nothing), a message that arrived
@@ -380,7 +391,7 @@ export default function ConversationThreadPane({
             return;
         }
         const generation = generationRef.current;
-        loadThread(mailboxUid, id).then(
+        loadThread(mailboxUid, id, client).then(
             (loaded) => {
                 if (generation !== generationRef.current) return;
                 const current = loaded.messages.filter((message) => !removedRef.current.has(message.uid));

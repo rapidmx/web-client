@@ -8,6 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import MailSelectionBar from "../../../apps/shared/components/mail/MailSelectionBar.js";
+import { createApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -392,5 +394,73 @@ describe("MailSelectionBar keyboard shortcut hints", () => {
         renderBar({ currentFolderUid: "f3", deletesPermanently: true, shortcuts: true });
         expect(screen.getByRole("button", { name: "Delete permanently" })).toHaveAttribute("title", "Delete permanently (Ctrl+D)");
         expect(screen.getByRole("button", { name: "Delete permanently" })).toHaveAttribute("aria-keyshortcuts", "Control+D Delete");
+    });
+
+    // Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+    // client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`
+    // (`MoveToFolderDialog`, mounted here for its "New folder" prompt).
+    describe("Move to's New folder prompt under an ApiClientContext.Provider", () => {
+        it("creates the folder through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const created = { uid: "f7", mailboxUid: "mb1", name: "Trips", type: "user", version: 0 };
+            const fetchMock = mockFetch((url, init) =>
+                url === "/api/mail/folders" && init?.method === "POST" ? jsonResponse(200, created) : undefined,
+            );
+            const user = userEvent.setup();
+            renderBar();
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+            await user.type(screen.getByLabelText("New folder name"), "Trips");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]: [string]) => url === "/api/mail/folders")).toBe(true));
+            const call = fetchMock.mock.calls.find(([url]: [string]) => url === "/api/mail/folders")!;
+            expect((call[1] as RequestInit).headers).not.toHaveProperty("Authorization");
+        });
+
+        it("creates the folder through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+            const created = { uid: "f7", mailboxUid: "mb1", name: "Trips", type: "user", version: 0 };
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            const fetchMock = mockFetch((url, init) =>
+                url === "https://acct-a.example.com/api/mail/folders" && init?.method === "POST" ? jsonResponse(200, created) : undefined,
+            );
+            const onMoveTo = vi.fn(async () => undefined);
+            const listed = [messageFixture("m1"), messageFixture("m2")];
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <MailSelectionBar
+                        selected={[listed[0]]}
+                        listed={listed}
+                        folders={FOLDERS}
+                        currentFolderUid="f1"
+                        labels={LABELS}
+                        mailboxUid="mb1"
+                        busy={false}
+                        onSelectAll={vi.fn()}
+                        onClearSelection={vi.fn()}
+                        onCancel={vi.fn()}
+                        onSetRead={vi.fn()}
+                        onSetFlagged={vi.fn()}
+                        onArchive={vi.fn()}
+                        onMoveTo={onMoveTo}
+                        onReportJunk={vi.fn()}
+                        onDelete={vi.fn()}
+                        onApplyLabels={vi.fn()}
+                        onLabelCreated={vi.fn()}
+                        onFolderCreated={vi.fn()}
+                    />
+                </ApiClientContext.Provider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Move to" }));
+            await user.click(screen.getByRole("button", { name: /New folder/ }));
+            await user.type(screen.getByLabelText("New folder name"), "Trips");
+            await user.click(screen.getByRole("button", { name: "Create and move" }));
+
+            await waitFor(() => expect(onMoveTo).toHaveBeenCalledWith("f7"));
+            const call = fetchMock.mock.calls.find(([url]: [string]) => url === "https://acct-a.example.com/api/mail/folders")!;
+            expect(new Headers((call[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        });
     });
 });

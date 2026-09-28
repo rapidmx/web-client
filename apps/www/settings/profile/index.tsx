@@ -4,11 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useMemo, useState } from "react";
-import { FreeBusyVisibility, freeBusyVisibilityOf, isSharedWithMe, updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import { DEFAULT_TIME_ZONE, deviceTimeZone, timeZoneOptions } from "@rapidmx/react-shared/util/timeZone.js";
+import { FreeBusyVisibility, freeBusyVisibilityOf, isSharedWithMe, updateMailbox } from "../../../../lib/mail/mailApi.js";
+import { DEFAULT_TIME_ZONE, deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../lib/components/forms/FormField.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 export type SettingsProfilePageProps = Omit<SettingsShellProps, "active">;
@@ -60,6 +61,7 @@ function ProfileContent() {
     // `SettingsShell` only ever renders its children once `mailboxes` has loaded and `mailboxUid` has
     // resolved to one of them — same established non-null pattern as `apps/www/settings/auto-reply/index.tsx`.
     const mailbox = mailboxes.find((mb) => mb.uid === mailboxUid)!;
+    const client = useApiClient();
 
     const deviceZone = useMemo(() => deviceTimeZone(), []);
     // What the server holds, which is what "changed" is measured against - moved along by each successful save.
@@ -107,13 +109,16 @@ function ProfileContent() {
 
         setSaving(true);
         try {
-            const updated = await updateMailbox({
-                uid: mailbox.uid,
-                version,
-                ...(nameChanged && { displayName: name }),
-                ...(zoneChanged && { timezone }),
-                ...(freeBusyChanged && { freeBusyVisibility: freeBusy }),
-            });
+            const updated = await updateMailbox(
+                {
+                    uid: mailbox.uid,
+                    version,
+                    ...(nameChanged && { displayName: name }),
+                    ...(zoneChanged && { timezone }),
+                    ...(freeBusyChanged && { freeBusyVisibility: freeBusy }),
+                },
+                client,
+            );
             setVersion(updated.version);
             setSavedName(name);
             setSavedZone(timezone);

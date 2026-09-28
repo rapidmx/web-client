@@ -15,14 +15,14 @@ if (typeof document !== "undefined") {
     // runner (measured here: over five seconds with the machine kept busy). Waiting for a condition that never comes still fails - just
     // after this, not after one second.
     configure({ asyncUtilTimeout: 10_000 });
-    const { resetPushClient } = await import("@rapidmx/react-shared/mail/pushClient.js");
+    const { resetPushClient } = await import("../../lib/mail/pushClient.js");
     const { clearListSnapshots } = await import("../../apps/shared/mail/listSnapshots.js");
     const { clearOriginalMessageCache } = await import("../../apps/shared/components/mail/compose/quotedBody.js");
     const { resetNotifications } = await import("../../apps/shared/notifications/store.js");
     const { resetPendingSends } = await import("../../apps/shared/mail/outbox/pendingSends.js");
     const { resetSendJobs } = await import("../../apps/shared/mail/outbox/sendState.js");
     const { resetOutgoingReplies } = await import("../../apps/shared/mail/outbox/outgoingReplies.js");
-    const { setApiUnauthorizedObserver } = await import("@rapidmx/react-shared/util/api.js");
+    const { setApiUnauthorizedObserver } = await import("../../lib/util/api.js");
     // `window.location` (a stub, so `location.href = ...` can be asserted on) and the window's size are replaced by tests with
     // `Object.defineProperty()`, which nothing undoes: jsdom keeps one window for the whole file, so a test that ran after one of
     // those would read a stub's (empty) `search` where it set `?folderUid=` - and pass or fail on the order the tests ran in.

@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
-import { CALENDAR_COLOR_PALETTE, accentColorForMailbox, colorForFolder } from "@rapidmx/react-shared/calendar/calendarColors.js";
-import { Folder, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import { CALENDAR_COLOR_PALETTE, accentColorForMailbox, colorForFolder } from "../../../../lib/calendar/calendarColors.js";
+import { Folder, Mailbox } from "../../../../lib/mail/mailApi.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 
 export interface CalendarListSidebarMailbox {

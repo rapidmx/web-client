@@ -7,9 +7,18 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
-import { DEFAULT_CALENDAR_COLOR, accentColorForMailbox } from "@rapidmx/react-shared/calendar/calendarColors.js";
+import { DEFAULT_CALENDAR_COLOR, accentColorForMailbox } from "../../../lib/calendar/calendarColors.js";
 import CalendarShellBase, { useCalendarShell } from "../../../apps/shared/components/calendar/layout/CalendarShell.js";
 import { withTestRouter } from "../routerTestUtils.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
 const CalendarShell = withTestRouter(CalendarShellBase);
@@ -381,5 +390,37 @@ describe("CalendarShell", () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
 
         expect(fetchMock.mock.calls.filter(([url]: [string]) => url.startsWith("/api/mail/folders"))).toHaveLength(1);
+    });
+
+    describe("an explicit ApiClient from context (e.g. tauri-client's multi-account mode)", () => {
+        it("fetches mailboxes and folders through the provided client's own fetch, not the global one", async () => {
+            // `AppShell`'s own branding fetch (unrelated to this component's own mailbox/folder loading, and
+            // out of this task's scope) still goes through the global `apiFetch()` - only the mailbox/folder
+            // calls `CalendarShell` itself makes are expected to move to the explicit client.
+            const fetchMock = mockFetch((url) => (url.startsWith("/api/system/branding") ? jsonResponse(404, {}) : undefined));
+            const client = fakeApiClient((path) => {
+                if (path.startsWith("/mail/mailboxes/auto-provision")) throw Object.assign(new Error("not enabled"), { status: 404 });
+                if (path.startsWith("/mail/mailboxes")) return [mailboxA];
+                if (path.startsWith("/mail/folders")) return [calendarFolder];
+                throw new Error(`unexpected ${path}`);
+            });
+
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <CalendarShell userUid="u1">content</CalendarShell>
+                </ApiClientContext.Provider>,
+            );
+
+            await screen.findByText("content");
+            expect(client.fetch).toHaveBeenCalledWith(expect.stringContaining("/mail/mailboxes"), undefined);
+            expect(client.fetch).toHaveBeenCalledWith(expect.stringContaining("/mail/folders"), undefined);
+            expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/"))).toBe(false);
+        });
+
+        it("still behaves exactly as before with no provider above it (the default global-fetch path)", async () => {
+            mockMailboxesAndFolders([mailboxA], [calendarFolder]);
+            render(<CalendarShell userUid="u1">content</CalendarShell>);
+            await screen.findByText("content");
+        });
     });
 });

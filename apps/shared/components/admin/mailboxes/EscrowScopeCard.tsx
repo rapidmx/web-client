@@ -3,12 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { EscrowScope, listEscrowScopes } from "@rapidmx/react-shared/admin/escrowScopesApi.js";
-import { Mailbox, updateMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { EscrowScope, listEscrowScopes } from "../../../../../lib/admin/escrowScopesApi.js";
+import { Mailbox, updateMailbox } from "../../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
 
 const SELECT_CLASS =
     "text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -27,6 +28,7 @@ export interface EscrowScopeCardProps {
  * shown in the admin console, whose trusted-role gate the server enforces again for `escrowScopeId`.
  */
 export default function EscrowScopeCard({ mailbox, onUpdate }: EscrowScopeCardProps) {
+    const client = useApiClient();
     const [scopes, setScopes] = useState<EscrowScope[] | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [escrowScopeId, setEscrowScopeId] = useState(mailbox.escrowScopeId ?? "");
@@ -36,7 +38,7 @@ export default function EscrowScopeCard({ mailbox, onUpdate }: EscrowScopeCardPr
     const [confirming, setConfirming] = useState(false);
 
     useEffect(() => {
-        listEscrowScopes({ limit: SCOPE_LIST_LIMIT })
+        listEscrowScopes({ limit: SCOPE_LIST_LIMIT }, client)
             .then(setScopes)
             .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load escrow scopes."));
     }, []);
@@ -53,7 +55,7 @@ export default function EscrowScopeCard({ mailbox, onUpdate }: EscrowScopeCardPr
         setSaved(false);
         setSaving(true);
         try {
-            const updated = await updateMailbox({ uid: mailbox.uid, version: mailbox.version, escrowScopeId: escrowScopeId || null });
+            const updated = await updateMailbox({ uid: mailbox.uid, version: mailbox.version, escrowScopeId: escrowScopeId || null }, client);
             onUpdate(updated);
             setSaved(true);
         } catch (err) {

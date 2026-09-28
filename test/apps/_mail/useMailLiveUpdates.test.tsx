@@ -5,7 +5,7 @@
 import React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
+import { resetPushClient } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import {
     LIVE_EVENT_DEBOUNCE_MS,

@@ -13,7 +13,7 @@ import ComposeWindow from "../../../apps/shared/components/mail/compose/ComposeW
 import type { ComposeSession } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
 import { clearMailboxWritabilityCache } from "../../../apps/shared/components/mail/writableMailboxes.js";
 
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../lib/crypto/keySession.js", () => ({
     getUnlockedKeys: () => undefined,
     subscribeKeySession: () => () => undefined,
 }));

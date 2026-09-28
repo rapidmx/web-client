@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../../lib/mail/mailApi.js";
 
 /**
  * What a message in Outbox is doing, read from the fields the server keeps on it (`scheduledSend*`):

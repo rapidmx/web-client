@@ -12,7 +12,7 @@ import { withTestRouter } from "../../routerTestUtils.js";
 import { APPEARANCE_SAVE_DELAY_MS } from "../../../../apps/shared/appearance/AppearanceProvider.js";
 import { writeAppearanceCache } from "../../../../apps/shared/appearance/appearanceCache.js";
 import { APPEARANCE_STYLE_ID } from "../../../../apps/shared/appearance/theme.js";
-import { BACKGROUND_MAX_BYTES } from "@rapidmx/react-shared/appearance/preferencesApi.js";
+import { BACKGROUND_MAX_BYTES } from "../../../../lib/appearance/preferencesApi.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const SettingsAppearancePage = withTestRouter(SettingsAppearancePageBase);

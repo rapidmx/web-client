@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { getMailboxPolicy } from "@rapidmx/react-shared/admin/mailboxPolicyApi.js";
+import { getMailboxPolicy } from "../../../lib/admin/mailboxPolicyApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import LoadedSettingsForm from "../../shared/components/admin/settings/LoadedSettingsForm.js";
 import MailboxPolicyForm from "../../shared/components/admin/settings/MailboxPolicyForm.js";

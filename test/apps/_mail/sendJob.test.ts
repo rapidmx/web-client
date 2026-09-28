@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
-import type { Mailbox, Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { toBase64 } from "../../../lib/crypto/encoding.js";
+import type { Mailbox, Message } from "../../../lib/mail/mailApi.js";
 
 const mocks = vi.hoisted(() => ({
     assembleDraft: vi.fn(),
@@ -21,8 +21,8 @@ const mocks = vi.hoisted(() => ({
     buildSignedOnlyMessage: vi.fn(),
 }));
 
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/mail/mailApi.js")>()),
+vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     assembleDraft: mocks.assembleDraft,
     assembleDraftRaw: mocks.assembleDraftRaw,
     getMailbox: mocks.getMailbox,
@@ -31,14 +31,14 @@ vi.mock("@rapidmx/react-shared/mail/mailApi.js", async (importOriginal) => ({
     sendMessage: mocks.sendMessage,
     setMessageRequestReceipt: mocks.setMessageRequestReceipt,
 }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     getEncryptionPolicy: mocks.getEncryptionPolicy,
     lookupKeys: mocks.lookupKeys,
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys: mocks.getUnlockedKeys, subscribeKeySession: () => () => undefined }));
-vi.mock("@rapidmx/react-shared/crypto/smimeMessage.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/smimeMessage.js")>()),
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: mocks.getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/smimeMessage.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/smimeMessage.js")>()),
     buildEncryptedMessage: mocks.buildEncryptedMessage,
     buildSignedOnlyMessage: mocks.buildSignedOnlyMessage,
 }));
@@ -132,8 +132,8 @@ describe("startSend - the happy path", () => {
         expect(startSend(request())).toBe(true);
         expect(isSendPending("m1")).toBe(true);
         await settle();
-        expect(mocks.assembleDraft).toHaveBeenCalledWith("m1", { to: [{ address: "bob@example.com" }], cc: [], bcc: [], subject: "Hello", html: "<p>Hi</p>" });
-        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1");
+        expect(mocks.assembleDraft).toHaveBeenCalledWith("m1", { to: [{ address: "bob@example.com" }], cc: [], bcc: [], subject: "Hello", html: "<p>Hi</p>" }, undefined);
+        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", undefined);
         expect(toasts()).toEqual([]);
         expect(retainedRequest("m1")).toBeDefined();
     });
@@ -176,7 +176,7 @@ describe("startSend - the happy path", () => {
         const time = new Date(Date.now() + 3_600_000).toISOString();
         startSend(request({ scheduledSendTime: time }));
         await settle();
-        expect(mocks.sendMessage).toHaveBeenCalledWith("m1", { scheduledSendTime: time });
+        expect(mocks.sendMessage).toHaveBeenCalledWith("m1", { scheduledSendTime: time }, undefined);
         expect(mocks.queueMessageSend).not.toHaveBeenCalled();
         expect(toasts()[0]).toMatchObject({ kind: "success", title: "Message scheduled" });
         expect(retainedRequest("m1")).toBeUndefined();
@@ -314,7 +314,7 @@ describe("startSend - encryption and signing", () => {
         mocks.lookupKeys.mockResolvedValue({ keys: [peerKey], encryptPreference: { preferEncrypt: "mutual" } });
         startSend(request({ mailbox: undefined, policy: undefined }));
         await settle();
-        expect(mocks.getMailbox).toHaveBeenCalledWith("mb1");
+        expect(mocks.getMailbox).toHaveBeenCalledWith("mb1", undefined, undefined);
         expect(mocks.buildEncryptedMessage).toHaveBeenCalledTimes(1);
         expect(mocks.assembleDraftRaw).toHaveBeenCalledTimes(1);
         expect(mocks.assembleDraft).not.toHaveBeenCalled();
@@ -354,7 +354,7 @@ describe("startSend - encryption and signing", () => {
             unlockedSigning.signingCertDer,
             unlockedSigning.signingPrivateKey,
         );
-        expect(mocks.assembleDraftRaw).toHaveBeenCalledWith("m1", expect.objectContaining({ subject: "Hello", rawMime: expect.stringContaining("SIGNED") }));
+        expect(mocks.assembleDraftRaw).toHaveBeenCalledWith("m1", expect.objectContaining({ subject: "Hello", rawMime: expect.stringContaining("SIGNED") }), undefined);
         forgetRetainedRequest("m1");
         startSend(request({ signEnabled: true, offeredSign: true, mailbox: { ...mailbox, displayName: "a@b", primarySmtpAddress: "me" } }));
         await settle();
@@ -462,5 +462,67 @@ describe("startSend - encryption and signing", () => {
         await settle();
         expect(mocks.buildEncryptedMessage).not.toHaveBeenCalled();
         expect(mocks.lookupKeys).toHaveBeenCalledTimes(1);
+    });
+});
+
+// A window rendered under an `ApiClientContext.Provider` (e.g. one account of the native, multi-account `tauri-client`) passes its own
+// `useApiClient()` value as `startSend()`/`retrySend()`'s trailing `client` argument (see `ComposeWindow.tsx`'s `submit()`); every REST call
+// `sendJob.ts` makes along the way must forward that same instance rather than falling back to the default global cookie-based session. Every
+// test above calls `startSend()`/`retrySend()` with no client at all, proving the other half: that path is untouched, `client` staying
+// `undefined` all the way down to each mocked REST function's own trailing parameter.
+describe("startSend/retrySend - an explicit ApiClient is threaded through", () => {
+    const client = { fetch: vi.fn(), setUnauthorizedObserver: vi.fn() };
+
+    it("passes it to every call the plain-message path makes", async () => {
+        expect(startSend(request(), client)).toBe(true);
+        await settle();
+        expect(mocks.assembleDraft).toHaveBeenCalledWith("m1", expect.anything(), client);
+        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", client);
+    });
+
+    it("passes it to the mailbox/policy/recipient-key lookups a send fills in for itself", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedEncryption);
+        mocks.getEncryptionPolicy.mockResolvedValue(AUTO);
+        mocks.lookupKeys.mockResolvedValue({ keys: [peerKey], encryptPreference: { preferEncrypt: "mutual" } });
+        startSend(request({ mailbox: undefined, policy: undefined }), client);
+        await settle();
+        expect(mocks.getMailbox).toHaveBeenCalledWith("mb1", undefined, client);
+        expect(mocks.getEncryptionPolicy).toHaveBeenCalledWith(client);
+        expect(mocks.lookupKeys).toHaveBeenCalledWith("mb1", "bob@example.com", client);
+        expect(mocks.assembleDraftRaw).toHaveBeenCalledWith("m1", expect.anything(), client);
+    });
+
+    it("passes it to the receipt flag and a send-later's own call", async () => {
+        startSend(request({ requestReceipt: true }), client);
+        await settle();
+        expect(mocks.setMessageRequestReceipt).toHaveBeenCalledWith(expect.anything(), true, client);
+        forgetRetainedRequest("m1");
+        const time = new Date(Date.now() + 3_600_000).toISOString();
+        startSend(request({ scheduledSendTime: time }), client);
+        await settle();
+        expect(mocks.sendMessage).toHaveBeenCalledWith("m1", { scheduledSendTime: time }, client);
+    });
+
+    it("passes it to retrySend's own already-accepted check and the send it starts", async () => {
+        mocks.getMessage.mockResolvedValue({ ...draft, folderUid: "sent" });
+        await retrySend(request(), client);
+        expect(mocks.getMessage).toHaveBeenCalledWith("m1", client);
+        expect(mocks.queueMessageSend).not.toHaveBeenCalled();
+
+        mocks.getMessage.mockResolvedValue(draft);
+        await retrySend(request(), client);
+        await settle();
+        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", client);
+    });
+
+    it("passes it to Retry clicked from the failure pop-up", async () => {
+        mocks.queueMessageSend.mockRejectedValueOnce(new ApiRequestError("Relay down", 500));
+        startSend(request(), client);
+        await settle();
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
+        expect(mocks.queueMessageSend).toHaveBeenLastCalledWith("m1", client);
+        await settle();
+        expect(mocks.getMessage).toHaveBeenCalledWith("m1", client);
     });
 });

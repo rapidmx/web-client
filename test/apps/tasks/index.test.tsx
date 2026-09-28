@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import TasksPageBase from "../../../apps/www/tasks/index.js";
 import { withTestRouter } from "../routerTestUtils.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const TasksPage = withTestRouter(TasksPageBase);
@@ -728,7 +730,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
     });
 
     it("Flagged email view shows the ApiRequestError message when the fetch fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockShellAndTasksWithLists([todayTask], [list], [tasksFolder, inboxFolder], (url) => {
             if (url.includes("folderUid=f-inbox")) throw new ApiRequestError("nope", 500);
             return undefined;
@@ -862,7 +864,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
     });
 
     it("toolbar Complete shows the ApiRequestError message when updating a checked task fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockShellAndTasksWithLists([todayTask], [list], [tasksFolder], (url, init) => {
             if (init?.method === "PUT") throw new ApiRequestError("cannot complete", 403);
             return undefined;
@@ -916,7 +918,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
     });
 
     it("toolbar Add to My Day shows the ApiRequestError message when updating a checked task fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockShellAndTasksWithLists([todayTask], [list], [tasksFolder], (url, init) => {
             if (init?.method === "PUT") throw new ApiRequestError("cannot add to my day", 403);
             return undefined;
@@ -969,7 +971,7 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
     });
 
     it("toolbar Delete shows the ApiRequestError message when deleting a checked task fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockShellAndTasksWithLists([todayTask], [list], [tasksFolder], (url, init) => {
             if (init?.method === "DELETE") throw new ApiRequestError("cannot delete", 403);
             return undefined;
@@ -1066,5 +1068,64 @@ describe("TasksPage keyboard shortcuts", () => {
         await user.click(screen.getByText("Flagged email"));
         await waitFor(() => expect(screen.queryByLabelText("Add a task")).not.toBeInTheDocument());
         expect(press("n", { altKey: true })).toBe(true);
+    });
+});
+
+// Round: under an `ApiClientContext.Provider` (e.g. `tauri-client`), every REST call this page (and the
+// components it renders - `TasksShell`, `TasksSidebar`) makes must route through that client's own
+// `baseUrl`/bearer token instead of the default cookie-based `apiFetch()`. Matched by `.includes()` rather
+// than `mockShellAndTasks()`'s own `.startsWith()` prefixes, since an explicit client's requests carry an
+// absolute `https://acct-a.example.com/...` URL, not a relative one.
+describe("TasksPage — explicit ApiClient (tauri-client-style host apps)", () => {
+    function mockShellAndTasksAnyOrigin(tasks: unknown[], folders: unknown[] = [tasksFolder]) {
+        return mockFetch((url, init) => {
+            if (url.includes("/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.includes("/mail/folders")) return jsonResponse(200, folders);
+            if (url.includes("/mail/task-lists")) return jsonResponse(200, []);
+            if (url.includes("/mail/tasks") && init?.method === "POST") {
+                const body = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...task(), uid: "t-created", ...body });
+            }
+            if (url.includes("/mail/tasks") && (init?.method ?? "GET") === "GET") return jsonResponse(200, tasks);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+    }
+
+    it("loads tasks through the default global fetch with no provider above it (unchanged behavior)", async () => {
+        const fetchMock = mockShellAndTasksAnyOrigin([todayTask]);
+        render(<TasksPage userUid="u1" />);
+
+        await screen.findByText("Today task");
+        const tasksCall = fetchMock.mock.calls.find(
+            ([url, init]) => (url as string).includes("/mail/tasks") && ((init as RequestInit | undefined)?.method ?? "GET") === "GET",
+        )!;
+        expect(tasksCall[0]).toMatch(/^\/api\/mail\/tasks/);
+        expect(new Headers((tasksCall[1] as RequestInit).headers).get("Authorization")).toBeNull();
+    });
+
+    it("loads and creates tasks through the provided ApiClient's own baseUrl and bearer token", async () => {
+        const fetchMock = mockShellAndTasksAnyOrigin([]);
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <TasksPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+
+        await screen.findByText("No tasks yet.");
+        const listCall = fetchMock.mock.calls.find(
+            ([url, init]) => (url as string).includes("/mail/tasks") && ((init as RequestInit | undefined)?.method ?? "GET") === "GET",
+        )!;
+        expect(listCall[0]).toMatch(/^https:\/\/acct-a\.example\.com\/api\/mail\/tasks/);
+        expect(new Headers((listCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+
+        await user.type(screen.getByLabelText("Add a task"), "New task");
+        await user.click(screen.getByRole("button", { name: "Add" }));
+
+        await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toBe(true));
+        const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
+        expect(postCall[0]).toBe("https://acct-a.example.com/api/mail/tasks");
+        expect(new Headers((postCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

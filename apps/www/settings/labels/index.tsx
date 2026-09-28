@@ -4,13 +4,14 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Label, createLabel, deleteLabel, listLabels, updateLabel } from "@rapidmx/react-shared/mail/labelsApi.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { Label, createLabel, deleteLabel, listLabels, updateLabel } from "../../../../lib/mail/labelsApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../lib/components/forms/FormField.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
 
 export type SettingsLabelsPageProps = Omit<SettingsShellProps, "active">;
 
@@ -26,6 +27,7 @@ const DEFAULT_COLOR = "#6366f1";
 
 function LabelsContent() {
     const { mailboxUid } = useSettingsShell();
+    const client = useApiClient();
     const [labels, setLabels] = useState<Label[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -45,7 +47,7 @@ function LabelsContent() {
     // `SettingsShell` only ever renders its children once `mailboxUid` has resolved — same established
     // non-null pattern as `apps/www/settings/auto-reply/index.tsx`.
     useEffect(() => {
-        listLabels(mailboxUid!)
+        listLabels(mailboxUid!, {}, client)
             .then(setLabels)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load labels."))
             .finally(() => setLoading(false));
@@ -72,10 +74,10 @@ function LabelsContent() {
         setFormError(null);
         try {
             if (editing) {
-                const updated = await updateLabel({ uid: editing.uid, version: editing.version, name: formName, color: formColor });
+                const updated = await updateLabel({ uid: editing.uid, version: editing.version, name: formName, color: formColor }, client);
                 setLabels((prev) => prev.map((l) => (l.uid === updated.uid ? updated : l)));
             } else {
-                const created = await createLabel({ mailboxUid: mailboxUid!, name: formName, color: formColor });
+                const created = await createLabel({ mailboxUid: mailboxUid!, name: formName, color: formColor }, client);
                 setLabels((prev) => [...prev, created]);
             }
             setFormOpen(false);
@@ -90,7 +92,7 @@ function LabelsContent() {
         setDeleteBusy(true);
         setDeleteError(null);
         try {
-            await deleteLabel(deleting!.uid, deleting!.version);
+            await deleteLabel(deleting!.uid, deleting!.version, client);
             setLabels((prev) => prev.filter((l) => l.uid !== deleting!.uid));
             setDeleting(null);
         } catch (err) {

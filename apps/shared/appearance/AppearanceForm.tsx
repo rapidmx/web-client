@@ -16,9 +16,9 @@ import {
     ColorKey,
     DEFAULT_BACKGROUND,
     validateBackgroundFile,
-} from "@rapidmx/react-shared/appearance/preferencesApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+} from "../../../lib/appearance/preferencesApi.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
 import ColorField from "./ColorField.js";
 import { normalizeHex } from "./color.js";
 import { useAppearance } from "./appearanceContext.js";

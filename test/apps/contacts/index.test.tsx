@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import ContactsPageBase from "../../../apps/www/contacts/index.js";
 import { latestRouter, withTestRouter } from "../routerTestUtils.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const ContactsPage = withTestRouter(ContactsPageBase);
@@ -41,8 +43,8 @@ vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearP
 // Key rotation continuity: a contact's key change is resolved through resolveKeyConflict(), mocked at the module
 // boundary (see .claude/NOTES.md on fetch stubs not reaching keyvaultApi.js).
 const { resolveKeyConflict } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     resolveKeyConflict,
 }));
 
@@ -850,7 +852,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("shows an error, using the ApiRequestError message, when loading deleted contacts fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
             if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [contactsFolder]);
@@ -974,7 +976,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("toolbar Delete shows an error, using the ApiRequestError message, when one deletion fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockShellAndContactsWithLists([jane], [list], (url, init) => {
             if (init?.method === "DELETE") throw new ApiRequestError("cannot delete", 403);
             return undefined;
@@ -1151,7 +1153,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("toolbar Favorite shows the ApiRequestError message when updating a checked contact fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockShellAndContactsWithLists([jane], [list], (url, init) => {
             if (init?.method === "PUT") throw new ApiRequestError("cannot favorite", 403);
             return undefined;
@@ -1225,7 +1227,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("toolbar Add category shows the ApiRequestError message when updating a checked contact fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("VIP");
         mockShellAndContactsWithLists([jane], [list], (url, init) => {
             if (init?.method === "PUT") throw new ApiRequestError("cannot categorize", 403);
@@ -1325,7 +1327,7 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
     });
 
     it("toolbar Import shows the ApiRequestError message when creating one of the imported contacts fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockShellAndContactsWithLists([], [list], (url, init) => {
             if (url === "/api/mail/contacts" && init?.method === "POST") throw new ApiRequestError("cannot import", 403);
             return undefined;
@@ -1631,5 +1633,65 @@ describe("ContactsPage keyboard shortcuts", () => {
 
         expect(press("/", {}, name)).toBe(true);
         expect(press("e", {}, name)).toBe(true);
+    });
+});
+
+// Round: under an `ApiClientContext.Provider` (e.g. `tauri-client`), every REST call this page (and the
+// components it renders - `ContactsShell`, `ContactsSidebar`, `ContactForm`) makes must route through that
+// client's own `baseUrl`/bearer token instead of the default cookie-based `apiFetch()`. Matched by `.includes()`
+// rather than `mockShellAndContacts()`'s own `.startsWith()` prefixes, since an explicit client's requests carry
+// an absolute `https://acct-a.example.com/...` URL, not a relative one.
+describe("ContactsPage — explicit ApiClient (tauri-client-style host apps)", () => {
+    function mockShellAndContactsAnyOrigin(contacts: unknown[]) {
+        return mockFetch((url, init) => {
+            if (url.includes("/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.includes("/mail/folders")) return jsonResponse(200, [contactsFolder]);
+            if (url.includes("/mail/contact-lists")) return jsonResponse(200, []);
+            if (url.includes("/mail/contacts") && init?.method === "POST") {
+                const body = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...jane, uid: "c9", ...body });
+            }
+            if (url.includes("/mail/contacts") && (init?.method ?? "GET") === "GET") return jsonResponse(200, contacts);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+    }
+
+    it("loads contacts through the default global fetch with no provider above it (unchanged behavior)", async () => {
+        const fetchMock = mockShellAndContactsAnyOrigin([jane]);
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        const contactsCall = fetchMock.mock.calls.find(
+            ([url, init]) => (url as string).includes("/mail/contacts") && ((init as RequestInit | undefined)?.method ?? "GET") === "GET",
+        )!;
+        expect(contactsCall[0]).toMatch(/^\/api\/mail\/contacts/);
+        expect(new Headers((contactsCall[1] as RequestInit).headers).get("Authorization")).toBeNull();
+    });
+
+    it("loads and creates contacts through the provided ApiClient's own baseUrl and bearer token", async () => {
+        const fetchMock = mockShellAndContactsAnyOrigin([]);
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <ContactsPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+
+        await screen.findByText("No contacts found.");
+        const listCall = fetchMock.mock.calls.find(
+            ([url, init]) => (url as string).includes("/mail/contacts") && ((init as RequestInit | undefined)?.method ?? "GET") === "GET",
+        )!;
+        expect(listCall[0]).toMatch(/^https:\/\/acct-a\.example\.com\/api\/mail\/contacts/);
+        expect(new Headers((listCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+
+        await user.click(screen.getByRole("button", { name: "New contact" }));
+        await user.type(screen.getByLabelText("Display name"), "New Person");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toBe(true));
+        const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
+        expect(postCall[0]).toBe("https://acct-a.example.com/api/mail/contacts");
+        expect(new Headers((postCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

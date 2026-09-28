@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { FormEvent } from "react";
-import { Attendee, BusyStatus, EventVisibility, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { Attendee, BusyStatus, EventVisibility, RecurrenceRule, WeekdayCode } from "../../../../lib/calendar/calendarApi.js";
+import { Mailbox } from "../../../../lib/mail/mailApi.js";
+import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 
 /** Which occurrences of a recurring event an edit applies to. */
 export type EditScope = "occurrence" | "series";

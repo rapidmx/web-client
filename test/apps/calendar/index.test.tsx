@@ -10,9 +10,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import CalendarPageBase from "../../../apps/www/calendar/index.js";
 import { withTestRouter } from "../routerTestUtils.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const CalendarPage = withTestRouter(CalendarPageBase);
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // `@dnd-kit/core`'s real sensors can't be driven from jsdom (they call `setPointerCapture`, which
 // jsdom doesn't implement, and that breaks the rest of synthetic event dispatch — see
@@ -450,6 +459,48 @@ describe("CalendarPage", () => {
             ),
         );
         expect(await screen.findByText("Personal")).toBeInTheDocument();
+    });
+
+    describe("with an explicit ApiClient from context (e.g. tauri-client's multi-account mode)", () => {
+        it("loads mailboxes/folders/events and creates a new calendar through the provided client's own fetch, not the global one", async () => {
+            const folders = [calendarFolder];
+            // Anything outside `/api/mail/...` (e.g. `AppShell`'s own branding fetch) is unrelated to this
+            // component's own wiring and still goes through the global `apiFetch()`.
+            const fetchMock = mockFetch((url) => (url.startsWith("/api/mail/") ? undefined : jsonResponse(404, {})));
+            const client = fakeApiClient((path, init) => {
+                const method = init?.method ?? "GET";
+                if (path.startsWith("/mail/mailboxes")) return [mailbox];
+                if (path === "/mail/folders" && method === "POST") {
+                    folders.push(secondCalendarFolder);
+                    return secondCalendarFolder;
+                }
+                if (path.startsWith("/mail/folders")) return folders;
+                if (path.startsWith("/mail/calendar-events")) return path.includes("folderUid=f-cal2") ? [] : [calendarEvent()];
+                throw new Error(`unexpected ${method} ${path}`);
+            });
+            const user = userEvent.setup();
+
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <CalendarPage userUid="u1" />
+                </ApiClientContext.Provider>,
+            );
+
+            expect(await screen.findByText(/Standup/)).toBeInTheDocument();
+
+            await user.click(screen.getByLabelText("Add calendar"));
+            await user.type(screen.getByLabelText("New calendar name"), "Personal");
+            await user.click(screen.getByRole("button", { name: "Add" }));
+
+            await waitFor(() =>
+                expect(client.fetch).toHaveBeenCalledWith(
+                    "/mail/folders",
+                    expect.objectContaining({ method: "POST", body: expect.stringContaining("Personal") }),
+                ),
+            );
+            expect(await screen.findByText("Personal")).toBeInTheDocument();
+            expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/"))).toBe(false);
+        });
     });
 
     it("shows a combined error naming every calendar that failed to load, when more than one calendar is checked", async () => {

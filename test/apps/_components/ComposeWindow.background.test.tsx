@@ -19,7 +19,7 @@ import { clearMailboxWritabilityCache } from "../../../apps/shared/components/ma
 import { ShortcutProvider } from "../../../apps/shared/keyboard/ShortcutProvider.js";
 
 const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 const { requestUnlock } = vi.hoisted(() => ({ requestUnlock: vi.fn() }));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock }) }));
 vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => ({

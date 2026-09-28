@@ -4,8 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useRef, useState } from "react";
 import { HiOutlineCalendarDays } from "react-icons/hi2";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { MessageInvite } from "@rapidmx/react-shared/calendar/inviteApi.js";
+import type { Message } from "../../../../../lib/mail/mailApi.js";
+import type { MessageInvite } from "../../../../../lib/calendar/inviteApi.js";
 import { ANSWER_LABEL, formatRowStart } from "./inviteFormat.js";
 import { useMessageInvite } from "./inviteStore.js";
 import InviteRsvpPopover from "./InviteRsvpPopover.js";

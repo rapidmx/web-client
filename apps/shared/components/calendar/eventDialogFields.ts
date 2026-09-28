@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { EventVisibility, guestPermissionsOf, visibilityOf } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { EventVisibility, guestPermissionsOf, visibilityOf } from "../../../../lib/calendar/calendarApi.js";
 import {
     MAX_EVENT_DESCRIPTION_HTML_LENGTH,
     MAX_EVENT_DESCRIPTION_LENGTH,
     htmlToPlainText,
     sanitizeEventDescriptionHtml,
-} from "@rapidmx/react-shared/calendar/eventDescription.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+} from "../../../../lib/calendar/eventDescription.js";
+import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { EventFormValues } from "./eventForm.js";
 
 /** The event dialog's own fields of a `CalendarEventInput` - only the ones that differ from what the event has, so saving an event no one touched these on

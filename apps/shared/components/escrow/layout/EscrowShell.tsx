@@ -5,12 +5,12 @@
 import "../../../styles/app.css";
 import React, { PropsWithChildren, ReactNode, useEffect, useState } from "react";
 import { HiOutlineClipboardDocumentList, HiOutlineFolderOpen } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { listMatters } from "@rapidmx/react-shared/admin/mattersApi.js";
-import { useSessionRefresh } from "@rapidmx/react-shared/auth/session.js";
-import { getBranding } from "@rapidmx/react-shared/branding/brandingApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { listMatters } from "../../../../../lib/admin/mattersApi.js";
+import { useSessionRefresh } from "../../../../../lib/auth/session.js";
+import { getBranding } from "../../../../../lib/branding/brandingApi.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import BottomTabBar, { NavItem } from "../../../../../lib/components/navigation/BottomTabBar.js";
 import UserMenu from "../../layout/UserMenu.js";
 import RailIcon from "../../layout/RailIcon.js";
 import AppearanceProvider from "../../../appearance/AppearanceProvider.js";

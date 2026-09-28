@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ConversationList from "../../../apps/shared/components/mail/ConversationList.js";
 import { clearInviteCache } from "../../../apps/shared/components/mail/invite/inviteStore.js";
+import { createApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 
 function conversationFixture(overrides: Record<string, unknown> = {}) {
     return {
@@ -413,6 +415,41 @@ describe("ConversationList", () => {
 
             expect(screen.getByRole("checkbox", { name: "Select conversation: Hello there" })).toBeInTheDocument();
         });
+    });
+});
+
+// Round: apps components under an `ApiClientContext.Provider` (e.g. `tauri-client`) must route through that
+// client's own `baseUrl`/token instead of the default cookie-based `apiFetch()` - see `lib/util/apiClientContext.ts`.
+describe("under an ApiClientContext.Provider", () => {
+    it("loads a conversation's messages through the default global fetch with no provider above it (unchanged behavior)", async () => {
+        const { fetchMock } = renderList({}, [messageFixture()]);
+        const user = userEvent.setup();
+
+        await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+
+        expect(await screen.findByText("The opening message")).toBeInTheDocument();
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/messages/conversations/c1?mailboxUid=mb1");
+        expect((fetchMock.mock.calls[0][1] as RequestInit).headers).not.toHaveProperty("Authorization");
+    });
+
+    it("loads a conversation's messages through the provided ApiClient's own baseUrl and bearer token when one is provided", async () => {
+        const fetchMock = mockFetch((url) => {
+            if (url.startsWith("https://acct-a.example.com/api/mail/messages/conversations/")) return jsonResponse(200, [messageFixture()]);
+            throw new Error(`unexpected ${url}`);
+        });
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <ConversationList conversations={[conversationFixture()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />
+            </ApiClientContext.Provider>,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+
+        expect(await screen.findByText("The opening message")).toBeInTheDocument();
+        expect(fetchMock.mock.calls[0][0]).toBe("https://acct-a.example.com/api/mail/messages/conversations/c1?mailboxUid=mb1");
+        expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });
 

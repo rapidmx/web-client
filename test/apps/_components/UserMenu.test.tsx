@@ -8,6 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import UserMenu from "../../../apps/shared/components/layout/UserMenu.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 import { MailConnectionContext, type MailConnection } from "../../../apps/shared/mail/useMailConnection.js";
 import { getNotificationsSnapshot, notify, resetNotifications } from "../../../apps/shared/notifications/store.js";
 
@@ -508,6 +510,28 @@ describe("UserMenu", () => {
             // The badge's letter comes from the same name, not from the uid or the username.
             expect(screen.getAllByText("J")).toHaveLength(2);
             expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([PROFILE_URL, MAILBOXES_URL]);
+        });
+
+        it("looks up the mailbox name via the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided (the profile lookup itself always targets auth-server directly)", async () => {
+            const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+            const clientMailboxesUrl = `https://account-a.example.com${MAILBOXES_URL}`;
+            const fetchMock = mockFetch((url) => {
+                if (url === PROFILE_URL) return jsonResponse(404, { message: "Not found." });
+                if (url === clientMailboxesUrl) return jsonResponse(200, [mailbox()]);
+                if (url === MAILBOXES_URL) throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+                throw new Error(`unexpected ${url}`);
+            });
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <UserMenu userUid="u1" authServerUrl={AUTH_SERVER_URL} onSignOut={vi.fn()} />
+                </ApiClientContext.Provider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(await screen.findByText("Jean-Philippe Steinmetz")).toBeInTheDocument();
+            const call = fetchMock.mock.calls.find(([url]) => url === clientMailboxesUrl)!;
+            expect(new Headers((call[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
         });
 
         it("uses the mailbox name when the profile exists but has no name, and keeps the profile's avatar image", async () => {

@@ -21,9 +21,11 @@
  * handles that case itself via `destroyAllLocalIndexes()`.
  */
 import { useEffect, useRef } from "react";
-import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
-import type { PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import type { Folder } from "@rapidmx/react-shared/mail/mailApi.js";
+import { getUnlockedKeys } from "../../../lib/crypto/keySession.js";
+import type { PublicKey } from "../../../lib/crypto/keyvaultApi.js";
+import type { Folder } from "../../../lib/mail/mailApi.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 
 /**
  * The index builder (with the message security code it decrypts through - PKI.js and the ASN.1/X.509 libraries, over half a
@@ -52,15 +54,19 @@ export interface LocalIndexLifecycleProps {
 
 /** Renders nothing - pure side-effect component, mounted by `MailShell.tsx`. */
 export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMailboxUids }: LocalIndexLifecycleProps) {
+    // The explicit ApiClient (from useApiClient()) this component is rendered under - undefined for every existing caller (the SSR web/admin
+    // apps, Electron), which keeps building the index against the default global cookie-based session exactly as before. A native,
+    // multi-account host that renders this under an ApiClientContext.Provider gets its own account's client threaded through instead.
+    const client = useApiClient();
     // mailboxUid -> whether it was unlocked at the last check. An entry exists for every mailbox whose
     // build this component started; only ever changed by a real observed transition, never reset by an
     // effect re-run.
     const trackedRef = useRef(new Map<string, boolean>());
-    // The latest props, for the long-lived polling interval below.
-    const latestRef = useRef({ mailboxUid, folders });
-    latestRef.current = { mailboxUid, folders };
+    // The latest props (and client), for the long-lived polling interval below.
+    const latestRef = useRef({ mailboxUid, folders, client });
+    latestRef.current = { mailboxUid, folders, client };
 
-    function startBuildIfUnlocked(targetMailboxUid: string, targetFolders: Folder[]) {
+    function startBuildIfUnlocked(targetMailboxUid: string, targetFolders: Folder[], targetClient: ApiClient | undefined) {
         const unlocked = getUnlockedKeys(targetMailboxUid);
         if (!unlocked || targetFolders.length === 0 || trackedRef.current.get(targetMailboxUid)) {
             return;
@@ -69,15 +75,15 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
         // Never an unhandled rejection - a broken local index is best-effort infrastructure, not a build
         // the rest of the app depends on.
         loadBuilder()
-            .then(({ buildLocalIndex }) => buildLocalIndex(targetMailboxUid, unlocked, targetFolders))
+            .then(({ buildLocalIndex }) => buildLocalIndex(targetMailboxUid, unlocked, targetFolders, undefined, targetClient))
             .catch(() => undefined);
     }
 
     useEffect(() => {
         if (mailboxUid) {
-            startBuildIfUnlocked(mailboxUid, folders);
+            startBuildIfUnlocked(mailboxUid, folders, client);
         }
-    }, [mailboxUid, folders]);
+    }, [mailboxUid, folders, client]);
 
     useEffect(() => {
         const interval = setInterval(() => {
@@ -94,9 +100,9 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
                 }
             }
             // The active mailbox was (re-)unlocked since the last check, e.g. via an on-demand unlock prompt.
-            const { mailboxUid: activeUid, folders: activeFolders } = latestRef.current;
+            const { mailboxUid: activeUid, folders: activeFolders, client: activeClient } = latestRef.current;
             if (activeUid) {
-                startBuildIfUnlocked(activeUid, activeFolders);
+                startBuildIfUnlocked(activeUid, activeFolders, activeClient);
             }
         }, POLL_INTERVAL_MS);
         return () => clearInterval(interval);

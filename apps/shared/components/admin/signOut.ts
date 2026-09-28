@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { authApiFetch } from "@rapidmx/react-shared/util/api.js";
+import { authApiFetch } from "../../../../lib/util/api.js";
 
 /**
  * The cross-tab sign-out channel - must stay identical to `SIGN_OUT_CHANNEL` in

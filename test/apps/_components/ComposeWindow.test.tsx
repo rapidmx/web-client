@@ -7,7 +7,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
-import { toBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
+import { toBase64 } from "../../../lib/crypto/encoding.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 import ComposeWindow from "../../../apps/shared/components/mail/compose/ComposeWindow.js";
 import type { ComposeSession } from "../../../apps/shared/components/mail/compose/ComposeContext.js";
 import { clearMailboxWritabilityCache } from "../../../apps/shared/components/mail/writableMailboxes.js";
@@ -21,16 +22,41 @@ import { registerUnlockOpener } from "../../../apps/shared/mail/outbox/composeBr
 const toasts = () => getNotificationsSnapshot().visible;
 
 // "New message" (Alt+N) from inside a window asks the compose context for another one; the window is rendered on its own here, so what it asks
-// for is a spy.
-const { openCompose } = vi.hoisted(() => ({ openCompose: vi.fn() }));
-vi.mock("../../../apps/shared/components/mail/compose/ComposeContext.js", () => ({ useCompose: () => ({ openCompose }) }));
+// for is a spy. `composeClientRef` stands in for `ComposeContextValue.client` (see `ComposeContext.tsx`'s own doc
+// comment) - `undefined` by default, matching every real caller with no `ApiClientContext.Provider` above it; the
+// "explicit client" tests below point it at a fake `ApiClient` before rendering.
+const { openCompose, composeClientRef } = vi.hoisted(() => ({
+    openCompose: vi.fn(),
+    composeClientRef: { current: undefined as ApiClient | undefined },
+}));
+vi.mock("../../../apps/shared/components/mail/compose/ComposeContext.js", () => ({
+    useCompose: () => ({ openCompose, client: composeClientRef.current }),
+}));
+
+/** A fake `ApiClient` for the "explicit client" tests: routes exactly the calls `mockCompose()`'s global-fetch
+ * routes cover, but through `client.fetch()` instead - so a test can prove a call went through the client rather
+ * than the global cookie-based fetch. Paths here have no `/api` prefix, matching what `withClient()` actually
+ * passes to `client.fetch()` (a real client adds that prefix itself - see `createApiClient()`). */
+function fakeComposeClient(extra?: (path: string, init?: RequestInit) => unknown): { client: ApiClient; fetch: ReturnType<typeof vi.fn> } {
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+        const custom = extra?.(path, init);
+        if (custom !== undefined) return custom;
+        if (path.startsWith("/mail/folders")) return [otherFolder, draftsFolder];
+        if (path.startsWith("/mail/mail-signatures")) return [];
+        if (path === "/mail/messages" && (init?.method ?? "GET") === "POST") return draft;
+        if (path === "/mail/mailboxes/mb1") return { uid: "mb1", primarySmtpAddress: "u1@example.com", aliasAddresses: [], keys: [] };
+        if (path.startsWith("/mail/mailboxes?")) return [];
+        throw new Error(`unexpected ${init?.method ?? "GET"} ${path}`);
+    });
+    return { client: { fetch: fetchMock, setUnauthorizedObserver: vi.fn() }, fetch: fetchMock };
+}
 
 // subscribeKeySession keeps a real listener set, so tests can fire lock/unlock events via emitKeySession().
 const { getUnlockedKeys, keySessionListeners } = vi.hoisted(() => ({
     getUnlockedKeys: vi.fn(),
     keySessionListeners: new Set<(event: { mailboxUid: string; state: "unlocked" | "locked" }) => void>(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../lib/crypto/keySession.js", () => ({
     getUnlockedKeys,
     subscribeKeySession: (listener: (event: { mailboxUid: string; state: "unlocked" | "locked" }) => void) => {
         keySessionListeners.add(listener);
@@ -68,8 +94,8 @@ const { buildSignedOnlyMessage, buildEncryptedMessage } = vi.hoisted(() => ({
     buildSignedOnlyMessage: vi.fn(),
     buildEncryptedMessage: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/smimeMessage.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/smimeMessage.js")>()),
+vi.mock("../../../lib/crypto/smimeMessage.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/smimeMessage.js")>()),
     buildSignedOnlyMessage,
     buildEncryptedMessage,
 }));
@@ -205,6 +231,7 @@ afterEach(() => {
     getUnlockedKeys.mockReset();
     buildSignedOnlyMessage.mockReset();
     buildEncryptedMessage.mockReset();
+    composeClientRef.current = undefined;
 });
 
 describe("ComposeWindow", () => {
@@ -4237,5 +4264,50 @@ describe("ComposeWindow keyboard shortcuts", () => {
         // The other header buttons have none.
         expect(screen.getByRole("button", { name: "Minimize" })).toHaveAttribute("title", "Minimize");
         expect(screen.getByRole("button", { name: "Minimize" })).not.toHaveAttribute("aria-keyshortcuts");
+    });
+
+    describe("the ApiClient ComposeContext supplies (multi-account: tauri-client)", () => {
+        it("still uses the default global cookie-based fetch when ComposeContext supplies no client", async () => {
+            const fetchMock = mockCompose();
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            await waitFor(() =>
+                expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages", expect.objectContaining({ method: "POST" })),
+            );
+            expect(await screen.findByLabelText("Attach files")).not.toBeDisabled();
+        });
+
+        it("routes every REST call through the explicit client instead, once ComposeContext supplies one, and never touches the global fetch", async () => {
+            const globalFetch = mockFetch(() => {
+                throw new Error("must not use the global fetch when an explicit client is provided");
+            });
+            const { client, fetch: clientFetch } = fakeComposeClient();
+            composeClientRef.current = client;
+
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+
+            await waitFor(() =>
+                expect(clientFetch).toHaveBeenCalledWith("/mail/messages", expect.objectContaining({ method: "POST" })),
+            );
+            expect(await screen.findByLabelText("Attach files")).not.toBeDisabled();
+            expect(globalFetch).not.toHaveBeenCalled();
+        });
+
+        it("autosaves an edited draft through the explicit client too", async () => {
+            const { client, fetch: clientFetch } = fakeComposeClient((path, init) => {
+                if (path === "/mail/compose/m1/assemble" && (init?.method ?? "GET") === "POST") return { ...draft, subject: "Hi" };
+                return undefined;
+            });
+            composeClientRef.current = client;
+            const user = userEvent.setup();
+
+            render(<ComposeWindow session={session()} autosaveDelayMs={5} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await screen.findByLabelText("Attach files");
+            await user.type(screen.getByLabelText("Subject"), "Hi");
+
+            await waitFor(() =>
+                expect(clientFetch).toHaveBeenCalledWith("/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })),
+            );
+        });
     });
 });

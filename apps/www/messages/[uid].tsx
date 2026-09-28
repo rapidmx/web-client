@@ -4,16 +4,17 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../shared/navigation/pageTitle.js";
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Message, getMessage } from "@rapidmx/react-shared/mail/mailApi.js";
-import { Label, listLabels } from "@rapidmx/react-shared/mail/labelsApi.js";
-import { useMessageAttachments } from "@rapidmx/react-shared/mail/mailDetailHooks.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { Message, getMessage } from "../../../lib/mail/mailApi.js";
+import { Label, listLabels } from "../../../lib/mail/labelsApi.js";
+import { useMessageAttachments } from "../../../lib/mail/mailDetailHooks.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import { useMarkMessageRead } from "../../shared/mail/useMarkMessageRead.js";
 import MailShell, { MailShellProps, useMailShell } from "../../shared/components/mail/layout/MailShell.js";
 import { LazyConversationThreadPane, LazyMessageDetailPane } from "../../shared/components/mail/LazyReadingPane.js";
 import { useSearchParams } from "@rapidrest/react/client";
 import { ReadingPaneSkeleton } from "../../shared/components/mail/reading/MessageCard.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
 
 /**
  * Only reached on mobile (below the `md` breakpoint) — desktop's `apps/www/index.tsx` keeps its existing
@@ -31,6 +32,7 @@ function MessageDetailPage(props: MailShellProps & { params: { uid: string } }) 
 
 function MessageDetailContent({ uid }: { uid: string }) {
     const { mailboxFolders, mailboxUid, onFolderCreated } = useMailShell();
+    const client = useApiClient();
     const [message, setMessage] = useState<Message | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -40,11 +42,11 @@ function MessageDetailContent({ uid }: { uid: string }) {
     useEffect(() => {
         setLoading(true);
         setError(null);
-        getMessage(uid)
+        getMessage(uid, client)
             .then(setMessage)
             .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this message."))
             .finally(() => setLoading(false));
-    }, [uid]);
+    }, [uid, client]);
 
     // See `apps/www/index.tsx`'s identical effect's own doc comment - a failure here just hides the
     // Labels control rather than blocking the rest of the page. Keyed on the message's own mailbox, not the
@@ -55,7 +57,7 @@ function MessageDetailContent({ uid }: { uid: string }) {
             return;
         }
         let cancelled = false;
-        listLabels(messageMailboxUid, { limit: 200 })
+        listLabels(messageMailboxUid, { limit: 200 }, client)
             .then((result) => {
                 if (!cancelled) {
                     setLabels(result);
@@ -65,7 +67,7 @@ function MessageDetailContent({ uid }: { uid: string }) {
         return () => {
             cancelled = true;
         };
-    }, [messageMailboxUid]);
+    }, [messageMailboxUid, client]);
 
     // A thread loads, marks read and fetches the attachments of each message it opens itself.
     const attachments = useMessageAttachments(conversationId ? null : message);

@@ -3,11 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { createContext, PropsWithChildren, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { accentColorForMailbox, colorForFolder } from "@rapidmx/react-shared/calendar/calendarColors.js";
-import { Folder, Mailbox, listFolders, listMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import { accentColorForMailbox, colorForFolder } from "../../../../../lib/calendar/calendarColors.js";
+import { Folder, Mailbox, listFolders, listMailboxes } from "../../../../../lib/mail/mailApi.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Skeleton, { SkeletonList } from "../../../../../lib/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import { useLocation } from "../../../navigation/index.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
@@ -75,6 +76,7 @@ export default function CalendarShell({
     pluginNav,
     children,
 }: PropsWithChildren<CalendarShellProps>) {
+    const client = useApiClient();
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
@@ -93,7 +95,7 @@ export default function CalendarShell({
         if (!userUid) {
             return;
         }
-        listMailboxes({ limit: 100 })
+        listMailboxes({ limit: 100 }, client)
             .then((result) => {
                 setMailboxes(orderMailboxes(result, userUid));
                 setStatus("ready");
@@ -102,7 +104,7 @@ export default function CalendarShell({
                 setError(err instanceof ApiRequestError ? err.message : "Could not load your mailboxes.");
                 setStatus("error");
             });
-    }, [userUid]);
+    }, [userUid, client]);
 
     const ownMailboxUid = primaryMailboxUid(mailboxes, userUid);
     const mailboxUid: string | undefined =
@@ -117,7 +119,7 @@ export default function CalendarShell({
         let cancelled = false;
         void Promise.all(
             mailboxes.map((mailbox) =>
-                listFolders(mailbox.uid)
+                listFolders(mailbox.uid, client)
                     .then((folders): MailboxCalendars => ({ mailbox, calendarFolders: folders.filter((f) => f.type === "calendar") }))
                     .catch(
                         (err): MailboxCalendars => ({
@@ -135,7 +137,7 @@ export default function CalendarShell({
         return () => {
             cancelled = true;
         };
-    }, [mailboxes, folderRefreshToken]);
+    }, [mailboxes, folderRefreshToken, client]);
 
     const calendarFolders = useMemo(() => mailboxCalendars.flatMap((mc) => mc.calendarFolders), [mailboxCalendars]);
     const folderUid: string | undefined = calendarFolders.find((f) => f.mailboxUid === mailboxUid)?.uid;

@@ -5,8 +5,8 @@
 import React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
-import type { AppearancePreferences } from "@rapidmx/react-shared/appearance/preferencesApi.js";
+import { getPushClient } from "../../../lib/mail/pushClient.js";
+import type { AppearancePreferences } from "../../../lib/appearance/preferencesApi.js";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import AppearanceProvider, {
     APPEARANCE_SAVE_DELAY_MS,

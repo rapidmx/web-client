@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import SettingsBlockedSendersPageBase from "../../../../apps/www/settings/blocked-senders/index.js";
 import { withTestRouter } from "../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 import { clearMailboxUpdateAccessCache } from "../../../../apps/shared/mail/useMailboxUpdateAccess.js";
 import { getNotificationsSnapshot } from "../../../../apps/shared/notifications/store.js";
 
@@ -105,6 +107,37 @@ describe("SettingsBlockedSendersPage", () => {
         expect(blocked.getByText("new@bad.example")).toBeInTheDocument();
         expect(blocked.getByLabelText("Add a blocked sender")).toHaveValue("");
         expect(blocked.getByRole("status")).toHaveTextContent("Blocked new@bad.example.");
+    });
+
+    it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/mail/mailboxes/auto-provision") return jsonResponse(404, { message: "not enabled" });
+            if (url === "https://account-a.example.com/api/mail/mailboxes/mb1/blocked-senders" && init?.method === "POST") {
+                return change(["new@bad.example", "spam@bad.example", "@junk.example"], ["friend@good.example"], "new@bad.example");
+            }
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes?")) return jsonResponse(200, [mailbox]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SettingsBlockedSendersPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+        const blocked = await section("Blocked senders");
+
+        await user.type(await blocked.findByLabelText("Add a blocked sender"), "new@bad.example");
+        await user.click(blocked.getByRole("button", { name: "Block" }));
+
+        await waitFor(() => expect(blocked.getByText("3 of 1,000")).toBeInTheDocument());
+        const post = fetchMock.mock.calls.find(
+            ([url, init]) => url === "https://account-a.example.com/api/mail/mailboxes/mb1/blocked-senders" && init?.method === "POST",
+        )!;
+        expect(new Headers((post[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 
     it("takes a domain typed as example.com as the entry @example.com, and submits with Enter", async () => {

@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef } from "react";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import CopyButton from "@rapidmx/react-shared/components/buttons/CopyButton.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
+import CopyButton from "../../../lib/components/buttons/CopyButton.js";
 import { HistoryEntry, NotificationKind } from "./store.js";
 import { useNotifications } from "./useNotifications.js";
 

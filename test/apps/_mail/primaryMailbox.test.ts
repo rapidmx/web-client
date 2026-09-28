@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import type { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Mailbox } from "../../../lib/mail/mailApi.js";
 import {
     isOwnMailbox,
     isSharedMailbox,

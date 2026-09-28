@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { TransportRuleAction, TransportRuleConditions } from "@rapidmx/react-shared/admin/transportRulesApi.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { TransportRuleAction, TransportRuleConditions } from "../../../lib/admin/transportRulesApi.js";
+import Button from "../../../lib/components/buttons/Button.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 import { ActionTypeDef, ConditionFieldDef, hasConditions } from "../../shared/components/rules/RuleBuilder.js";
 
 /** Refused outright when a rule has no conditions: it would reject or quarantine every message the server receives. */

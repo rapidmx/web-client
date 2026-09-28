@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import SettingsReadReceiptsPageBase from "../../../../apps/www/settings/read-receipts/index.js";
 import { withTestRouter } from "../../routerTestUtils.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const SettingsReadReceiptsPage = withTestRouter(SettingsReadReceiptsPageBase);
@@ -172,5 +174,33 @@ describe("SettingsReadReceiptsPage", () => {
 
         expect(await screen.findByText("Couldn't save the read receipt settings")).toBeInTheDocument();
         expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
+    });
+
+    it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided - the electron-client standalone mount's own props are unaffected", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url === "https://account-a.example.com/api/mail/mailboxes/mb1" && init?.method === "PUT") {
+                return jsonResponse(200, { ...mailbox, alwaysRequestReceiptExternal: true });
+            }
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SettingsReadReceiptsPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+        await screen.findByLabelText("From internal recipients (mail to this organization)");
+
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        const put = fetchMock.mock.calls.find(([url, init]) => url === "https://account-a.example.com/api/mail/mailboxes/mb1" && init?.method === "PUT")!;
+        expect(new Headers((put[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

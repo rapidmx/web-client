@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
     Contact,
     ContactAddressKind,
@@ -13,11 +13,12 @@ import {
     ContactPostalAddress,
     createContact,
     updateContact,
-} from "@rapidmx/react-shared/contacts/contactsApi.js";
-import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+} from "../../../../lib/contacts/contactsApi.js";
+import { Mailbox } from "../../../../lib/mail/mailApi.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../lib/components/forms/FormField.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 
@@ -46,6 +47,7 @@ const ADDRESS_KINDS: ContactAddressKind[] = ["home", "work", "other"];
  * desktop-and-mobile-inline (see that route's own doc comment on why "new" never gets a dedicated route).
  */
 export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes, onSaved, onCancel }: ContactFormProps) {
+    const client = useApiClient();
     const [targetMailboxUid, setTargetMailboxUid] = useState(mailboxUid);
     const [displayName, setDisplayName] = useState(contact?.displayName ?? "");
     const [givenName, setGivenName] = useState(contact?.givenName ?? "");
@@ -115,23 +117,31 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
             };
             let saved: Contact;
             if (contact) {
-                saved = await updateContact({
-                    uid: contact.uid,
-                    version: contact.version,
-                    ...(input as Omit<ContactPatch, "uid" | "version">),
-                });
+                saved = await updateContact(
+                    {
+                        uid: contact.uid,
+                        version: contact.version,
+                        ...(input as Omit<ContactPatch, "uid" | "version">),
+                    },
+                    client,
+                );
             } else {
                 const targetFolderUid =
-                    targetMailboxUid === mailboxUid ? folderUid : await findWellKnownFolderUid(targetMailboxUid as string, "contacts");
+                    targetMailboxUid === mailboxUid
+                        ? folderUid
+                        : await findWellKnownFolderUid(targetMailboxUid as string, "contacts", client);
                 if (!targetFolderUid) {
                     setError("That mailbox has no Contacts folder.");
                     return;
                 }
-                saved = await createContact({
-                    mailboxUid: targetMailboxUid as string,
-                    folderUid: targetFolderUid,
-                    ...(input as Omit<Parameters<typeof createContact>[0], "mailboxUid" | "folderUid">),
-                });
+                saved = await createContact(
+                    {
+                        mailboxUid: targetMailboxUid as string,
+                        folderUid: targetFolderUid,
+                        ...(input as Omit<Parameters<typeof createContact>[0], "mailboxUid" | "folderUid">),
+                    },
+                    client,
+                );
             }
             // A message opened later in this page load must see the changed contact's signing keys.
             clearPinnedSignerCache();

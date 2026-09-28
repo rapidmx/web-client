@@ -11,27 +11,6 @@
 @import "tailwindcss";
 
 /*
- * Tailwind v4's automatic content scanning excludes `node_modules` by default, which is exactly where
- * `@rapidmx/react-shared`'s components live - without these, none of its Tailwind classnames (Modal/
- * Drawer/Button/Alert/Skeleton/FormField/PopoverPortal/ContactAvatar/MiniDatePicker/BottomTabBar) are
- * generated, and e.g. a Modal renders with no overlay, position or width. The published package ships
- * only its compiled `dist` (no `src`), and `@source` paths resolve from this file's directory
- * (`apps/shared/styles/`), so both install layouts are listed; a path that doesn't exist is skipped:
- * - `../../../node_modules/...`: react-shared under this package's own `node_modules` - this repo's
- *   checkout, or a consumer install that nests it under web-client.
- * - `../../../../react-shared/dist`: react-shared hoisted beside this package, i.e. this file at
- *   `<consumer>/node_modules/@rapidmx/web-client/apps/shared/styles/` and react-shared at
- *   `<consumer>/node_modules/@rapidmx/react-shared` - how `server` installs both, for its pages and
- *   for the plugin pages' `plugin-ui.css`, which imports this file from there.
- * `electron-client` links `node_modules/@rapidmx/web-client` to a checkout of this repo, so one of the
- * two matches whether this file is reached through the link or its real path. From a checkout, the
- * second path can also find a sibling `react-shared` checkout's build, which only adds classes
- * react-shared itself uses.
- */
-@source "../../../node_modules/@rapidmx/react-shared/dist";
-@source "../../../../react-shared/dist";
-
-/*
  * `server`'s own build (unlike `electron-client`, which already explicitly sourced this same tree in
  * its own `styles.css`) has no explicit `@source` for this package's *own* `apps/**` tree at all,
  * relying entirely on Tailwind's "automatic" module-graph-based detection - confirmed empirically to
@@ -42,10 +21,22 @@
  * `max-w-md`, ...) used by `AdminShell.tsx` (which has its own, separate `import "./app.css"`) was
  * silently absent from the built stylesheet, even though `AdminShell.tsx` itself was very much in the
  * bundle - verified directly by diffing every classname `AdminShell.tsx` uses against the actual built
- * CSS. An explicit `@source` here makes the scan independent of Vite's per-entry chunking, the same
- * fix this file applies to `react-shared` above, just for this package's own source too.
+ * CSS. An explicit `@source` here makes the scan independent of Vite's per-entry chunking.
  */
 @source "../../";
+
+/*
+ * `lib/` (this package's own `admin/`, `appearance/`, `auth/`, `branding/`, `calendar/`, `components/`,
+ * `contacts/`, `crypto/`, `mail/`, `search/`, `tasks/`, `util/`, `videoconf/` - merged in from the former
+ * `@rapidmx/react-shared` package, 2026-09-27, see `.claude/NOTES.md`) is a sibling of `apps/`, not a
+ * descendant of it, so the `@source "../../"` above does not reach it. Its `components/` tree (Modal/
+ * Drawer/Button/Alert/Skeleton/FormField/PopoverPortal/ContactAvatar/MiniDatePicker/BottomTabBar) needs
+ * the same explicit `@source` as `apps/**` does, for the same per-chunk-scanning reason, and for the same
+ * reason wherever this file is consumed from a `node_modules/@rapidmx/web-client/apps/shared/styles/`
+ * install too: `lib/` ships alongside `apps/` there as well, so this one relative path resolves correctly
+ * from both this repo's own checkout and a consumer's install.
+ */
+@source "../../../lib";
 
 /*
  * Self-hosted display typeface — the four weights shipped in `public/fonts/`. Matches the

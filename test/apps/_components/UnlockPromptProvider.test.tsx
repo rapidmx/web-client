@@ -15,14 +15,14 @@ const { getUnlockedKeys, unlockWithPassword, unlockWithRecoveryCode, getKeyVault
     getKeyVault: vi.fn(),
     consumeRecoveryCode: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", async (importOriginal) => ({
-    UnopenableEncryptionKeyError: (await importOriginal<typeof import("@rapidmx/react-shared/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
+vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({
+    UnopenableEncryptionKeyError: (await importOriginal<typeof import("../../../lib/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
     getUnlockedKeys,
     unlockWithPassword,
     unlockWithRecoveryCode,
 }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault }));
-vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({ consumeRecoveryCode, replacePasswordWrap: vi.fn() }));
+vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({ getKeyVault }));
+vi.mock("../../../lib/crypto/masterKeyWraps.js", () => ({ consumeRecoveryCode, replacePasswordWrap: vi.fn() }));
 
 const fakeUnlockedKeys = { masterKey: new Uint8Array(32) };
 
@@ -103,7 +103,7 @@ describe("UnlockPromptProvider", () => {
     });
 
     it("says a key couldn't be opened, not 'Incorrect password', for an UnopenableEncryptionKeyError (round 5)", async () => {
-        const { UnopenableEncryptionKeyError } = await import("@rapidmx/react-shared/crypto/keySession.js");
+        const { UnopenableEncryptionKeyError } = await import("../../../lib/crypto/keySession.js");
         getUnlockedKeys.mockReturnValue(undefined);
         unlockWithPassword.mockRejectedValue(new UnopenableEncryptionKeyError("enc-fp", new Error("bad tag")));
         const user = userEvent.setup();
@@ -265,7 +265,7 @@ describe("UnlockPromptProvider", () => {
         });
 
         it("keeps the unopenable-key explanation for a correct code", async () => {
-            const { UnopenableEncryptionKeyError } = await import("@rapidmx/react-shared/crypto/keySession.js");
+            const { UnopenableEncryptionKeyError } = await import("../../../lib/crypto/keySession.js");
             getUnlockedKeys.mockReturnValue(undefined);
             getKeyVault.mockResolvedValue({});
             unlockWithRecoveryCode.mockRejectedValue(new UnopenableEncryptionKeyError("enc-fp"));

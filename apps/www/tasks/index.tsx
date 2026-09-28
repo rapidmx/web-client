@@ -5,7 +5,7 @@
 import { pageTitle } from "../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { endOfWeek, isAfter, isBefore, isToday, parseISO, startOfDay } from "date-fns";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     Task,
     TaskPriority,
@@ -15,15 +15,16 @@ import {
     setTaskCompleted,
     setTaskMyDay,
     updateTask,
-} from "@rapidmx/react-shared/tasks/tasksApi.js";
-import { listFlaggedMessages } from "@rapidmx/react-shared/mail/flaggedMessages.js";
-import { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+} from "../../../lib/tasks/tasksApi.js";
+import { listFlaggedMessages } from "../../../lib/mail/flaggedMessages.js";
+import { Message } from "../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import TasksShell, { TasksShellProps, useTasksShell } from "../../shared/components/tasks/layout/TasksShell.js";
 import TasksSidebar, { TasksView } from "../../shared/components/tasks/TasksSidebar.js";
 import TasksToolbar, { TasksViewMode } from "../../shared/components/tasks/TasksToolbar.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 import { findWellKnownFolderUid } from "../../shared/mail/findWellKnownFolderUid.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/listAllPages.js";
@@ -82,6 +83,7 @@ const PRIORITY_CLASS: Record<TaskPriority, string> = {
 
 function TasksContent() {
     const { folderUid, mailboxUid, userUid, mailboxes } = useTasksShell();
+    const client = useApiClient();
     // The quick-add form's Mailbox choices - view-only shares are left out (see writableMailboxes.ts).
     const writableMailboxes = useWritableMailboxes(mailboxes, userUid, mailboxUid);
     // The quick-add form's chosen mailbox - `undefined` means "the mailbox being viewed".
@@ -125,7 +127,7 @@ function TasksContent() {
         }
         setLoading(true);
         setError(null);
-        return listAllPages((page) => listTasks(folderUid, { limit: LIST_PAGE_SIZE, page }))
+        return listAllPages((page) => listTasks(folderUid, { limit: LIST_PAGE_SIZE, page }, client))
             .then((result) => {
                 setTasks(result.items);
                 setTruncated(result.truncated);
@@ -149,7 +151,7 @@ function TasksContent() {
         }
         setFlaggedLoading(true);
         setFlaggedError(null);
-        listFlaggedMessages(mailboxUid)
+        listFlaggedMessages(mailboxUid, client)
             .then(setFlaggedMessages)
             .catch((err) => setFlaggedError(err instanceof ApiRequestError ? err.message : "Could not load flagged email."))
             .finally(() => setFlaggedLoading(false));
@@ -168,19 +170,22 @@ function TasksContent() {
         const target = targetMailboxUid ?? mailboxUid;
         setCreating(true);
         try {
-            const targetFolderUid = target === mailboxUid ? folderUid : await findWellKnownFolderUid(target, "tasks");
+            const targetFolderUid = target === mailboxUid ? folderUid : await findWellKnownFolderUid(target, "tasks", client);
             if (!targetFolderUid) {
                 setCreateError("That mailbox has no Tasks folder.");
                 return;
             }
-            const created = await createTask({
-                mailboxUid: target,
-                folderUid: targetFolderUid,
-                title: title.trim(),
-                // The date input's "yyyy-MM-dd" is the user's *local* day - see `parseDueDate()`.
-                dueDate: dueDate ? parseDueDate(dueDate).toISOString() : undefined,
-                priority,
-            });
+            const created = await createTask(
+                {
+                    mailboxUid: target,
+                    folderUid: targetFolderUid,
+                    title: title.trim(),
+                    // The date input's "yyyy-MM-dd" is the user's *local* day - see `parseDueDate()`.
+                    dueDate: dueDate ? parseDueDate(dueDate).toISOString() : undefined,
+                    priority,
+                },
+                client,
+            );
             if (target === mailboxUid) {
                 setAddedElsewhere(null);
                 setTasks((prev) => [...prev, created]);
@@ -202,7 +207,7 @@ function TasksContent() {
         const nextCompleted = !task.completed;
         setTasks((prev) => prev.map((t) => (t.uid === task.uid ? { ...t, completed: nextCompleted } : t)));
         try {
-            const updated = await setTaskCompleted(task, nextCompleted);
+            const updated = await setTaskCompleted(task, nextCompleted, client);
             setTasks((prev) => prev.map((t) => (t.uid === task.uid ? updated : t)));
         } catch (err) {
             setTasks((prev) => prev.map((t) => (t.uid === task.uid ? task : t)));
@@ -212,7 +217,7 @@ function TasksContent() {
 
     async function handleDelete(task: Task) {
         try {
-            await deleteTask(task.uid, task.version);
+            await deleteTask(task.uid, task.version, client);
             setTasks((prev) => prev.filter((t) => t.uid !== task.uid));
         } catch (err) {
             notifyApiError(err, "Couldn't delete the task");
@@ -261,7 +266,7 @@ function TasksContent() {
     async function handleBulkComplete() {
         for (const task of checkedTasks) {
             try {
-                await setTaskCompleted(task, true);
+                await setTaskCompleted(task, true, client);
             } catch (err) {
                 notifyApiError(err, "Couldn't update some of the tasks");
             }
@@ -273,7 +278,7 @@ function TasksContent() {
     async function handleBulkAddToMyDay() {
         for (const task of checkedTasks) {
             try {
-                await setTaskMyDay(task, true);
+                await setTaskMyDay(task, true, client);
             } catch (err) {
                 notifyApiError(err, "Couldn't update some of the tasks");
             }
@@ -285,7 +290,7 @@ function TasksContent() {
     async function handleBulkDelete() {
         for (const task of checkedTasks) {
             try {
-                await deleteTask(task.uid, task.version);
+                await deleteTask(task.uid, task.version, client);
             } catch (err) {
                 notifyApiError(err, "Couldn't delete some of the tasks");
             }

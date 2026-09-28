@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { Message, emptyFolder, listMessages, purgeMessage } from "@rapidmx/react-shared/mail/mailApi.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { Message, emptyFolder, listMessages, purgeMessage } from "../../../lib/mail/mailApi.js";
+import { ApiClient, ApiRequestError } from "../../../lib/util/api.js";
 import { displaySubject } from "../components/mail/reading/EncryptedPreview.js";
 import { notifySessionExpired } from "../notifications/apiErrors.js";
 import { notify } from "../notifications/store.js";
@@ -64,14 +64,14 @@ export function messageCount(count: number): string {
  * to delete, a message that is already gone) is recorded against its message and the rest carry on. `deleted` and `failed` keep the order of
  * `messages`.
  */
-export async function purgeMessages(messages: Message[]): Promise<PurgeOutcome> {
+export async function purgeMessages(messages: Message[], client?: ApiClient): Promise<PurgeOutcome> {
     const failures: (PurgeFailure | null)[] = new Array(messages.length).fill(null);
     let next = 0;
     async function worker(): Promise<void> {
         while (next < messages.length) {
             const index = next++;
             try {
-                await purgeMessage(messages[index].uid);
+                await purgeMessage(messages[index].uid, client);
             } catch (err) {
                 failures[index] = { message: messages[index], ...describeFailure(err) };
             }
@@ -93,17 +93,18 @@ export async function purgeMessages(messages: Message[]): Promise<PurgeOutcome> 
 export async function purgeFolder(
     folderUid: string,
     paging: { pageSize: number; maxPages: number } = { pageSize: LIST_PAGE_SIZE, maxPages: MAX_LIST_PAGES },
+    client?: ApiClient,
 ): Promise<EmptyFolderOutcome> {
     try {
-        await emptyFolder(folderUid);
+        await emptyFolder(folderUid, client);
         return { emptied: true, deleted: [], failed: [] };
     } catch (err) {
         if (!(err instanceof ApiRequestError) || (err.status !== 403 && err.status !== 409)) {
             throw err;
         }
     }
-    const listed = await listAllPages((page) => listMessages(folderUid, { limit: paging.pageSize, page }), paging.pageSize, paging.maxPages);
-    const outcome = await purgeMessages(listed.items);
+    const listed = await listAllPages((page) => listMessages(folderUid, { limit: paging.pageSize, page }, client), paging.pageSize, paging.maxPages);
+    const outcome = await purgeMessages(listed.items, client);
     return { ...outcome, emptied: outcome.failed.length === 0 && !listed.truncated };
 }
 

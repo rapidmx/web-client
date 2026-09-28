@@ -8,9 +8,18 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
-import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
+import { Mailbox } from "../../../lib/mail/mailApi.js";
 import { addGuest, clickModify, openMoreOptions, openTimeControls, setWhen } from "./eventModalHelpers.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // `ResourcePicker`'s own loading/filtering/error rendering is tested in its own file — mocked here so
 // this file only exercises how `EventModal` opens it and reacts to a selection.
@@ -1293,6 +1302,135 @@ describe("EventModal", () => {
 
             await user.click(screen.getByRole("button", { name: "+ Add room/equipment" }));
             expect(screen.getByTestId("exclude-addresses")).toHaveTextContent("bob@example.com");
+        });
+    });
+
+    describe("with an explicit ApiClient from context (e.g. tauri-client's multi-account mode)", () => {
+        it("creates a new event through the provided client's own fetch, not the global one", async () => {
+            const fetchMock = mockFetch(() => {
+                throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+            });
+            const client = fakeApiClient(() => occurrence({ uid: "e-new" }));
+            const onSaved = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <EventModal
+                        open
+                        onClose={vi.fn()}
+                        mailboxUid="mb1"
+                        folderUid="f1"
+                        organizerAddress="jane@example.com"
+                        occurrence={null}
+                        onSaved={onSaved}
+                        onDeleted={vi.fn()}
+                    />
+                </ApiClientContext.Provider>,
+            );
+
+            await user.type(screen.getByLabelText("Title"), "Planning");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            await waitFor(() => expect(onSaved).toHaveBeenCalled());
+            expect(client.fetch).toHaveBeenCalledWith("/mail/calendar-events", expect.objectContaining({ method: "POST" }));
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it("updates a non-recurring event through the provided client's own fetch, not the global one", async () => {
+            const fetchMock = mockFetch(() => {
+                throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+            });
+            const client = fakeApiClient((path) => (path === "/mail/calendar-events/e1" ? occurrence({ title: "Renamed" }) : undefined));
+            const onSaved = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <EventModal
+                        open
+                        onClose={vi.fn()}
+                        mailboxUid="mb1"
+                        folderUid="f1"
+                        organizerAddress="jane@example.com"
+                        occurrence={occurrence()}
+                        onSaved={onSaved}
+                        onDeleted={vi.fn()}
+                    />
+                </ApiClientContext.Provider>,
+            );
+            clickModify();
+
+            await user.clear(screen.getByLabelText("Title"));
+            await user.type(screen.getByLabelText("Title"), "Renamed");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            await waitFor(() => expect(onSaved).toHaveBeenCalled());
+            expect(client.fetch).toHaveBeenCalledWith("/mail/calendar-events/e1", expect.objectContaining({ method: "PUT" }));
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it("deletes a non-recurring event through the provided client's own fetch, not the global one", async () => {
+            const fetchMock = mockFetch(() => {
+                throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+            });
+            const client = fakeApiClient(() => undefined);
+            const onDeleted = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <EventModal
+                        open
+                        onClose={vi.fn()}
+                        mailboxUid="mb1"
+                        folderUid="f1"
+                        organizerAddress="jane@example.com"
+                        occurrence={occurrence()}
+                        onSaved={vi.fn()}
+                        onDeleted={onDeleted}
+                    />
+                </ApiClientContext.Provider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Delete" }));
+
+            await waitFor(() => expect(onDeleted).toHaveBeenCalled());
+            expect(client.fetch).toHaveBeenCalledWith("/mail/calendar-events/e1?version=2", expect.objectContaining({ method: "DELETE" }));
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it("responds to an invitation through the provided client's own fetch, not the global one", async () => {
+            const fetchMock = mockFetch(() => {
+                throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+            });
+            const invited = occurrence({
+                organizer: { address: "jane@example.com", type: "to" },
+                attendees: [{ address: "bob@example.com", role: "required", responseStatus: "needsAction", isOrganizer: false }],
+            });
+            const client = fakeApiClient(() => ({ ...invited }));
+            const onSaved = vi.fn();
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <EventModal
+                        open
+                        onClose={vi.fn()}
+                        mailboxUid="mb1"
+                        folderUid="f1"
+                        organizerAddress="bob@example.com"
+                        occurrence={invited}
+                        onSaved={onSaved}
+                        onDeleted={vi.fn()}
+                    />
+                </ApiClientContext.Provider>,
+            );
+
+            await user.click(screen.getByRole("button", { name: "Accept" }));
+
+            await waitFor(() => expect(onSaved).toHaveBeenCalled());
+            expect(client.fetch).toHaveBeenCalledWith(
+                "/mail/calendar-events/e1/respond",
+                expect.objectContaining({ method: "POST", body: JSON.stringify({ responseStatus: "accepted" }) }),
+            );
+            expect(fetchMock).not.toHaveBeenCalled();
         });
     });
 });

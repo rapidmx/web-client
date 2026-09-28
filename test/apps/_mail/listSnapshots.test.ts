@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it } from "vitest";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
 import {
     LIST_SNAPSHOT_MAX,
     LIST_SNAPSHOT_TTL_MS,

@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 
 /** Page size for the async-request lists (the server returns them newest first and caps `limit` at 500). */
 export const REQUEST_LIST_PAGE_SIZE = 50;

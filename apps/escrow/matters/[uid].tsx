@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { closeMatter, getMatter, Matter } from "@rapidmx/react-shared/admin/mattersApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { closeMatter, getMatter, Matter } from "../../../lib/admin/mattersApi.js";
 import {
     approveAccessRequest,
     createAccessRequest,
@@ -12,20 +12,20 @@ import {
     EscrowAccessRequest,
     getAccessRequestMaterial,
     listAccessRequests,
-} from "@rapidmx/react-shared/admin/escrowAccessRequestsApi.js";
+} from "../../../lib/admin/escrowAccessRequestsApi.js";
 import {
     createMatterExportRequest,
     listMatterExportRequests,
     matterExportRequestDownloadUrl,
-} from "@rapidmx/react-shared/admin/matterExportApi.js";
-import { searchMatter, SearchResultPage } from "@rapidmx/react-shared/admin/matterSearchApi.js";
-import { parseSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
+} from "../../../lib/admin/matterExportApi.js";
+import { searchMatter, SearchResultPage } from "../../../lib/admin/matterSearchApi.js";
+import { parseSearchQuery } from "../../../lib/search/queryGrammar.js";
 import EscrowShell, { EscrowShellProps } from "../../shared/components/escrow/layout/EscrowShell.js";
 import { LoadMoreButton, usePagedList } from "../../shared/components/admin/usePagedList.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
+import FormField from "../../../lib/components/forms/FormField.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";

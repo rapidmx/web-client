@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { appearanceBackgroundUrl, normalizeAppearance } from "@rapidmx/react-shared/appearance/preferencesApi.js";
+import { appearanceBackgroundUrl, normalizeAppearance } from "../../../lib/appearance/preferencesApi.js";
 import { APPEARANCE_BOOT_SCRIPT } from "./bootScript.js";
 import { cacheKeyOf, timeOf } from "./appearanceCache.js";
 import { APPEARANCE_STYLE_ID, appearanceCss } from "./theme.js";

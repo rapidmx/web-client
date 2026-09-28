@@ -13,24 +13,25 @@ import {
     HiOutlineUsers,
 } from "react-icons/hi2";
 import { useRouter } from "@rapidrest/react/client";
-import { useSessionRefresh } from "@rapidmx/react-shared/auth/session.js";
-import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
-import { stopImpersonating } from "@rapidmx/react-shared/mail/mailApi.js";
-import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
-import { useIdleKeyTimeout } from "@rapidmx/react-shared/crypto/useIdleKeyTimeout.js";
+import { useSessionRefresh } from "../../../../lib/auth/session.js";
+import { getSetupStatus } from "../../../../lib/admin/setupApi.js";
+import { stopImpersonating } from "../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import useBranding from "../../../../lib/branding/useBranding.js";
+import { useIdleKeyTimeout } from "../../../../lib/crypto/useIdleKeyTimeout.js";
 import ComposeProvider from "../mail/compose/ComposeContext.js";
 import { flushComposeDrafts, markSigningOut } from "../mail/compose/composeFlushRegistry.js";
-import BottomTabBar, { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
+import BottomTabBar, { NavItem } from "../../../../lib/components/navigation/BottomTabBar.js";
 import { FrameBrandingFooter, FrameBrandingHeader, useBrandingHtml } from "./BrandingChrome.js";
 import RailIcon from "./RailIcon.js";
 import AppearanceProvider from "../../appearance/AppearanceProvider.js";
 import { clearAppearanceCache } from "../../appearance/appearanceCache.js";
-import type { Branding } from "@rapidmx/react-shared/branding/brandingApi.js";
+import type { Branding } from "../../../../lib/branding/brandingApi.js";
 import UserMenu from "./UserMenu.js";
 import { UnlockPromptProvider } from "./UnlockPromptProvider.js";
 import { SIGN_OUT_CHANNEL, destroyAllLocalIndexes } from "../../search/localIndexRpcClient.js";
-import { authApiFetch, setApiUnauthorizedObserver } from "@rapidmx/react-shared/util/api.js";
-import { destroyUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { authApiFetch, setApiUnauthorizedObserver } from "../../../../lib/util/api.js";
+import { destroyUnlockedKeys } from "../../../../lib/crypto/keySession.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../plugins/pluginNav.js";
 import { useInAppFrame } from "../../navigation/frameContext.js";
@@ -172,6 +173,7 @@ export function AppChrome({
     hideChrome,
     children,
 }: PropsWithChildren<AppChromeProps>) {
+    const client = useApiClient();
     const [stoppingImpersonation, setStoppingImpersonation] = useState(false);
     // The keyboard shortcuts dialog: opened by `?`/Ctrl+/ (`GlobalShortcuts`) and by the account menu's item.
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -226,7 +228,7 @@ export function AppChrome({
         if (!userUid || impersonating || !trusted) {
             return;
         }
-        getSetupStatus()
+        getSetupStatus(client)
             .then((status) => {
                 if (status.required) {
                     window.location.href = "/admin/setup";

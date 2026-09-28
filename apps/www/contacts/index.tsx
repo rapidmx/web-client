@@ -5,7 +5,7 @@
 import { pageTitle } from "../../shared/navigation/pageTitle.js";
 import { useNavigate } from "../../shared/navigation/index.js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     Contact,
     createContact,
@@ -14,23 +14,24 @@ import {
     listDeletedContacts,
     setContactFavorite,
     updateContact,
-} from "@rapidmx/react-shared/contacts/contactsApi.js";
-import { contactsToVCardFile, contactToVCard, parseVCards } from "@rapidmx/react-shared/contacts/vcard.js";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+} from "../../../lib/contacts/contactsApi.js";
+import { contactsToVCardFile, contactToVCard, parseVCards } from "../../../lib/contacts/vcard.js";
+import useIsMobile from "../../../lib/util/useIsMobile.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import { useCompose } from "../../shared/components/mail/compose/ComposeContext.js";
 import ContactsShell, { ContactsShellProps, useContactsShell } from "../../shared/components/contacts/layout/ContactsShell.js";
 import ContactsSidebar, { ContactsView } from "../../shared/components/contacts/ContactsSidebar.js";
 import ContactsToolbar from "../../shared/components/contacts/ContactsToolbar.js";
 import FloatingActionButton from "../../shared/components/layout/FloatingActionButton.js";
 import { HiOutlineUserPlus } from "react-icons/hi2";
-import ContactAvatar from "@rapidmx/react-shared/components/avatar/ContactAvatar.js";
+import ContactAvatar from "../../../lib/components/avatar/ContactAvatar.js";
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
-import { getMyMailboxAccess } from "@rapidmx/react-shared/mail/mailboxAccessApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { getMyMailboxAccess } from "../../../lib/mail/mailboxAccessApi.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 import { LIST_PAGE_SIZE, MAX_LIST_PAGES, listAllPages } from "../../shared/mail/listAllPages.js";
 import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigners.js";
 import { SHORTCUTS } from "../../shared/keyboard/keymap.js";
@@ -81,6 +82,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     const { openCompose } = useCompose();
     const isMobile = useIsMobile();
     const navigate = useNavigate();
+    const client = useApiClient();
     const [contacts, setContacts] = useState<Contact[]>([]);
     const [deletedContacts, setDeletedContacts] = useState<Contact[]>([]);
     const [deletedLoading, setDeletedLoading] = useState(false);
@@ -113,7 +115,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         }
         setLoading(true);
         setError(null);
-        return listAllPages((page) => listContacts(folderUid, { limit: LIST_PAGE_SIZE, page }))
+        return listAllPages((page) => listContacts(folderUid, { limit: LIST_PAGE_SIZE, page }, client))
             .then((result) => {
                 setContacts(result.items);
                 setTruncated(result.truncated);
@@ -142,7 +144,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             return;
         }
         let cancelled = false;
-        getMyMailboxAccess(mailboxUid!).then(
+        getMyMailboxAccess(mailboxUid!, client).then(
             (access) => {
                 if (!cancelled) {
                     setDelegateCanViewDeleted(access.canDelete && access.canUpdate);
@@ -163,7 +165,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         }
         setDeletedLoading(true);
         setDeletedError(null);
-        listAllPages((page) => listDeletedContacts(folderUid, { limit: LIST_PAGE_SIZE, page }))
+        listAllPages((page) => listDeletedContacts(folderUid, { limit: LIST_PAGE_SIZE, page }, client))
             .then((result) => {
                 // A server that dropped the `deleted` filter (no delete+update right on this folder) answers with live
                 // contacts, which must never be listed as deleted.
@@ -294,7 +296,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
 
     async function handleDelete(contact: Contact) {
         try {
-            await deleteContact(contact.uid, contact.version);
+            await deleteContact(contact.uid, contact.version, client);
             // Trusted signer pins come from contacts - a deleted contact's keys must stop vouching for signatures.
             clearPinnedSignerCache();
             setSelectedUid(null);
@@ -310,7 +312,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         setConfirmingBulkDelete(false);
         for (const contact of checkedContacts) {
             try {
-                await deleteContact(contact.uid, contact.version);
+                await deleteContact(contact.uid, contact.version, client);
             } catch (err) {
                 notifyApiError(err, "Couldn't delete some of the contacts");
             }
@@ -340,7 +342,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         const allFavorited = checkedContacts.every((c) => c.favorite);
         for (const contact of checkedContacts) {
             try {
-                await setContactFavorite(contact, !allFavorited);
+                await setContactFavorite(contact, !allFavorited, client);
             } catch (err) {
                 notifyApiError(err, "Couldn't update some of the contacts");
             }
@@ -359,7 +361,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             try {
                 // Only the changed field - sending the whole fetched contact back includes server-managed
                 // fields restapi rejects, and would overwrite any concurrent edit to the other fields.
-                await updateContact({ uid: contact.uid, version: contact.version, categories });
+                await updateContact({ uid: contact.uid, version: contact.version, categories }, client);
             } catch (err) {
                 notifyApiError(err, "Couldn't update some of the contacts");
             }
@@ -383,7 +385,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         const parsed = parseVCards(text);
         for (const input of parsed) {
             try {
-                await createContact({ mailboxUid, folderUid, ...input });
+                await createContact({ mailboxUid, folderUid, ...input }, client);
             } catch (err) {
                 notifyApiError(err, "Couldn't import some of the contacts");
             }

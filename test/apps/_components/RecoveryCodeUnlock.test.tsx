@@ -8,8 +8,8 @@ import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { KeysLockedError } from "@rapidmx/react-shared/crypto/masterKey.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
 import {
     CONSUME_FAILED_MESSAGE,
     RecoveryFollowUp,
@@ -31,16 +31,16 @@ const { getUnlockedKeys, unlockWithRecoveryCode, getKeyVault, replacePasswordWra
     replacePasswordWrap: vi.fn(),
     consumeRecoveryCode: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithRecoveryCode }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({ getKeyVault }));
-vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", async (importOriginal) => ({
-    PasswordWrapReplaceError: (await importOriginal<typeof import("@rapidmx/react-shared/crypto/masterKeyWraps.js")>()).PasswordWrapReplaceError,
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithRecoveryCode }));
+vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({ getKeyVault }));
+vi.mock("../../../lib/crypto/masterKeyWraps.js", async (importOriginal) => ({
+    PasswordWrapReplaceError: (await importOriginal<typeof import("../../../lib/crypto/masterKeyWraps.js")>()).PasswordWrapReplaceError,
     replacePasswordWrap,
     consumeRecoveryCode,
 }));
 
-const { PasswordWrapReplaceError } = await vi.importActual<typeof import("@rapidmx/react-shared/crypto/masterKeyWraps.js")>(
-    "@rapidmx/react-shared/crypto/masterKeyWraps.js",
+const { PasswordWrapReplaceError } = await vi.importActual<typeof import("../../../lib/crypto/masterKeyWraps.js")>(
+    "../../../lib/crypto/masterKeyWraps.js",
 );
 
 const keys = { masterKey: new Uint8Array(32) };

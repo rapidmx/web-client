@@ -9,8 +9,8 @@
 // crypto, with real WebCrypto) and by manual browser verification, per this feature's own
 // implementation plan.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
-import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import type { ParsedSearchQuery } from "../../../lib/search/queryGrammar.js";
+import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
 import { searchLocalIndex } from "../../../apps/shared/search/searchTier2.js";
 
 const { initLocalIndex, searchLocal, getLocalCoverage } = vi.hoisted(() => ({

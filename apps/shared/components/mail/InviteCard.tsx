@@ -13,10 +13,11 @@ import {
     proposeNewTime,
     removeMessageInvite,
     respondToMessageInvite,
-} from "@rapidmx/react-shared/calendar/inviteApi.js";
-import { guestPermissionsOf } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { formatMailAddress } from "@rapidmx/react-shared/mail/mailAddress.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+} from "../../../../lib/calendar/inviteApi.js";
+import { guestPermissionsOf } from "../../../../lib/calendar/calendarApi.js";
+import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import EventDescriptionView from "../calendar/EventDescriptionView.js";
 import RequestChangeForm from "../calendar/RequestChangeForm.js";
 import { VISIBILITY_LABEL, describeGuestPermissions } from "../calendar/eventFormat.js";
@@ -96,6 +97,7 @@ export interface InviteCardProps {
  * An answer that arrives after the message changed or this was unmounted is dropped.
  */
 export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardProps) {
+    const client = useApiClient();
     const { invite, setInvite } = useMessageInvite(messageUid);
     const [pending, setPending] = useState<Pending | null>(null);
     const [proposing, setProposing] = useState(false);
@@ -125,7 +127,7 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
     }
 
     async function sendProposal(proposal: ProposedTime) {
-        if (await run("propose", "Couldn't send the proposed time", () => proposeNewTime(messageUid, proposal))) {
+        if (await run("propose", "Couldn't send the proposed time", () => proposeNewTime(messageUid, proposal, client))) {
             setProposing(false);
             setProposed(true);
         }
@@ -283,7 +285,7 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                                         aria-busy={pending === response || undefined}
                                         loading={pending === response}
                                         disabled={busy || current}
-                                        onClick={() => void run(response, failure, () => respondToMessageInvite(messageUid, response))}
+                                        onClick={() => void run(response, failure, () => respondToMessageInvite(messageUid, response, client))}
                                     >
                                         {current && <HiOutlineCheck size={14} aria-hidden="true" />}
                                         {label}
@@ -310,7 +312,7 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                             aria-busy={pending === "acceptProposal" || undefined}
                             loading={pending === "acceptProposal"}
                             disabled={busy}
-                            onClick={() => void run("acceptProposal", "Couldn't accept the proposed time", () => acceptProposal(messageUid))}
+                            onClick={() => void run("acceptProposal", "Couldn't accept the proposed time", () => acceptProposal(messageUid, client))}
                         >
                             Accept proposal
                         </Button>
@@ -324,7 +326,7 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                             loading={pending === "add"}
                             disabled={busy}
                             // A published event has no organizer to answer, so adding it is accepting it: the server sends no reply.
-                            onClick={() => void run("add", "Couldn't add this event to your calendar", () => respondToMessageInvite(messageUid, "accepted"))}
+                            onClick={() => void run("add", "Couldn't add this event to your calendar", () => respondToMessageInvite(messageUid, "accepted", client))}
                         >
                             Add to calendar
                         </Button>
@@ -337,7 +339,7 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                             aria-busy={pending === "remove" || undefined}
                             loading={pending === "remove"}
                             disabled={busy}
-                            onClick={() => void run("remove", "Couldn't remove this meeting from your calendar", () => removeMessageInvite(messageUid))}
+                            onClick={() => void run("remove", "Couldn't remove this meeting from your calendar", () => removeMessageInvite(messageUid, client))}
                         >
                             Remove from calendar
                         </Button>

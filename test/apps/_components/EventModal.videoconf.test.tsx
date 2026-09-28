@@ -8,8 +8,17 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 import { addGuest, clickModify } from "./eventModalHelpers.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+/** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
+ * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
+function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
+    const fetch = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => impl(path, init)));
+    return { fetch, setUnauthorizedObserver: vi.fn() } as unknown as ApiClient & { fetch: typeof fetch };
+}
 
 // The "Add video conferencing" toggle, the meeting it mints/cancels through
 // `@rapidmx/meet-plugin`'s `/mail/video-meetings` routes, and the organizer's own join affordance.
@@ -482,5 +491,52 @@ describe("EventModal join video call affordance", () => {
         // Nothing to assert on screen - the point is that settling after the unmount changes no state (a
         // React warning here would fail the run).
         await waitFor(() => expect(screen.queryByRole("button", { name: "Join video call" })).not.toBeInTheDocument());
+    });
+});
+
+describe("EventModal video conferencing with an explicit ApiClient from context (e.g. tauri-client's multi-account mode)", () => {
+    it("mints the meeting and patches the event through the provided client's own fetch, not the global one", async () => {
+        const fetchMock = mockFetch(() => {
+            throw new Error("the global apiFetch() must not be used when an explicit client is provided");
+        });
+        const client = fakeApiClient((path, init) => {
+            const method = init?.method ?? "GET";
+            if (path === "/mail/video-meetings" && method === "POST") {
+                return { meeting: meetingFixture, organizerJoinUrl: JOIN_URL };
+            }
+            if (path === "/mail/calendar-events" && method === "POST") {
+                return { ...occurrence(), uid: "e-new", version: 0 };
+            }
+            if (path === "/mail/calendar-events/e-new" && method === "PUT") {
+                return { ...occurrence({ uid: "e-new" }), videoMeetingUid: "vm1", location: PLACEHOLDER };
+            }
+            throw new Error(`unexpected ${method} ${path}`);
+        });
+        const onSaved = vi.fn();
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <EventModal
+                    open
+                    onClose={vi.fn()}
+                    mailboxUid="mb1"
+                    folderUid="f1"
+                    organizerAddress="jane@example.com"
+                    occurrence={null}
+                    onSaved={onSaved}
+                    onDeleted={vi.fn()}
+                />
+            </ApiClientContext.Provider>,
+        );
+
+        await user.type(screen.getByLabelText("Title"), "Standup");
+        await addGuest(user, "bob@example.com");
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(client.fetch).toHaveBeenCalledWith("/mail/video-meetings", expect.objectContaining({ method: "POST" }));
+        expect(client.fetch).toHaveBeenCalledWith("/mail/calendar-events/e-new", expect.objectContaining({ method: "PUT" }));
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 });

@@ -3,10 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { MailboxAutoProvisionAliasOption, autoProvisionMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { MailboxAutoProvisionAliasOption, autoProvisionMailbox } from "../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import { FrameTakeover } from "../../navigation/frameContext.js";
 
 type Status = "checking" | "needs_selection" | "creating" | "unavailable" | "retryable";
@@ -48,6 +49,7 @@ function unavailableReason(err: unknown): string | null {
  * administrator they ask can tell why - see `unavailableReason()`.
  */
 export default function MailboxProvisioning() {
+    const client = useApiClient();
     const [status, setStatus] = useState<Status>("checking");
     const [options, setOptions] = useState<MailboxAutoProvisionAliasOption[]>([]);
     const [selected, setSelected] = useState("");
@@ -61,7 +63,7 @@ export default function MailboxProvisioning() {
 
     useEffect(() => {
         setStatus("checking");
-        autoProvisionMailbox()
+        autoProvisionMailbox(undefined, client)
             .then((result) => {
                 if (result.status === "needs_selection") {
                     // `autoProvision()` only ever returns this status with a non-empty cross product of
@@ -99,7 +101,7 @@ export default function MailboxProvisioning() {
         setStatus("creating");
         setError(null);
         try {
-            await autoProvisionMailbox({ alias: option.alias, domain: option.domain });
+            await autoProvisionMailbox({ alias: option.alias, domain: option.domain }, client);
             window.location.reload();
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not create your mailbox.");

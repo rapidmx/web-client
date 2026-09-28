@@ -8,8 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import CalendarListSidebar from "../../../apps/shared/components/calendar/CalendarListSidebar.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
-import { CALENDAR_COLOR_PALETTE } from "@rapidmx/react-shared/calendar/calendarColors.js";
-import { Folder, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { CALENDAR_COLOR_PALETTE } from "../../../lib/calendar/calendarColors.js";
+import { Folder, Mailbox } from "../../../lib/mail/mailApi.js";
 
 function folder(overrides: Partial<Folder> = {}): Folder {
     return {

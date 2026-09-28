@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useSyncExternalStore } from "react";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { MailAddressLike } from "@rapidmx/react-shared/mail/mailAddress.js";
+import type { Message } from "../../../../lib/mail/mailApi.js";
+import type { MailAddressLike } from "../../../../lib/mail/mailAddress.js";
 import type { NotificationAction } from "../../notifications/store.js";
 import type { SendRequest } from "./sendJob.js";
 

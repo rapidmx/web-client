@@ -17,9 +17,9 @@
  * alongside Tier 1/Tier 3 (`apps/www/index.tsx`'s own search orchestration) must never see the *whole
  * search* fail just because this one, most novel piece had a bad moment.
  */
-import type { UnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
-import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
-import type { SearchResult } from "@rapidmx/react-shared/search/searchApi.js";
+import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
+import type { ParsedSearchQuery } from "../../../lib/search/queryGrammar.js";
+import type { SearchResult } from "../../../lib/search/searchApi.js";
 import { deriveLocalIndexKey } from "./localIndexKey.js";
 import { getLocalCoverage, initLocalIndex, searchLocal } from "./localIndexRpcClient.js";
 import type { Coverage } from "./localIndexWorker.js";

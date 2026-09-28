@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
 import type { OutgoingReply } from "../../../mail/outbox/outgoingReplies.js";
 import MailAddress, { RecipientLine } from "../MailAddress.js";
 import MessageBody from "./MessageBody.js";

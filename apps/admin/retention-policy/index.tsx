@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { RetentionPolicy, getRetentionPolicy } from "@rapidmx/react-shared/admin/retentionPolicyApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { RetentionPolicy, getRetentionPolicy } from "../../../lib/admin/retentionPolicyApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import RetentionPolicyForm from "../../shared/components/admin/settings/RetentionPolicyForm.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
 
 export default function RetentionPolicyPage(props: Omit<AdminShellProps, "active">) {
     return (

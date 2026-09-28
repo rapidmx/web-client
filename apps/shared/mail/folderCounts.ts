@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Folder, FolderType, Mailbox, Message, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Folder, FolderType, Mailbox, Message, listFolders } from "../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
 
 /**
  * The folder badges' numbers, kept right without a reload.
@@ -150,9 +151,10 @@ export interface FolderCounts {
  * each was loaded with); `mailboxes` is whose folders to read back. The overlay starts again whenever `mailboxes` does.
  */
 export function useFolderCounts(mailboxes: Mailbox[], folders: Folder[], onFoldersListed?: (folders: Folder[]) => void): FolderCounts {
+    const client = useApiClient();
     const [counts, setCounts] = useState<Record<string, FolderCount>>({});
-    const latestRef = useRef({ mailboxes, folders, onFoldersListed });
-    latestRef.current = { mailboxes, folders, onFoldersListed };
+    const latestRef = useRef({ mailboxes, folders, onFoldersListed, client });
+    latestRef.current = { mailboxes, folders, onFoldersListed, client };
     // Bumped by every change of the overlay this page makes, so a read that started before one can tell it is out of date.
     const changesRef = useRef(0);
     const inFlightRef = useRef(0);
@@ -202,7 +204,9 @@ export function useFolderCounts(mailboxes: Mailbox[], folders: Folder[], onFolde
         timerRef.current = undefined;
         const run = ++runRef.current;
         const startedAt = changesRef.current;
-        const results = await Promise.all(latestRef.current.mailboxes.map((mailbox) => listFolders(mailbox.uid).catch(() => undefined)));
+        const results = await Promise.all(
+            latestRef.current.mailboxes.map((mailbox) => listFolders(mailbox.uid, latestRef.current.client).catch(() => undefined)),
+        );
         if (stoppedRef.current || run !== runRef.current) {
             return;
         }

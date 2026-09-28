@@ -16,9 +16,9 @@ import {
     parseAppearanceEvent,
     saveAppearance,
     uploadAppearanceBackground,
-} from "@rapidmx/react-shared/appearance/preferencesApi.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { getPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
+} from "../../../lib/appearance/preferencesApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { getPushClient } from "../../../lib/mail/pushClient.js";
 import { AppearanceApi, AppearanceContext, AppearancePatch } from "./appearanceContext.js";
 import { cacheKeyOf, readAppearanceCache, timeOf, writeAppearanceCache } from "./appearanceCache.js";
 import { measureImage, rangeFromLevels } from "./photo.js";

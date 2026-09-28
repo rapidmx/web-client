@@ -16,6 +16,11 @@
  * The cache is dropped (`clearPinnedSignerCache()`) whenever a key session locks (subscribed on first use), on sign-out
  * (`AppShell`), and after the reader adds, edits or deletes contacts (the contacts pages) - so a contact removed
  * because its key was revoked doesn't keep vouching for signatures until the TTL runs out.
+ *
+ * **Explicit-client callers get their own cache**, a `WeakMap<ApiClient, Map<...>>` alongside the default
+ * global-path `Map` - the same split `useMailboxUpdateAccess.ts` already uses, for the same reason: two
+ * `tauri-client` accounts must never answer each other's "who does this sender's key belong to" question from
+ * one shared cache keyed only by `mailboxUid` (mailbox uids are not guaranteed unique across accounts/servers).
  */
 import {
     Contact,
@@ -25,18 +30,38 @@ import {
     listContacts,
     pinnedSigningFingerprintsFor,
     signerKeyStateFor,
-} from "@rapidmx/react-shared/contacts/contactsApi.js";
+} from "../../../../lib/contacts/contactsApi.js";
 import { keyPinnedSince } from "../contacts/contactKeys.js";
-import { listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
-import { subscribeKeySession } from "@rapidmx/react-shared/crypto/keySession.js";
+import { listFolders } from "../../../../lib/mail/mailApi.js";
+import { subscribeKeySession } from "../../../../lib/crypto/keySession.js";
+import type { ApiClient } from "../../../../lib/util/api.js";
 
 /** How long one mailbox's loaded contact list is reused before it is fetched again. */
 export const CONTACTS_CACHE_TTL_MS = 60_000;
 
-const contactsCache = new Map<string, { loadedAt: number; contacts: Promise<Contact[]> }>();
+interface ContactsCacheEntry {
+    loadedAt: number;
+    contacts: Promise<Contact[]>;
+}
 
-/** Forgets every cached contact list - on sign-out, a key-session lock, after the reader changes their contacts, and
- * in tests. */
+const contactsCache = new Map<string, ContactsCacheEntry>();
+const contactsCacheByClient = new WeakMap<ApiClient, Map<string, ContactsCacheEntry>>();
+
+function cacheFor(client: ApiClient | undefined): Map<string, ContactsCacheEntry> {
+    if (!client) {
+        return contactsCache;
+    }
+    let cache = contactsCacheByClient.get(client);
+    if (!cache) {
+        cache = new Map();
+        contactsCacheByClient.set(client, cache);
+    }
+    return cache;
+}
+
+/** Forgets every cached contact list for the default global path - on sign-out, a key-session lock, after the
+ * reader changes their contacts, and in tests. Does not clear any explicit-client cache: those are scoped to
+ * their own `ApiClient` and garbage-collected with it, with no shared "the app signed out" moment to clear on. */
 export function clearPinnedSignerCache(): void {
     contactsCache.clear();
 }
@@ -57,12 +82,12 @@ function subscribeToLocksOnce(): void {
     });
 }
 
-async function loadMailboxContacts(mailboxUid: string): Promise<Contact[]> {
-    const folders = await listFolders(mailboxUid);
+async function loadMailboxContacts(mailboxUid: string, client: ApiClient | undefined): Promise<Contact[]> {
+    const folders = await listFolders(mailboxUid, client);
     const contacts: Contact[] = [];
     for (const folder of folders.filter((f) => f.type === "contacts")) {
         for (let page = 0; page < PINNED_FINGERPRINT_MAX_PAGES; page++) {
-            const batch = await listContacts(folder.uid, { limit: PINNED_FINGERPRINT_PAGE_SIZE, page });
+            const batch = await listContacts(folder.uid, { limit: PINNED_FINGERPRINT_PAGE_SIZE, page }, client);
             contacts.push(...batch);
             if (batch.length < PINNED_FINGERPRINT_PAGE_SIZE) {
                 break;
@@ -73,15 +98,16 @@ async function loadMailboxContacts(mailboxUid: string): Promise<Contact[]> {
 }
 
 /** `mailboxUid`'s contacts, from the cache when fresh. Rejects if they can't be loaded. */
-function cachedMailboxContacts(mailboxUid: string): Promise<Contact[]> {
+function cachedMailboxContacts(mailboxUid: string, client: ApiClient | undefined): Promise<Contact[]> {
     subscribeToLocksOnce();
-    let entry = contactsCache.get(mailboxUid);
+    const cache = cacheFor(client);
+    let entry = cache.get(mailboxUid);
     if (!entry || Date.now() - entry.loadedAt > CONTACTS_CACHE_TTL_MS) {
-        const created = { loadedAt: Date.now(), contacts: loadMailboxContacts(mailboxUid) };
-        contactsCache.set(mailboxUid, created);
+        const created = { loadedAt: Date.now(), contacts: loadMailboxContacts(mailboxUid, client) };
+        cache.set(mailboxUid, created);
         created.contacts.catch(() => {
-            if (contactsCache.get(mailboxUid) === created) {
-                contactsCache.delete(mailboxUid);
+            if (cache.get(mailboxUid) === created) {
+                cache.delete(mailboxUid);
             }
         });
         entry = created;
@@ -90,8 +116,8 @@ function cachedMailboxContacts(mailboxUid: string): Promise<Contact[]> {
 }
 
 /** The sender `address`'s pinned signing fingerprints from `mailboxUid`'s contacts. Rejects if they can't be loaded. */
-export async function getPinnedSignerFingerprints(mailboxUid: string, address: string): Promise<string[]> {
-    return pinnedSigningFingerprintsFor(await cachedMailboxContacts(mailboxUid), address);
+export async function getPinnedSignerFingerprints(mailboxUid: string, address: string, client?: ApiClient): Promise<string[]> {
+    return pinnedSigningFingerprintsFor(await cachedMailboxContacts(mailboxUid, client), address);
 }
 
 /** A sender's signing-key state (`signerKeyStateFor()`) plus what a key-changed notice needs to show and link. */
@@ -104,8 +130,8 @@ export interface SenderKeyState extends SignerKeyState {
 
 /** The sender `address`'s signing-key state from `mailboxUid`'s (cached) contacts, for a "signing key changed" comparison
  * or to spot a recorded conflict. Reads stored contacts only. Rejects if they can't be loaded. */
-export async function getSignerKeyState(mailboxUid: string, address: string): Promise<SenderKeyState> {
-    const contacts = await cachedMailboxContacts(mailboxUid);
+export async function getSignerKeyState(mailboxUid: string, address: string, client?: ApiClient): Promise<SenderKeyState> {
+    const contacts = await cachedMailboxContacts(mailboxUid, client);
     const state = signerKeyStateFor(contacts, address);
     const wanted = address.trim().toLowerCase();
     const matching = contacts.filter((contact) => contact.emails.some((email) => email.address.trim().toLowerCase() === wanted));

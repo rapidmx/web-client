@@ -25,14 +25,14 @@ import {
     HiOutlineWrenchScrewdriver,
     HiOutlineBars3,
 } from "react-icons/hi2";
-import { apiFetch, ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { getSetupStatus } from "@rapidmx/react-shared/admin/setupApi.js";
-import { useSessionRefresh } from "@rapidmx/react-shared/auth/session.js";
-import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
-import type { NavItem } from "@rapidmx/react-shared/components/navigation/BottomTabBar.js";
+import { apiFetch, ApiRequestError } from "../../../../../lib/util/api.js";
+import { getSetupStatus } from "../../../../../lib/admin/setupApi.js";
+import { useSessionRefresh } from "../../../../../lib/auth/session.js";
+import useBranding from "../../../../../lib/branding/useBranding.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../../lib/components/buttons/Button.js";
+import Drawer from "../../../../../lib/components/overlays/Drawer.js";
+import type { NavItem } from "../../../../../lib/components/navigation/BottomTabBar.js";
 import { FrameBrandingFooter, useBrandingHtml } from "../../layout/BrandingChrome.js";
 import RailIcon from "../../layout/RailIcon.js";
 import AppearanceProvider from "../../../appearance/AppearanceProvider.js";

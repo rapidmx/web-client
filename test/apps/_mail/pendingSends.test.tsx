@@ -19,7 +19,7 @@ import {
 import { flushComposeDrafts } from "../../../apps/shared/components/mail/compose/composeFlushRegistry.js";
 import OutboxBadge from "../../../apps/shared/components/mail/OutboxBadge.js";
 import { EMPTY_OUTBOX_STATUS, outboxItemStatus, outboxLabel, summarizeOutbox } from "../../../apps/shared/mail/outbox/outboxState.js";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
 
 const entry = (draftUid: string, mailboxUid = "mb1") => ({ draftUid, mailboxUid, subject: "S", recipients: ["a@example.com"], scheduled: false });
 

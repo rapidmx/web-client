@@ -8,8 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
-import { CalendarOccurrence, expandOccurrences } from "@rapidmx/react-shared/calendar/recurrence.js";
-import { CalendarEvent } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { CalendarOccurrence, expandOccurrences } from "../../../lib/calendar/recurrence.js";
+import { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
 import { clickModify, openTimeControls, setWhen } from "./eventModalHelpers.js";
 
 // Round-4 review fixes: all-day series west of UTC, series time changes on the event's own wall clock,

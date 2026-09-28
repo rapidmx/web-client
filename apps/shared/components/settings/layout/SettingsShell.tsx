@@ -4,11 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
-import { Mailbox, listMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Skeleton, { SkeletonList } from "@rapidmx/react-shared/components/feedback/Skeleton.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
+import Drawer from "../../../../../lib/components/overlays/Drawer.js";
+import { Mailbox, listMailboxes } from "../../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Skeleton, { SkeletonList } from "../../../../../lib/components/feedback/Skeleton.js";
 import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import { useLocation, useNavigate } from "../../../navigation/index.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
@@ -93,6 +94,7 @@ export default function SettingsShell({
     pluginNav,
     children,
 }: PropsWithChildren<SettingsShellProps>) {
+    const client = useApiClient();
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
     const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
@@ -116,7 +118,7 @@ export default function SettingsShell({
         if (!userUid) {
             return;
         }
-        listMailboxes({ limit: 100 })
+        listMailboxes({ limit: 100 }, client)
             .then((result) => {
                 setMailboxes(orderMailboxes(result, userUid));
                 setStatus("ready");

@@ -9,12 +9,12 @@ import {
     UnlockedKeys,
     UnlockResult,
     UnopenableEncryptionKeyError,
-} from "@rapidmx/react-shared/crypto/keySession.js";
-import type { PublicKey } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import FormField from "@rapidmx/react-shared/components/forms/FormField.js";
+} from "../../../../lib/crypto/keySession.js";
+import type { PublicKey } from "../../../../lib/crypto/keyvaultApi.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import FormField from "../../../../lib/components/forms/FormField.js";
 import {
     RECOVERY_CODE_ERROR,
     RecoveryFollowUp,

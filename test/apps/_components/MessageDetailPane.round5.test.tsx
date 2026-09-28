@@ -16,8 +16,8 @@ const { evaluateMessageSecurity, getUnlockedKeys, getPinnedSignerFingerprints } 
     getUnlockedKeys: vi.fn(),
     getPinnedSignerFingerprints: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({
     getPinnedSignerFingerprints,
     // No recorded key conflicts - see MessageDetailPane.keyChange.test.tsx for those.
@@ -87,7 +87,7 @@ describe("MessageDetailPane (round 5)", () => {
             renderPane();
 
             expect(await screen.findByText("Signed & verified")).toBeInTheDocument();
-            expect(getPinnedSignerFingerprints).toHaveBeenCalledWith("mb1", "Sender@Example.com");
+            expect(getPinnedSignerFingerprints).toHaveBeenCalledWith("mb1", "Sender@Example.com", undefined);
             expect(evaluateMessageSecurity).toHaveBeenCalledWith("raw mime", undefined, ["pin1", "pin2"], undefined);
         });
 

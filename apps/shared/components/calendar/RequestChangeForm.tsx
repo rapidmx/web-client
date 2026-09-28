@@ -4,11 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
 import { HiOutlineXMark } from "react-icons/hi2";
-import { Attendee, EventChangeRequest, requestEventChange } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { htmlToPlainText, sanitizeEventDescriptionHtml } from "@rapidmx/react-shared/calendar/eventDescription.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import { toDatetimeLocal } from "@rapidmx/react-shared/util/dateInput.js";
+import { Attendee, EventChangeRequest, requestEventChange } from "../../../../lib/calendar/calendarApi.js";
+import { htmlToPlainText, sanitizeEventDescriptionHtml } from "../../../../lib/calendar/eventDescription.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import { notify } from "../../notifications/store.js";
 import { INPUT_CLASS } from "./EventFormParts.js";
@@ -61,6 +62,7 @@ function sameMinute(a: string, b: string): boolean {
  * A title or location can be changed, not cleared (the server refuses that), and the time of a series or an all-day event is not offered.
  */
 export default function RequestChangeForm({ subject, canChange, canInvite, onSent, onCancel }: RequestChangeFormProps) {
+    const client = useApiClient();
     const canChangeTime = canChange && !subject.allDay && !subject.recurring && !!subject.startDate && !!subject.endDate;
     const [title, setTitle] = useState(subject.title);
     const [location, setLocation] = useState(subject.location ?? "");
@@ -145,7 +147,7 @@ export default function RequestChangeForm({ subject, canChange, canInvite, onSen
 
         setSending(true);
         try {
-            await requestEventChange(subject.uid, request);
+            await requestEventChange(subject.uid, request, client);
             notify({
                 kind: "success",
                 title: "Your change was sent to the organizer",

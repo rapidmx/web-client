@@ -8,6 +8,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import EscrowScopeCard from "../../../../apps/shared/components/admin/mailboxes/EscrowScopeCard.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../../lib/util/api.js";
 
 const mailbox = {
     uid: "mb1",
@@ -133,5 +135,34 @@ describe("EscrowScopeCard", () => {
         await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
         await user.click(await screen.findByRole("button", { name: "Confirm and save" }));
         expect(await screen.findByText("Could not save the escrow scope.")).toBeInTheDocument();
+    });
+
+    it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/escrow/scopes?limit=200&page=0") return jsonResponse(200, [scope("es1", "Legal")]);
+            if (url === "https://account-a.example.com/api/mail/mailboxes/mb1" && init?.method === "PUT") {
+                const body = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...mailbox, version: mailbox.version + 1, escrowScopeId: body.escrowScopeId ?? undefined });
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <EscrowScopeCard mailbox={mailbox} onUpdate={vi.fn()} />
+            </ApiClientContext.Provider>,
+        );
+
+        await user.selectOptions(await screen.findByLabelText("Escrow scope"), "es1");
+        await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
+        await user.click(await screen.findByRole("button", { name: "Confirm and save" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        const put = fetchMock.mock.calls.find(([url, init]) => url === "https://account-a.example.com/api/mail/mailboxes/mb1" && init?.method === "PUT")!;
+        expect(new Headers((put[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });

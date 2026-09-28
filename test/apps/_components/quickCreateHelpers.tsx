@@ -6,8 +6,8 @@
 import React from "react";
 import { render } from "@testing-library/react";
 import { vi } from "vitest";
-import { Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
-import { TaskList } from "@rapidmx/react-shared/tasks/tasksApi.js";
+import { Mailbox } from "../../../lib/mail/mailApi.js";
+import { TaskList } from "../../../lib/tasks/tasksApi.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 

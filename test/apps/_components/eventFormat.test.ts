@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import { Attendee } from "@rapidmx/react-shared/calendar/calendarApi.js";
+import { Attendee } from "../../../lib/calendar/calendarApi.js";
 import {
     applyGuestChips,
     bestReminderUnit,

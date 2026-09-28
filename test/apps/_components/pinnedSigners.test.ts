@@ -10,16 +10,16 @@ import {
 } from "../../../apps/shared/components/mail/pinnedSigners.js";
 
 const { listContacts, listFolders } = vi.hoisted(() => ({ listContacts: vi.fn(), listFolders: vi.fn() }));
-vi.mock("@rapidmx/react-shared/contacts/contactsApi.js", async (importOriginal) => ({
+vi.mock("../../../lib/contacts/contactsApi.js", async (importOriginal) => ({
     // pinnedSigningFingerprintsFor() and the page constants stay real.
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/contacts/contactsApi.js")>()),
+    ...(await importOriginal<typeof import("../../../lib/contacts/contactsApi.js")>()),
     listContacts,
 }));
-vi.mock("@rapidmx/react-shared/mail/mailApi.js", () => ({ listFolders }));
+vi.mock("../../../lib/mail/mailApi.js", () => ({ listFolders }));
 const { keySessionListeners } = vi.hoisted(() => ({
     keySessionListeners: new Set<(event: { mailboxUid: string; state: "locked" | "unlocked" }) => void>(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../lib/crypto/keySession.js", () => ({
     subscribeKeySession: (listener: (event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) => {
         keySessionListeners.add(listener);
         return () => keySessionListeners.delete(listener);
@@ -55,11 +55,13 @@ describe("getPinnedSignerFingerprints", () => {
         });
 
         expect(await getPinnedSignerFingerprints("mb1", "sender@example.com")).toEqual(["aa11", "bb22"]);
-        expect(listFolders).toHaveBeenCalledWith("mb1");
+        // Trailing `undefined`: no explicit `ApiClient` was passed in, so the default global path is used -
+        // `listFolders`/`listContacts` still receive `client` explicitly (as `undefined`), not omitted.
+        expect(listFolders).toHaveBeenCalledWith("mb1", undefined);
         expect(listContacts.mock.calls).toEqual([
-            ["f-c1", { limit: 500, page: 0 }],
-            ["f-c1", { limit: 500, page: 1 }],
-            ["f-c2", { limit: 500, page: 0 }],
+            ["f-c1", { limit: 500, page: 0 }, undefined],
+            ["f-c1", { limit: 500, page: 1 }, undefined],
+            ["f-c2", { limit: 500, page: 0 }, undefined],
         ]);
     });
 
@@ -84,6 +86,34 @@ describe("getPinnedSignerFingerprints", () => {
         now.mockReturnValue(1_001 + CONTACTS_CACHE_TTL_MS);
         await getPinnedSignerFingerprints("mb1", "a@example.com");
         expect(listFolders).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives an explicit ApiClient its own cache, separate from the default global one", async () => {
+        listFolders.mockResolvedValue([{ uid: "f-c1", type: "contacts" }]);
+        listContacts.mockResolvedValue([contact("a@example.com", ["global-key"])]);
+
+        expect(await getPinnedSignerFingerprints("mb1", "a@example.com")).toEqual(["global-key"]);
+        expect(listFolders).toHaveBeenCalledTimes(1);
+
+        const client = {} as never;
+        listContacts.mockResolvedValue([contact("a@example.com", ["client-key"])]);
+        expect(await getPinnedSignerFingerprints("mb1", "a@example.com", client)).toEqual(["client-key"]);
+        expect(listFolders).toHaveBeenCalledTimes(2);
+        expect(listFolders).toHaveBeenLastCalledWith("mb1", client);
+
+        // Still cached on each side - a second call for either doesn't re-fetch.
+        listContacts.mockResolvedValue([]);
+        expect(await getPinnedSignerFingerprints("mb1", "a@example.com")).toEqual(["global-key"]);
+        expect(await getPinnedSignerFingerprints("mb1", "a@example.com", client)).toEqual(["client-key"]);
+        expect(listFolders).toHaveBeenCalledTimes(2);
+
+        // clearPinnedSignerCache() only clears the default global path's cache, not an explicit client's -
+        // there is no single "the app signed out" moment for an explicit client to hook into.
+        clearPinnedSignerCache();
+        listContacts.mockResolvedValue([contact("a@example.com", ["refetched"])]);
+        expect(await getPinnedSignerFingerprints("mb1", "a@example.com")).toEqual(["refetched"]);
+        expect(await getPinnedSignerFingerprints("mb1", "a@example.com", client)).toEqual(["client-key"]);
+        expect(listFolders).toHaveBeenCalledTimes(3);
     });
 
     it("doesn't cache a failed load", async () => {

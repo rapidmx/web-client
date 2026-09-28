@@ -26,10 +26,10 @@ const { searchEncryptedCandidates, getUnlockedKeys, unlockWithPassword, subscrib
     unlockWithPassword: vi.fn(),
     subscribeKeySession: vi.fn(() => () => undefined),
 }));
-vi.mock("@rapidmx/react-shared/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
+vi.mock("../../lib/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
 vi.mock("../../apps/shared/search/searchTier2.js", () => ({ searchLocalIndex }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
+vi.mock("../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
 vi.mock("../../apps/shared/components/mail/LazyReadingPane.js", () => ({
     LazyMessageDetailPane: ({ message }: { message: { uid: string } | null }) => <div data-testid="detail-pane">{message ? `message:${message.uid}` : "no-message"}</div>,
     LazyConversationThreadPane: ({ conversation }: { conversation: { conversationId: string } | null }) => (

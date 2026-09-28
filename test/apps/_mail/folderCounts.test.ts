@@ -2,6 +2,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
+import React from "react";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -17,6 +18,8 @@ import {
     unreadBadgeTotal,
     useFolderCounts,
 } from "../../../apps/shared/mail/folderCounts.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 const folder = (uid: string, mailboxUid: string, type: string, unreadCount = 0, totalCount = 0) =>
     ({ uid, mailboxUid, type, name: type, unreadCount, totalCount, version: 0, dateCreated: "", dateModified: "" }) as any;
@@ -490,5 +493,35 @@ describe("useFolderCounts", () => {
 
         rerender({ mailboxes: [MB1, MB2], folders: [INBOX, DRAFTS, OTHER_INBOX] });
         expect(result.current.counts).toEqual({});
+    });
+
+    describe("with an explicit ApiClient", () => {
+        it("reads folders through the given client's own fetch instead of the default global one", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(500, {}));
+            const clientFetch = vi.fn().mockResolvedValue([{ ...INBOX, unreadCount: 7, totalCount: 12 }]);
+            const client: ApiClient = { fetch: clientFetch, setUnauthorizedObserver: vi.fn() };
+            const { result } = renderHook(() => useFolderCounts([MB1], [INBOX, DRAFTS]), {
+                wrapper: ({ children }) => React.createElement(ApiClientContext.Provider, { value: client }, children),
+            });
+
+            act(() => result.current.refresh(0));
+            await advance(0);
+
+            expect(clientFetch).toHaveBeenCalledTimes(1);
+            expect(result.current.counts.inbox).toEqual({ unread: 7, total: 12 });
+            // The default global fetch was never touched.
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it("behaves exactly as the default path with no provider above it", async () => {
+            const fetchMock = serverWith({ inbox: { unreadCount: 3, totalCount: 5 } });
+            const { result } = renderHook(() => useFolderCounts([MB1], [INBOX, DRAFTS]));
+
+            act(() => result.current.refresh(0));
+            await advance(0);
+
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+            expect(result.current.counts.inbox).toEqual({ unread: 3, total: 5 });
+        });
     });
 });

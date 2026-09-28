@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ContactsSidebar, { contactsViewKey, ContactsView } from "../../../apps/shared/components/contacts/ContactsSidebar.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
-import type { Contact } from "@rapidmx/react-shared/contacts/contactsApi.js";
+import type { Contact } from "../../../lib/contacts/contactsApi.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 function contact(overrides: Partial<Contact> = {}): Contact {
     return {
@@ -107,7 +109,7 @@ describe("ContactsSidebar", () => {
     });
 
     it("shows an error, using the ApiRequestError message, when loading contact lists fails.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockFetch(() => {
             throw new ApiRequestError("nope", 500);
         });
@@ -263,7 +265,7 @@ describe("ContactsSidebar", () => {
     });
 
     it("shows the ApiRequestError message when creating a new list fails with an API error.", async () => {
-        const { ApiRequestError } = await import("@rapidmx/react-shared/util/api.js");
+        const { ApiRequestError } = await import("../../../lib/util/api.js");
         mockFetch((url, init) => {
             if (init?.method === "POST") {
                 throw new ApiRequestError("list name already taken", 409);
@@ -282,5 +284,45 @@ describe("ContactsSidebar", () => {
                 { kind: "error", title: "Couldn't create the list", message: "list name already taken" },
             ]),
         );
+    });
+
+    // Round: under an `ApiClientContext.Provider` (e.g. `tauri-client`), this component's own list-loading/creating
+    // must route through that client's `baseUrl`/token instead of the default cookie-based `apiFetch()`.
+    describe("under an ApiClientContext.Provider", () => {
+        it("fetches contact lists through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const fetchMock = mockFetch(() => jsonResponse(200, []));
+            render(<ContactsSidebar mailboxUid="mb1" contacts={[]} active={{ type: "all" }} onSelect={vi.fn()} />);
+
+            await screen.findByText("Your contact lists");
+            expect(fetchMock.mock.calls[0][0]).toMatch(/^\/api\/mail\/contact-lists/);
+        });
+
+        it("fetches and creates contact lists through the provided ApiClient's own baseUrl and bearer token", async () => {
+            const fetchMock = mockFetch((url, init) => {
+                if (init?.method === "POST") {
+                    return jsonResponse(200, { uid: "l2", version: 0, dateCreated: "", dateModified: "", mailboxUid: "mb1", name: "Aardvarks" });
+                }
+                return jsonResponse(200, []);
+            });
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <ContactsSidebar mailboxUid="mb1" contacts={[]} active={{ type: "all" }} onSelect={vi.fn()} />
+                </ApiClientContext.Provider>,
+            );
+
+            await screen.findByText("Your contact lists");
+            expect(fetchMock.mock.calls[0][0]).toMatch(/^https:\/\/acct-a\.example\.com\/api\/mail\/contact-lists/);
+            expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+
+            await user.click(screen.getByLabelText("New contact list"));
+            await user.type(screen.getByLabelText("New list name"), "Aardvarks");
+            await user.click(screen.getByRole("button", { name: "Add" }));
+
+            const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
+            expect(post[0]).toBe("https://acct-a.example.com/api/mail/contact-lists");
+            expect(new Headers((post[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        });
     });
 });

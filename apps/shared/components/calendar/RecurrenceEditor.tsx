@@ -4,8 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { format } from "date-fns";
-import { RecurrenceFrequency, RecurrenceRule, WeekdayCode } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { WEEKDAY_CODES, WEEKDAY_LABELS, describeRecurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { RecurrenceFrequency, RecurrenceRule, WeekdayCode } from "../../../../lib/calendar/calendarApi.js";
+import { WEEKDAY_CODES, WEEKDAY_LABELS, describeRecurrence } from "../../../../lib/calendar/recurrence.js";
 import { recurrenceUntilDateKey, recurrenceUntilInstant } from "./allDay.js";
 
 const SELECT_CLASS =

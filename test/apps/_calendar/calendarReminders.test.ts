@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import type { PushEvent } from "@rapidmx/react-shared/mail/pushClient.js";
+import type { PushEvent } from "../../../lib/mail/pushClient.js";
 import {
     SNOOZE_MS,
     calendarReminderOf,

@@ -4,9 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { HiOutlineBars3 } from "react-icons/hi2";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Task, TaskList, createTaskList, listTaskLists } from "@rapidmx/react-shared/tasks/tasksApi.js";
-import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
+import { Task, TaskList, createTaskList, listTaskLists } from "../../../../lib/tasks/tasksApi.js";
+import Drawer from "../../../../lib/components/overlays/Drawer.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 
 export type TasksView =
@@ -61,6 +62,7 @@ function NavItem({ label, count, active, onClick }: { label: string; count?: num
  * lists are real `TaskList` records, fetched here (same pattern as `ContactsSidebar`'s contact lists).
  */
 export default function TasksSidebar({ mailboxUid, tasks, userUid, active, onSelect, refreshToken }: TasksSidebarProps) {
+    const client = useApiClient();
     const [lists, setLists] = useState<TaskList[]>([]);
     const [listsError, setListsError] = useState<string | null>(null);
     const [addingList, setAddingList] = useState(false);
@@ -73,7 +75,7 @@ export default function TasksSidebar({ mailboxUid, tasks, userUid, active, onSel
             return;
         }
         setListsError(null);
-        listTaskLists(mailboxUid, { limit: 200 })
+        listTaskLists(mailboxUid, { limit: 200 }, client)
             .then(setLists)
             .catch((err) => setListsError(err instanceof ApiRequestError ? err.message : "Could not load task lists."));
     }, [mailboxUid, refreshToken]);
@@ -98,7 +100,7 @@ export default function TasksSidebar({ mailboxUid, tasks, userUid, active, onSel
             return;
         }
         try {
-            const created = await createTaskList({ mailboxUid, name: newListName.trim() });
+            const created = await createTaskList({ mailboxUid, name: newListName.trim() }, client);
             setLists((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
             setNewListName("");
             setAddingList(false);

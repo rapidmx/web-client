@@ -9,8 +9,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { Editor } from "@tiptap/core";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
-import { Attendee } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { CalendarOccurrence } from "@rapidmx/react-shared/calendar/recurrence.js";
+import { Attendee } from "../../../lib/calendar/calendarApi.js";
+import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 import { getNotificationsSnapshot, resetNotifications } from "../../../apps/shared/notifications/store.js";
 import { addGuest, clickModify, openMoreOptions } from "./eventModalHelpers.js";
 

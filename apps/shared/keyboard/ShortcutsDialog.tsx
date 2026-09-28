@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 import { formatSpec, specsFor } from "./format.js";
 import { HELP_SCOPES, SCOPE_LABELS, SHORTCUTS, ShortcutDef, shortcutRank } from "./keymap.js";
 import { useKeyEnvironment, useRegisteredShortcuts } from "./ShortcutProvider.js";

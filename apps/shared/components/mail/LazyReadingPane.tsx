@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ComponentType, useEffect, useState } from "react";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
 import { ReadingPaneSkeleton } from "./reading/MessageCard.js";
 import type MessageDetailPaneType from "./MessageDetailPane.js";
 import type ConversationThreadPaneType from "./ConversationThreadPane.js";

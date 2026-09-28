@@ -3,8 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { PropsWithChildren, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { DraftThreading } from "@rapidmx/react-shared/mail/mailApi.js";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
+import { DraftThreading } from "../../../../../lib/mail/mailApi.js";
+import { ApiClient } from "../../../../../lib/util/api.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
+import useIsMobile from "../../../../../lib/util/useIsMobile.js";
 import { ResumeCompose, registerComposeOpener } from "../../../mail/outbox/composeBridge.js";
 import { markComposePhase } from "./composePerf.js";
 import ComposeWindowPlaceholder from "./ComposeWindowPlaceholder.js";
@@ -169,6 +171,14 @@ export interface OpenComposeInput {
 export interface ComposeContextValue {
     /** Opens a new compose window, stacked alongside any already open (Gmail allows several at once). */
     openCompose: (input: OpenComposeInput) => void;
+    /**
+     * The active account's `ApiClient` (see `useApiClient()`'s own doc comment), resolved once here rather
+     * than by every compose component individually - `ComposeWindow` and everything it renders reach it
+     * through this context's own value instead of each calling `useApiClient()` for itself. `useApiClient()`
+     * remains independently callable (this is additive, not a replacement) - a future consumer that isn't a
+     * descendant of `ComposeProvider` (or doesn't want to depend on it) can still read it directly.
+     */
+    client?: ApiClient;
 }
 
 const ComposeContext = createContext<ComposeContextValue>({ openCompose: () => undefined });
@@ -187,6 +197,7 @@ export function useCompose(): ComposeContextValue {
  */
 export default function ComposeProvider({ children, userUid, trusted }: PropsWithChildren<{ userUid?: string; trusted?: boolean }>) {
     const [sessions, setSessions] = useState<ComposeSession[]>([]);
+    const client = useApiClient();
     const isMobile = useIsMobile();
     const { Component: ComposeWindow, failed, retry: retryLoad } = useComposeWindowComponent(sessions.length > 0);
 
@@ -263,7 +274,7 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
         setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, minimized: !s.minimized } : s)));
     }
 
-    const value = useMemo<ComposeContextValue>(() => ({ openCompose }), []);
+    const value = useMemo<ComposeContextValue>(() => ({ openCompose, client }), [client]);
     // Code with no React context - a failed send's "Open draft" pop-up - opens windows through this.
     useEffect(() => registerComposeOpener((input) => value.openCompose(input)), [value]);
 

@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { RecipientEncryptionStatus, decideMessageEncryption } from "@rapidmx/react-shared/crypto/composeSecurity.js";
-import type { EncryptionPolicy } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+import { RecipientEncryptionStatus, decideMessageEncryption } from "../../../../../lib/crypto/composeSecurity.js";
+import type { EncryptionPolicy } from "../../../../../lib/crypto/keyvaultApi.js";
 
 /**
  * Whether a message must be treated as encrypted - the one place that decides it, as a pure function of what is *known*.

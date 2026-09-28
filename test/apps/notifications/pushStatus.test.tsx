@@ -4,7 +4,7 @@
 import React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
+import { getPushClient } from "../../../lib/mail/pushClient.js";
 import { PUSH_NOTICE_ID, PUSH_OFFLINE_NOTICE_MS, usePushConnectionNotice } from "../../../apps/shared/notifications/pushStatus.js";
 import { dismiss, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 

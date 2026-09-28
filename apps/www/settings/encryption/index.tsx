@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
     KeyVault,
     MasterKeyWrap,
@@ -19,7 +19,7 @@ import {
     rekey,
     removeMasterKeyWrap,
     startSignEnrollment,
-} from "@rapidmx/react-shared/crypto/keyvaultApi.js";
+} from "../../../../lib/crypto/keyvaultApi.js";
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
     SIGNING_PRIVATE_KEY_AAD_PURPOSE,
@@ -27,27 +27,28 @@ import {
     destroyUnlockedKeys,
     getUnlockedKeys,
     unlockWithPassword,
-} from "@rapidmx/react-shared/crypto/keySession.js";
-import { IDLE_TIMEOUT_OPTIONS_MINUTES, getIdleTimeoutMinutes, setIdleTimeoutMinutes } from "@rapidmx/react-shared/crypto/idleTimeout.js";
+} from "../../../../lib/crypto/keySession.js";
+import { IDLE_TIMEOUT_OPTIONS_MINUTES, getIdleTimeoutMinutes, setIdleTimeoutMinutes } from "../../../../lib/crypto/idleTimeout.js";
 import {
     LOCAL_INDEX_SIZE_OPTIONS,
     getDefaultLocalIndexByteBudget,
     getLocalIndexByteBudget,
     setLocalIndexByteBudget,
 } from "../../../shared/search/localIndexSizePreference.js";
-import { fromBase64 } from "@rapidmx/react-shared/crypto/encoding.js";
-import { KeysLockedError, buildAad, generateMasterKey, openWithKey, sealWithKey } from "@rapidmx/react-shared/crypto/masterKey.js";
-import { buildEscrowWrap, buildPasswordWrap, buildRecoveryWraps } from "@rapidmx/react-shared/crypto/masterKeyWraps.js";
-import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "@rapidmx/react-shared/crypto/keys.js";
-import { getMailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { fromBase64 } from "../../../../lib/crypto/encoding.js";
+import { KeysLockedError, buildAad, generateMasterKey, openWithKey, sealWithKey } from "../../../../lib/crypto/masterKey.js";
+import { buildEscrowWrap, buildPasswordWrap, buildRecoveryWraps } from "../../../../lib/crypto/masterKeyWraps.js";
+import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "../../../../lib/crypto/keys.js";
+import { getMailbox } from "../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import KeyEnrollmentGate from "../../../shared/components/layout/KeyEnrollmentGate.js";
 import { useUnlockPrompt } from "../../../shared/components/layout/UnlockPromptProvider.js";
 import { destroyLocalIndex } from "../../../shared/search/localIndexRpcClient.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
 import SigningCertificateCard, { SigningCertificateMode } from "../../../shared/components/settings/SigningCertificateCard.js";
 import { readStoredSignEnrollment, storeSignEnrollment } from "../../../shared/signing/enrollmentStorage.js";
 import {
@@ -235,6 +236,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     const { mailboxUid, mailboxes } = useSettingsShell();
     const mailbox = mailboxes.find((mb) => mb.uid === mailboxUid)!;
     const { requestUnlock } = useUnlockPrompt();
+    const client = useApiClient();
 
     const [vault, setVault] = useState<KeyVault | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -323,7 +325,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
      */
     async function verifiedUnlockedKeys(): Promise<{ current: UnlockedKeys; freshVault: KeyVault }> {
         const current = await currentUnlockedKeys();
-        const freshVault = await getKeyVault(mailboxUid!);
+        const freshVault = await getKeyVault(mailboxUid!, client);
         if (!(await masterKeyOpensVault(mailboxUid!, current.masterKey, freshVault))) {
             throw new StaleSessionKeysError();
         }
@@ -355,9 +357,9 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         try {
             // Only reachable when mailbox.escrowScopeId is set (see the render guard below).
             const { current } = await verifiedUnlockedKeys();
-            const escrowInfo = await getEscrowInfo(mailboxUid!);
+            const escrowInfo = await getEscrowInfo(mailboxUid!, client);
             const wrap = await buildEscrowWrap(current.masterKey, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
-            await addMasterKeyWrap(mailboxUid!, wrap);
+            await addMasterKeyWrap(mailboxUid!, wrap, undefined, client);
             await loadVault();
         } catch (err) {
             setEscrowError(errorMessage(err, "Could not add escrow protection for this mailbox."));
@@ -376,7 +378,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             setSigningStatus("checking");
             release = watchEnrollment(mailboxUid!, storedId);
         } else if (canManageKeys) {
-            getCurrentSignEnrollment(mailboxUid!)
+            getCurrentSignEnrollment(mailboxUid!, client)
                 .then((current) => {
                     if (!cancelled && current) {
                         if (current.status === "pending") {
@@ -420,7 +422,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         let timer: ReturnType<typeof setTimeout> | undefined;
         let attempts = 0;
         const refresh = () => {
-            getMailbox(mailboxUid!)
+            getMailbox(mailboxUid!, {}, client)
                 .then((refreshed) => {
                     if (cancelled) {
                         return;
@@ -446,7 +448,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         setCancelEnrollmentError(null);
         setCancelingEnrollment(true);
         try {
-            const result = await cancelSignEnrollment(mailboxUid!, enrollmentId);
+            const result = await cancelSignEnrollment(mailboxUid!, enrollmentId, client);
             if (result.status === "pending") {
                 setCancelEnrollmentError("The enrollment couldn't be cancelled yet. Try again.");
             } else if (result.status === "failed") {
@@ -486,10 +488,14 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                 privateKeyRaw,
                 buildAad(mailboxUid!, SIGNING_PRIVATE_KEY_AAD_PURPOSE),
             );
-            const { enrollmentId } = await startSignEnrollment(mailboxUid!, {
-                csr: csrPem,
-                wrappedKey: { ciphertext: wrappedKeySealed.ciphertext, nonce: wrappedKeySealed.nonce, algorithm: "AES-256-GCM" },
-            });
+            const { enrollmentId } = await startSignEnrollment(
+                mailboxUid!,
+                {
+                    csr: csrPem,
+                    wrappedKey: { ciphertext: wrappedKeySealed.ciphertext, nonce: wrappedKeySealed.nonce, algorithm: "AES-256-GCM" },
+                },
+                client,
+            );
             storeSignEnrollment(mailboxUid!, enrollmentId);
             // Followed from now on (and after this page is left): the server has just accepted it, so it is pending - no need to ask first.
             watchEnrollment(mailboxUid!, enrollmentId, { initial: { status: "pending" } });
@@ -514,7 +520,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     }
 
     function loadVault() {
-        return getKeyVault(mailboxUid!)
+        return getKeyVault(mailboxUid!, client)
             .then(setVault)
             .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your key vault."));
     }
@@ -543,7 +549,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         setRemovingMethod(key);
         setActionError(null);
         try {
-            await removeMasterKeyWrap(mailboxUid!, wrap.method, wrap.methodId);
+            await removeMasterKeyWrap(mailboxUid!, wrap.method, wrap.methodId, client);
             await loadVault();
         } catch (err) {
             // A pop-up (the confirmation is already closed); `actionError` keeps the guidance tied to the forms below.
@@ -570,7 +576,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         try {
             const { current } = await verifiedUnlockedKeys();
             const wrap = await buildPasswordWrap(mailboxUid!, current.masterKey, newPassword);
-            await addMasterKeyWrap(mailboxUid!, wrap);
+            await addMasterKeyWrap(mailboxUid!, wrap, undefined, client);
             setNewPassword("");
             setConfirmNewPassword("");
             await loadVault();
@@ -636,19 +642,19 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                 if (free <= 0) {
                     // Guaranteed non-empty by the shortfall check above.
                     const old = pendingOld.shift()!;
-                    await removeMasterKeyWrap(mailboxUid!, "recovery", old.methodId);
+                    await removeMasterKeyWrap(mailboxUid!, "recovery", old.methodId, client);
                     removedForThis = old;
                     removedEarly++;
                     free++;
                 }
-                await addMasterKeyWrap(mailboxUid!, { ...built.wraps[i], methodId: `recovery-${batch}-${i + 1}` });
+                await addMasterKeyWrap(mailboxUid!, { ...built.wraps[i], methodId: `recovery-${batch}-${i + 1}` }, undefined, client);
                 free--;
                 savedCodes.push(built.codes[i]);
             } catch (err) {
                 addError = err;
                 if (removedForThis) {
                     try {
-                        await addMasterKeyWrap(mailboxUid!, removedForThis);
+                        await addMasterKeyWrap(mailboxUid!, removedForThis, undefined, client);
                         removedEarly--;
                     } catch {
                         // Still counted in removedEarly, which the messages below report.
@@ -682,7 +688,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             let notRemoved = 0;
             for (const wrap of pendingOld) {
                 try {
-                    await removeMasterKeyWrap(mailboxUid!, "recovery", wrap.methodId);
+                    await removeMasterKeyWrap(mailboxUid!, "recovery", wrap.methodId, client);
                 } catch {
                     notRemoved++;
                 }
@@ -744,7 +750,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         let codes: string[];
         try {
             const current = await currentUnlockedKeys();
-            const [freshVault, freshMailbox] = await Promise.all([getKeyVault(mailboxUid!), getMailbox(mailboxUid!)]);
+            const [freshVault, freshMailbox] = await Promise.all([getKeyVault(mailboxUid!, client), getMailbox(mailboxUid!, {}, client)]);
             keys = freshMailbox.keys ?? [];
             // A session key that opens nothing is stale (rotated elsewhere) rather than missing some keys.
             if (!(await masterKeyOpensVault(mailboxUid!, current.masterKey, freshVault))) {
@@ -763,7 +769,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             // rotating without it would end escrow coverage. restapi's own 409 stays the final word.
             if (freshVault.masterKeyWraps.some((w) => w.method === "escrow")) {
                 try {
-                    const escrowInfo = await getEscrowInfo(mailboxUid!);
+                    const escrowInfo = await getEscrowInfo(mailboxUid!, client);
                     masterKeyWraps.push(await buildEscrowWrap(mk, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey)));
                 } catch (err) {
                     if (!(err instanceof ApiRequestError && err.status === 404)) {
@@ -771,7 +777,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                     }
                 }
             }
-            await rekey(mailboxUid!, { wrappedKeys: rewrapped.wrappedKeys, masterKeyWraps, keys });
+            await rekey(mailboxUid!, { wrappedKeys: rewrapped.wrappedKeys, masterKeyWraps, keys }, client);
         } catch (err) {
             if (err instanceof UncoveredVaultKeysError) {
                 setActionError(

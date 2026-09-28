@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode } from "react";
-import { DescriptionNode, htmlToPlainText, parseEventDescription } from "@rapidmx/react-shared/calendar/eventDescription.js";
+import { DescriptionNode, htmlToPlainText, parseEventDescription } from "../../../../lib/calendar/eventDescription.js";
 
 function renderNodes(nodes: DescriptionNode[]): ReactNode[] {
     return nodes.map((node, index) => {

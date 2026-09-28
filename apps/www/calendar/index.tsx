@@ -20,27 +20,28 @@ import {
     startOfMonth,
     startOfWeek,
 } from "date-fns";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import useIsMobile from "@rapidmx/react-shared/util/useIsMobile.js";
-import { CalendarEvent, getCalendarEvent, listCalendarEvents } from "@rapidmx/react-shared/calendar/calendarApi.js";
-import { getPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
-import { moveOccurrence, resizeOccurrenceEnd } from "@rapidmx/react-shared/calendar/calendarMutations.js";
-import { resolveDragAction } from "@rapidmx/react-shared/calendar/calendarDragIds.js";
-import { createFolder } from "@rapidmx/react-shared/mail/mailApi.js";
-import { CalendarOccurrence, expandAllOccurrences } from "@rapidmx/react-shared/calendar/recurrence.js";
-import Drawer from "@rapidmx/react-shared/components/overlays/Drawer.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { useApiClient } from "../../../lib/util/apiClientContext.js";
+import useIsMobile from "../../../lib/util/useIsMobile.js";
+import { CalendarEvent, getCalendarEvent, listCalendarEvents } from "../../../lib/calendar/calendarApi.js";
+import { getPushClient } from "../../../lib/mail/pushClient.js";
+import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calendarMutations.js";
+import { resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
+import { createFolder } from "../../../lib/mail/mailApi.js";
+import { CalendarOccurrence, expandAllOccurrences } from "../../../lib/calendar/recurrence.js";
+import Drawer from "../../../lib/components/overlays/Drawer.js";
 import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../shared/components/calendar/layout/CalendarShell.js";
 import CalendarListSidebar from "../../shared/components/calendar/CalendarListSidebar.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import EventModal from "../../shared/components/calendar/EventModal.js";
 import FloatingActionButton from "../../shared/components/layout/FloatingActionButton.js";
 import { EventAnchor, anchorOf } from "../../shared/components/calendar/EventShell.js";
-import MiniDatePicker from "@rapidmx/react-shared/components/pickers/MiniDatePicker.js";
+import MiniDatePicker from "../../../lib/components/pickers/MiniDatePicker.js";
 import MonthView from "../../shared/components/calendar/MonthView.js";
 import SplitDayView from "../../shared/components/calendar/SplitDayView.js";
 import TimeGridView from "../../shared/components/calendar/TimeGridView.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
 import { SWIPE_PERIOD_SHIFT } from "../../shared/components/calendar/swipeNavigation.js";
 import { useSwipeSlide } from "../../shared/gestures/useSwipeSlide.js";
 import { useEnterSlide } from "../../shared/gestures/useEnterSlide.js";
@@ -108,6 +109,7 @@ interface ModalState {
 
 function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHref?: string }) {
     const { mailboxUid, folderUid, calendarFolders, mailboxCalendars, mailboxes, reloadFolders, colorFor } = useCalendarShell();
+    const client = useApiClient();
     // `PointerSensor` alone activates a drag on the very first touch-move, indistinguishable from a
     // scroll gesture on a touch device. `MouseSensor` (a small `distance` — desktop drags still start
     // immediately on a deliberate movement, no change from before) + `TouchSensor` (a `delay`+`tolerance`
@@ -166,7 +168,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     }
 
     async function handleAddCalendar(targetMailboxUid: string, name: string, color: string) {
-        const created = await createFolder({ mailboxUid: targetMailboxUid, name, type: "calendar", color });
+        const created = await createFolder({ mailboxUid: targetMailboxUid, name, type: "calendar", color }, client);
         setCheckedFolderUidsState((prev) => new Set([...(prev ?? calendarFolders.map((f) => f.uid)), created.uid]));
         reloadFolders();
     }
@@ -209,7 +211,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         }
         setLoading(true);
         setError(null);
-        void Promise.allSettled(targets.map((f) => listCalendarEvents(f.uid)))
+        void Promise.allSettled(targets.map((f) => listCalendarEvents(f.uid, client)))
             .then((results) => {
                 if (seq !== reloadSeqRef.current) {
                     return;
@@ -264,7 +266,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                 if (!uid) {
                     return;
                 }
-                void getCalendarEvent(uid).then(
+                void getCalendarEvent(uid, client).then(
                     (fresh) => {
                         if (checkedFolderUidsRef.current.has(fresh.folderUid)) {
                             setEvents((previous) =>
@@ -281,7 +283,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                     },
                 );
             }),
-        [],
+        [client],
     );
 
     const occurrences = useMemo(
@@ -406,9 +408,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         }
         try {
             if (action.type === "move") {
-                await moveOccurrence(action.occurrence, action.deltaMs);
+                await moveOccurrence(action.occurrence, action.deltaMs, client);
             } else {
-                await resizeOccurrenceEnd(action.occurrence, action.newEnd);
+                await resizeOccurrenceEnd(action.occurrence, action.newEnd, client);
             }
             reload();
         } catch (err) {

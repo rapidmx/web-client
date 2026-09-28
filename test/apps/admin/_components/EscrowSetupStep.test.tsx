@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 
 const { generateEscrowKeyPair } = vi.hoisted(() => ({ generateEscrowKeyPair: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/escrowKeys.js", () => ({ generateEscrowKeyPair }));
+vi.mock("../../../../lib/crypto/escrowKeys.js", () => ({ generateEscrowKeyPair }));
 
 import EscrowSetupStep, { DOWNLOAD_URL_LIFETIME_MS, downloadTextFile } from "../../../../apps/shared/components/admin/setup/EscrowSetupStep.js";
 

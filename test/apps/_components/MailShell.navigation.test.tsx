@@ -14,14 +14,14 @@ import MailShell, { useMailShell } from "../../../apps/shared/components/mail/la
 import { useNavigate } from "../../../apps/shared/navigation/index.js";
 import { TestRouter } from "../routerTestUtils.js";
 
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
+vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({
     getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
     enrollKey: vi.fn(),
     getEncryptionPolicy: vi.fn().mockResolvedValue({ encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" }),
     lookupKeys: vi.fn().mockResolvedValue({ keys: [] }),
     findActivePublicKey: vi.fn().mockReturnValue(undefined),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../lib/crypto/keySession.js", () => ({
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     getUnlockedKeys: vi.fn().mockReturnValue({ masterKey: new Uint8Array(32) }),

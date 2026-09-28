@@ -28,7 +28,7 @@
  * this interface takes the resolved value as required, so an implementation never has to reproduce that default
  * itself.
  */
-import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
+import type { ParsedSearchQuery } from "../../../lib/search/queryGrammar.js";
 import type { Coverage, IndexEntitiesResult, InitParams, LocalSearchPage, WindowState } from "./localIndexWorker.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 

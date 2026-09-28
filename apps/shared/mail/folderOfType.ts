@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { Folder, createFolder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
+import { Folder, createFolder, listFolders } from "../../../lib/mail/mailApi.js";
+import type { ApiClient } from "../../../lib/util/api.js";
 
 /** The folders this page load has had to look up or make for a mailbox, so a second Report junk does not ask again. */
 const resolved = new Map<string, string>();
@@ -27,6 +28,7 @@ export async function resolveFolderOfType(
     name: string,
     known: Folder[] = [],
     onFound?: (folder: Folder) => void,
+    client?: ApiClient,
 ): Promise<string> {
     const inTree = known.find((folder) => folder.mailboxUid === mailboxUid && folder.type === type);
     if (inTree) {
@@ -37,13 +39,13 @@ export async function resolveFolderOfType(
     if (remembered) {
         return remembered;
     }
-    const listed = (await listFolders(mailboxUid)).find((folder) => folder.type === type);
+    const listed = (await listFolders(mailboxUid, client)).find((folder) => folder.type === type);
     if (listed) {
         onFound?.(listed);
         resolved.set(key, listed.uid);
         return listed.uid;
     }
-    const created = await createFolder({ mailboxUid, name, type });
+    const created = await createFolder({ mailboxUid, name, type }, client);
     resolved.set(key, created.uid);
     return created.uid;
 }

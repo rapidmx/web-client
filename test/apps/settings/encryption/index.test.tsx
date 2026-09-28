@@ -7,7 +7,8 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError, createApiClient } from "../../../../lib/util/api.js";
+import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
 import { resetEnrollmentTracker } from "../../../../apps/shared/signing/enrollmentTracker.js";
 import SettingsEncryptionPageBase from "../../../../apps/www/settings/encryption/index.js";
 import { withTestRouter } from "../../routerTestUtils.js";
@@ -40,10 +41,10 @@ const {
     cancelSignEnrollment: vi.fn(),
     getEscrowInfo: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => {
+vi.mock("../../../../lib/crypto/keyvaultApi.js", async (importOriginal) => {
     // `findActivePublicKey` is a pure function this page also imports - kept real (via importOriginal)
     // rather than added to every test's mock list, unlike the network-calling functions below.
-    const actual = await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>();
+    const actual = await importOriginal<typeof import("../../../../lib/crypto/keyvaultApi.js")>();
     return { ...actual, getKeyVault, addMasterKeyWrap, removeMasterKeyWrap, enrollKey, rekey, startSignEnrollment, checkSignEnrollmentStatus, checkSignEnrollmentNow, getCurrentSignEnrollment, cancelSignEnrollment, getEscrowInfo };
 });
 
@@ -52,7 +53,7 @@ const { getUnlockedKeys, destroyUnlockedKeys, unlockWithPassword } = vi.hoisted(
     destroyUnlockedKeys: vi.fn(),
     unlockWithPassword: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../../lib/crypto/keySession.js", () => ({
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     SIGNING_PRIVATE_KEY_AAD_PURPOSE: "sign-private-key",
@@ -66,13 +67,13 @@ const { buildPasswordWrap, buildRecoveryWraps, buildEscrowWrap } = vi.hoisted(()
     buildRecoveryWraps: vi.fn(),
     buildEscrowWrap: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/masterKeyWraps.js", () => ({ buildPasswordWrap, buildRecoveryWraps, buildEscrowWrap }));
+vi.mock("../../../../lib/crypto/masterKeyWraps.js", () => ({ buildPasswordWrap, buildRecoveryWraps, buildEscrowWrap }));
 
 const { generateKeyPairWithCsr, exportPrivateKeyPkcs8 } = vi.hoisted(() => ({
     generateKeyPairWithCsr: vi.fn(),
     exportPrivateKeyPkcs8: vi.fn(),
 }));
-vi.mock("@rapidmx/react-shared/crypto/keys.js", () => ({ generateKeyPairWithCsr, exportPrivateKeyPkcs8 }));
+vi.mock("../../../../lib/crypto/keys.js", () => ({ generateKeyPairWithCsr, exportPrivateKeyPkcs8 }));
 
 const { sealWithKey, buildAad, openWithKey, generateMasterKey, KeysLockedError } = vi.hoisted(() => ({
     sealWithKey: vi.fn(),
@@ -81,7 +82,7 @@ const { sealWithKey, buildAad, openWithKey, generateMasterKey, KeysLockedError }
     generateMasterKey: vi.fn(),
     KeysLockedError: class KeysLockedError extends Error {},
 }));
-vi.mock("@rapidmx/react-shared/crypto/masterKey.js", () => ({ sealWithKey, buildAad, openWithKey, generateMasterKey, KeysLockedError }));
+vi.mock("../../../../lib/crypto/masterKey.js", () => ({ sealWithKey, buildAad, openWithKey, generateMasterKey, KeysLockedError }));
 
 // jsdom's `navigator.clipboard` is a getter-only property — `Object.assign` throws against it, so
 // `writeText` must be installed via `defineProperty` instead (matches admin/domains/[uid].test.tsx's
@@ -203,6 +204,28 @@ describe("SettingsEncryptionPage", () => {
         expect(screen.getByText("Recovery code")).toBeInTheDocument();
     });
 
+    it("threads the ApiClient from ApiClientContext through its own keyvault calls, targeting the client's baseUrl for the mailbox list instead of the default cookie-based fetch", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url === "https://account-a.example.com/api/mail/mailboxes/auto-provision") return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SettingsEncryptionPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+
+        expect(await screen.findByText(/Encryption key: abcd1234/)).toBeInTheDocument();
+        expect(getKeyVault).toHaveBeenCalledWith("mb1", client);
+    });
+
     it("distinguishes a signing key from an encryption key, marks a revoked key, hides Remove for an escrow wrap, and falls back to the raw method name for an unrecognized wrap", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue({
@@ -285,7 +308,7 @@ describe("SettingsEncryptionPage", () => {
         await user.click(within(recoveryRow).getByRole("button", { name: "Remove" }));
         await user.click(await screen.findByRole("button", { name: "Remove method" }));
 
-        await waitFor(() => expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-1"));
+        await waitFor(() => expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-1", undefined));
         await waitFor(() => expect(screen.queryByText("Recovery code")).not.toBeInTheDocument());
     });
 
@@ -349,7 +372,7 @@ describe("SettingsEncryptionPage", () => {
         const user = userEvent.setup();
         await user.click(within(screen.getAllByText("Password")[0].closest("li")!).getByRole("button", { name: "Remove" }));
         await user.click(await screen.findByRole("button", { name: "Remove method" }));
-        await waitFor(() => expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "password", undefined));
+        await waitFor(() => expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "password", undefined, undefined));
     });
 
     it("doesn't offer adding a second password while one exists, pointing at key rotation instead", async () => {
@@ -388,7 +411,7 @@ describe("SettingsEncryptionPage", () => {
         await user.click(screen.getByRole("button", { name: "Add password" }));
 
         await waitFor(() => expect(buildPasswordWrap).toHaveBeenCalledWith("mb1", unlockedFixture.masterKey, "a good password"));
-        expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", expect.objectContaining({ method: "password" }));
+        expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", expect.objectContaining({ method: "password" }), undefined, undefined);
         await waitFor(() => expect(screen.getByLabelText("New password")).toHaveValue(""));
     });
 
@@ -551,7 +574,7 @@ describe("SettingsEncryptionPage", () => {
             expect(id).toMatch(/^recovery-[0-9a-z]+-[1-8]$/);
         }
         expect(removeMasterKeyWrap).toHaveBeenCalledTimes(1);
-        expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-1");
+        expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-1", undefined);
         // New wraps are all added before any old one is removed.
         expect(addMasterKeyWrap.mock.invocationCallOrder[7]).toBeLessThan(removeMasterKeyWrap.mock.invocationCallOrder[0]);
         expect(screen.getByText(/Your old recovery codes no longer work/)).toBeInTheDocument();
@@ -757,8 +780,8 @@ describe("SettingsEncryptionPage", () => {
 
         expect(await screen.findByText(/1 of your old recovery codes could not be removed and still work/)).toBeInTheDocument();
         expect(screen.getByText("NEWCODE-2")).toBeInTheDocument();
-        expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-1");
-        expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-2");
+        expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-1", undefined);
+        expect(removeMasterKeyWrap).toHaveBeenCalledWith("mb1", "recovery", "recovery-2", undefined);
     });
 
     /** A vault holding `total` wraps: one password, `recovery` old recovery codes, the rest passkeys. */
@@ -852,7 +875,7 @@ describe("SettingsEncryptionPage", () => {
             await screen.findByText(/Only 1 of 3 new recovery codes could be saved \(conflict\)\. 1 of your old recovery codes had to be removed to make room; the rest were kept and still work/),
         ).toBeInTheDocument();
         expect(removeMasterKeyWrap).toHaveBeenCalledTimes(2);
-        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", expect.objectContaining({ methodId: "old-recovery-2" }));
+        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", expect.objectContaining({ methodId: "old-recovery-2" }), undefined, undefined);
     });
 
     it("reports a first new code that fails to save after an old code was already removed to make room", async () => {
@@ -873,7 +896,7 @@ describe("SettingsEncryptionPage", () => {
             await screen.findByText("Could not regenerate recovery codes. 1 of your old recovery codes had to be removed to make room; the rest were kept and still work."),
         ).toBeInTheDocument();
         expect(screen.queryByText("Save your new recovery codes")).not.toBeInTheDocument();
-        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", expect.objectContaining({ methodId: "old-recovery-1" }));
+        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", expect.objectContaining({ methodId: "old-recovery-1" }), undefined, undefined);
     });
 
     it("puts back the old recovery code it removed to make room when the new code then fails to save", async () => {
@@ -892,7 +915,7 @@ describe("SettingsEncryptionPage", () => {
 
         expect(await screen.findByText("vault is full")).toBeInTheDocument();
         expect(addMasterKeyWrap).toHaveBeenCalledTimes(2);
-        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", full.masterKeyWraps[1]);
+        expect(addMasterKeyWrap).toHaveBeenLastCalledWith("mb1", full.masterKeyWraps[1], undefined, undefined);
     });
 
     it("shows an error when the fresh vault can't be fetched before regenerating", async () => {
@@ -1120,7 +1143,7 @@ describe("SettingsEncryptionPage", () => {
             ],
             masterKeyWraps: [expect.objectContaining({ method: "password" }), ...newRecoveryWraps],
             keys: freshKeys,
-        });
+        }, undefined);
         expect(unlockWithPassword).toHaveBeenCalledWith("mb1", freshKeys, "a good new password");
 
         await user.click(screen.getByRole("checkbox"));
@@ -1168,6 +1191,7 @@ describe("SettingsEncryptionPage", () => {
             expect(rekey).toHaveBeenCalledWith(
                 "mb1",
                 expect.objectContaining({ masterKeyWraps: [expect.objectContaining({ method: "password" }), recoveryFixture(1).wraps[0], freshEscrowWrap] }),
+                undefined,
             );
             expect(getEscrowInfo.mock.invocationCallOrder[0]).toBeLessThan(rekey.mock.invocationCallOrder[0]);
             await waitFor(() => expect(unlockWithPassword).toHaveBeenCalled());
@@ -1219,7 +1243,7 @@ describe("SettingsEncryptionPage", () => {
             await submitRotation(user);
 
             expect(await screen.findByText("ROTATED-1")).toBeInTheDocument();
-            expect(getEscrowInfo).toHaveBeenCalledWith("mb1");
+            expect(getEscrowInfo).toHaveBeenCalledWith("mb1", undefined);
             expect(buildEscrowWrap).not.toHaveBeenCalled();
             expect(rekey.mock.calls[0][1].masterKeyWraps.some((w: { method: string }) => w.method === "escrow")).toBe(false);
         });
@@ -1255,7 +1279,7 @@ describe("SettingsEncryptionPage", () => {
 
         await submitRotation(user, "a good password");
 
-        await waitFor(() => expect(rekey).toHaveBeenCalledWith("mb1", expect.objectContaining({ keys: [], wrappedKeys: [] })));
+        await waitFor(() => expect(rekey).toHaveBeenCalledWith("mb1", expect.objectContaining({ keys: [], wrappedKeys: [] }), undefined));
         await waitFor(() => expect(unlockWithPassword).toHaveBeenCalledWith("mb1", [], "a good password"));
     });
 
@@ -1453,10 +1477,14 @@ describe("SettingsEncryptionPage", () => {
         expect(exportPrivateKeyPkcs8).toHaveBeenCalledWith(keyPair.privateKey);
         expect(buildAad).toHaveBeenCalledWith("mb1", "sign-private-key");
         expect(sealWithKey).toHaveBeenCalledWith(unlockedFixture.masterKey, expect.any(Uint8Array), expect.any(Uint8Array));
-        expect(startSignEnrollment).toHaveBeenCalledWith("mb1", {
-            csr: "csr-pem",
-            wrappedKey: { ciphertext: "sealed-ct", nonce: "sealed-n", algorithm: "AES-256-GCM" },
-        });
+        expect(startSignEnrollment).toHaveBeenCalledWith(
+            "mb1",
+            {
+                csr: "csr-pem",
+                wrappedKey: { ciphertext: "sealed-ct", nonce: "sealed-n", algorithm: "AES-256-GCM" },
+            },
+            undefined,
+        );
     });
 
     it("shows the server's own message when starting signing enrollment fails", async () => {
@@ -1701,11 +1729,11 @@ describe("SettingsEncryptionPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
 
-        expect(getEscrowInfo).toHaveBeenCalledWith("mb1");
+        expect(getEscrowInfo).toHaveBeenCalledWith("mb1", undefined);
         await waitFor(() =>
             expect(buildEscrowWrap).toHaveBeenCalledWith(unlockedFixture.masterKey, "scope-1", expect.any(Uint8Array)),
         );
-        expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", escrowWrap);
+        expect(addMasterKeyWrap).toHaveBeenCalledWith("mb1", escrowWrap, undefined, undefined);
         expect(await screen.findByText(/under legal\/compliance escrow/)).toBeInTheDocument();
     });
 
@@ -2005,7 +2033,7 @@ describe("SettingsEncryptionPage", () => {
             await user.click(screen.getByRole("button", { name: "Cancel enrollment" }));
 
             await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
-            expect(cancelSignEnrollment).toHaveBeenCalledWith("mb1", "enr-1");
+            expect(cancelSignEnrollment).toHaveBeenCalledWith("mb1", "enr-1", undefined);
             expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
             expect(screen.queryByText("Cancelled by the mailbox owner.")).not.toBeInTheDocument();
             expect(screen.queryByRole("button", { name: "Cancel enrollment" })).not.toBeInTheDocument();

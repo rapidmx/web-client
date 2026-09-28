@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { Folder, Message } from "@rapidmx/react-shared/mail/mailApi.js";
-import { Label } from "@rapidmx/react-shared/mail/labelsApi.js";
+import { Folder, Message } from "../../../../lib/mail/mailApi.js";
+import { Label } from "../../../../lib/mail/labelsApi.js";
 import LabelMenuButton from "./labelMenu.js";
 import MoveToFolderDialog, { MOVE_TARGET_TYPES } from "./MoveToFolderDialog.js";
 import { ariaKeyShortcuts, withHint } from "../../keyboard/format.js";

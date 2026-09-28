@@ -23,9 +23,9 @@ const { evaluateMessageSecurity, evaluateMessageSecurityWithSeal, getUnlockedKey
         getSignerKeyState: vi.fn(),
         getMyMailboxAccess: vi.fn(),
     }));
-vi.mock("@rapidmx/react-shared/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity, evaluateMessageSecurityWithSeal }));
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
-vi.mock("@rapidmx/react-shared/mail/mailboxAccessApi.js", () => ({ getMyMailboxAccess }));
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity, evaluateMessageSecurityWithSeal }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
+vi.mock("../../../lib/mail/mailboxAccessApi.js", () => ({ getMyMailboxAccess }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints, getSignerKeyState, clearPinnedSignerCache: vi.fn() }));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock: vi.fn() }) }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ moveLocalEntity: vi.fn() }));
@@ -305,7 +305,9 @@ describe("MessageDetailPane: verified when first opened", () => {
         expect(notice.queryByText(/isn.t verified/)).not.toBeInTheDocument();
         expect(await notice.findByRole("button", { name: "Accept new key" })).toBeInTheDocument();
         expect(screen.queryByText(/signature couldn.t be verified/)).not.toBeInTheDocument();
-        expect(getMyMailboxAccess).toHaveBeenCalledWith("mb1");
+        // `undefined`: no `ApiClientContext.Provider` is mounted here, so this goes through the default
+        // global fetch, the same as before this call started passing its (optional) `client` through.
+        expect(getMyMailboxAccess).toHaveBeenCalledWith("mb1", undefined);
     });
 
     it("explains a signer key that is no longer trusted, without the key change notice", async () => {

@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useId, useRef, useState } from "react";
-import { blockedSendersOf, isSharedWithMe, safeSendersOf } from "@rapidmx/react-shared/mail/mailApi.js";
+import { blockedSendersOf, isSharedWithMe, safeSendersOf } from "../../../../lib/mail/mailApi.js";
 import {
     MAX_SENDER_LIST_ENTRIES,
     SenderListKind,
@@ -14,9 +14,10 @@ import {
     checkSenderEntry,
     removeBlockedSender,
     removeSafeSender,
-} from "@rapidmx/react-shared/mail/senderListsApi.js";
+} from "../../../../lib/mail/senderListsApi.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { useMailboxUpdateAccess } from "../../../shared/mail/useMailboxUpdateAccess.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
@@ -222,6 +223,7 @@ function ListsContent() {
     // `SettingsShell` only ever renders its children once `mailboxes` has loaded and `mailboxUid` has resolved to one of them - same established
     // non-null pattern as `apps/www/settings/read-receipts/index.tsx`.
     const mailbox = mailboxes.find((mb) => mb.uid === mailboxUid)!;
+    const client = useApiClient();
     const writable = useMailboxUpdateAccess(mailbox);
     // The lists are the owner's (and a manager's) to change; the server does not say which of the two a delegate is, so one who may update is offered the
     // forms and told what a refusal means.
@@ -277,8 +279,8 @@ function ListsContent() {
                                 otherEntries={safe}
                                 ownAddresses={ownAddresses}
                                 editable={writable}
-                                onAdd={(entry) => change(() => addBlockedSender(mailbox.uid, entry), "Couldn't block this sender")}
-                                onRemove={(entry) => change(() => removeBlockedSender(mailbox.uid, entry), "Couldn't unblock this sender")}
+                                onAdd={(entry) => change(() => addBlockedSender(mailbox.uid, entry, client), "Couldn't block this sender")}
+                                onRemove={(entry) => change(() => removeBlockedSender(mailbox.uid, entry, client), "Couldn't unblock this sender")}
                             />
                             <ListSection
                                 kind="safe"
@@ -286,8 +288,8 @@ function ListsContent() {
                                 otherEntries={blocked}
                                 ownAddresses={ownAddresses}
                                 editable={writable}
-                                onAdd={(entry) => change(() => addSafeSender(mailbox.uid, entry), "Couldn't add this safe sender")}
-                                onRemove={(entry) => change(() => removeSafeSender(mailbox.uid, entry), "Couldn't remove this safe sender")}
+                                onAdd={(entry) => change(() => addSafeSender(mailbox.uid, entry, client), "Couldn't add this safe sender")}
+                                onRemove={(entry) => change(() => removeSafeSender(mailbox.uid, entry, client), "Couldn't remove this safe sender")}
                             />
                         </div>
                     </>

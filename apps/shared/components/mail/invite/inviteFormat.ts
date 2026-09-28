@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import type { Attachment } from "@rapidmx/react-shared/mail/mailApi.js";
-import type { InviteResponse, MessageInvite } from "@rapidmx/react-shared/calendar/inviteApi.js";
+import type { Attachment } from "../../../../../lib/mail/mailApi.js";
+import type { InviteResponse, MessageInvite } from "../../../../../lib/calendar/inviteApi.js";
 import { APP_HREFS } from "../../../navigation/appHrefs.js";
 
 /** Whether an attachment is a calendar file - what tells the pane a message may carry an invitation worth asking the server about. By type

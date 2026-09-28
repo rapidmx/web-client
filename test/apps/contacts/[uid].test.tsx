@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ContactDetailPageBase from "../../../apps/www/contacts/[uid].js";
 import { latestRouter, withTestRouter } from "../routerTestUtils.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import { createApiClient } from "../../../lib/util/api.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const ContactDetailPage = withTestRouter(ContactDetailPageBase);
@@ -19,8 +21,8 @@ vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearP
 
 // A contact's key change is resolved through resolveKeyConflict(), mocked at the module boundary.
 const { resolveKeyConflict } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn() }));
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@rapidmx/react-shared/crypto/keyvaultApi.js")>()),
+vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     resolveKeyConflict,
 }));
 
@@ -268,5 +270,62 @@ describe("ContactDetailPage", () => {
 
         await waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/contacts"));
         expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
+    });
+
+    // Round: under an `ApiClientContext.Provider` (e.g. `tauri-client`), this page's own contact load/delete must
+    // route through that client's `baseUrl`/token instead of the default cookie-based `apiFetch()`. Matched by
+    // `.includes()` rather than `mockShell()`'s own `.startsWith()` prefixes, since an explicit client's requests
+    // carry an absolute `https://acct-a.example.com/...` URL, not a relative one.
+    describe("under an ApiClientContext.Provider", () => {
+        function mockShellAnyOrigin(extra?: (url: string, init?: RequestInit) => Response | undefined) {
+            return mockFetch((url, init) => {
+                const custom = extra?.(url, init);
+                if (custom) return custom;
+                if (url.includes("/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                if (url.includes("/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.includes("/mail/folders")) return jsonResponse(200, [contactsFolder]);
+                if (url.includes("/mail/contact-lists")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+        }
+
+        it("loads the contact through the default global fetch with no provider above it (unchanged behavior)", async () => {
+            const fetchMock = mockShellAnyOrigin((url) => (url.includes("/mail/contacts/c1") ? jsonResponse(200, jane) : undefined));
+            render(<ContactDetailPage userUid="u1" params={{ uid: "c1" }} />);
+
+            expect(await screen.findByRole("heading", { name: "Jane Doe" })).toBeInTheDocument();
+            const contactCall = fetchMock.mock.calls.find(([url]) => (url as string).includes("/mail/contacts/c1"))!;
+            expect(contactCall[0]).toBe("/api/mail/contacts/c1");
+            expect(new Headers((contactCall[1] as RequestInit).headers).get("Authorization")).toBeNull();
+        });
+
+        it("loads and deletes the contact through the provided ApiClient's own baseUrl and bearer token", async () => {
+            const fetchMock = mockShellAnyOrigin((url, init) => {
+                if (url.includes("/mail/contacts/c1") && (init?.method ?? "GET") === "GET") return jsonResponse(200, jane);
+                if (url.includes("/mail/contacts/c1?version=0") && init?.method === "DELETE") return jsonResponse(200, {});
+                return undefined;
+            });
+            const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+            const user = userEvent.setup();
+            render(
+                <ApiClientContext.Provider value={client}>
+                    <ContactDetailPage userUid="u1" params={{ uid: "c1" }} />
+                </ApiClientContext.Provider>,
+            );
+
+            expect(await screen.findByRole("heading", { name: "Jane Doe" })).toBeInTheDocument();
+            const getCall = fetchMock.mock.calls.find(
+                ([url, init]) => (url as string).includes("/mail/contacts/c1") && ((init as RequestInit | undefined)?.method ?? "GET") === "GET",
+            )!;
+            expect(getCall[0]).toBe("https://acct-a.example.com/api/mail/contacts/c1");
+            expect(new Headers((getCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+
+            await user.click(await screen.findByRole("button", { name: "Delete" }));
+
+            await waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/contacts"));
+            const deleteCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")!;
+            expect(deleteCall[0]).toBe("https://acct-a.example.com/api/mail/contacts/c1?version=0");
+            expect(new Headers((deleteCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+        });
     });
 });

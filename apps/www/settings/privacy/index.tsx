@@ -4,30 +4,31 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
     DataExportFormat,
     DataExportRequest,
     createExportRequest,
     exportRequestDownloadUrl,
     listExportRequests,
-} from "@rapidmx/react-shared/mail/dataExportApi.js";
+} from "../../../../lib/mail/dataExportApi.js";
 import {
     MailboxImportFormat,
     MailboxImportRequest,
     listImportRequests,
     uploadMailboxImport,
-} from "@rapidmx/react-shared/mail/mailboxImportApi.js";
+} from "../../../../lib/mail/mailboxImportApi.js";
 import {
     DataSubjectErasureRequest,
     createErasureRequest,
     listErasureRequests,
-} from "@rapidmx/react-shared/mail/erasureRequestApi.js";
-import { Folder, listFolders } from "@rapidmx/react-shared/mail/mailApi.js";
+} from "../../../../lib/mail/erasureRequestApi.js";
+import { Folder, listFolders } from "../../../../lib/mail/mailApi.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
+import Button from "../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../lib/components/overlays/Modal.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const NON_MAIL_FOLDER_TYPES = new Set(["calendar", "contacts", "tasks", "notes"]);
@@ -121,6 +122,7 @@ function OwnMailboxOnlyNotice({ ownedMailboxCount, ownMailboxLabel }: { ownedMai
 }
 
 function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mailboxLabel: string }) {
+    const client = useApiClient();
     const [requests, setRequests] = useState<DataExportRequest[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -133,7 +135,7 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
     const loadSeq = useRef(0);
     function loadRequests() {
         const seq = ++loadSeq.current;
-        return listExportRequests()
+        return listExportRequests({}, client)
             .then((data) => {
                 if (seq === loadSeq.current) {
                     setRequests(data);
@@ -154,7 +156,7 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
         e.preventDefault();
         setCreating(true);
         try {
-            await createExportRequest({ format });
+            await createExportRequest({ format }, client);
             await loadRequests();
         } catch (err) {
             notifyApiError(err, "Couldn't start the export");
@@ -233,6 +235,7 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
 }
 
 function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
+    const client = useApiClient();
     const [folders, setFolders] = useState<Folder[]>([]);
     const [targetFolderUid, setTargetFolderUid] = useState("");
     const [foldersError, setFoldersError] = useState<string | null>(null);
@@ -248,7 +251,7 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
     const loadSeq = useRef(0);
     function loadRequests() {
         const seq = ++loadSeq.current;
-        return listImportRequests()
+        return listImportRequests({}, client)
             .then((data) => {
                 if (seq === loadSeq.current) {
                     setRequests(data);
@@ -265,7 +268,7 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
         // Only reachable once mailboxUid is resolved - SettingsShell never renders this page's children
         // until then, the same invariant every other settings page in this codebase already relies on.
         void Promise.all([
-            listFolders(mailboxUid!)
+            listFolders(mailboxUid!, client)
                 .then((all) => {
                     const mailFolders = all.filter((f) => !NON_MAIL_FOLDER_TYPES.has(f.type));
                     setFolders(mailFolders);
@@ -377,6 +380,7 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
 }
 
 function ErasureSection({ mailboxLabel }: { mailboxLabel: string }) {
+    const client = useApiClient();
     const [requests, setRequests] = useState<DataSubjectErasureRequest[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -385,7 +389,7 @@ function ErasureSection({ mailboxLabel }: { mailboxLabel: string }) {
     const [createError, setCreateError] = useState<string | null>(null);
 
     function loadRequests() {
-        return listErasureRequests()
+        return listErasureRequests({}, client)
             .then(setRequests)
             .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load your erasure requests."));
     }
@@ -404,7 +408,7 @@ function ErasureSection({ mailboxLabel }: { mailboxLabel: string }) {
         setCreateError(null);
         setCreating(true);
         try {
-            await createErasureRequest();
+            await createErasureRequest(client);
             setConfirming(false);
             await loadRequests();
         } catch (err) {

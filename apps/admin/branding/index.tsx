@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { Branding, getBranding } from "@rapidmx/react-shared/branding/brandingApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { Branding, getBranding } from "../../../lib/branding/brandingApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import BrandingForm from "../../shared/components/admin/settings/BrandingForm.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
 
 export default function BrandingPage(props: Omit<AdminShellProps, "active">) {
     return (

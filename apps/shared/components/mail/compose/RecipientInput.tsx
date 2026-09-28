@@ -11,7 +11,7 @@ import {
     type ContactSuggestionOptions,
     type RecipientSuggestion,
     type RecipientSuggestionKind,
-} from "@rapidmx/react-shared/mail/directoryApi.js";
+} from "../../../../../lib/mail/directoryApi.js";
 import { formatRecipient, isValidRecipientAddress, parseRecipient, splitRecipientList, splitTypedRecipients } from "./recipients.js";
 
 /** How long typing must pause before suggestions are requested. */

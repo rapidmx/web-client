@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useEffect, useRef, useState } from "react";
 import { HiCheck, HiChevronDown, HiChevronLeft, HiChevronRight, HiMinus } from "react-icons/hi2";
-import PopoverPortal from "@rapidmx/react-shared/components/overlays/PopoverPortal.js";
+import PopoverPortal from "../../../../lib/components/overlays/PopoverPortal.js";
 
 /** What every row has. `checked` turns it into a radio/checkbox item (the caller says which via `role`) and
  * draws the checkmark column; without it the row is a plain command. */

@@ -5,7 +5,7 @@
 import React from "react";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { Message } from "@rapidmx/react-shared/mail/mailApi.js";
+import type { Message } from "../../../lib/mail/mailApi.js";
 import OutboxRowStatus from "../../../apps/shared/components/mail/OutboxRowStatus.js";
 
 const row = (fields: Partial<Message>) => <OutboxRowStatus message={{ uid: "m1", ...fields } as Message} />;

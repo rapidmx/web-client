@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { useEffect } from "react";
-import { getPushClient, PushStatus } from "@rapidmx/react-shared/mail/pushClient.js";
+import { getPushClient, PushStatus } from "../../../lib/mail/pushClient.js";
 import { dismiss, notify } from "./store.js";
 
 /** How long the live connection has to be down before anyone is told: a reconnect within a few seconds is not worth a word. */

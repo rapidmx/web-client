@@ -5,7 +5,7 @@
 import React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getPushClient, resetPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
+import { getPushClient, resetPushClient } from "../../../lib/mail/pushClient.js";
 import { dismiss, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import { useCalendarReminders } from "../../../apps/shared/calendar/useCalendarReminders.js";
 

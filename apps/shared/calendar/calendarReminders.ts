@@ -5,7 +5,7 @@
 /** Pure helpers behind `useCalendarReminders.ts` - kept apart from the hook so the push-payload parsing, the snooze
  * arithmetic and the pop-up's wording are each testable without a React tree or a socket. */
 
-import type { PushEvent } from "@rapidmx/react-shared/mail/pushClient.js";
+import type { PushEvent } from "../../../lib/mail/pushClient.js";
 
 /** How long "Snooze" waits before the reminder reappears - or less, if the meeting starts sooner (`snoozeDelayMs()`). */
 export const SNOOZE_MS = 5 * 60_000;

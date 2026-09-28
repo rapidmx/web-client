@@ -13,26 +13,26 @@ import { withTestRouter } from "../routerTestUtils.js";
 
 // Rendered inside a router, as the app's shell does: the address it reads the selection from is the router's (see routerTestUtils.tsx).
 const MailShell = withTestRouter(MailShellBase);
-import { getKeyVault } from "@rapidmx/react-shared/crypto/keyvaultApi.js";
-import { resetPushClient } from "@rapidmx/react-shared/mail/pushClient.js";
-import { getUnlockedKeys } from "@rapidmx/react-shared/crypto/keySession.js";
+import { getKeyVault } from "../../../lib/crypto/keyvaultApi.js";
+import { resetPushClient } from "../../../lib/mail/pushClient.js";
+import { getUnlockedKeys } from "../../../lib/crypto/keySession.js";
 import { beginPendingSend, finishPendingSend } from "../../../apps/shared/mail/outbox/pendingSends.js";
 import { sendState } from "../../../apps/shared/mail/outbox/sendState.js";
 
 // MailShell now wraps its content in KeyEnrollmentGate (see that component), which checks
 // getKeyVault() once mailboxUid resolves. Mocked at the module level rather than via the shared
 // mockFetch() helper used everywhere else in this file: KeyEnrollmentGate.tsx's dependency on
-// @rapidmx/react-shared's crypto/ subpath (added ahead of a real react-shared publish, consumed here
-// via a yarn patch) isn't reliably reached by a plain vi.stubGlobal("fetch", ...) the way every other
-// @rapidmx/react-shared API call in this suite is - a Vite/Vitest module-resolution quirk specific to
-// this not-yet-published subpath, confirmed by direct reproduction. Every test in this file exercises
+// lib/crypto/ (moved in from the former @rapidmx/react-shared package, 2026-09-27 - see
+// .claude/NOTES.md) isn't reliably reached by a plain vi.stubGlobal("fetch", ...) the way every other
+// lib/ API call in this suite is - a Vite/Vitest module-resolution quirk specific to
+// this subpath, confirmed by direct reproduction. Every test in this file exercises
 // MailShell's own behavior, not encryption enrollment, so "already enrolled" is the correct default
 // throughout - a mailbox with no keys enrolled yet is KeyEnrollmentGate's own concern, covered by its
 // own dedicated test file.
 // getEncryptionPolicy()/lookupKeys() are also stubbed here since ComposeWindow.tsx (mounted by clicking
 // this shell's own Compose button) calls both unconditionally on mount, regardless of whether a
 // mailbox's encryption keys are unlocked - the same real-module-under-jsdom concern as getKeyVault above.
-vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
+vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({
     getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
     enrollKey: vi.fn(),
     getEncryptionPolicy: vi.fn().mockResolvedValue({ encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" }),
@@ -46,7 +46,7 @@ vi.mock("@rapidmx/react-shared/crypto/keyvaultApi.js", () => ({
 // Treated as already-unlocked this session (see KeyEnrollmentGate's own getUnlockedKeys() short-circuit)
 // so these tests never hit its "Unlock your mailbox" password prompt - that flow is this component's own
 // concern, covered by KeyEnrollmentGate.test.tsx.
-vi.mock("@rapidmx/react-shared/crypto/keySession.js", () => ({
+vi.mock("../../../lib/crypto/keySession.js", () => ({
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     getUnlockedKeys: vi.fn().mockReturnValue({ masterKey: new Uint8Array(32) }),

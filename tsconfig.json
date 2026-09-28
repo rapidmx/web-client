@@ -4,8 +4,8 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
-    "rootDir": "apps",
-    "outDir": "dist/apps",
+    "rootDir": ".",
+    "outDir": "dist",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -16,5 +16,5 @@
     "noImplicitAny": false,
     "types": ["vite/client"]
   },
-  "include": ["apps"]
+  "include": ["apps", "lib"]
 }

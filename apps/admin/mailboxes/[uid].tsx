@@ -4,15 +4,15 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "@rapidmx/react-shared/util/api.js";
-import { deleteMailbox, getMailbox, impersonateUser, Mailbox } from "@rapidmx/react-shared/mail/mailApi.js";
+import { ApiRequestError } from "../../../lib/util/api.js";
+import { deleteMailbox, getMailbox, impersonateUser, Mailbox } from "../../../lib/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import ShareAccessCard from "../../shared/components/admin/mailboxes/ShareAccessCard.js";
 import ResourceSettingsCard from "../../shared/components/admin/mailboxes/ResourceSettingsCard.js";
 import EscrowScopeCard from "../../shared/components/admin/mailboxes/EscrowScopeCard.js";
-import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
-import Button from "@rapidmx/react-shared/components/buttons/Button.js";
-import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import Alert from "../../../lib/components/feedback/Alert.js";
+import Button from "../../../lib/components/buttons/Button.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 
 function formatBytes(bytes: number): string {
     if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
