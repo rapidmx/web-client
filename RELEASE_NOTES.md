@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- **`lib/`, containing `@rapidmx/react-shared`'s entire former source, moved in unchanged and published at `@rapidmx/web-client/lib/<path>.js`.** Every real consumer of react-shared (`booking-plugin`, `meet-plugin`, `rapidmx/server`, `tauri-client`, and this package itself) already depended on `@rapidmx/web-client` too, so maintaining it as a separate package no longer served a purpose - `react-shared` is now retired, pointing here. Includes `createApiClient()`, an explicit `baseUrl`/bearer-token calling mode for every REST client module alongside the existing global cookie-based `apiFetch()`, and `ApiClientContext`/`useApiClient()` so a component tree can reach it without prop-drilling.
+- **Wired every mail, calendar, contacts, tasks and settings page, component and hook that fetches data to `useApiClient()`**, so a native multi-account host (the new Tauri client) can back each call with its own bearer-token client instead of always using the default global cookie session - each existing call site is unaffected when no `ApiClientContext.Provider` is present above it. `useSessionRefresh()`/`useRedirectIfUnauthenticated()` are no-ops under an explicit client, since there's no cookie to refresh and no sign-in page to redirect to in that case. A few gaps deliberately remain out of scope for this pass (the `apps/shared/signing/**` enrollment-tracking module-level stores, `uploadMailboxImport()`'s raw-bytes upload, auth-server-targeted calls like `stopImpersonating()`/`logOutOfAuthServer()`) - see NOTES for the full survey of what was and wasn't converted and why.
+- **A swappable local-index transport** (`apps/shared/search/localIndexTransport.ts`), defaulting to the existing Worker/OPFS one unchanged, so a native host app can back Tier 2 search with its own implementation instead.
+
 ## v0.21.0
 
 ### Fixed
