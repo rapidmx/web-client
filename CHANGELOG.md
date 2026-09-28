@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-28
+
+### Added
+- Added a swappable local-index transport, defaulting to the existing Worker/OPFS one unchanged, so a native host app can back Tier 2 search with its own implementation
+- Added lib/, containing @rapidmx/react-shared's entire source moved in unchanged and exported at @rapidmx/web-client/lib/*.js, since every real consumer of react-shared already depended on web-client too
+
+### Changed
+- Document the new export, the full call-site survey, and what a native host integration needs, in NOTES
+- Wire every mail, calendar, contacts, tasks and settings page, component and hook that fetches data to useApiClient(), so a native multi-account host can back each call with its own bearer-token client instead of always using the default global cookie session
+- Give the local index's verification-seal writes and pinnedSigners.ts their own client threading and per-account cache, closing a gap the rest of the wiring missed
+- Give useMailboxUpdateAccess.ts its own cache per client, so two accounts can never answer each other's cached mailbox-access question
+- Expose the active client on ComposeContext instead of having every compose descendant resolve its own
+- Make useSessionRefresh and useRedirectIfUnauthenticated no-op under an explicit client, since there is no cookie to refresh and no sign-in page to redirect to in that case
+- Document the merge, the wiring, and the remaining raw-fetch and signing-enrollment gaps in NOTES and README
+- Document the lib/ merge, multi-account API client wiring and swappable local-index transport in RELEASE_NOTES
+
 ## [0.21.0] - 2026-09-27
 
 ### Changed
@@ -1073,7 +1089,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/rapidmx/web-client/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/rapidmx/web-client/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/rapidmx/web-client/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rapidmx/web-client/compare/v0.18.0...v0.19.0

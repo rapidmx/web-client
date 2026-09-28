@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.22.0
+
 ### Added
 
 - **`lib/`, containing `@rapidmx/react-shared`'s entire former source, moved in unchanged and published at `@rapidmx/web-client/lib/<path>.js`.** Every real consumer of react-shared (`booking-plugin`, `meet-plugin`, `rapidmx/server`, `tauri-client`, and this package itself) already depended on `@rapidmx/web-client` too, so maintaining it as a separate package no longer served a purpose - `react-shared` is now retired, pointing here. Includes `createApiClient()`, an explicit `baseUrl`/bearer-token calling mode for every REST client module alongside the existing global cookie-based `apiFetch()`, and `ApiClientContext`/`useApiClient()` so a component tree can reach it without prop-drilling.
