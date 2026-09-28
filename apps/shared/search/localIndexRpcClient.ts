@@ -25,6 +25,18 @@
  * every pending request and drops the module-level `worker` reference so the next `call()` spawns a
  * replacement. `searchTier2.ts` additionally races its own calls against a timeout, since a Worker that's
  * merely stuck (not crashed) posts no `error` event at all.
+ *
+ * **Swappable transport**: everything above is specific to this one implementation - the Worker/OPFS-backed
+ * default. Every function this module exports below (`initLocalIndex`, `searchLocal`, `destroyLocalIndex`, ...)
+ * is a thin delegator to whichever `LocalIndexTransport` (`localIndexTransport.ts`) is "current," which defaults
+ * to `workerLocalIndexTransport` - this file's own implementation, wrapped - and can be swapped once, at startup,
+ * via `setLocalIndexTransport()`. A host app with a different storage backend (no Worker, no OPFS, no WASM at
+ * all - `tauri-client`'s native SQLCipher/`rusqlite` index) installs its own transport there; every call site
+ * that already goes through this file's exports (`searchTier2.ts`, `LocalIndexLifecycle.tsx`,
+ * `localIndexBuilder.ts`, and the rest) then runs against that backend instead, unmodified. The three
+ * module-level constants below (`SIGN_OUT_CHANNEL`, `PENDING_DELETIONS_KEY`, `DESTROY_ALL_TIMEOUT_MS`) remain
+ * plain exports, not part of the swappable interface - they name this one transport's own cross-tab/localStorage
+ * mechanics, which a different transport has no reason to share.
  */
 import type { ParsedSearchQuery } from "@rapidmx/react-shared/search/queryGrammar.js";
 import type {
@@ -48,6 +60,7 @@ import type {
 } from "./localIndexWorker.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 import { removeLocalIndexDirectories, removeLocalIndexDirectory } from "./localIndexStorage.js";
+import type { LocalIndexTransport, PruneLocalEntitiesOptions, SetLocalIndexBuildingCompletion } from "./localIndexTransport.js";
 
 let worker: Worker | undefined;
 let nextRequestId = 1;
@@ -61,7 +74,7 @@ const initializedMailboxes = new Set<string>();
 let generationCounter = 0;
 
 /** A fresh generation - see this module's doc comment. */
-export function nextLocalIndexGeneration(): number {
+function nextLocalIndexGenerationImpl(): number {
     generationCounter += 1;
     return generationCounter;
 }
@@ -141,7 +154,7 @@ function listenForSignOut(): void {
 async function closeEverythingInThisTab(): Promise<void> {
     signedOut = true;
     initializedMailboxes.clear();
-    await call("destroyAll", { generation: nextLocalIndexGeneration() } satisfies GenerationParams).catch(() => undefined);
+    await call("destroyAll", { generation: nextLocalIndexGenerationImpl() } satisfies GenerationParams).catch(() => undefined);
 }
 
 function call<T>(method: LocalIndexRequest["method"], params?: unknown): Promise<T> {
@@ -194,7 +207,7 @@ let pendingRetry: Promise<void> | undefined;
 
 /** Retries every deletion an earlier page load couldn't finish. Runs once per page load (memoized), before
  * this tab's first `init` - so it never races an index this tab itself opens. Never rejects. */
-export function retryPendingLocalIndexDeletions(): Promise<void> {
+function retryPendingLocalIndexDeletionsImpl(): Promise<void> {
     pendingRetry ??= (async () => {
         const uids = readPendingDeletions();
         if (uids.length === 0) {
@@ -214,8 +227,8 @@ export function retryPendingLocalIndexDeletions(): Promise<void> {
     return pendingRetry;
 }
 
-export async function initLocalIndex(params: InitParams): Promise<void> {
-    await retryPendingLocalIndexDeletions();
+async function initLocalIndexImpl(params: InitParams): Promise<void> {
+    await retryPendingLocalIndexDeletionsImpl();
     if (signedOut) {
         throw new Error("Signed out - the local search index is unavailable in this tab.");
     }
@@ -223,13 +236,13 @@ export async function initLocalIndex(params: InitParams): Promise<void> {
     initializedMailboxes.add(params.mailboxUid);
 }
 
-export function indexLocalEntities(mailboxUid: string, entities: LocalIndexEntity[], generation?: number): Promise<IndexEntitiesResult> {
+function indexLocalEntitiesImpl(mailboxUid: string, entities: LocalIndexEntity[], generation?: number): Promise<IndexEntitiesResult> {
     return call("indexEntities", { mailboxUid, entities, generation } satisfies IndexEntitiesParams);
 }
 
 /** Drops one message from this session's local index (a delete). A no-op for a mailbox not indexed in
  * this tab - a later build pass prunes it instead. Never rejects: best-effort housekeeping. */
-export async function removeLocalEntity(mailboxUid: string, entityUid: string): Promise<void> {
+async function removeLocalEntityImpl(mailboxUid: string, entityUid: string): Promise<void> {
     if (!initializedMailboxes.has(mailboxUid)) {
         return;
     }
@@ -237,44 +250,35 @@ export async function removeLocalEntity(mailboxUid: string, entityUid: string): 
 }
 
 /** Re-points one indexed message at its new folder (archive, cancel-scheduled-send) so `folder:`-scoped
- * local searches stay correct. Same no-op/never-rejects rules as `removeLocalEntity()`. */
-export async function moveLocalEntity(mailboxUid: string, entityUid: string, folderUid: string): Promise<void> {
+ * local searches stay correct. Same no-op/never-rejects rules as `removeLocalEntityImpl()`. */
+async function moveLocalEntityImpl(mailboxUid: string, entityUid: string, folderUid: string): Promise<void> {
     if (!initializedMailboxes.has(mailboxUid)) {
         return;
     }
     await call("moveEntity", { mailboxUid, entityUid, folderUid } satisfies MoveEntityParams).catch(() => undefined);
 }
 
-export function getIndexedVersions(mailboxUid: string, entityUids: string[]): Promise<Record<string, string>> {
+function getIndexedVersionsImpl(mailboxUid: string, entityUids: string[]): Promise<Record<string, string>> {
     return call("indexedVersions", { mailboxUid, entityUids } satisfies IndexedVersionsParams);
 }
 
-export function pruneLocalEntities(
-    mailboxUid: string,
-    keepEntityUids: string[],
-    since: string | undefined,
-    options: { folderUids?: string[]; generation?: number } = {},
-): Promise<number> {
+function pruneLocalEntitiesImpl(mailboxUid: string, keepEntityUids: string[], since: string | undefined, options: PruneLocalEntitiesOptions): Promise<number> {
     return call("pruneEntities", { mailboxUid, keepEntityUids, since, ...options } satisfies PruneEntitiesParams);
 }
 
-export function searchLocal(mailboxUid: string, parsed: ParsedSearchQuery, limit: number, offset = 0): Promise<LocalSearchPage> {
+function searchLocalImpl(mailboxUid: string, parsed: ParsedSearchQuery, limit: number, offset: number): Promise<LocalSearchPage> {
     return call("search", { mailboxUid, parsed, limit, offset } satisfies SearchParams);
 }
 
-export function getLocalCoverage(mailboxUid: string): Promise<Coverage> {
+function getLocalCoverageImpl(mailboxUid: string): Promise<Coverage> {
     return call("coverage", mailboxUid);
 }
 
-export function setLocalIndexWindow(mailboxUid: string, timeFloorMonths: number, byteBudgetBytes: number, generation?: number): Promise<WindowState> {
+function setLocalIndexWindowImpl(mailboxUid: string, timeFloorMonths: number, byteBudgetBytes: number, generation?: number): Promise<WindowState> {
     return call("setWindow", { mailboxUid, timeFloorMonths, byteBudgetBytes, generation } satisfies SetWindowParams);
 }
 
-export function setLocalIndexBuilding(
-    mailboxUid: string,
-    building: boolean,
-    completion: { complete: boolean; coveredFrom?: string; coveredUntil?: string; generation?: number } = { complete: false },
-): Promise<void> {
+function setLocalIndexBuildingImpl(mailboxUid: string, building: boolean, completion: SetLocalIndexBuildingCompletion): Promise<void> {
     return call("setBuilding", { mailboxUid, building, ...completion } satisfies SetBuildingParams);
 }
 
@@ -283,10 +287,10 @@ export function setLocalIndexBuilding(
  * lifecycle hooks where a failure mustn't block key destruction) but resolves `false` - and logs why -
  * when the index could not be removed, e.g. because another tab still has it open; the deletion is then
  * retried on the next page load. */
-export async function destroyLocalIndex(mailboxUid: string): Promise<boolean> {
+async function destroyLocalIndexImpl(mailboxUid: string): Promise<boolean> {
     updatePendingDeletions((current) => current.add(mailboxUid));
     try {
-        await call("destroy", { mailboxUid, generation: nextLocalIndexGeneration() } satisfies DestroyParams);
+        await call("destroy", { mailboxUid, generation: nextLocalIndexGenerationImpl() } satisfies DestroyParams);
         updatePendingDeletions((current) => current.delete(mailboxUid));
         return true;
     } catch (err) {
@@ -309,7 +313,7 @@ export const DESTROY_ALL_TIMEOUT_MS = 3_000;
  * would be waste), then removes the directories. Anything left behind is retried on the next load. Resolves
  * `true` when everything was removed within `timeoutMs`; never rejects.
  */
-export async function destroyAllLocalIndexes(timeoutMs = DESTROY_ALL_TIMEOUT_MS): Promise<boolean> {
+async function destroyAllLocalIndexesImpl(timeoutMs: number): Promise<boolean> {
     signedOut = true;
     writePendingDeletions([ALL_INDEXES]);
     try {
@@ -320,7 +324,7 @@ export async function destroyAllLocalIndexes(timeoutMs = DESTROY_ALL_TIMEOUT_MS)
     const work = (async () => {
         let ok = true;
         if (worker) {
-            const { failed } = await call<{ failed: string[] }>("destroyAll", { generation: nextLocalIndexGeneration() } satisfies GenerationParams).catch(() => ({
+            const { failed } = await call<{ failed: string[] }>("destroyAll", { generation: nextLocalIndexGenerationImpl() } satisfies GenerationParams).catch(() => ({
                 failed: ["(worker)"],
             }));
             ok = failed.length === 0;
@@ -344,6 +348,122 @@ export async function destroyAllLocalIndexes(timeoutMs = DESTROY_ALL_TIMEOUT_MS)
 
 /** Removes local indexes for mailboxes outside `accessibleMailboxUids` - e.g. left behind by a different
  * user who signed in on this device without signing out. Never rejects. */
-export async function pruneInaccessibleLocalIndexes(accessibleMailboxUids: Iterable<string>): Promise<void> {
+async function pruneInaccessibleLocalIndexesImpl(accessibleMailboxUids: Iterable<string>): Promise<void> {
     await removeLocalIndexDirectories(new Set(accessibleMailboxUids)).catch(() => undefined);
+}
+
+/**
+ * This file's own Worker/OPFS-backed implementation, wrapping the functions above - see this module's own doc
+ * comment ("Swappable transport"). The default `LocalIndexTransport` (`localIndexTransport.ts`); every export
+ * below delegates to whichever transport `setLocalIndexTransport()` has made current, which starts out as this
+ * one.
+ */
+export const workerLocalIndexTransport: LocalIndexTransport = {
+    nextGeneration: nextLocalIndexGenerationImpl,
+    init: initLocalIndexImpl,
+    indexEntities: indexLocalEntitiesImpl,
+    removeEntity: removeLocalEntityImpl,
+    moveEntity: moveLocalEntityImpl,
+    indexedVersions: getIndexedVersionsImpl,
+    pruneEntities: pruneLocalEntitiesImpl,
+    search: searchLocalImpl,
+    coverage: getLocalCoverageImpl,
+    setWindow: setLocalIndexWindowImpl,
+    setBuilding: setLocalIndexBuildingImpl,
+    destroy: destroyLocalIndexImpl,
+    destroyAll: destroyAllLocalIndexesImpl,
+    pruneInaccessible: pruneInaccessibleLocalIndexesImpl,
+    retryPendingDeletions: retryPendingLocalIndexDeletionsImpl,
+};
+
+let currentTransport: LocalIndexTransport = workerLocalIndexTransport;
+
+/**
+ * Swaps the `LocalIndexTransport` every export below delegates to - see this module's own doc comment
+ * ("Swappable transport"). Defaults to `workerLocalIndexTransport`; a host app with a different storage backend
+ * (e.g. `tauri-client`'s native SQLCipher/`rusqlite` index) calls this once, at startup, before any of this
+ * module's other exports are used, so every call site already wired through them runs against that backend
+ * instead - unmodified.
+ */
+export function setLocalIndexTransport(transport: LocalIndexTransport): void {
+    currentTransport = transport;
+}
+
+/** A fresh generation - see this module's doc comment. */
+export function nextLocalIndexGeneration(): number {
+    return currentTransport.nextGeneration();
+}
+
+export function initLocalIndex(params: InitParams): Promise<void> {
+    return currentTransport.init(params);
+}
+
+export function indexLocalEntities(mailboxUid: string, entities: LocalIndexEntity[], generation?: number): Promise<IndexEntitiesResult> {
+    return currentTransport.indexEntities(mailboxUid, entities, generation);
+}
+
+/** Drops one message from this session's local index (a delete). A no-op for a mailbox not indexed in
+ * this tab - a later build pass prunes it instead. Never rejects: best-effort housekeeping. */
+export function removeLocalEntity(mailboxUid: string, entityUid: string): Promise<void> {
+    return currentTransport.removeEntity(mailboxUid, entityUid);
+}
+
+/** Re-points one indexed message at its new folder (archive, cancel-scheduled-send) so `folder:`-scoped
+ * local searches stay correct. Same no-op/never-rejects rules as `removeLocalEntity()`. */
+export function moveLocalEntity(mailboxUid: string, entityUid: string, folderUid: string): Promise<void> {
+    return currentTransport.moveEntity(mailboxUid, entityUid, folderUid);
+}
+
+export function getIndexedVersions(mailboxUid: string, entityUids: string[]): Promise<Record<string, string>> {
+    return currentTransport.indexedVersions(mailboxUid, entityUids);
+}
+
+export function pruneLocalEntities(
+    mailboxUid: string,
+    keepEntityUids: string[],
+    since: string | undefined,
+    options: PruneLocalEntitiesOptions = {},
+): Promise<number> {
+    return currentTransport.pruneEntities(mailboxUid, keepEntityUids, since, options);
+}
+
+export function searchLocal(mailboxUid: string, parsed: ParsedSearchQuery, limit: number, offset = 0): Promise<LocalSearchPage> {
+    return currentTransport.search(mailboxUid, parsed, limit, offset);
+}
+
+export function getLocalCoverage(mailboxUid: string): Promise<Coverage> {
+    return currentTransport.coverage(mailboxUid);
+}
+
+export function setLocalIndexWindow(mailboxUid: string, timeFloorMonths: number, byteBudgetBytes: number, generation?: number): Promise<WindowState> {
+    return currentTransport.setWindow(mailboxUid, timeFloorMonths, byteBudgetBytes, generation);
+}
+
+export function setLocalIndexBuilding(mailboxUid: string, building: boolean, completion: SetLocalIndexBuildingCompletion = { complete: false }): Promise<void> {
+    return currentTransport.setBuilding(mailboxUid, building, completion);
+}
+
+/** Destroys one mailbox's local index - spec §11 "MUST be destroyed on the same events that destroy private
+ * keys." Never rejects (it's called from lifecycle hooks where a failure mustn't block key destruction) but
+ * resolves `false` when the index could not be removed - see the current transport's own doc comment for what
+ * that means for it (the Worker transport also logs why, and retries on the next page load). */
+export function destroyLocalIndex(mailboxUid: string): Promise<boolean> {
+    return currentTransport.destroy(mailboxUid);
+}
+
+/** Destroys **every** local index this transport knows of - not just the mailboxes this session opened - e.g.
+ * on sign-out. Never rejects. Resolves `true` only if everything was removed within `timeoutMs`. */
+export function destroyAllLocalIndexes(timeoutMs = DESTROY_ALL_TIMEOUT_MS): Promise<boolean> {
+    return currentTransport.destroyAll(timeoutMs);
+}
+
+/** Removes local indexes for mailboxes outside `accessibleMailboxUids` - e.g. left behind by a different
+ * user who signed in on this device without signing out. Never rejects. */
+export function pruneInaccessibleLocalIndexes(accessibleMailboxUids: Iterable<string>): Promise<void> {
+    return currentTransport.pruneInaccessible(accessibleMailboxUids);
+}
+
+/** Retries every deletion an earlier session couldn't finish. Never rejects. */
+export function retryPendingLocalIndexDeletions(): Promise<void> {
+    return currentTransport.retryPendingDeletions();
 }
