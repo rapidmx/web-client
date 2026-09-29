@@ -157,8 +157,31 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
     applyCsrfHeader(headers, init.method);
     const credentials = apiBaseUrl ? "include" : init.credentials;
 
-    const res = await fetch(apiUrl(path), { ...init, headers, credentials });
+    let res = await fetch(apiUrl(path), { ...init, headers, credentials });
+    // The access token has run out (a sleeping tab or laptop stops the timer that renews it in time): renew the session, and ask again once.
+    if (res.status === 401 && sessionRecovery && (await recoverSession())) {
+        res = await fetch(apiUrl(path), { ...init, headers, credentials });
+    }
     return decodeApiResponse<T>(res, (error) => unauthorizedObserver?.(error));
+}
+
+let sessionRecovery: (() => Promise<boolean>) | undefined;
+
+/**
+ * Registers what `apiFetch()` does when the server answers `401`: try to renew the signed-in session and, when that worked, send the request once
+ * more. `recovery` resolves whether the session was renewed. The app frame registers it while a session is open (`useSessionRefresh()`); pass
+ * `undefined` to remove it. A rejection counts as "not renewed".
+ */
+export function setApiSessionRecovery(recovery: (() => Promise<boolean>) | undefined): void {
+    sessionRecovery = recovery;
+}
+
+async function recoverSession(): Promise<boolean> {
+    try {
+        return await sessionRecovery!();
+    } catch {
+        return false;
+    }
 }
 
 /**

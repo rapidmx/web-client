@@ -8,14 +8,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../testUtils.js";
 import {
     SESSION_REFRESH_AFTER_MS,
+    SESSION_RECOVERY_COOLDOWN_MS,
     SESSION_REFRESH_CHECK_MS,
     type SessionRefreshOptions,
+    recoverSession,
     refreshSession,
+    resetSessionRecovery,
     useRedirectIfUnauthenticated,
     useSessionRefresh,
 } from "../../../lib/auth/session.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
-import { createApiClient } from "../../../lib/util/api.js";
+import { apiFetch, createApiClient } from "../../../lib/util/api.js";
 
 const AUTH = "https://auth.example.com";
 const REFRESHED_AT_KEY = "rapidmx.session.refreshedAt";
@@ -41,6 +44,7 @@ function RefreshComponent({
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    resetSessionRecovery();
 });
 
 afterEach(() => {
@@ -137,7 +141,77 @@ describe("refreshSession", () => {
     });
 });
 
+describe("recoverSession", () => {
+    it("refreshes whatever this browser remembers of the last refresh, and says it worked", async () => {
+        localStorage.setItem(REFRESHED_AT_KEY, String(Date.now()));
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await expect(recoverSession(AUTH)).resolves.toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][0]).toBe(`${AUTH}/api/auth/refresh`);
+    });
+
+    it("shares one refresh between requests refused together, then reuses the outcome for a while", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        const [a, b] = await Promise.all([recoverSession(AUTH), recoverSession(AUTH)]);
+        expect([a, b]).toEqual([true, true]);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        await expect(recoverSession(AUTH)).resolves.toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        vi.advanceTimersByTime(SESSION_RECOVERY_COOLDOWN_MS + 1);
+        await expect(recoverSession(AUTH)).resolves.toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("says it did not work when the refresh is refused, forgets the last refresh so the next check asks again, and does not ask again at once", async () => {
+        localStorage.setItem(REFRESHED_AT_KEY, String(Date.now()));
+        const fetchMock = mockFetch(() => jsonResponse(401, { message: "Invalid or missing authentication token." }));
+        await expect(recoverSession(AUTH)).resolves.toBe(false);
+        expect(localStorage.getItem(REFRESHED_AT_KEY)).toBe("0");
+        await expect(recoverSession(AUTH)).resolves.toBe(false);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+});
+
 describe("useSessionRefresh", () => {
+    it("without a session, refreshes even when this browser remembers a recent refresh", async () => {
+        const location = mockLocation();
+        localStorage.setItem(REFRESHED_AT_KEY, String(Date.now()));
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        render(<RefreshComponent authServerUrl={AUTH} />);
+        await waitFor(() => expect(location.reload).toHaveBeenCalledTimes(1));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("with a session, renews it when a request is refused, and sends the request again", async () => {
+        localStorage.setItem(REFRESHED_AT_KEY, String(Date.now()));
+        let refreshed = false;
+        const fetchMock = mockFetch((url) => {
+            if (url.endsWith("/auth/refresh")) {
+                refreshed = true;
+                return jsonResponse(200, {});
+            }
+            return refreshed ? jsonResponse(200, { data: 1 }) : jsonResponse(401, { message: "Expired" });
+        });
+        render(<RefreshComponent userUid="u1" authServerUrl={AUTH} />);
+        await expect(apiFetch("/mail/mailboxes")).resolves.toEqual({ data: 1 });
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/mail/mailboxes", `${AUTH}/api/auth/refresh`, "/api/mail/mailboxes"]);
+    });
+
+    it("stops renewing on a refused request once the page unmounts, or while paused", async () => {
+        const { unmount } = render(<RefreshComponent userUid="u1" authServerUrl={AUTH} />);
+        unmount();
+        const fetchMock = mockFetch(() => jsonResponse(401, {}));
+        await expect(apiFetch("/x")).rejects.toMatchObject({ status: 401 });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        render(<RefreshComponent userUid="u1" authServerUrl={AUTH} options={{ paused: true }} />);
+        await expect(apiFetch("/x")).rejects.toMatchObject({ status: 401 });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it("without a session, refreshes silently and reloads the page", async () => {
         const location = mockLocation();
         location.href = "https://mail.example.com/";

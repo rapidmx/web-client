@@ -12,6 +12,7 @@ import {
     authApiFetch,
     configureApiBaseUrl,
     createApiClient,
+    setApiSessionRecovery,
     setApiUnauthorizedObserver,
     withClient,
     withCsrfHeader,
@@ -23,6 +24,60 @@ afterEach(() => {
     // never leaks into a later test in this file (or another file sharing this module instance).
     configureApiBaseUrl("");
     setApiUnauthorizedObserver(undefined);
+    setApiSessionRecovery(undefined);
+});
+
+describe("apiFetch session recovery", () => {
+    function serve(answers: Response[]) {
+        return mockFetch(() => answers.shift()!);
+    }
+
+    it("renews the session when the server answers 401, and asks again once with the same request", async () => {
+        const recovery = vi.fn().mockResolvedValue(true);
+        setApiSessionRecovery(recovery);
+        const fetchMock = serve([jsonResponse(401, { message: "Expired" }), jsonResponse(200, { ok: true })]);
+        await expect(apiFetch("/mail/mailboxes", { method: "PUT", body: '{"a":1}' })).resolves.toEqual({ ok: true });
+        expect(recovery).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock.mock.calls[1][0]).toBe("/api/mail/mailboxes");
+        expect((fetchMock.mock.calls[1][1] as RequestInit).body).toBe('{"a":1}');
+    });
+
+    it("does not ask a third time when the retry is refused too, and still tells the observer", async () => {
+        setApiSessionRecovery(vi.fn().mockResolvedValue(true));
+        const observer = vi.fn();
+        setApiUnauthorizedObserver(observer);
+        const fetchMock = serve([jsonResponse(401, {}), jsonResponse(401, { message: "Still no" })]);
+        await expect(apiFetch("/x")).rejects.toMatchObject({ status: 401, message: "Still no" });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(observer).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ["did not renew it", () => vi.fn().mockResolvedValue(false)],
+        ["failed", () => vi.fn().mockRejectedValue(new Error("offline"))],
+    ])("answers the 401 as it was, without asking again, when renewing the session %s", async (_name, recovery) => {
+        setApiSessionRecovery(recovery());
+        const observer = vi.fn();
+        setApiUnauthorizedObserver(observer);
+        const fetchMock = serve([jsonResponse(401, { message: "Expired" })]);
+        await expect(apiFetch("/x")).rejects.toMatchObject({ status: 401 });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(observer).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves other answers, and a 401 with nothing registered, alone", async () => {
+        const recovery = vi.fn().mockResolvedValue(true);
+        setApiSessionRecovery(recovery);
+        serve([jsonResponse(403, {})]);
+        await expect(apiFetch("/x")).rejects.toMatchObject({ status: 403 });
+        expect(recovery).not.toHaveBeenCalled();
+
+        setApiSessionRecovery(undefined);
+        const fetchMock = serve([jsonResponse(401, {})]);
+        await expect(apiFetch("/x")).rejects.toMatchObject({ status: 401 });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe("setApiUnauthorizedObserver", () => {

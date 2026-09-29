@@ -15,7 +15,7 @@
  * sign-out already has.
  */
 import { useEffect, useRef } from "react";
-import { ApiRequestError, authApiFetch } from "../util/api.js";
+import { ApiRequestError, authApiFetch, setApiSessionRecovery } from "../util/api.js";
 import { useApiClient } from "../util/apiClientContext.js";
 
 /** An access token's age at which it is refreshed. The token lives an hour; the margin leaves time to retry a failed refresh. */
@@ -76,6 +76,45 @@ export async function refreshSession(authServerUrl: string, force = false): Prom
     return locks ? locks.request(LOCK_NAME, run) : run();
 }
 
+/** How long the outcome of a recovery is reused for: requests that fail together share one refresh, and a session that will not come back is not asked again at once. */
+export const SESSION_RECOVERY_COOLDOWN_MS = 10 * 1000;
+
+let recovery: Promise<boolean> | undefined;
+let lastRecovery: { at: number; renewed: boolean } | undefined;
+
+/**
+ * Renews the session because a request was refused for lack of one, whatever this browser's record of the last refresh says. Every request
+ * refused at about the same time shares one refresh, and its outcome is reused for `SESSION_RECOVERY_COOLDOWN_MS`. A refusal also clears the record of
+ * the last refresh, so the next regular check asks again (and sends the browser to sign-in if the refresh token is truly gone).
+ *
+ * @returns Whether the session was renewed.
+ */
+export function recoverSession(authServerUrl: string): Promise<boolean> {
+    if (lastRecovery && Date.now() - lastRecovery.at < SESSION_RECOVERY_COOLDOWN_MS) {
+        return Promise.resolve(lastRecovery.renewed);
+    }
+    recovery ??= refreshSession(authServerUrl, true)
+        .then(
+            () => true,
+            () => {
+                writeTimestamp(() => localStorage, REFRESHED_AT_KEY, 0);
+                return false;
+            },
+        )
+        .then((renewed) => {
+            lastRecovery = { at: Date.now(), renewed };
+            recovery = undefined;
+            return renewed;
+        });
+    return recovery;
+}
+
+/** Forgets what recoveries have done (for tests). */
+export function resetSessionRecovery(): void {
+    recovery = undefined;
+    lastRecovery = undefined;
+}
+
 /** Whether `err` says auth-server rejected the refresh token itself, as opposed to a failure worth retrying. */
 function isAuthRejection(err: unknown): boolean {
     return err instanceof ApiRequestError && (err.status === 401 || err.status === 403);
@@ -129,7 +168,8 @@ export interface SessionRefreshOptions {
  * lifetime, or reopened later): attempts one silent refresh and reloads so the server renders the page with the new
  * cookie. If the refresh is refused (the refresh token expired or was revoked, or there was none), or a reload just
  * made still found no session, redirects to sign-in as `useRedirectIfUnauthenticated()` does.
- * - `userUid` set: refreshes once the token is `SESSION_REFRESH_AFTER_MS` old (and right away when this browser has no
+ * - `userUid` set: also renews the session when a request is refused for lack of one (`apiFetch()` asks `recoverSession()` and sends the request
+ * again), so a token that ran out while timers were stopped costs nothing. Refreshes once the token is `SESSION_REFRESH_AFTER_MS` old (and right away when this browser has no
  * record of a recent refresh, since the page's token age is unknown), checked every `SESSION_REFRESH_CHECK_MS` and
  * whenever the tab becomes visible or the network returns, because a sleeping laptop stops timers. A failure that is
  * not a rejection is simply retried at the next check. A rejection (`401`/`403`: the refresh token expired or was
@@ -169,7 +209,8 @@ export function useSessionRefresh(userUid: string | undefined, authServerUrl: st
                 window.location.href = signInUrl(authServerUrl);
                 return;
             }
-            refreshSession(authServerUrl)
+            // Forced: the page has no session, so what this browser remembers of the last refresh says nothing about whether one is due.
+            refreshSession(authServerUrl, true)
                 .then(() => {
                     if (!cancelled) {
                         writeTimestamp(() => sessionStorage, RELOADED_AT_KEY, Date.now());
@@ -189,6 +230,9 @@ export function useSessionRefresh(userUid: string | undefined, authServerUrl: st
         if (paused) {
             return;
         }
+
+        // A request the server refuses for lack of a session renews it (see `apiFetch()`), instead of waiting for the next check.
+        setApiSessionRecovery(() => recoverSession(authServerUrl));
 
         let leaving = false;
         let inFlight = false;
@@ -230,6 +274,7 @@ export function useSessionRefresh(userUid: string | undefined, authServerUrl: st
         window.addEventListener("online", check);
         return () => {
             cancelled = true;
+            setApiSessionRecovery(undefined);
             window.clearInterval(interval);
             document.removeEventListener("visibilitychange", onVisible);
             window.removeEventListener("online", check);
