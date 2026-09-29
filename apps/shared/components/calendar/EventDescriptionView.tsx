@@ -24,7 +24,7 @@ export function linkifyText(text: string): ReactNode[] {
         while (/[.,;:!?]$/.test(url) || (url.endsWith(")") && count(url, ")") > count(url, "(")) || (url.endsWith("]") && count(url, "]") > count(url, "["))) {
             url = url.slice(0, -1);
         }
-        const at = match.index!;
+        const at = match.index;
         parts.push(text.slice(last, at));
         parts.push(
             <a key={at} href={url} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>

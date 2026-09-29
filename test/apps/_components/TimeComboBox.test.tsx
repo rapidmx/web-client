@@ -24,7 +24,7 @@ function setup(props: Partial<React.ComponentProps<typeof TimeComboBox>> = {}) {
             <button type="button">elsewhere</button>
         </form>,
     );
-    return { onSelect, onType, input: screen.getByRole("combobox", { name: "Start" }) as HTMLInputElement, ...view };
+    return { onSelect, onType, input: screen.getByRole("combobox", { name: "Start" }), ...view };
 }
 
 describe("TimeComboBox", () => {

@@ -22,14 +22,13 @@ import { htmlToPlainText } from "../../../../lib/calendar/eventDescription.js";
 import { deleteEventOccurrence, deleteEventSeries } from "../../../../lib/calendar/calendarMutations.js";
 import { CalendarOccurrence, describeRecurrence } from "../../../../lib/calendar/recurrence.js";
 import { getVideoMeeting } from "../../../../lib/videoconf/videoMeetingsApi.js";
-import { deviceTimeZone } from "../../../../lib/util/timeZone.js";
+import { describeTimeZone, deviceTimeZone } from "../../../../lib/util/timeZone.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
 import EventDescriptionView from "./EventDescriptionView.js";
 import RequestChangeForm from "./RequestChangeForm.js";
 import { BUSY_STATUS_LABEL, RESPONSE_STATUS_LABEL, VISIBILITY_LABEL, describeGuestPermissions, describeReminder, formatStoredWhen, formatStoredWhenInZone } from "./eventFormat.js";
-import { describeTimeZone } from "../../../../lib/util/timeZone.js";
 
 const ROLE_LABEL = { required: "", optional: "Optional", resource: "Room/equipment" } as const;
 
