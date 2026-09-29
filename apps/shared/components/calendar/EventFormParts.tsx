@@ -9,9 +9,12 @@ import Button from "../../../../lib/components/buttons/Button.js";
 import GuestInput from "./GuestInput.js";
 import LazyDescriptionEditor from "./LazyDescriptionEditor.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
+import TimeComboBox from "./TimeComboBox.js";
+import TimeZonePicker from "../../../../lib/components/pickers/TimeZonePicker.js";
 import ResourcePicker from "./ResourcePicker.js";
 import { EventFormController } from "./eventForm.js";
 import { hasDescriptionText } from "./eventDialogFields.js";
+import { dayTimes, endTimeOptions, formatTimeOfDay } from "./timePicker.js";
 import {
     REMINDER_UNITS,
     ReminderUnit,
@@ -20,6 +23,7 @@ import {
     VISIBILITY_HELP,
     VISIBILITY_LABEL,
     bestReminderUnit,
+    zoneDate,
 } from "./eventFormat.js";
 
 export const INPUT_CLASS =
@@ -378,7 +382,9 @@ export function RecurrenceSelect({
     );
 }
 
-/** [start date] [start time] to [end time] [end date], then "All day", the "Time zone" link (and its menu) and how the event repeats. */
+const START_TIME_OPTIONS = dayTimes().map((time) => ({ value: time, label: formatTimeOfDay(time) }));
+
+/** [start date] [start time] to [end time] [end date], then the "Time zone" link (and its menu), "All day" and how the event repeats. */
 export function DateTimeControls({ c }: { c: EventFormController }) {
     const { values } = c;
     const [zoneOpen, setZoneOpen] = useState(false);
@@ -393,22 +399,27 @@ export function DateTimeControls({ c }: { c: EventFormController }) {
                     onChange={(e) => c.setStart(`${e.target.value}${values.start.slice(10)}`)}
                 />
                 {!values.allDay && (
-                    <input
-                        type="time"
+                    <TimeComboBox
                         aria-label="Event start time"
-                        className={`${SELECT_CLASS} min-w-0`}
-                        value={values.start.slice(11, 16)}
-                        onChange={(e) => c.setStart(`${values.start.slice(0, 11)}${e.target.value}`)}
+                        className={`${SELECT_CLASS} w-28`}
+                        display={formatTimeOfDay(values.start.slice(11, 16))}
+                        current={values.start.slice(11, 16)}
+                        options={START_TIME_OPTIONS}
+                        // Moving the start moves the end with it, so the event keeps its length: whatever the start is set to.
+                        onSelect={(time) => c.setStart(`${values.start.slice(0, 11)}${time}`)}
+                        onType={(time) => c.setStart(`${values.start.slice(0, 11)}${time}`)}
                     />
                 )}
                 <span className="text-text-muted">to</span>
                 {!values.allDay && (
-                    <input
-                        type="time"
+                    <TimeComboBox
                         aria-label="Event end time"
-                        className={`${SELECT_CLASS} min-w-0`}
-                        value={values.end.slice(11, 16)}
-                        onChange={(e) => c.setEnd(`${values.end.slice(0, 11)}${e.target.value}`)}
+                        className={`${SELECT_CLASS} w-28`}
+                        display={formatTimeOfDay(values.end.slice(11, 16))}
+                        current={values.end}
+                        options={endTimeOptions(values.start).map((option) => ({ value: option.value, label: option.label, hint: option.hint }))}
+                        onSelect={c.setEnd}
+                        onType={(time) => c.setEnd(`${values.end.slice(0, 11)}${time}`)}
                     />
                 )}
                 <input
@@ -419,36 +430,31 @@ export function DateTimeControls({ c }: { c: EventFormController }) {
                     onChange={(e) => c.setEnd(`${e.target.value}${values.end.slice(10)}`)}
                 />
             </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-                <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={values.allDay} onChange={(e) => c.onAllDayChange(e.target.checked)} />
-                    All day
-                </label>
-                <button
-                    type="button"
-                    aria-expanded={zoneOpen}
-                    className="text-primary-dark hover:underline"
-                    onClick={() => setZoneOpen((open) => !open)}
-                >
-                    Time zone
-                </button>
-                {!c.editingSingleOccurrence && (
-                    <RecurrenceSelect value={values.recurrenceRule} onChange={(rule) => c.update({ recurrenceRule: rule })} allDay={values.allDay} startWeekday={c.startWeekday} />
-                )}
-            </div>
+            {/* The Time zone link sits above All day, and the zone menu it opens right under it - before how the event repeats. */}
+            <button
+                type="button"
+                aria-expanded={zoneOpen}
+                className="self-start text-sm text-primary-dark hover:underline"
+                onClick={() => setZoneOpen((open) => !open)}
+            >
+                Time zone
+            </button>
             {zoneOpen && (
-                <select
-                    aria-label="Time zone"
-                    className={`${SELECT_CLASS} self-start max-w-full`}
+                <TimeZonePicker
+                    aria-label="Event time zone"
+                    className={`${SELECT_CLASS} max-w-full`}
                     value={values.formZone}
-                    onChange={(e) => c.onTimeZoneChange(e.target.value)}
-                >
-                    {c.timeZones.map((zone) => (
-                        <option key={zone} value={zone}>
-                            {zone}
-                        </option>
-                    ))}
-                </select>
+                    zones={c.timeZones}
+                    at={zoneDate(values.start)}
+                    onChange={c.onTimeZoneChange}
+                />
+            )}
+            <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={values.allDay} onChange={(e) => c.onAllDayChange(e.target.checked)} />
+                All day
+            </label>
+            {!c.editingSingleOccurrence && (
+                <RecurrenceSelect value={values.recurrenceRule} onChange={(rule) => c.update({ recurrenceRule: rule })} allDay={values.allDay} startWeekday={c.startWeekday} />
             )}
         </div>
     );

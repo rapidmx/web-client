@@ -28,7 +28,8 @@ import Button from "../../../../lib/components/buttons/Button.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
 import EventDescriptionView from "./EventDescriptionView.js";
 import RequestChangeForm from "./RequestChangeForm.js";
-import { BUSY_STATUS_LABEL, RESPONSE_STATUS_LABEL, VISIBILITY_LABEL, describeGuestPermissions, describeReminder, formatStoredWhen } from "./eventFormat.js";
+import { BUSY_STATUS_LABEL, RESPONSE_STATUS_LABEL, VISIBILITY_LABEL, describeGuestPermissions, describeReminder, formatStoredWhen, formatStoredWhenInZone } from "./eventFormat.js";
+import { describeTimeZone } from "../../../../lib/util/timeZone.js";
 
 const ROLE_LABEL = { required: "", optional: "Optional", resource: "Room/equipment" } as const;
 
@@ -220,11 +221,20 @@ export default function EventDetails({
                 {error && <Alert>{error}</Alert>}
 
                 <DetailRow icon={<HiOutlineClock size={18} />}>
-                    <div>{formatStoredWhen(occurrence.startDate, occurrence.endDate, occurrence.allDay)}</div>
-                    {occurrence.recurrenceRule && <div className="text-text-muted">Repeats {describeRecurrence(occurrence.recurrenceRule)}</div>}
-                    {!occurrence.allDay && eventZone && eventZone !== deviceTimeZone() && (
-                        <div className="text-text-muted">Event time zone: {eventZone.replace(/_/g, " ")}</div>
+                    {!occurrence.allDay && eventZone && eventZone !== deviceTimeZone() ? (
+                        // Set somewhere else: the time on the reader's own clock, and on the clock it was set on, each said in full so nobody has to convert.
+                        <>
+                            <div>
+                                {formatStoredWhen(occurrence.startDate, occurrence.endDate, false)} &bull; {describeTimeZone(deviceTimeZone(), new Date(occurrence.startDate))}
+                            </div>
+                            <div className="text-text-muted">
+                                {formatStoredWhenInZone(occurrence.startDate, occurrence.endDate, eventZone)} &bull; {describeTimeZone(eventZone, new Date(occurrence.startDate))}
+                            </div>
+                        </>
+                    ) : (
+                        <div>{formatStoredWhen(occurrence.startDate, occurrence.endDate, occurrence.allDay)}</div>
                     )}
+                    {occurrence.recurrenceRule && <div className="text-text-muted">Repeats {describeRecurrence(occurrence.recurrenceRule)}</div>}
                 </DetailRow>
 
                 {occurrence.location && (

@@ -21,12 +21,27 @@ export async function openTimeControls(user: UserEvent) {
     await user.click(screen.getByRole("button", { name: /day, [A-Z][a-z]+ \d+|Pick a date and time/ }));
 }
 
+/** Types a time (`HH:mm`, or anything a time field understands) into a time field and leaves it, which is what settles it. */
+export function setTimeField(label: string, time: string) {
+    const field = screen.getByLabelText(label);
+    fireEvent.focus(field);
+    fireEvent.change(field, { target: { value: time } });
+    fireEvent.blur(field);
+}
+
+/** Chooses a zone in the time zone list (open the Time zone controls first): searches for it and clicks the option that starts with `name`, as "New York, America". */
+export async function chooseTimeZone(user: UserEvent, name: string) {
+    await user.click(screen.getByRole("combobox", { name: "Event time zone" }));
+    await user.type(screen.getByRole("searchbox", { name: "Search time zones" }), name);
+    await user.click(screen.getByRole("option", { name: new RegExp(`^${name}`) }));
+}
+
 /** Sets the form's start or end from a `YYYY-MM-DD` or `YYYY-MM-DDTHH:mm` value, through the date (and time) inputs. */
 export function setWhen(which: "Start" | "End", value: string) {
     const [date, time] = value.split("T");
     fireEvent.change(screen.getByLabelText(`Event ${which.toLowerCase()} date`), { target: { value: date } });
     if (time !== undefined) {
-        fireEvent.change(screen.getByLabelText(`Event ${which.toLowerCase()} time`), { target: { value: time } });
+        setTimeField(`Event ${which.toLowerCase()} time`, time);
     }
 }
 

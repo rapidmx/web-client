@@ -19,6 +19,7 @@ import {
 import { EventFormController } from "./eventForm.js";
 import { CalendarField, INPUT_CLASS, IconRow, SELECT_CLASS } from "./EventFormParts.js";
 import QuickFaceFrame from "./QuickFaceFrame.js";
+import { describeTimeZone } from "../../../../lib/util/timeZone.js";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const DURATIONS = ["15", "30", "45", "60"];
@@ -298,7 +299,7 @@ export default function AppointmentQuickForm({ c, draft, onDraftChange, tabs, se
                                 onChange={(e) => onDraftChange({ endTime: e.target.value })}
                             />
                         </div>
-                        <p className="text-xs text-text-muted mt-1">Times are in {timeZone.replace(/_/g, " ")}.</p>
+                        <p className="text-xs text-text-muted mt-1">Times are in {describeTimeZone(timeZone)}.</p>
                     </IconRow>
 
                     <IconRow icon={<HiOutlineMapPin size={20} />}>

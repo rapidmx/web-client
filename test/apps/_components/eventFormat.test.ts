@@ -9,6 +9,7 @@ import {
     describeReminder,
     formatFormWhen,
     formatStoredWhen,
+    formatStoredWhenInZone,
     formatWhen,
     guestChip,
     reminderOf,
@@ -162,5 +163,16 @@ describe("saying when", () => {
         expect(formatFormWhen("2026-09-24T00:00", "2026-09-25T00:00", true, NOW)).toBe("Thursday, September 24 – Friday, September 25");
         expect(formatFormWhen("", "2026-09-24T15:00", false, NOW)).toBe("Pick a date and time");
         expect(formatFormWhen("2026-09-24T00:00", "", true, NOW)).toBe("Pick a date and time");
+    });
+});
+
+describe("formatStoredWhenInZone", () => {
+    it("reads a stored event on another zone's clock", () => {
+        const now = new Date("2026-09-01T00:00:00.000Z");
+        // 17:00Z is 1:00pm in New York and 10:00am in Los Angeles, on the same day.
+        expect(formatStoredWhenInZone("2026-09-29T17:00:00.000Z", "2026-09-29T17:45:00.000Z", "America/New_York", now).replace(/\s+/g, " ")).toBe("Tuesday, September 29 1:00pm – 1:45pm");
+        expect(formatStoredWhenInZone("2026-09-29T17:00:00.000Z", "2026-09-29T17:45:00.000Z", "America/Los_Angeles", now).replace(/\s+/g, " ")).toBe("Tuesday, September 29 10:00am – 10:45am");
+        // Across midnight on that clock.
+        expect(formatStoredWhenInZone("2026-09-30T02:00:00.000Z", "2026-09-30T05:00:00.000Z", "Asia/Tokyo", now).replace(/\s+/g, " ")).toBe("Wednesday, September 30 11:00am – 2:00pm");
     });
 });

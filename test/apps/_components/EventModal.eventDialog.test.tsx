@@ -395,8 +395,8 @@ describe("the Find a time tab", () => {
 
         // Suggestions are for times not yet past; the event's own day may be, so pick from the hour buttons too.
         await user.click(screen.getByRole("button", { name: "Start at 2pm" }));
-        expect(screen.getByLabelText("Event start time")).toHaveValue("14:00");
-        expect(screen.getByLabelText("Event end time")).toHaveValue("15:00");
+        expect(screen.getByLabelText("Event start time")).toHaveValue("2:00 PM");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("3:00 PM");
     });
 
     it("follows the date chosen in the form", async () => {

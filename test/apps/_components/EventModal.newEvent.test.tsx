@@ -10,7 +10,7 @@ import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 import { RecurrenceRule } from "../../../lib/calendar/calendarApi.js";
 import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
-import { addGuest, clickModify, openMoreOptions, openTimeControls, setWhen } from "./eventModalHelpers.js";
+import { addGuest, clickModify, openMoreOptions, openTimeControls, chooseTimeZone, setTimeField, setWhen } from "./eventModalHelpers.js";
 
 // A new event: the quick-create popover, "More options" growing it into the full card with the same values, and the fields both share.
 
@@ -93,7 +93,7 @@ describe("quick create", () => {
         renderNew();
 
         expect(screen.getByRole("button", { name: /Wednesday, June 10(, 2026)?\s+9:00am – 10:00am/ })).toBeInTheDocument();
-        expect(screen.getByText(/UTC\s+•\s+Does not repeat/)).toBeInTheDocument();
+        expect(screen.getByText(/UTC \(GMT\+00:00\)\s+•\s+Does not repeat/)).toBeInTheDocument();
         expect(screen.getByText("Work")).toBeInTheDocument();
         expect(screen.getByText(/Busy\s+•\s+Default visibility\s+•\s+No notification/)).toBeInTheDocument();
     });
@@ -105,8 +105,8 @@ describe("quick create", () => {
 
         await openTimeControls(user);
         expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-10");
-        expect(screen.getByLabelText("Event start time")).toHaveValue("09:00");
-        expect(screen.getByLabelText("Event end time")).toHaveValue("10:00");
+        expect(screen.getByLabelText("Event start time")).toHaveValue("9:00 AM");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("10:00 AM");
         expect(screen.getByLabelText("Event end date")).toHaveValue("2026-06-10");
         expect(screen.getByRole("checkbox", { name: "All day" })).not.toBeChecked();
         expect(screen.getByLabelText("Recurrence")).toHaveValue("none");
@@ -123,12 +123,12 @@ describe("quick create", () => {
         setWhen("Start", "2026-06-11T14:00");
         // One hour long still: 2:00pm - 3:00pm the next day.
         expect(screen.getByLabelText("Event end date")).toHaveValue("2026-06-11");
-        expect(screen.getByLabelText("Event end time")).toHaveValue("15:00");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("3:00 PM");
         expect(screen.getByRole("button", { name: /Thursday, June 11(, 2026)?\s+2:00pm – 3:00pm/ })).toBeInTheDocument();
 
         // Only the end moves when the end changes.
         setWhen("End", "2026-06-11T17:30");
-        expect(screen.getByLabelText("Event start time")).toHaveValue("14:00");
+        expect(screen.getByLabelText("Event start time")).toHaveValue("2:00 PM");
         expect(screen.getByRole("button", { name: /2:00pm – 5:30pm/ })).toBeInTheDocument();
 
         // Turning All day on shows dates only.
@@ -245,8 +245,8 @@ describe("quick create", () => {
         await openTimeControls(user);
 
         await user.click(screen.getByRole("checkbox", { name: "All day" }));
-        expect(screen.getByLabelText("Event start time")).toHaveValue("00:00");
-        expect(screen.getByLabelText("Event end time")).toHaveValue("01:00");
+        expect(screen.getByLabelText("Event start time")).toHaveValue("12:00 AM");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("1:00 AM");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
         await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -259,7 +259,7 @@ describe("quick create", () => {
         await openTimeControls(user);
         await user.click(screen.getByRole("checkbox", { name: "All day" }));
         await user.click(screen.getByRole("checkbox", { name: "All day" }));
-        expect(screen.getByLabelText("Event end time")).toHaveValue("10:00");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("10:00 AM");
     });
 
     it("asks for a date instead of failing when a date or time is cleared", async () => {
@@ -301,13 +301,13 @@ describe("quick create", () => {
             await user.type(screen.getByLabelText("Title"), "Call");
             await openTimeControls(user);
 
-            expect(screen.queryByRole("combobox", { name: "Time zone" })).not.toBeInTheDocument();
+            expect(screen.queryByRole("combobox", { name: "Event time zone" })).not.toBeInTheDocument();
             await user.click(screen.getByRole("button", { name: "Time zone" }));
-            await user.selectOptions(screen.getByLabelText("Time zone"), "America/New_York");
+            await chooseTimeZone(user, "New York, America");
             // 09:00Z is 05:00 in New York (EDT).
-            expect(screen.getByLabelText("Event start time")).toHaveValue("05:00");
-            expect(screen.getByLabelText("Event end time")).toHaveValue("06:00");
-            expect(screen.getByText(/America\/New York\s+•/)).toBeInTheDocument();
+            expect(screen.getByLabelText("Event start time")).toHaveValue("5:00 AM");
+            expect(screen.getByLabelText("Event end time")).toHaveValue("6:00 AM");
+            expect(screen.getByText(/New York, America \(GMT-04:00\)\s+•/)).toBeInTheDocument();
 
             await user.click(screen.getByRole("button", { name: "Save" }));
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -324,9 +324,9 @@ describe("quick create", () => {
             await openMoreOptions(user);
 
             await user.click(screen.getByRole("button", { name: "Time zone" }));
-            await user.selectOptions(screen.getByLabelText("Time zone"), "America/New_York");
+            await chooseTimeZone(user, "New York, America");
             setWhen("Start", "2026-06-10T07:00");
-            expect(screen.getByLabelText("Event end time")).toHaveValue("08:00");
+            expect(screen.getByLabelText("Event end time")).toHaveValue("8:00 AM");
             await user.click(screen.getByRole("button", { name: "Save" }));
             await waitFor(() => expect(onSaved).toHaveBeenCalled());
             // 07:00 in New York is 11:00Z.
@@ -338,10 +338,10 @@ describe("quick create", () => {
             renderNew();
             await openMoreOptions(user);
             await user.click(screen.getByRole("button", { name: "Time zone" }));
-            await user.selectOptions(screen.getByLabelText("Time zone"), "America/New_York");
-            await user.selectOptions(screen.getByLabelText("Time zone"), "UTC");
-            expect(screen.getByLabelText("Event start time")).toHaveValue("09:00");
-            expect(screen.getByLabelText("Event end time")).toHaveValue("10:00");
+            await chooseTimeZone(user, "New York, America");
+            await chooseTimeZone(user, "UTC");
+            expect(screen.getByLabelText("Event start time")).toHaveValue("9:00 AM");
+            expect(screen.getByLabelText("Event end time")).toHaveValue("10:00 AM");
         });
 
         it("stores an all-day event with the chosen zone and leaves its dates alone, and keeps a value it can't convert", async () => {
@@ -350,17 +350,17 @@ describe("quick create", () => {
             await openMoreOptions(user);
             await user.click(screen.getByRole("checkbox", { name: "All day" }));
             await user.click(screen.getByRole("button", { name: "Time zone" }));
-            await user.selectOptions(screen.getByLabelText("Time zone"), "Asia/Tokyo");
+            await chooseTimeZone(user, "Tokyo, Asia");
             expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-10");
             await user.click(screen.getByRole("checkbox", { name: "All day" }));
 
             // A cleared start can't be converted; it stays as it is when the zone changes.
             fireEvent.change(screen.getByLabelText("Event start date"), { target: { value: "" } });
-            await user.selectOptions(screen.getByLabelText("Time zone"), "Europe/Paris");
+            await chooseTimeZone(user, "Paris, Europe");
             expect(screen.getByLabelText("Event start date")).toHaveValue("");
             fireEvent.change(screen.getByLabelText("Event start date"), { target: { value: "2026-06-10" } });
             fireEvent.change(screen.getByLabelText("Event end date"), { target: { value: "" } });
-            await user.selectOptions(screen.getByLabelText("Time zone"), "UTC");
+            await chooseTimeZone(user, "UTC");
             expect(screen.getByLabelText("Event end date")).toHaveValue("");
         });
     });
@@ -519,7 +519,7 @@ describe("More options", () => {
         expect(screen.getByText(/^amy@example.com/)).toBeInTheDocument();
         expect(screen.getByLabelText("Attendee role 2")).toBeInTheDocument();
         expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-12");
-        expect(screen.getByLabelText("Event start time")).toHaveValue("13:00");
+        expect(screen.getByLabelText("Event start time")).toHaveValue("1:00 PM");
         expect(screen.queryByRole("button", { name: "More options" })).not.toBeInTheDocument();
     });
 
@@ -829,5 +829,102 @@ describe("a video meeting that could not be made", () => {
         await user.click(screen.getByRole("button", { name: "Close" }));
         expect(onSaved).toHaveBeenCalledTimes(1);
         expect(onClose).not.toHaveBeenCalled();
+    });
+});
+
+describe("when a new event is opened without a time", () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it("starts at the next half hour and lasts an hour", async () => {
+        vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-09-29T11:12:00.000Z") });
+        const user = userEvent.setup();
+        renderNew({ initialStart: undefined, initialEnd: undefined });
+        await openTimeControls(user);
+        expect(screen.getByLabelText("Event start time")).toHaveValue("11:30 AM");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("12:30 PM");
+        expect(screen.getByLabelText("Event start date")).toHaveValue("2026-09-29");
+    });
+
+    it("lasts an hour from a start it was given without an end", async () => {
+        const user = userEvent.setup();
+        renderNew({ initialEnd: undefined });
+        await openTimeControls(user);
+        expect(screen.getByLabelText("Event start time")).toHaveValue("9:00 AM");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("10:00 AM");
+    });
+});
+
+describe("the time fields", () => {
+    it("offer every quarter hour to start at, and take a time typed instead, moving the end to keep the length", async () => {
+        const user = userEvent.setup();
+        renderNew();
+        await openTimeControls(user);
+        const start = screen.getByLabelText("Event start time");
+
+        await user.click(start);
+        const times = within(screen.getByRole("listbox", { name: "Event start time options" })).getAllByRole("option");
+        expect(times).toHaveLength(96);
+        expect(times[0]).toHaveTextContent("12:00 AM");
+        expect(times[1]).toHaveTextContent("12:15 AM");
+
+        // Picking moves the end with it: an hour long still.
+        await user.click(screen.getByRole("option", { name: "2:15 PM" }));
+        expect(start).toHaveValue("2:15 PM");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("3:15 PM");
+
+        // A time typed in, off the quarter hours, keeps the length the same way.
+        setTimeField("Event start time", "4:07pm");
+        expect(start).toHaveValue("4:07 PM");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("5:07 PM");
+
+        // And so does an event of another length: 33 minutes stays 33 minutes.
+        setTimeField("Event end time", "4:40pm");
+        setTimeField("Event start time", "6:00pm");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("6:33 PM");
+    });
+
+    it("offer each quarter hour after the start to end at, with how long the event would be, on into the next day", async () => {
+        const user = userEvent.setup();
+        renderNew({ initialStart: new Date("2026-06-10T23:00:00.000Z"), initialEnd: new Date("2026-06-11T00:00:00.000Z") });
+        await openTimeControls(user);
+        await user.click(screen.getByLabelText("Event end time"));
+        const list = screen.getByRole("listbox", { name: "Event end time options" });
+        const options = within(list).getAllByRole("option");
+        expect(options[0]).toHaveTextContent("11:15 PM(15 mins)");
+        expect(options[3]).toHaveTextContent("12:00 AM(1 hr)");
+
+        await user.click(within(list).getByRole("option", { name: /^1:30 AM/ }));
+        expect(screen.getByLabelText("Event end time")).toHaveValue("1:30 AM");
+        expect(screen.getByLabelText("Event end date")).toHaveValue("2026-06-11");
+        expect(screen.getByLabelText("Event start time")).toHaveValue("11:00 PM");
+    });
+
+    it("keep the end on its own day when a time is typed for it", async () => {
+        const user = userEvent.setup();
+        renderNew();
+        await openTimeControls(user);
+        setTimeField("Event end time", "5:30pm");
+        expect(screen.getByLabelText("Event end time")).toHaveValue("5:30 PM");
+        expect(screen.getByLabelText("Event end date")).toHaveValue("2026-06-10");
+    });
+});
+
+describe("the date and time controls' layout", () => {
+    it("put the Time zone link above All day, and the zone menu it opens right under it, before how the event repeats", async () => {
+        const user = userEvent.setup();
+        renderNew();
+        await openTimeControls(user);
+        await user.click(screen.getByRole("button", { name: "Time zone" }));
+
+        const link = screen.getByRole("button", { name: "Time zone" });
+        const zone = screen.getByRole("combobox", { name: "Event time zone" });
+        const allDay = screen.getByRole("checkbox", { name: "All day" });
+        const repeat = screen.getByLabelText("Recurrence");
+        const before = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+        expect(before(link, zone)).toBe(true);
+        expect(before(zone, allDay)).toBe(true);
+        expect(before(allDay, repeat)).toBe(true);
     });
 });

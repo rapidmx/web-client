@@ -224,7 +224,7 @@ describe("InviteCard: a guest's change request received by the organizer", () =>
         const region = screen.getByRole("region", { name: "Change requested" });
         expect(region).toHaveTextContent("Amy’s change was applied.");
         expect(within(region).getByText("Q3 planning")).toBeInTheDocument();
-        expect(within(region).getByText("Tue, Jun 16, 2026, 2:00 PM - 3:30 PM UTC".replace(/ /g, " "), { exact: false })).toBeInTheDocument();
+        expect(within(region).getByText("Tue, Jun 16, 2026, 2:00 PM - 3:30 PM • UTC (GMT+00:00)".replace(/ /g, " "), { exact: false })).toBeInTheDocument();
         expect(within(region).getByText("Room 4")).toBeInTheDocument();
         expect(within(region).getByText("New agenda")).toBeInTheDocument();
         // It was applied: there is nothing to accept, and no "You accepted the proposed time."

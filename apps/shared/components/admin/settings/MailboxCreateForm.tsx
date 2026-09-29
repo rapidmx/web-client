@@ -7,7 +7,7 @@ import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { getMailboxPolicy } from "../../../../../lib/admin/mailboxPolicyApi.js";
 import { LeftoverConflict, leftoverConflictOf } from "../../../../../lib/admin/leftoverMailboxApi.js";
 import { createMailbox, listMailboxDomains, Mailbox, resolveMailboxOwner, ResolvedPrincipal } from "../../../../../lib/mail/mailApi.js";
-import { deviceTimeZone } from "../../../../../lib/util/timeZone.js";
+import { describeTimeZone, deviceTimeZone, zoneClock } from "../../../../../lib/util/timeZone.js";
 import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
 import Alert from "../../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
@@ -298,6 +298,7 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
                         onChange={(e) => setTimezone(e.target.value)}
                         placeholder="America/Los_Angeles"
                     />
+                    {zoneClock(timezone) && <p className="text-xs text-text-muted mt-1">{describeTimeZone(timezone)}</p>}
                 </FormField>
 
                 <FormField label="Quota (GB)" htmlFor="quotaGb">

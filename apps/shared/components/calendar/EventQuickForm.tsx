@@ -9,8 +9,9 @@ import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import { EventShellContext } from "./EventShell.js";
 import { CalendarField, DateTimeControls, DescriptionRow, GuestsRow, IconRow, LocationRow, VideoConferencingRow } from "./EventFormParts.js";
+import { describeTimeZone } from "../../../../lib/util/timeZone.js";
 import { EventFormController } from "./eventForm.js";
-import { BUSY_STATUS_LABEL, VISIBILITY_LABEL, describeReminder, formatFormWhen, reminderOf } from "./eventFormat.js";
+import { BUSY_STATUS_LABEL, VISIBILITY_LABEL, describeReminder, formatFormWhen, reminderOf, zoneDate } from "./eventFormat.js";
 
 export interface EventQuickFormProps {
     c: EventFormController;
@@ -79,7 +80,7 @@ export default function EventQuickForm({ c, onExpand, tabs, tabPanelProps }: Eve
                     >
                         <span className="block text-sm">{formatFormWhen(values.start, values.end, values.allDay)}</span>
                         <span className="block text-xs text-text-muted">
-                            {values.formZone.replace(/_/g, " ")} &bull;{" "}
+                            {describeTimeZone(values.formZone, zoneDate(values.start))} &bull;{" "}
                             {values.recurrenceRule ? `Repeats ${describeRecurrence(values.recurrenceRule)}` : "Does not repeat"}
                         </span>
                     </button>

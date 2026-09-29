@@ -60,7 +60,7 @@ describe("the form", () => {
         ]);
         expect(screen.getByLabelText("Bookable from")).toHaveValue("09:00");
         expect(screen.getByLabelText("Bookable until")).toHaveValue("17:00");
-        expect(screen.getByText("Times are in America/New York.")).toBeInTheDocument();
+        expect(screen.getByText("Times are in New York, America (GMT-04:00).")).toBeInTheDocument();
         expect(screen.getByRole("checkbox", { name: "Video call" })).toBeChecked();
         expect(screen.getByRole("checkbox", { name: "Phone call" })).not.toBeChecked();
         expect(screen.getByRole("checkbox", { name: "Other" })).not.toBeChecked();

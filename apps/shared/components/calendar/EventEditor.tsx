@@ -34,6 +34,7 @@ import QuickCreateFaces, { QuickCreateConfig } from "./QuickCreateFaces.js";
 import { EditScope, EventFormController, EventFormValues } from "./eventForm.js";
 import { descriptionProblem, dialogFields, hasDescriptionText, initialDescriptionHtml } from "./eventDialogFields.js";
 import { mergeGuests, msToWallString, wallStringToMs } from "./eventFormat.js";
+import { nextHalfHour } from "./timePicker.js";
 
 /**
  * The Location text this modal writes when it mints a video meeting for an event, and the one value it will
@@ -190,8 +191,10 @@ export default function EventEditor({
             start = `${format(initialStart ?? new Date(), "yyyy-MM-dd")}T00:00`;
             end = start;
         } else {
-            start = toDatetimeLocal(occurrence?.startDate ?? initialStart?.toISOString() ?? new Date().toISOString());
-            end = toDatetimeLocal(occurrence?.endDate ?? initialEnd?.toISOString() ?? new Date(Date.now() + 30 * MS_PER_MINUTE).toISOString());
+            // With nothing clicked, a new event starts at the next half hour and lasts an hour.
+            const newStart = initialStart ?? nextHalfHour(new Date());
+            start = toDatetimeLocal(occurrence?.startDate ?? newStart.toISOString());
+            end = toDatetimeLocal(occurrence?.endDate ?? (initialEnd ?? new Date(newStart.getTime() + MS_PER_HOUR)).toISOString());
         }
         return {
             title: occurrence?.title ?? "",

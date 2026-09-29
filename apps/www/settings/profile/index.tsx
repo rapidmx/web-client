@@ -5,7 +5,8 @@
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useMemo, useState } from "react";
 import { FreeBusyVisibility, freeBusyVisibilityOf, isSharedWithMe, updateMailbox } from "../../../../lib/mail/mailApi.js";
-import { DEFAULT_TIME_ZONE, deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
+import TimeZonePicker from "../../../../lib/components/pickers/TimeZonePicker.js";
+import { DEFAULT_TIME_ZONE, describeTimeZone, deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import Button from "../../../../lib/components/buttons/Button.js";
@@ -169,22 +170,17 @@ function ProfileContent() {
 
                     <FormField label="Time zone" htmlFor="profile-time-zone">
                         <div className="flex flex-wrap items-center gap-2">
-                            <select
+                            <TimeZonePicker
                                 id="profile-time-zone"
                                 className={SELECT_CLASS}
                                 value={timezone}
-                                onChange={(e) => {
-                                    setTimezone(e.target.value);
+                                zones={zones}
+                                onChange={(zone) => {
+                                    setTimezone(zone);
                                     setSaved(false);
                                 }}
                                 aria-describedby="profile-time-zone-help"
-                            >
-                                {zones.map((zone) => (
-                                    <option key={zone} value={zone}>
-                                        {zone}
-                                    </option>
-                                ))}
-                            </select>
+                            />
                             {timezone !== deviceZone && (
                                 <Button
                                     type="button"
@@ -195,7 +191,7 @@ function ProfileContent() {
                                         setSaved(false);
                                     }}
                                 >
-                                    Use this device&rsquo;s time zone ({deviceZone})
+                                    Use this device&rsquo;s time zone ({describeTimeZone(deviceZone)})
                                 </Button>
                             )}
                         </div>

@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import type { Attachment } from "../../../../../lib/mail/mailApi.js";
 import type { InviteResponse, MessageInvite } from "../../../../../lib/calendar/inviteApi.js";
+import { describeTimeZone, deviceTimeZone } from "../../../../../lib/util/timeZone.js";
 import { APP_HREFS } from "../../../navigation/appHrefs.js";
 
 /** Whether an attachment is a calendar file - what tells the pane a message may carry an invitation worth asking the server about. By type
@@ -53,15 +54,15 @@ export function formatInviteWhen(invite: Pick<MessageInvite, "startDate" | "endD
     }
     const date = new Intl.DateTimeFormat(undefined, DAY_FORMAT);
     const time = new Intl.DateTimeFormat(undefined, CLOCK_FORMAT);
-    // The zone is named once, after the last time shown: the times are the reader's own, not the organizer's.
-    const timeAndZone = new Intl.DateTimeFormat(undefined, { ...CLOCK_FORMAT, timeZoneName: "short" });
+    // The zone is named once, in full, after the last time shown: the times are the reader's own, not the organizer's.
+    const zone = describeTimeZone(deviceTimeZone(), end ?? start);
     const startDay = date.format(start);
     if (!end) {
-        return `${startDay}, ${timeAndZone.format(start)}`;
+        return `${startDay}, ${time.format(start)} • ${zone}`;
     }
     return startDay === date.format(end)
-        ? `${startDay}, ${time.format(start)} - ${timeAndZone.format(end)}`
-        : `${startDay}, ${time.format(start)} - ${date.format(end)}, ${timeAndZone.format(end)}`;
+        ? `${startDay}, ${time.format(start)} - ${time.format(end)} • ${zone}`
+        : `${startDay}, ${time.format(start)} - ${date.format(end)}, ${time.format(end)} • ${zone}`;
 }
 
 /** The meeting's start the way a list row writes it - `Thu 9/24/2026 1:00 PM` (dates only for an all-day event), in the reader's zone. */

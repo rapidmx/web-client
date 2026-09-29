@@ -187,6 +187,21 @@ export function formatStoredWhen(startDate: string, endDate: string, allDay: boo
     return formatWhen(new Date(startDate), new Date(endDate), false, now);
 }
 
+/** The date the form's start falls on, for reading a zone's offset as it will be for the event (daylight saving); now while there is no date. */
+export function zoneDate(start: string): Date {
+    const day = new Date(`${start.slice(0, 10)}T12:00:00Z`);
+    return Number.isNaN(day.getTime()) ? new Date() : day;
+}
+
+/** `formatWhen()` for a stored timed event as `zone`'s clock reads it, whatever zone the viewer is in. */
+export function formatStoredWhenInZone(startDate: string, endDate: string, zone: string, now: Date = new Date()): string {
+    const onZoneClock = (iso: string) => {
+        const wall = new Date(toEventWallClock(new Date(iso).getTime(), zone, false));
+        return new Date(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate(), wall.getUTCHours(), wall.getUTCMinutes());
+    };
+    return formatWhen(onZoneClock(startDate), onZoneClock(endDate), false, now);
+}
+
 /** Adds the guests typed or pasted into the guests field to `current` - recipients separated by commas or semicolons, each an address or
  * `Name <address>` (see `applyGuestChips()`, which keeps who is already there): an address already on the list (in any case) or in
  * `skipAddresses` is skipped, and what is not an address comes back as `invalid` for the field to keep. */

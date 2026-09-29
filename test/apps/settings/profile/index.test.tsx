@@ -64,13 +64,20 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+/** Chooses a zone in the profile's time zone list: opens it, searches for the zone and clicks the option that starts with `name`. */
+async function chooseZone(user: ReturnType<typeof userEvent.setup>, name: string) {
+    await user.click(screen.getByLabelText("Time zone"));
+    await user.type(screen.getByRole("searchbox", { name: "Search time zones" }), name);
+    await user.click(screen.getByRole("option", { name: new RegExp(`^${name}`) }));
+}
+
 describe("SettingsProfilePage", () => {
     it("seeds the display name and time zone from the mailbox", async () => {
         mockShell();
         render(<SettingsProfilePage userUid="u1" />);
 
         expect(await screen.findByLabelText("Display name")).toHaveValue("My Mail");
-        expect(screen.getByLabelText("Time zone")).toHaveValue("Europe/Paris");
+        expect(screen.getByLabelText("Time zone")).toHaveTextContent(/^Paris, Europe \(GMT\+0[12]:00\)/);
         expect(screen.queryByText(/no time zone chosen yet/)).not.toBeInTheDocument();
         // Says what each is for.
         expect(screen.getByText(/The sender name on mail you send/)).toBeInTheDocument();
@@ -82,7 +89,7 @@ describe("SettingsProfilePage", () => {
             mockShell({ ...mailbox, timezone: "UTC" });
             render(<SettingsProfilePage userUid="u1" />);
 
-            expect(await screen.findByLabelText("Time zone")).toHaveValue("Asia/Tokyo");
+            expect(await screen.findByLabelText("Time zone")).toHaveTextContent("Tokyo, Asia (GMT+09:00)");
             expect(screen.getByText(/Your mailbox has no time zone chosen yet; this device.s is preselected/)).toBeInTheDocument();
             // Already the device's zone: nothing to offer.
             expect(screen.queryByRole("button", { name: /Use this device/ })).not.toBeInTheDocument();
@@ -108,7 +115,7 @@ describe("SettingsProfilePage", () => {
             mockShell({ ...mailbox, timezone: "UTC" });
             render(<SettingsProfilePage userUid="u1" />);
 
-            expect(await screen.findByLabelText("Time zone")).toHaveValue("UTC");
+            expect(await screen.findByLabelText("Time zone")).toHaveTextContent("UTC (GMT+00:00)");
             expect(screen.queryByText(/no time zone chosen yet/)).not.toBeInTheDocument();
             expect(screen.queryByRole("button", { name: /Use this device/ })).not.toBeInTheDocument();
         });
@@ -117,7 +124,7 @@ describe("SettingsProfilePage", () => {
             mockShell();
             render(<SettingsProfilePage userUid="u1" />);
 
-            expect(await screen.findByLabelText("Time zone")).toHaveValue("Europe/Paris");
+            expect(await screen.findByLabelText("Time zone")).toHaveTextContent(/^Paris, Europe \(GMT\+0[12]:00\)/);
         });
 
         it("offers to use the device's zone whenever the selection differs, and hides that once it is selected", async () => {
@@ -126,11 +133,11 @@ describe("SettingsProfilePage", () => {
             render(<SettingsProfilePage userUid="u1" />);
             await screen.findByLabelText("Time zone");
 
-            await user.click(screen.getByRole("button", { name: "Use this device’s time zone (Asia/Tokyo)" }));
-            expect(screen.getByLabelText("Time zone")).toHaveValue("Asia/Tokyo");
+            await user.click(screen.getByRole("button", { name: "Use this device’s time zone (Tokyo, Asia (GMT+09:00))" }));
+            expect(screen.getByLabelText("Time zone")).toHaveTextContent("Tokyo, Asia (GMT+09:00)");
             expect(screen.queryByRole("button", { name: /Use this device/ })).not.toBeInTheDocument();
 
-            await user.selectOptions(screen.getByLabelText("Time zone"), "America/New_York");
+            await chooseZone(user, "New York, America");
             expect(screen.getByRole("button", { name: /Use this device/ })).toBeInTheDocument();
         });
 
@@ -138,7 +145,7 @@ describe("SettingsProfilePage", () => {
             mockShell({ ...mailbox, timezone: "Mars/Olympus_Mons" });
             render(<SettingsProfilePage userUid="u1" />);
 
-            expect(await screen.findByLabelText("Time zone")).toHaveValue("Mars/Olympus_Mons");
+            expect(await screen.findByLabelText("Time zone")).toHaveTextContent("Mars/Olympus Mons");
         });
     });
 
@@ -226,7 +233,7 @@ describe("SettingsProfilePage", () => {
             render(<SettingsProfilePage userUid="u1" />);
             await screen.findByLabelText("Time zone");
 
-            await user.selectOptions(screen.getByLabelText("Time zone"), "America/New_York");
+            await chooseZone(user, "New York, America");
             await user.click(screen.getByRole("button", { name: "Save" }));
 
             expect(await screen.findByText("Saved.")).toBeInTheDocument();
@@ -275,7 +282,7 @@ describe("SettingsProfilePage", () => {
             await user.click(screen.getByRole("button", { name: "Save" }));
             expect(saves(fetchMock)).toHaveLength(1);
 
-            await user.selectOptions(screen.getByLabelText("Time zone"), "America/New_York");
+            await chooseZone(user, "New York, America");
             await user.click(screen.getByRole("button", { name: "Save" }));
             await vi.waitFor(() => expect(saves(fetchMock)).toHaveLength(2));
             expect(saves(fetchMock)).toEqual([

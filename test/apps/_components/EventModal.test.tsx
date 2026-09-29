@@ -10,7 +10,7 @@ import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 import { Mailbox } from "../../../lib/mail/mailApi.js";
-import { addGuest, clickModify, openMoreOptions, openTimeControls, setWhen } from "./eventModalHelpers.js";
+import { addGuest, clickModify, openMoreOptions, openTimeControls, setTimeField, setWhen } from "./eventModalHelpers.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 
@@ -167,7 +167,7 @@ describe("EventModal", () => {
         // occurrence's local-time-converted start/end) — same instant, so "after start" must fail.
         clickModify();
         const startValue = screen.getByLabelText<HTMLInputElement>("Event start time").value;
-        fireEvent.change(screen.getByLabelText("Event end time"), { target: { value: startValue } });
+        setTimeField("Event end time", startValue);
 
         await user.click(screen.getByRole("button", { name: "Save" }));
         expect(await screen.findByText("The end time must be after the start time.")).toBeInTheDocument();
@@ -520,10 +520,10 @@ describe("EventModal", () => {
         );
         clickModify();
 
-        expect(screen.getByLabelText("Event start time")).toHaveAttribute("type", "time");
+        expect(screen.getByLabelText("Event start time")).toHaveAttribute("role", "combobox");
         setWhen("Start", "2026-06-04T09:00");
         expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-04");
-        expect(screen.getByLabelText("Event start time")).toHaveValue("09:00");
+        expect(screen.getByLabelText("Event start time")).toHaveValue("9:00 AM");
 
         await user.click(screen.getByRole("checkbox", { name: "All day" }));
         expect(screen.queryByLabelText("Event start time")).not.toBeInTheDocument();

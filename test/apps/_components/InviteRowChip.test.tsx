@@ -255,7 +255,7 @@ describe("InviteRowChip", () => {
             const dialog = await screen.findByRole("dialog", { name: "RSVP: Video Test" });
             expect(rsvp).toHaveAttribute("aria-expanded", "true");
             expect(within(dialog).getByRole("heading", { name: "Video Test" })).toBeInTheDocument();
-            expect(plain(dialog.textContent)).toContain("Tue, Jun 16, 2026, 1:00 PM - 2:00 PM UTC");
+            expect(plain(dialog.textContent)).toContain("Tue, Jun 16, 2026, 1:00 PM - 2:00 PM • UTC (GMT+00:00)");
             expect(dialog).toHaveTextContent("Conflicts with: Design review");
             const events = within(within(dialog).getByRole("list", { name: "Events" })).getAllByRole("listitem");
             expect(events.map((item) => item.getAttribute("data-kind")).sort()).toEqual(["busy", "conflict", "invite"]);

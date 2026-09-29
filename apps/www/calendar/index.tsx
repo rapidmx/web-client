@@ -43,6 +43,7 @@ import TimeGridView from "../../shared/components/calendar/TimeGridView.js";
 import Alert from "../../../lib/components/feedback/Alert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import { SWIPE_PERIOD_SHIFT } from "../../shared/components/calendar/swipeNavigation.js";
+import { nextHalfHour } from "../../shared/components/calendar/timePicker.js";
 import { useSwipeSlide } from "../../shared/gestures/useSwipeSlide.js";
 import { useEnterSlide } from "../../shared/gestures/useEnterSlide.js";
 import { useWheelPaging, type WheelEdge } from "../../shared/gestures/useWheelPaging.js";
@@ -357,10 +358,12 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         if (!mailboxUid || !folderUid) {
             return;
         }
+        // With nothing clicked, the next half hour, for an hour.
+        const from = start ?? nextHalfHour(new Date());
         setModal({
             occurrence: null,
-            initialStart: start ?? new Date(),
-            initialEnd: end ?? new Date(Date.now() + 30 * 60_000),
+            initialStart: from,
+            initialEnd: end ?? new Date(from.getTime() + 60 * 60_000),
             targetFolderUid,
             anchor,
             initialAllDay,

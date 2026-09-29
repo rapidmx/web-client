@@ -19,7 +19,8 @@ import Button from "../../../../lib/components/buttons/Button.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { addDaysToKey } from "./allDay.js";
 import { EventFormController } from "./eventForm.js";
-import { formatFormWhen, localDateFromKey, msToWallString, wallStringToMs } from "./eventFormat.js";
+import { formatFormWhen, localDateFromKey, msToWallString, wallStringToMs, zoneDate } from "./eventFormat.js";
+import { describeTimeZone } from "../../../../lib/util/timeZone.js";
 import {
     SEARCH_DAYS,
     WORK_END_HOUR,
@@ -238,7 +239,7 @@ export default function FindATime({ c }: { c: EventFormController }) {
                 >
                     &rsaquo;
                 </button>
-                <span className="text-xs text-text-muted">{formZone.replace(/_/g, " ")}</span>
+                <span className="text-xs text-text-muted">{describeTimeZone(formZone, zoneDate(dayKey))}</span>
             </div>
 
             {lookUp.status === "error" && (

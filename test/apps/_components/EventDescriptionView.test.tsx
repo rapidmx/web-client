@@ -82,3 +82,28 @@ describe("EventDescriptionView", () => {
         expect(render(<EventDescriptionView html="<p> </p>" text={null} />).container).toBeEmptyDOMElement();
     });
 });
+
+describe("EventDescriptionView links", () => {
+    it("makes a web address typed into the text a link, in the rich text and in the plain text, keeping sentence punctuation out of it", () => {
+        const { container, rerender } = render(
+            <EventDescriptionView html="<p>Join: https://meet.google.com/abc-def, or see (https://example.com/a_(b)). Not http.</p><p>More https://tel.meet/x?pin=1&amp;hs=7</p><p>[https://example.com/b]</p>" />,
+        );
+        const links = [...container.querySelectorAll("a")];
+        expect(links.map((link) => link.getAttribute("href"))).toEqual(["https://meet.google.com/abc-def", "https://example.com/a_(b)", "https://tel.meet/x?pin=1&hs=7", "https://example.com/b"]);
+        links.forEach((link) => {
+            expect(link).toHaveAttribute("target", "_blank");
+            expect(link).toHaveAttribute("rel", "noopener noreferrer");
+        });
+        expect(container.querySelector("p")).toHaveTextContent("Join: https://meet.google.com/abc-def, or see (https://example.com/a_(b)). Not http.");
+
+        rerender(<EventDescriptionView text={"Line one https://example.com/plain!\nsecond"} />);
+        expect(container.querySelector("a")).toHaveAttribute("href", "https://example.com/plain");
+        expect(container.firstElementChild).toHaveTextContent("Line one https://example.com/plain! second");
+    });
+
+    it("does not make a link inside a link a second one", () => {
+        const { container } = render(<EventDescriptionView html='<a href="https://example.com/x">see https://example.com/y</a>' />);
+        expect(container.querySelectorAll("a")).toHaveLength(1);
+        expect(container.querySelector("a")).toHaveAttribute("href", "https://example.com/x");
+    });
+});

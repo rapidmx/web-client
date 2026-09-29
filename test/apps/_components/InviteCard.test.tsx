@@ -97,18 +97,18 @@ describe("isCalendarAttachment", () => {
 
 describe("formatInviteWhen", () => {
     it("shows one date and a time range for a same-day event, naming the zone once", () => {
-        expect(plain(formatInviteWhen(inviteFixture()))).toBe("Tue, Jun 16, 2026, 2:00 PM - 3:30 PM UTC");
+        expect(plain(formatInviteWhen(inviteFixture()))).toBe("Tue, Jun 16, 2026, 2:00 PM - 3:30 PM • UTC (GMT+00:00)");
     });
 
     it("shows both ends in full for an event that spans days", () => {
         expect(plain(formatInviteWhen(inviteFixture({ endDate: "2026-06-17T09:00:00.000Z" })))).toBe(
-            "Tue, Jun 16, 2026, 2:00 PM - Wed, Jun 17, 2026, 9:00 AM UTC",
+            "Tue, Jun 16, 2026, 2:00 PM - Wed, Jun 17, 2026, 9:00 AM • UTC (GMT+00:00)",
         );
     });
 
     it("shows the start alone when the end is missing, unparseable or not after it", () => {
         for (const endDate of [undefined, "garbage", "2026-06-16T14:00:00.000Z"]) {
-            expect(plain(formatInviteWhen(inviteFixture({ endDate })))).toBe("Tue, Jun 16, 2026, 2:00 PM UTC");
+            expect(plain(formatInviteWhen(inviteFixture({ endDate })))).toBe("Tue, Jun 16, 2026, 2:00 PM • UTC (GMT+00:00)");
         }
     });
 
@@ -154,7 +154,7 @@ describe("InviteCard", () => {
         const region = screen.getByRole("region");
 
         expect(within(region).getByText("Quarterly planning")).toBeInTheDocument();
-        expect(plain(within(region).getByText("When").nextElementSibling?.textContent)).toBe("Tue, Jun 16, 2026, 2:00 PM - 3:30 PM UTC");
+        expect(plain(within(region).getByText("When").nextElementSibling?.textContent)).toBe("Tue, Jun 16, 2026, 2:00 PM - 3:30 PM • UTC (GMT+00:00)");
         expect(within(region).getByText("Where").nextElementSibling).toHaveTextContent("Room 4");
         expect(within(region).getByText("Organizer").nextElementSibling).toHaveTextContent("The Boss <boss@example.com>");
         expect(within(region).getByText("Attendees").nextElementSibling).toHaveTextContent("2 attendees: Me, amy@example.com");
@@ -556,7 +556,7 @@ describe("InviteCard", () => {
 
             expect(within(region).getByText("Jean-Philippe Steinmetz").parentElement).toHaveTextContent("Jean-Philippe Steinmetz tentatively accepted.");
             expect(within(region).getByText("Video Test")).toBeInTheDocument();
-            expect(plain(region.textContent)).toContain("Tue, Jun 16, 2026, 2:00 PM - 3:30 PM UTC");
+            expect(plain(region.textContent)).toContain("Tue, Jun 16, 2026, 2:00 PM - 3:30 PM • UTC (GMT+00:00)");
             expect(screen.queryByRole("button")).not.toBeInTheDocument();
             for (const label of ["When", "Organizer", "Attendees"]) {
                 expect(within(region).queryByText(label)).not.toBeInTheDocument();
@@ -611,7 +611,7 @@ describe("InviteCard", () => {
             await renderCard(counter());
             const region = screen.getByRole("region", { name: "New time proposed" });
 
-            expect(plain(region.textContent)).toContain("Amy proposed a new time: Wed, Jun 17, 2026, 10:00 AM - 11:00 AM UTC");
+            expect(plain(region.textContent)).toContain("Amy proposed a new time: Wed, Jun 17, 2026, 10:00 AM - 11:00 AM • UTC (GMT+00:00)");
             expect(within(region).getByText("Quarterly planning")).toBeInTheDocument();
             expect(within(region).getByRole("button", { name: "Accept proposal" })).toBeEnabled();
             expect(within(region).queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();

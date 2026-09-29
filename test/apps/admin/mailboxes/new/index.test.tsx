@@ -66,6 +66,24 @@ describe("NewMailboxPage", () => {
         expect(posted).toBe(false);
     });
 
+    it("says what the timezone typed is and how far it is from UTC, and nothing for a zone that isn't one", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, []);
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New mailbox");
+
+        await user.clear(screen.getByLabelText("Timezone"));
+        await user.type(screen.getByLabelText("Timezone"), "Asia/Tokyo");
+        expect(screen.getByText("Tokyo, Asia (GMT+09:00)")).toBeInTheDocument();
+        await user.clear(screen.getByLabelText("Timezone"));
+        await user.type(screen.getByLabelText("Timezone"), "Nowhere/Land");
+        expect(screen.queryByText(/GMT/)).not.toBeInTheDocument();
+    });
+
     it("creates the mailbox (with custom timezone/quota) and redirects to its detail page", async () => {
         let requestBody: any;
         mockFetch((url, init) => {

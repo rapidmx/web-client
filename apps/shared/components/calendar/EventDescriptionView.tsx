@@ -5,18 +5,50 @@
 import React, { ReactNode } from "react";
 import { DescriptionNode, htmlToPlainText, parseEventDescription } from "../../../../lib/calendar/eventDescription.js";
 
-function renderNodes(nodes: DescriptionNode[]): ReactNode[] {
+const URL_PATTERN = /https?:\/\/[^\s<>"']+/gi;
+const LINK_CLASS = "text-primary-dark underline break-words";
+
+function count(text: string, character: string): number {
+    return text.split(character).length - 1;
+}
+
+/**
+ * `text` with every web address in it made a link that opens in a new tab: a description's own links are its author's, but Google Meet joins, dial-in pages
+ * and the like are often only typed into the text. Punctuation that ends a sentence, or closes a bracket the address was not in, stays out of the link.
+ */
+export function linkifyText(text: string): ReactNode[] {
+    const parts: ReactNode[] = [];
+    let last = 0;
+    for (const match of text.matchAll(URL_PATTERN)) {
+        let url = match[0];
+        while (/[.,;:!?]$/.test(url) || (url.endsWith(")") && count(url, ")") > count(url, "(")) || (url.endsWith("]") && count(url, "]") > count(url, "["))) {
+            url = url.slice(0, -1);
+        }
+        const at = match.index!;
+        parts.push(text.slice(last, at));
+        parts.push(
+            <a key={at} href={url} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
+                {url}
+            </a>,
+        );
+        last = at + url.length;
+    }
+    parts.push(text.slice(last));
+    return parts;
+}
+
+function renderNodes(nodes: DescriptionNode[], insideLink = false): ReactNode[] {
     return nodes.map((node, index) => {
         if ("text" in node) {
-            return node.text;
+            return insideLink ? node.text : <React.Fragment key={index}>{linkifyText(node.text)}</React.Fragment>;
         }
         switch (node.tag) {
             case "br":
                 return <br key={index} />;
             case "a":
                 return (
-                    <a key={index} href={node.href} target="_blank" rel="noopener noreferrer" className="text-primary-dark underline break-words">
-                        {renderNodes(node.children)}
+                    <a key={index} href={node.href} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
+                        {renderNodes(node.children, true)}
                     </a>
                 );
             case "ul":
@@ -66,5 +98,5 @@ export default function EventDescriptionView({ html, text, className }: EventDes
     if (htmlToPlainText(html) !== "") {
         return <div className={["break-words", className].filter(Boolean).join(" ")}>{renderNodes(parseEventDescription(html))}</div>;
     }
-    return text?.trim() ? <div className={["break-words whitespace-pre-wrap", className].filter(Boolean).join(" ")}>{text}</div> : null;
+    return text?.trim() ? <div className={["break-words whitespace-pre-wrap", className].filter(Boolean).join(" ")}>{linkifyText(text)}</div> : null;
 }

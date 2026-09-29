@@ -83,7 +83,7 @@ describe("EventModal details", () => {
         expect(within(dialog).getByText("Busy")).toBeInTheDocument();
         expect(within(dialog).getByText("Notify 15 minutes before")).toBeInTheDocument();
         // No reader-zone note when the event is in the reader's own zone; no repeat line for a single event.
-        expect(dialog).not.toHaveTextContent("Event time zone");
+        expect(dialog).not.toHaveTextContent("(GMT");
         expect(dialog).not.toHaveTextContent("Repeats");
     });
 
@@ -104,7 +104,10 @@ describe("EventModal details", () => {
             }),
         );
         expect(screen.getByText(/^Repeats every week on Wednesday/)).toBeInTheDocument();
-        expect(screen.getByText("Event time zone: America/New York")).toBeInTheDocument();
+        // Set in New York, read in UTC: the time in full on each clock, so nobody has to convert.
+        expect(screen.getByText(/3:00pm – 3:30pm • UTC \(GMT\+00:00\)$/)).toBeInTheDocument();
+        expect(screen.getByText(/11:00am – 11:30am • New York, America \(GMT-04:00\)$/)).toBeInTheDocument();
+        expect(screen.queryByText(/Event time zone/)).not.toBeInTheDocument();
     });
 
     it("shows an all-day event's days without a time, and no time zone note", () => {

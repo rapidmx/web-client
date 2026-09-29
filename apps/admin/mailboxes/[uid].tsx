@@ -12,6 +12,7 @@ import ResourceSettingsCard from "../../shared/components/admin/mailboxes/Resour
 import EscrowScopeCard from "../../shared/components/admin/mailboxes/EscrowScopeCard.js";
 import Alert from "../../../lib/components/feedback/Alert.js";
 import Button from "../../../lib/components/buttons/Button.js";
+import { describeTimeZone } from "../../../lib/util/timeZone.js";
 import Modal from "../../../lib/components/overlays/Modal.js";
 
 function formatBytes(bytes: number): string {
@@ -156,7 +157,7 @@ function MailboxDetailContent({
                     <dt className="text-text-muted">Owner</dt>
                     <dd>{mailbox.ownerUserUid ?? "None (shared mailbox)"}</dd>
                     <dt className="text-text-muted">Timezone</dt>
-                    <dd>{mailbox.timezone}</dd>
+                    <dd>{describeTimeZone(mailbox.timezone)}</dd>
                     <dt className="text-text-muted">Quota</dt>
                     <dd>
                         {formatBytes(mailbox.usedBytes)} / {formatBytes(mailbox.quotaBytes)}
