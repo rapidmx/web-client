@@ -1382,6 +1382,52 @@ describe("Print", () => {
         await waitFor(() => expect(popups()).toEqual([expect.objectContaining({ kind: "error", title: "Couldn't print this message" })]));
     });
 
+    describe("a message in a conversation", () => {
+        const inThread = () => message({ conversationId: "c1" });
+        const thread = (): Handler => (url) =>
+            url.startsWith("/api/mail/messages/conversations/c1")
+                ? jsonResponse(200, [
+                      message({ uid: "o1", subject: "Re: Hello there", receivedDate: "2025-12-30T00:00:00.000Z" }),
+                      message({ uid: "o2", subject: "Hello there", receivedDate: "2025-12-31T00:00:00.000Z" }),
+                      message({ uid: "m1", receivedDate: "2026-01-01T12:30:00.000Z" }),
+                      message({ uid: "n1", subject: "Newer", receivedDate: "2026-01-02T00:00:00.000Z" }),
+                  ])
+                : undefined;
+        const body = (uid: string, text: string): Handler => (url) => (url === `/api/mail/messages/${uid}/content` ? new Response(text, { headers: { "content-type": "text/plain" } }) : undefined);
+
+        it("prints the earlier messages after it, newest first, and not the later ones", async () => {
+            serve(thread(), body("m1", "this one"), body("o1", "oldest"), body("o2", "middle"), body("n1", "newer"));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={inThread()} attachments={[]} folders={FOLDERS as never} />);
+            await choose(user, [], "Print");
+            await waitFor(() => expect(printDocument).toHaveBeenCalledTimes(1));
+            const html = printDocument.mock.calls[0][0] as string;
+            expect(html.indexOf("this one")).toBeLessThan(html.indexOf("middle"));
+            expect(html.indexOf("middle")).toBeLessThan(html.indexOf("oldest"));
+            expect(html).not.toContain("newer");
+        });
+
+        it("says so, in place, for an earlier message that could not be loaded", async () => {
+            serve(thread(), body("m1", "this one"), body("o2", "middle"));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={inThread()} attachments={[]} folders={FOLDERS as never} />);
+            await choose(user, [], "Print");
+            await waitFor(() => expect(printDocument).toHaveBeenCalledTimes(1));
+            const html = printDocument.mock.calls[0][0] as string;
+            expect(html).toContain("could not be loaded, so it is not printed");
+            expect(html).toContain("middle");
+        });
+
+        it("prints the message alone when the conversation can't be listed", async () => {
+            serve((url) => (url.startsWith("/api/mail/messages/conversations/c1") ? jsonResponse(500, { message: "boom" }) : undefined), body("m1", "this one"));
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={inThread()} attachments={[]} folders={FOLDERS as never} />);
+            await choose(user, [], "Print");
+            await waitFor(() => expect(printDocument).toHaveBeenCalledTimes(1));
+            expect(printDocument.mock.calls[0][0]).not.toContain('class="rr-older"');
+        });
+    });
+
     describe("an encrypted message", () => {
         const encrypted = () => message({ encrypted: true, subject: "Encrypted message" });
 
@@ -1413,6 +1459,13 @@ describe("Print", () => {
             await screen.findByText(/Wrong key/);
             await openMenu(user);
             expect(screen.getByRole("menuitem", { name: /^Print/ })).toHaveTextContent("This message can't be read, so it can't be printed");
+        });
+
+        it("shows the subject it was opened to in place of the server's placeholder", async () => {
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", text: "the secret words", subject: "The real subject" });
+            serve(raw);
+            render(<MessageDetailPane message={message({ encrypted: true, subject: "[...]" })} attachments={[]} folders={FOLDERS as never} />);
+            expect(await screen.findByText("The real subject")).toBeInTheDocument();
         });
 
         it("prints the text it was opened to, never the server's ciphertext", async () => {

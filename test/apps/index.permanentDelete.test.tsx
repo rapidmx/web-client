@@ -389,6 +389,21 @@ describe("Delete in Deleted Items", () => {
         await waitFor(() => expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message"));
     });
 
+    it("permanently deletes with Shift+Delete from any folder, after asking, and the reading pane closes", async () => {
+        const { fetchMock } = mockServer({ messages: [message("a", "f1"), message("b", "f1")] });
+        const user = userEvent.setup();
+        render(<InboxPage userUid="u1" />);
+        await user.click(await screen.findByText("Subject b"));
+        await waitFor(() => expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:b"));
+
+        expect(fireEvent.keyDown(document.body, { key: "Delete", shiftKey: true })).toBe(false);
+        await user.click(confirmButton(await screen.findByRole("dialog"), "Delete permanently"));
+
+        await waitFor(() => expect(purges(fetchMock)).toEqual(["/api/mail/messages/b?purge=true"]));
+        expect(moves(fetchMock)).toHaveLength(0);
+        await waitFor(() => expect(screen.getByTestId("detail-pane")).toHaveTextContent("no-message"));
+    });
+
     it("permanently deletes the open conversation with the Delete key - its messages in Deleted Items - and closes the thread", async () => {
         flatLists(true);
         inTrash();
