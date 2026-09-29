@@ -139,7 +139,7 @@ describe("FindATime look-up", () => {
         render(<FindATime c={controller({ formZone: "America/New_York" })} />);
         await settle();
         expect(lookUps(fetchMock)[0]).toMatchObject({ start: "2026-06-10T04:00:00.000Z", end: "2026-06-17T04:00:00.000Z" });
-        expect(screen.getByText("America/New York")).toBeInTheDocument();
+        expect(screen.getByText(/^New York, America \(GMT-0[45]:00\)$/)).toBeInTheDocument();
     });
 
     it("asks again for another day, and again when the guests change - not once for each change made within the pause", async () => {
