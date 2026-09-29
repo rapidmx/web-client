@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-29
+
+### Added
+- Added Shift+Delete to permanently delete the selected messages after a confirmation
+
+### Changed
+- Document the standing wait-for-green-CI-before-releasing rule in NOTES, per JP
+- Move the Branding step to the end of the server setup wizard, after Mailboxes
+- Show the decrypted subject and preview of encrypted messages in the conversation list, the thread header and the message card
+- Print the selected message followed by all older messages of its conversation, newest to oldest
+- Replace the question mark on the RSVP popover's tentative button with Maybe
+- Keep the calendar's hour labels on their grid lines so an event no longer appears an hour later than its time
+- Cover Shift+Delete on an open conversation so coverage stays at 100%
+
+### Removed
+- Removed the RSVP chip from a meeting request's list row once it has been answered
+
 ## [0.22.0] - 2026-09-28
 
 ### Added
@@ -1089,7 +1106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/rapidmx/web-client/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/rapidmx/web-client/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/rapidmx/web-client/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/rapidmx/web-client/compare/v0.19.0...v0.20.0
