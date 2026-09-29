@@ -3718,6 +3718,8 @@ describe("InboxPage", () => {
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
                 press("ArrowDown");
+                // The message has to be the selected one before the key has anything to act on.
+                await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
 
                 press("d", CTRL);
 
