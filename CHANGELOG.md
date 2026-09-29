@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-29
+
+### Added
+- Added a searchable time zone picker that lists zones from west to east and then by city
+
+### Changed
+- Show a time zone as its city, region and offset from UTC, for example Los Angeles, America (GMT-07:00), everywhere one is listed or named
+- Show an event set in another time zone with its time on the viewer's clock and on its own, each with the zone in full
+- Turn web addresses typed into an event's description into links
+- Start a new event at the next half hour and lasting an hour
+- Replace the event form's time fields with editable fields that offer every quarter hour, and show how long the event would be beside each end time
+- Keep the length of an event when its start time is typed or picked
+- Put the Time zone link above All day and its menu directly under it, before how the event repeats
+- Update the Find a time test for the time zone's new name
+- Make the Contacts shell test wait for the folders request instead of assuming it has been made when the content is drawn
+- Renew the signed-in session when a request is refused for lack of one, and send the request again, instead of waiting for the next timed refresh
+- Always refresh when a page is opened with no session, instead of skipping it because this browser remembers a recent refresh
+
+### Fixed
+- Fixed the lint errors in the time zone and link changes: an unneeded non-null assertion, an unneeded type assertion and a duplicate import
+
 ## [0.23.0] - 2026-09-29
 
 ### Added
@@ -1106,7 +1127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/rapidmx/web-client/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/rapidmx/web-client/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/rapidmx/web-client/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/rapidmx/web-client/compare/v0.20.0...v0.21.0
