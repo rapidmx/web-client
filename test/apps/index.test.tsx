@@ -3444,6 +3444,7 @@ describe("InboxPage", () => {
                 mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
 
                 expect(press("ArrowDown")).toBe(false);
@@ -3468,6 +3469,7 @@ describe("InboxPage", () => {
                 mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 const search = screen.getByLabelText("Search all mail");
 
                 expect(press("j", {}, search)).toBe(true);
@@ -3480,6 +3482,7 @@ describe("InboxPage", () => {
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 await user.click(screen.getByRole("button", { name: "Select" }));
                 expect(press("ArrowDown")).toBe(true);
                 expect(press("j")).toBe(true);
@@ -3491,6 +3494,7 @@ describe("InboxPage", () => {
                 mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 expect(press("ArrowDown")).toBe(true);
                 expect(press("j")).toBe(true);
             });
@@ -3499,6 +3503,7 @@ describe("InboxPage", () => {
                 mockSelectable([]);
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("No messages in this folder.");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 expect(press("ArrowDown")).toBe(true);
             });
 
@@ -3524,6 +3529,7 @@ describe("InboxPage", () => {
                 const fetchMock = mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 press("ArrowDown");
                 // The detail pane shows the selection a render later, and on a slow runner that is after this line has run.
                 await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
@@ -3544,6 +3550,7 @@ describe("InboxPage", () => {
                 const fetchMock = mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 // One key at a time, each waited for: the selection moves a render after the key, and on a slow runner three keys pressed
                 // back to back all act on the selection as it was before the first of them.
                 for (const uid of ["m1", "m2", "m3"]) {
@@ -3563,6 +3570,7 @@ describe("InboxPage", () => {
                 const fetchMock = mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
 
                 expect(press("d", CTRL)).toBe(true);
                 expect(press("Delete")).toBe(true);
@@ -3583,6 +3591,7 @@ describe("InboxPage", () => {
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("Gone already");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 press("ArrowDown");
                 await waitFor(() => expect(detail()).toHaveTextContent("message:m9"));
 
@@ -3610,6 +3619,7 @@ describe("InboxPage", () => {
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("Gone already");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 press("ArrowDown");
                 await waitFor(() => expect(detail()).toHaveTextContent("message:m9"));
                 expect(press("Delete")).toBe(false);
@@ -3626,6 +3636,7 @@ describe("InboxPage", () => {
                 const fetchMock = mockSelectable(threeMessages(), [inboxFolder]);
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 press("ArrowDown");
 
                 press("d", CTRL);
@@ -3639,6 +3650,7 @@ describe("InboxPage", () => {
                 const fetchMock = mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 press("ArrowDown");
                 // Opening it marked it read.
                 await waitFor(() => expect(rowButton("First").closest("li")).not.toHaveAttribute("data-unread"));
@@ -3675,6 +3687,7 @@ describe("InboxPage", () => {
                 const fetchMock = mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 press("ArrowDown");
                 const before = puts(fetchMock).length;
 
@@ -3692,6 +3705,7 @@ describe("InboxPage", () => {
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 await user.click(screen.getByRole("button", { name: "Select" }));
                 expect(press("d", CTRL)).toBe(true);
                 expect(press("Insert")).toBe(true);
@@ -3717,6 +3731,7 @@ describe("InboxPage", () => {
                 );
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 press("ArrowDown");
                 // The message has to be the selected one before the key has anything to act on.
                 await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
@@ -3738,6 +3753,7 @@ describe("InboxPage", () => {
                 );
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 press("ArrowDown");
 
                 press("d", CTRL);
@@ -3777,6 +3793,7 @@ describe("InboxPage", () => {
                 mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 expect(press("Escape")).toBe(true);
                 press("ArrowDown");
                 await waitFor(() => expect(detail()).toHaveTextContent("message:m1"));
@@ -3792,6 +3809,7 @@ describe("InboxPage", () => {
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 await user.click(screen.getByRole("button", { name: "Select" }));
                 await user.click(await screen.findByRole("checkbox", { name: "Select First" }));
 
@@ -3806,6 +3824,7 @@ describe("InboxPage", () => {
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 await user.click(screen.getByText("Second"));
                 const search = screen.getByLabelText("Search all mail");
                 await user.type(search, "abc");
@@ -3822,6 +3841,7 @@ describe("InboxPage", () => {
                 mockSelectable(threeMessages());
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 const search = screen.getByLabelText("Search all mail");
 
                 expect(press("/")).toBe(false);
@@ -3837,8 +3857,10 @@ describe("InboxPage", () => {
                 const user = userEvent.setup();
                 render(<InboxPage userUid="u1" />);
                 await screen.findByText("First");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 await toggleConversations(user);
                 await screen.findByText("No conversations in this folder.");
+                await act(async () => undefined); // the shortcuts are registered by an effect that runs just after the rows are drawn
                 expect(press("/")).toBe(false);
                 expect(screen.getByLabelText("Search all mail")).toHaveFocus();
             });
