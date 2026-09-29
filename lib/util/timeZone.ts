@@ -25,11 +25,25 @@ export function deviceTimeZone(): string {
 export function zoneClock(zone: string, at: Date = new Date()): { abbreviation: string; offset: string } | null {
     try {
         const part = (style: "short" | "longOffset") =>
-            new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: style }).formatToParts(at).find((p) => p.type === "timeZoneName")!.value;
+            formatterFor(zone, style).formatToParts(at).find((p) => p.type === "timeZoneName")!.value;
         return { abbreviation: part("short"), offset: part("longOffset").replace("GMT", "") || "+00:00" };
     } catch {
         return null;
     }
+}
+
+/** Building an `Intl.DateTimeFormat` is by far the costly part of naming a zone's clock, and a list names hundreds: each is made once. */
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function formatterFor(zone: string, style: "short" | "longOffset"): Intl.DateTimeFormat {
+    const key = `${style}|${zone}`;
+    let formatter = formatters.get(key);
+    if (!formatter) {
+        // Throws for a zone the runtime doesn't know, which is then not remembered.
+        formatter = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: style });
+        formatters.set(key, formatter);
+    }
+    return formatter;
 }
 
 /** A zone id split into its city and the region it is in: "America/Argentina/Buenos_Aires" is "Buenos Aires" in "America/Argentina"; "UTC" is in none. */
@@ -56,13 +70,15 @@ export function describeTimeZone(zone: string, at: Date = new Date()): string {
  * Orders zones for a list: by how far their clocks are from UTC at `at` (the westernmost first), then by city, then by id. A zone the runtime
  * doesn't know comes last.
  */
-export function compareTimeZones(a: string, b: string, at: Date = new Date()): number {
-    const minutes = (zone: string) => {
+export function sortTimeZones(zones: readonly string[], at: Date = new Date()): string[] {
+    // Each zone's offset is read once, not once per comparison.
+    const keyed = zones.map((zone) => {
         const offset = zoneClock(zone, at)?.offset;
-        return offset ? (offset.startsWith("-") ? -1 : 1) * (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(4, 6))) : Number.POSITIVE_INFINITY;
-    };
-    const byOffset = minutes(a) - minutes(b);
-    return (Number.isNaN(byOffset) ? 0 : byOffset) || zoneNames(a).city.localeCompare(zoneNames(b).city) || a.localeCompare(b);
+        const minutes = offset ? (offset.startsWith("-") ? -1 : 1) * (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(4, 6))) : Number.POSITIVE_INFINITY;
+        return { zone, minutes, city: zoneNames(zone).city };
+    });
+    keyed.sort((a, b) => (a.minutes === b.minutes ? 0 : a.minutes < b.minutes ? -1 : 1) || a.city.localeCompare(b.city) || a.zone.localeCompare(b.zone));
+    return keyed.map((entry) => entry.zone);
 }
 
 /**
@@ -76,6 +92,5 @@ export function timeZoneOptions(...extra: string[]): string[] {
     } catch {
         zones = [];
     }
-    const now = new Date();
-    return [...new Set([DEFAULT_TIME_ZONE, ...zones, ...extra.filter(Boolean)])].sort((a, b) => compareTimeZones(a, b, now));
+    return sortTimeZones([...new Set([DEFAULT_TIME_ZONE, ...zones, ...extra.filter(Boolean)])]);
 }

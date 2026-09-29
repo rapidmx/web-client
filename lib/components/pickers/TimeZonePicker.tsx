@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
-import { compareTimeZones, describeTimeZone } from "../../util/timeZone.js";
+import { describeTimeZone, sortTimeZones } from "../../util/timeZone.js";
 
 export interface TimeZonePickerProps {
     id?: string;
@@ -34,14 +34,19 @@ export default function TimeZonePicker({ id, "aria-label": label, "aria-describe
     const [query, setQuery] = useState("");
     const [active, setActive] = useState(-1);
 
-    // Listed by the offsets shown (which move with daylight saving): west to east, then by city.
-    const entries = useMemo(
-        () =>
-            [...zones]
-                .sort((a, b) => compareTimeZones(a, b, at))
-                .map((zone) => ({ zone, text: describeTimeZone(zone, at), haystack: `${describeTimeZone(zone, at)} ${zone.replace(/_/g, " ")}`.toLowerCase() })),
-        [zones, at],
-    );
+    // Listed by the offsets shown (which move with daylight saving): west to east, then by city. Worked out only while the list is open - naming several
+    // hundred zones is the costly part, and a closed picker (most renders) shows one - and keyed on the date's value, since a caller may hand over a new `Date` each render.
+    const atTime = at?.getTime();
+    const entries = useMemo(() => {
+        if (!open) {
+            return [];
+        }
+        const on = new Date(atTime ?? Date.now());
+        return sortTimeZones(zones, on).map((zone) => {
+            const text = describeTimeZone(zone, on);
+            return { zone, text, haystack: `${text} ${zone.replace(/_/g, " ")}`.toLowerCase() };
+        });
+    }, [open, zones, atTime]);
     const shown = useMemo(() => {
         const words = query.toLowerCase().replace(/_/g, " ").split(/\s+/).filter(Boolean);
         return words.length === 0 ? entries : entries.filter((entry) => words.every((word) => entry.haystack.includes(word)));

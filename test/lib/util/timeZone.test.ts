@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_TIME_ZONE, compareTimeZones, describeTimeZone, deviceTimeZone, timeZoneOptions, zoneClock } from "../../../lib/util/timeZone.js";
+import { DEFAULT_TIME_ZONE, describeTimeZone, deviceTimeZone, sortTimeZones, timeZoneOptions, zoneClock } from "../../../lib/util/timeZone.js";
 
 afterEach(() => {
     vi.restoreAllMocks();
@@ -31,8 +31,7 @@ describe("timeZoneOptions", () => {
         expect(options).toContain("Nowhere/Custom");
         expect(options).toContain("America/Los_Angeles");
         expect(new Set(options).size).toBe(options.length);
-        const now = new Date();
-        expect([...options].sort((a, b) => compareTimeZones(a, b, now))).toEqual(options);
+        expect(sortTimeZones(options)).toEqual(options);
         // The far west first, the far east last; UTC sits with the other zones at +00:00.
         expect(options.indexOf("Pacific/Pago_Pago")).toBeLessThan(options.indexOf("America/Los_Angeles"));
         expect(options.indexOf("America/Los_Angeles")).toBeLessThan(options.indexOf("America/New_York"));
@@ -61,9 +60,9 @@ describe("timeZoneOptions", () => {
     });
 });
 
-describe("compareTimeZones", () => {
+describe("sortTimeZones", () => {
     const at = new Date("2026-09-29T12:00:00Z");
-    const sorted = (zones: string[]) => [...zones].sort((a, b) => compareTimeZones(a, b, at));
+    const sorted = (zones: string[]) => sortTimeZones(zones, at);
 
     it("puts the westernmost clock first, and orders zones on the same clock by city", () => {
         expect(sorted(["Asia/Tokyo", "UTC", "America/Los_Angeles", "Africa/Abidjan", "Asia/Kolkata", "America/Adak", "Europe/London"])).toEqual([
@@ -80,17 +79,20 @@ describe("compareTimeZones", () => {
     it("reads each zone's offset on the date, daylight saving included", () => {
         // London is an hour ahead of UTC in the summer, and level with it in the winter (where the city decides).
         expect(sorted(["Europe/London", "UTC"])).toEqual(["UTC", "Europe/London"]);
-        expect(compareTimeZones("Europe/London", "UTC", new Date("2026-12-01T12:00:00Z"))).toBeLessThan(0);
-        expect(compareTimeZones("Europe/London", "Africa/Abidjan", new Date("2026-12-01T12:00:00Z"))).toBeGreaterThan(0);
+        const winter = new Date("2026-12-01T12:00:00Z");
+        expect(sortTimeZones(["UTC", "Europe/London"], winter)).toEqual(["Europe/London", "UTC"]);
+        expect(sortTimeZones(["Europe/London", "Africa/Abidjan"], winter)).toEqual(["Africa/Abidjan", "Europe/London"]);
     });
 
     it("breaks a tie on the city by the id, and puts a zone it doesn't know last, however many there are", () => {
         expect(sorted(["Nowhere/Land", "UTC", "Mars/Olympus_Mons", "Asia/Tokyo"])).toEqual(["UTC", "Asia/Tokyo", "Nowhere/Land", "Mars/Olympus_Mons"]);
-        expect(compareTimeZones("America/Indiana/Knox", "America/North_Dakota/Knox", at) < 0).toBe(true);
+        expect(sorted(["America/North_Dakota/Knox", "America/Indiana/Knox"])).toEqual(["America/Indiana/Knox", "America/North_Dakota/Knox"]);
     });
 
-    it("defaults to now", () => {
-        expect(compareTimeZones("Pacific/Pago_Pago", "Pacific/Kiritimati")).toBeLessThan(0);
+    it("defaults to now, and leaves the list it was given as it was", () => {
+        const zones = ["Pacific/Kiritimati", "Pacific/Pago_Pago"];
+        expect(sortTimeZones(zones)).toEqual(["Pacific/Pago_Pago", "Pacific/Kiritimati"]);
+        expect(zones).toEqual(["Pacific/Kiritimati", "Pacific/Pago_Pago"]);
     });
 });
 
