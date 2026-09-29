@@ -431,6 +431,29 @@ describe("Delete in Deleted Items", () => {
         expect(screen.getByText("Thread c2")).toBeInTheDocument();
     });
 
+    it("permanently deletes the open conversation with Shift+Delete from the Inbox, after asking, and closes the thread", async () => {
+        flatLists(true);
+        const { fetchMock } = mockServer({
+            messages: [
+                message("t1", "f1", { conversationId: "c1" }),
+                message("t2", "f1", { conversationId: "c1" }),
+                message("other", "f1", { conversationId: "c2" }),
+            ],
+        });
+        const user = userEvent.setup();
+        render(<InboxPage userUid="u1" />);
+        await user.click(await screen.findByText("Thread c1"));
+        await waitFor(() => expect(screen.getByTestId("thread-pane")).toHaveTextContent("thread:c1"));
+
+        fireEvent.keyDown(document.body, { key: "Delete", shiftKey: true });
+        const dialog = await screen.findByRole("dialog", { name: "Delete permanently" });
+        await user.click(confirmButton(dialog, "Delete permanently"));
+
+        await waitFor(() => expect(purges(fetchMock).sort()).toEqual(["/api/mail/messages/t1?purge=true", "/api/mail/messages/t2?purge=true"]));
+        await waitFor(() => expect(screen.getByTestId("thread-pane")).toHaveTextContent("no-thread"));
+        expect(moves(fetchMock)).toHaveLength(0);
+    });
+
     it("permanently deletes a ticked conversation: every message of it in Deleted Items, and only those", async () => {
         flatLists(true);
         inTrash();

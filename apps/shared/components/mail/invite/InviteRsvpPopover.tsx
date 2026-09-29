@@ -42,7 +42,7 @@ function estimateHeight(invite: MessageInvite, proposing: boolean): number {
 const RESPONSES: { response: InviteResponse; label: string; text: string; failure: string }[] = [
     { response: "accepted", label: "Accept", text: "Accept", failure: "Couldn't accept this meeting" },
     { response: "declined", label: "Decline", text: "Decline", failure: "Couldn't decline this meeting" },
-    { response: "tentative", label: "Tentative", text: "?", failure: "Couldn't respond tentatively to this meeting" },
+    { response: "tentative", label: "Tentative", text: "Maybe", failure: "Couldn't respond tentatively to this meeting" },
 ];
 
 interface RsvpPanelProps {
@@ -236,7 +236,7 @@ export interface InviteRsvpPopoverProps {
 
 /**
  * What the RSVP button opens: an anchored popover on a desktop, a dialog on a phone. A day view of the reader's schedule around the meeting, with
- * the invitation highlighted and its conflicts marked, and Accept, Decline, a "?" for Tentative and a "..." menu (Propose new time, Open in calendar).
+ * the invitation highlighted and its conflicts marked, and Accept, Decline, a "Maybe" for Tentative and a "..." menu (Propose new time, Open in calendar).
  * An answer is sent to the server, which puts the meeting on the calendar and replies to the organizer; the popover then closes and hands the
  * updated invitation to its caller. A failure raises a pop-up and leaves the popover open.
  *

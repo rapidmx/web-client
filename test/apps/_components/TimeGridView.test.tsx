@@ -177,4 +177,12 @@ describe("TimeGridView", () => {
         });
         expect(screen.getAllByRole("button", { name: "Conference" })).toHaveLength(2);
     });
+    it("keeps every hour label the height of its hour, so the labels stay on their lines instead of drifting up", () => {
+        renderGrid();
+        const label = screen.getByText("9AM");
+        // A negative margin would shorten each row by its size: the labels would then sit 6px higher with every hour (an event at 8:00 beside "9AM").
+        expect(label.style.height).toBe("48px");
+        expect(label.className).toContain("relative");
+        expect(label.className).not.toMatch(/(^|\s)-m[tb]-/);
+    });
 });

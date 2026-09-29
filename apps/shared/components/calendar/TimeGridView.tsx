@@ -73,7 +73,9 @@ export default function TimeGridView({ days, occurrences, folderColors, onSelect
             <div className="flex flex-1">
                 <div className="w-14 shrink-0">
                     {HOURS.map((hour) => (
-                        <div key={hour} style={{ height: HOUR_HEIGHT_PX }} className="text-[10px] text-text-muted text-right pr-1.5 -mt-1.5">
+                        // Each label sits on its hour line, raised by half its own height with `relative`/`-top-1.5`: a negative margin here would
+                        // also shorten the row, and the labels would drift up a little more with every hour (48px lines, 42px labels).
+                        <div key={hour} style={{ height: HOUR_HEIGHT_PX }} className="relative -top-1.5 text-[10px] text-text-muted text-right pr-1.5">
                             {hour === 0 ? "" : format(new Date(2000, 0, 1, hour), "ha")}
                         </div>
                     ))}

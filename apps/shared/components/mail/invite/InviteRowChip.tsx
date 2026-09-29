@@ -6,7 +6,7 @@ import React, { useRef, useState } from "react";
 import { HiOutlineCalendarDays } from "react-icons/hi2";
 import type { Message } from "../../../../../lib/mail/mailApi.js";
 import type { MessageInvite } from "../../../../../lib/calendar/inviteApi.js";
-import { ANSWER_LABEL, formatRowStart } from "./inviteFormat.js";
+import { formatRowStart } from "./inviteFormat.js";
 import { useMessageInvite } from "./inviteStore.js";
 import InviteRsvpPopover from "./InviteRsvpPopover.js";
 
@@ -25,8 +25,8 @@ export function showsInviteChip(message: Pick<Message, "meetingMethod" | "encryp
 
 /**
  * The line a meeting request gets in a list of mail, under its preview, as Outlook draws it: a calendar icon, when the meeting starts (in the reader's
- * zone), under that whether it conflicts with the reader's calendar - or, once answered, the answer - and an RSVP button that opens the day view with
- * Accept, Decline and Tentative (`InviteRsvpPopover`).
+ * zone), under that whether it conflicts with the reader's calendar, and an RSVP button that opens the day view with
+ * Accept, Decline and Maybe (`InviteRsvpPopover`). Once the meeting has been answered - from here or anywhere else - the chip is gone.
  *
  * The invitation is looked up (once, through the shared cache) only for a row that `showsInviteChip()` - the rest of the list is never asked about. Until
  * it arrives, or when the lookup fails, the chip says only "Meeting request", with no button.
@@ -39,11 +39,12 @@ export default function InviteRowChip({ message, onResponded, className = "mx-4"
     const { invite, setInvite } = useMessageInvite(message.uid, eligible);
     const [open, setOpen] = useState(false);
     const rsvpRef = useRef<HTMLButtonElement>(null);
-    if (!eligible) {
+    const answer = invite?.response ?? message.meetingResponse;
+    // Once the reader has answered, the row has nothing left to ask: the chip goes away (the answer stays on the message itself, and can be changed there).
+    if (!eligible || answer) {
         return null;
     }
 
-    const answer = invite?.response ?? message.meetingResponse;
     const conflicts = invite?.conflicts.length ?? 0;
     const start = invite ? formatRowStart(invite) : undefined;
 
@@ -67,13 +68,8 @@ export default function InviteRowChip({ message, onResponded, className = "mx-4"
             <div className="min-w-0 flex-1">
                 <div className="truncate text-text">{start ?? "Meeting request"}</div>
                 {invite && (
-                    <div
-                        className={[
-                            "truncate",
-                            answer === "accepted" ? "text-success" : answer === "declined" ? "text-danger" : conflicts > 0 ? "text-danger" : "text-text-muted",
-                        ].join(" ")}
-                    >
-                        {answer ? ANSWER_LABEL[answer] : conflicts > 0 ? `Conflicts with ${conflicts} ${conflicts === 1 ? "event" : "events"}` : "No conflicts"}
+                    <div className={["truncate", conflicts > 0 ? "text-danger" : "text-text-muted"].join(" ")}>
+                        {conflicts > 0 ? `Conflicts with ${conflicts} ${conflicts === 1 ? "event" : "events"}` : "No conflicts"}
                     </div>
                 )}
             </div>

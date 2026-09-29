@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MessageInvite } from "../../../lib/calendar/inviteApi.js";
 import type { Message } from "../../../lib/mail/mailApi.js";
 import { jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
+import InviteRsvpPopover from "../../../apps/shared/components/mail/invite/InviteRsvpPopover.js";
 import InviteRowChip, { showsInviteChip } from "../../../apps/shared/components/mail/invite/InviteRowChip.js";
 import { clearInviteCache } from "../../../apps/shared/components/mail/invite/inviteStore.js";
 import { dismissAll, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
@@ -176,22 +177,22 @@ describe("InviteRowChip", () => {
         expect(container.querySelector("[data-invite-chip]")).not.toHaveTextContent("No conflicts");
     });
 
-    it.each([
-        ["accepted", "Accepted"],
-        ["tentative", "Tentative"],
-        ["declined", "Declined"],
-    ] as const)("shows the answer '%s' instead of conflicts", async (response, label) => {
+    it.each(["accepted", "tentative", "declined"] as const)("goes away once the invitation is answered '%s'", async (response) => {
+        clearInviteCache();
         const conflicts = [entry("c1", "Clash", "2026-06-16T13:15:00.000Z", "2026-06-16T13:45:00.000Z")];
-        const { container } = await renderChip(inviteFixture({ response, conflicts }));
-        expect(container.querySelector("[data-invite-chip]")).toHaveTextContent(label);
-        expect(container.querySelector("[data-invite-chip]")).not.toHaveTextContent("Conflicts");
+        const fetchMock = mockInviteServer(() => jsonResponse(200, inviteFixture({ response, conflicts })));
+        const { container } = render(<InviteRowChip message={message()} />);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toBeNull());
+        expect(screen.queryByRole("button", { name: /RSVP/ })).not.toBeInTheDocument();
     });
 
-    it("shows the answer the message itself records when the invitation has none yet", async () => {
+    it("is not drawn at all when the message itself records an answer", async () => {
+        clearInviteCache();
         const fetchMock = mockInviteServer();
         const { container } = render(<InviteRowChip message={message({ meetingResponse: "accepted" })} />);
-        await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toHaveTextContent("Accepted"));
-        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(container.querySelector("[data-invite-chip]")).toBeNull();
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     });
 
     it("offers no RSVP to the organizer or when the request is not addressed to the reader", async () => {
@@ -260,7 +261,7 @@ describe("InviteRowChip", () => {
             expect(events.map((item) => item.getAttribute("data-kind")).sort()).toEqual(["busy", "conflict", "invite"]);
             expect(within(dialog).getByRole("button", { name: "Accept" })).toHaveFocus();
             expect(within(dialog).getByRole("button", { name: "Decline" })).toBeEnabled();
-            expect(within(dialog).getByRole("button", { name: "Tentative" })).toHaveTextContent("?");
+            expect(within(dialog).getByRole("button", { name: "Tentative" })).toHaveTextContent("Maybe");
             expect(within(dialog).getByRole("button", { name: "More actions" })).toHaveAttribute("aria-haspopup", "menu");
         });
 
@@ -275,9 +276,16 @@ describe("InviteRowChip", () => {
         });
 
         it("marks the current answer and does not offer it again", async () => {
-            const user = userEvent.setup();
-            await renderChip(inviteFixture({ response: "tentative" }));
-            await user.click(screen.getByRole("button", { name: /RSVP/ }));
+            // The row's chip is gone once a meeting is answered; the popover itself still knows how to draw an answered invitation.
+            const anchor = React.createRef<HTMLButtonElement>();
+            render(
+                <>
+                    <button ref={anchor} type="button">
+                        anchor
+                    </button>
+                    <InviteRsvpPopover messageUid="m1" invite={inviteFixture({ response: "tentative" })} anchorRef={anchor} onDone={vi.fn()} onClose={vi.fn()} />
+                </>,
+            );
 
             const dialog = await screen.findByRole("dialog");
             expect(within(dialog).getByRole("button", { name: "Tentative" })).toBeDisabled();
@@ -335,9 +343,9 @@ describe("InviteRowChip", () => {
                 "/api/mail/calendar-events/invite/m%2F1/respond",
                 expect.objectContaining({ method: "POST", body: JSON.stringify({ responseStatus: response }) }),
             );
-            expect(container.querySelector("[data-invite-chip]")).toHaveTextContent({ accepted: "Accepted", declined: "Declined", tentative: "Tentative" }[response]);
+            // Answered: the chip has nothing left to ask, and is gone.
+            expect(container.querySelector("[data-invite-chip]")).toBeNull();
             expect(onResponded).toHaveBeenCalledWith(expect.objectContaining({ uid: "m/1", meetingResponse: response }));
-            expect(screen.getByRole("button", { name: /RSVP/ })).toHaveFocus();
         });
 
         it("keeps the answer in the cache, so a card for the same message agrees", async () => {
@@ -346,13 +354,14 @@ describe("InviteRowChip", () => {
                 () => jsonResponse(200, inviteFixture()),
                 () => jsonResponse(200, inviteFixture({ response: "accepted", onCalendar: true })),
             );
-            const { rerender } = render(<InviteRowChip message={message()} />);
+            const { rerender, container } = render(<InviteRowChip message={message()} />);
             await user.click(await screen.findByRole("button", { name: /RSVP/ }));
             await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Accept" }));
             await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
+            // A fresh copy of the row's message that has not heard of the answer still draws no chip: the cache has it.
             rerender(<InviteRowChip message={message({ meetingResponse: undefined })} />);
-            expect(screen.getByText("Accepted")).toBeInTheDocument();
+            expect(container.querySelector("[data-invite-chip]")).toBeNull();
         });
 
         it("disables the buttons while an answer is on its way, and on failure raises a pop-up and stays open", async () => {
@@ -452,14 +461,14 @@ describe("InviteRowChip", () => {
                 expect(within(dialog).getByRole("button", { name: "Accept" })).toBeInTheDocument();
             });
 
-            it("sends the proposal, closes, and keeps the reader's earlier answer in the list", async () => {
+            it("sends the proposal and closes, leaving the chip up since nothing was answered", async () => {
                 const user = userEvent.setup();
                 const onResponded = vi.fn();
                 const fetchMock = mockInviteServer(
                     () => jsonResponse(200, inviteFixture()),
                     () => jsonResponse(200, inviteFixture()),
                 );
-                render(<InviteRowChip message={message({ meetingResponse: "tentative" })} onResponded={onResponded} />);
+                render(<InviteRowChip message={message()} onResponded={onResponded} />);
                 await user.click(await screen.findByRole("button", { name: /RSVP/ }));
                 const dialog = await screen.findByRole("dialog");
                 await user.click(within(dialog).getByRole("button", { name: "More actions" }));
@@ -477,7 +486,8 @@ describe("InviteRowChip", () => {
                         body: JSON.stringify({ startDate: "2026-06-16T15:00:00.000Z", endDate: "2026-06-16T16:00:00.000Z", comment: "Later?" }),
                     }),
                 );
-                expect(onResponded).toHaveBeenCalledWith(expect.objectContaining({ meetingResponse: "tentative" }));
+                expect(onResponded).toHaveBeenCalledWith(expect.objectContaining({ uid: "m1", meetingResponse: undefined }));
+                expect(screen.getByRole("button", { name: /RSVP/ })).toBeInTheDocument();
             });
 
             it("rejects an end that is not after the start without sending anything", async () => {

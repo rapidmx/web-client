@@ -728,7 +728,7 @@ describe("InboxPage", () => {
             expect(rsvp.closest("[data-row-open]")).toBeNull();
         });
 
-        it("answers from the chip without opening the row, and the list then shows the answer", async () => {
+        it("answers from the chip without opening the row, and the chip then goes away", async () => {
             const fetchMock = mockWithInvites();
             const user = userEvent.setup();
             render(<InboxPage userUid="u1" />);
@@ -739,7 +739,7 @@ describe("InboxPage", () => {
             await user.click(within(dialog).getByRole("button", { name: "Tentative" }));
 
             await waitFor(() => expect(screen.queryByRole("dialog", { name: "RSVP: Video Test" })).not.toBeInTheDocument());
-            expect(screen.getByRole("button", { name: "RSVP to Video Test" }).closest("[data-invite-chip]")).toHaveTextContent("Tentative");
+            expect(screen.queryByRole("button", { name: "RSVP to Video Test" })).not.toBeInTheDocument();
             // Neither the RSVP button nor the answer opened the message.
             expect(screen.getByText(/no-message/)).toBeInTheDocument();
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/invite/m1/respond", expect.objectContaining({ method: "POST" }));
@@ -769,7 +769,7 @@ describe("InboxPage", () => {
             expect(screen.getAllByRole("button", { name: /RSVP/ })).toHaveLength(1);
             await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Accept" }));
 
-            await waitFor(() => expect(screen.getByRole("button", { name: "RSVP to Video Test" }).closest("[data-invite-chip]")).toHaveTextContent("Accepted"));
+            await waitFor(() => expect(screen.queryByRole("button", { name: "RSVP to Video Test" })).not.toBeInTheDocument());
             expect(inviteCalls(fetchMock).map(([url]) => url)).toEqual(["/api/mail/calendar-events/invite/m1", "/api/mail/calendar-events/invite/m1/respond"]);
             expect(screen.queryByText(/message:m1/)).not.toBeInTheDocument();
         });

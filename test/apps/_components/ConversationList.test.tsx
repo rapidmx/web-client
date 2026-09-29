@@ -572,19 +572,22 @@ describe("meeting requests among a conversation's messages", () => {
             await user.click(await screen.findByRole("button", { name: "RSVP to Video Test" }));
             await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Decline" }));
 
-            await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toHaveTextContent("Declined"));
+            // Answered: the row has nothing left to ask, and the chip is gone.
+            await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toBeNull());
             expect(fetchMock).toHaveBeenLastCalledWith("/api/mail/calendar-events/invite/m2/respond", expect.objectContaining({ method: "POST" }));
             expect(onOpenMessage).not.toHaveBeenCalled();
             // The parent row is not a message of the list: nothing is handed to the caller to patch.
             expect(onMeetingResponded).not.toHaveBeenCalled();
         });
 
-        it("starts from the answer the server already recorded, and from a newer copy of the message", async () => {
+        it("draws no chip for an answer the server already recorded, or one a newer copy of the message carries", async () => {
             serve();
             const { container, rerender } = render(
                 <ConversationList conversations={[request({ latestMeetingResponse: "accepted" })]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />,
             );
-            await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toHaveTextContent("Accepted"));
+            expect(container.querySelector("[data-invite-chip]")).toBeNull();
+            rerender(<ConversationList conversations={[request({ conversationId: "c9", latestMessageUid: "m7" })]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await screen.findByRole("button", { name: "RSVP to Video Test" });
 
             clearInviteCache();
             rerender(
@@ -596,7 +599,7 @@ describe("meeting requests among a conversation's messages", () => {
                     onOpenMessage={vi.fn()}
                 />,
             );
-            await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toHaveTextContent("Tentative"));
+            await waitFor(() => expect(container.querySelector("[data-invite-chip]")).toBeNull());
         });
 
         it("asks once for a message that is both the conversation's latest and one of its expanded rows, and both rows agree", async () => {
@@ -610,11 +613,8 @@ describe("meeting requests among a conversation's messages", () => {
 
             await user.click(screen.getAllByRole("button", { name: "RSVP to Video Test" })[1]);
             await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Accept" }));
-            await waitFor(() => {
-                const chips = Array.from(document.querySelectorAll("[data-invite-chip]"));
-                expect(chips).toHaveLength(2);
-                chips.forEach((chip) => expect(chip).toHaveTextContent("Accepted"));
-            });
+            // Both rows stand for the one answered message: neither has a chip left.
+            await waitFor(() => expect(document.querySelectorAll("[data-invite-chip]")).toHaveLength(0));
         });
 
         it("keeps a finger on the chip from swiping the row", async () => {
