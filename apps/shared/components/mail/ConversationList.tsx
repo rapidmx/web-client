@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { HiChevronDown, HiChevronRight, HiOutlineFlag, HiOutlinePaperClip } from "react-icons/hi2";
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import { Message } from "../../../../lib/mail/mailApi.js";
 import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
 import MailAddress from "./MailAddress.js";
-import { EncryptedPreview, conversationLooksEncrypted } from "./reading/EncryptedPreview.js";
+import { EncryptedPreview, conversationLooksEncrypted, displaySubject } from "./reading/EncryptedPreview.js";
+import { decryptForDisplay, useDecryptedMessages, useUnlockEpoch } from "../../mail/decryptedMessages.js";
 import { ConversationSummary, listConversationMessages } from "../../../../lib/mail/conversationsApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "./unreadStyle.js";
@@ -98,6 +99,18 @@ export default function ConversationList({
     newestFirst,
 }: ConversationListProps) {
     const client = useApiClient();
+    // What this device has decrypted of the encrypted messages on screen: their real subjects and previews.
+    const decrypted = useDecryptedMessages();
+    const unlockEpoch = useUnlockEpoch();
+    // An encrypted conversation's row stands for its latest message, whose subject only decrypting can tell. Rows are decrypted as they are listed
+    // whenever the mailbox is unlocked (and again once it is), the same way the message list does.
+    useEffect(() => {
+        for (const conversation of conversations) {
+            if (conversationLooksEncrypted(conversation)) {
+                void decryptForDisplay(conversation.latestMessageUid, conversation.mailboxUid ?? mailboxUid);
+            }
+        }
+    }, [conversations, mailboxUid, unlockEpoch]);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     const [messagesById, setMessagesById] = useState<Record<string, Message[]>>({});
     const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
@@ -226,10 +239,10 @@ export default function ConversationList({
                                             {new Date(conversation.latestDate).toLocaleDateString()}
                                         </span>
                                     </div>
-                                    <div className={["text-sm truncate", subjectClass(unread)].join(" ")}>{conversation.subject || "(no subject)"}</div>
+                                    <div className={["text-sm truncate", subjectClass(unread)].join(" ")}>{decrypted[conversation.latestMessageUid]?.subject || displaySubject(conversation.subject) || "(no subject)"}</div>
                                     <div className="text-xs text-text-muted truncate font-normal">
                                         {/* An encrypted latest message has no preview (the server never had its plaintext): say so, with a lock, not nothing. */}
-                                        {conversationLooksEncrypted(conversation) ? <EncryptedPreview /> : conversation.latestPreview}
+                                        {conversationLooksEncrypted(conversation) ? decrypted[conversation.latestMessageUid]?.preview || <EncryptedPreview /> : conversation.latestPreview}
                                     </div>
                                     <div className="flex items-center gap-2 mt-1 text-xs text-text-muted font-normal">
                                         {conversation.messageCount > 1 && <span>{conversation.messageCount} messages</span>}
@@ -301,7 +314,7 @@ export default function ConversationList({
                                                 </span>
                                             </div>
                                             <div className="flex items-center gap-2 text-xs text-text-muted font-normal">
-                                                <span className="truncate">{message.bodyPreview || (message.encrypted ? <EncryptedPreview /> : null)}</span>
+                                                <span className="truncate">{message.bodyPreview || decrypted[message.uid]?.preview || (message.encrypted ? <EncryptedPreview /> : null)}</span>
                                                 {message.hasAttachments && (
                                                     <HiOutlinePaperClip size={12} aria-label="Has attachments" />
                                                 )}

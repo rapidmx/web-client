@@ -5,7 +5,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_BODY_HTML_LENGTH } from "../../../apps/shared/components/mail/reading/bodyHtml.js";
-import { buildPrintDocument, escapeHtml, printDocument } from "../../../apps/shared/components/mail/reading/printMessage.js";
+import { buildConversationPrintDocument, buildPrintDocument, escapeHtml, printDocument } from "../../../apps/shared/components/mail/reading/printMessage.js";
 
 const HEADERS = [
     { name: "From", value: "Ann <ann@x.com>" },
@@ -115,5 +115,31 @@ describe("printDocument", () => {
         document.querySelector("iframe")!.dispatchEvent(new Event("load"));
         vi.advanceTimersByTime(60_000);
         expect(document.querySelector("iframe")).toBeNull();
+    });
+});
+
+describe("buildConversationPrintDocument", () => {
+    it("prints the asked-for message first and the others after it, each under its own header lines", () => {
+        const html = buildConversationPrintDocument("Plans", [
+            { subject: "Plans", headers: [{ name: "From", value: "New <new@example.com>" }], content: { kind: "text", text: "newest body" } },
+            { subject: "Plans", headers: [{ name: "From", value: "Old <old@example.com>" }], content: { kind: "text", text: "oldest body" } },
+        ])!;
+        expect(html.match(/<h1>/g)).toHaveLength(1);
+        expect(html.indexOf("newest body")).toBeLessThan(html.indexOf("oldest body"));
+        expect(html.indexOf("New &lt;new@example.com&gt;")).toBeLessThan(html.indexOf("Old &lt;old@example.com&gt;"));
+        expect(html).toContain('<div class="rr-older">');
+    });
+
+    it("names an earlier message's subject when it differs, and notes one too large to print", () => {
+        const html = buildConversationPrintDocument("Plans", [
+            { subject: "Plans", headers: [], content: { kind: "text", text: "a" } },
+            { subject: "Other", headers: [], content: { kind: "html", html: "x".repeat(MAX_BODY_HTML_LENGTH + 1) } },
+        ])!;
+        expect(html).toContain("<h2>Other</h2>");
+        expect(html).toContain("is too large to print here");
+    });
+
+    it("prints nothing when the first message is too large", () => {
+        expect(buildConversationPrintDocument("S", [{ subject: "S", headers: [], content: { kind: "html", html: "x".repeat(MAX_BODY_HTML_LENGTH + 1) } }])).toBeUndefined();
     });
 });

@@ -66,6 +66,7 @@ export const SHORTCUTS = {
         replyAll: def({ id: "mail.replyAll", keys: ["mod+shift+r"], label: "Reply all", scope: "mail" }),
         forward: def({ id: "mail.forward", keys: ["mod+shift+f"], label: "Forward", scope: "mail" }),
         delete: def({ id: "mail.delete", keys: ["mod+d", "delete"], label: "Delete", scope: "mail" }),
+        permanentDelete: def({ id: "mail.permanentDelete", keys: ["shift+delete"], label: "Delete permanently", scope: "mail" }),
         archive: def({ id: "mail.archive", keys: ["e", "backspace"], label: "Archive", scope: "mail" }),
         move: def({ id: "mail.move", keys: ["mod+shift+v"], label: "Move to folder", scope: "mail" }),
         markRead: def({ id: "mail.markRead", keys: ["ctrl+q"], label: "Mark as read", scope: "mail" }),

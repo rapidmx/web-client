@@ -39,8 +39,8 @@ export const SETUP_STEPS = [
     { id: "domain", title: "Domain", intro: "Add the domain this server receives mail for, then publish the DNS records below." },
     { id: "settings", title: "Server settings", intro: "Set the rules for encryption, how long mail is kept, and new mailboxes." },
     { id: "escrow", title: "Escrow", intro: "Decide whether encrypted mail can be recovered by a trusted group of holders." },
-    { id: "branding", title: "Branding", intro: "Make the sign-in page and apps look like your organization." },
     { id: "mailboxes", title: "Mailboxes", intro: "Create the first mailboxes, starting with your own." },
+    { id: "branding", title: "Branding", intro: "Make the sign-in page and apps look like your organization." },
 ] as const;
 
 export type SetupStepId = (typeof SETUP_STEPS)[number]["id"];

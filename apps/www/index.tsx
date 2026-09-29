@@ -69,6 +69,7 @@ import { setReadStateMany } from "../shared/mail/messageReadState.js";
 import { useMarkMessageRead } from "../shared/mail/useMarkMessageRead.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "../shared/components/mail/unreadStyle.js";
 import { LazyConversationThreadPane, LazyMessageDetailPane, prefetchReadingPane } from "../shared/components/mail/LazyReadingPane.js";
+import { rememberDecrypted } from "../shared/mail/decryptedMessages.js";
 import ConversationList, { ListedConversation, conversationRowKey } from "../shared/components/mail/ConversationList.js";
 import type { ConversationThreadHead } from "../shared/components/mail/ConversationThreadPane.js";
 import SwipeRow from "../shared/components/mail/SwipeRow.js";
@@ -159,6 +160,7 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
                     return null;
                 }
                 const preview = security.html ? stripHtmlToText(security.html).slice(0, LIST_PREVIEW_MAX_LENGTH) : undefined;
+                rememberDecrypted(message.uid, message.mailboxUid, { subject: security.subject, preview });
                 return [message.uid, { subject: security.subject, preview }];
             } catch {
                 return null;
@@ -2497,11 +2499,20 @@ function InboxContent({ userUid }: { userUid?: string }) {
         );
     }
 
+    /** Shift+Delete, from the keyboard: permanently deletes the targets wherever they are, after the same confirmation as Delete in Deleted Items. */
+    async function permanentDeleteFromKeyboard() {
+        const targets = await keyboardTargets();
+        if (targets.length > 0 && (await purgeChosen(targets)) && threadPane && !selectMode) {
+            closeOpenThread();
+        }
+    }
+
     useShortcut(SHORTCUTS.mail.next, () => selectNeighbour(1), { enabled: canMoveSelection });
     useShortcut(SHORTCUTS.mail.previous, () => selectNeighbour(-1), { enabled: canMoveSelection });
     useShortcut(SHORTCUTS.mail.nextUnread, () => selectNextUnread(1), { enabled: canMoveSelection });
     useShortcut(SHORTCUTS.mail.previousUnread, () => selectNextUnread(-1), { enabled: canMoveSelection });
     useShortcut(SHORTCUTS.mail.delete, () => void deleteFromKeyboard(), { enabled: keyboardActions && keyboardTargetExists });
+    useShortcut(SHORTCUTS.mail.permanentDelete, () => void permanentDeleteFromKeyboard(), { enabled: keyboardActions && keyboardTargetExists });
     useShortcut(
         SHORTCUTS.mail.markRead,
         () =>

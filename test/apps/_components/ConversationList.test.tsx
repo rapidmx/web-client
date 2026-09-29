@@ -270,7 +270,9 @@ describe("ConversationList", () => {
             ],
         );
 
-        const previews = screen.getAllByText("Encrypted message");
+        // The subject of an encrypted row reads "Encrypted message" too (never the raw placeholder); only the preview line carries the lock.
+        const withLock = () => screen.getAllByText("Encrypted message").filter((el) => el.querySelector("svg"));
+        const previews = withLock();
         expect(previews).toHaveLength(1);
         expect(previews[0].querySelector("svg")).toHaveAttribute("aria-hidden", "true");
         expect(screen.getByText("Decrypted elsewhere")).toBeInTheDocument();
@@ -278,7 +280,7 @@ describe("ConversationList", () => {
         await user.click(screen.getAllByRole("button", { name: /^Expand conversation/ })[0]);
         await screen.findByText("Has a preview");
         // The one empty encrypted child joins the parent's; the plain empty one and the one with a preview do not.
-        expect(screen.getAllByText("Encrypted message")).toHaveLength(2);
+        expect(withLock()).toHaveLength(2);
     });
 
     it("shows a loading row while a conversation's messages are being fetched", async () => {

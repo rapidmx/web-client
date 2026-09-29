@@ -9,7 +9,7 @@ import { prepareBodyHtml } from "./bodyHtml.js";
 import { frameCsp } from "./frameDocument.js";
 
 /**
- * Printing one message: a document of its own - the message's header lines, and under them the same sanitized body the reading pane draws -
+ * Printing a message, and the conversation it belongs to: a document of its own - each message's header lines, and under them the same sanitized body the reading pane draws -
  * shown in a frame that nobody sees and printed from there, so the print is the message and not the app around it.
  *
  * The frame is as isolated as the reading pane's own (`frameDocument.ts`): the body has been through `prepareBodyHtml()`, the document
@@ -35,6 +35,8 @@ dl{margin:0 0 12px;display:grid;grid-template-columns:max-content 1fr;gap:2px 12
 dt{font-weight:600;color:#444}
 dd{margin:0;overflow-wrap:anywhere}
 hr{border:0;border-top:1px solid #999;margin:0 0 16px}
+h2{font-size:16px;margin:0 0 12px}
+.rr-older{margin-top:28px;padding-top:20px;border-top:2px solid #000;break-inside:auto}
 #rr-body{overflow-wrap:break-word}
 #rr-body img{max-width:100%;height:auto}
 #rr-body pre,pre.rr-text{white-space:pre-wrap;font:inherit;margin:0}
@@ -44,10 +46,14 @@ export function escapeHtml(text: string): string {
     return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-/**
- * The document to print, or `undefined` for a body too large to prepare (the pane does not draw it either).
- */
-export function buildPrintDocument(message: PrintableMessage): string | undefined {
+interface PrintSection {
+    /** The `<dl>`, rule and body of one message. */
+    html: string;
+    imageSource?: string;
+}
+
+/** One message's header lines and body, or `undefined` for a body too large to prepare (the pane does not draw it either). */
+function renderSection(message: PrintableMessage): PrintSection | undefined {
     let body: string;
     let imageSource: string | undefined;
     if (message.content.kind === "html") {
@@ -65,13 +71,44 @@ export function buildPrintDocument(message: PrintableMessage): string | undefine
         .filter((header) => header.value !== "")
         .map((header) => `<dt>${escapeHtml(header.name)}</dt><dd>${escapeHtml(header.value)}</dd>`)
         .join("");
+    return { html: `<dl>${lines}</dl><hr>${body}`, imageSource };
+}
+
+/**
+ * The document to print, or `undefined` for a body too large to prepare (the pane does not draw it either).
+ */
+export function buildPrintDocument(message: PrintableMessage): string | undefined {
+    return buildConversationPrintDocument(message.subject, [message]);
+}
+
+/**
+ * The document to print for a conversation: `subject` as the title, then each of `messages` in the order given (the message that was asked for
+ * first, then the ones before it), each under its own header lines and set apart from the last. A message whose subject differs from the title
+ * says so under its rule. Only the first message is required to be printable: a later one too large to prepare is replaced by a note saying so.
+ */
+export function buildConversationPrintDocument(subject: string, messages: PrintableMessage[]): string | undefined {
+    const sections: string[] = [];
+    let imageSource: string | undefined;
+    for (const [index, message] of messages.entries()) {
+        const section = renderSection(message);
+        if (section === undefined && index === 0) {
+            return undefined;
+        }
+        imageSource ??= section?.imageSource;
+        const html = section?.html ?? `<p>${escapeHtml(`"${message.subject}" is too large to print here.`)}</p>`;
+        sections.push(
+            index === 0
+                ? html
+                : `<div class="rr-older">${message.subject !== subject ? `<h2>${escapeHtml(message.subject)}</h2>` : ""}${html}</div>`,
+        );
+    }
     return [
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',
         `<meta http-equiv="Content-Security-Policy" content="${frameCsp(imageSource)}">`,
-        `<title>${escapeHtml(message.subject)}</title>`,
+        `<title>${escapeHtml(subject)}</title>`,
         `<style>${PRINT_CSS}</style></head>`,
-        `<body><h1>${escapeHtml(message.subject)}</h1><dl>${lines}</dl><hr>${body}</body></html>`,
+        `<body><h1>${escapeHtml(subject)}</h1>${sections.join("")}</body></html>`,
     ].join("");
 }
 

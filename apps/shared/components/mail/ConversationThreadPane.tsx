@@ -11,7 +11,8 @@ import { Label } from "../../../../lib/mail/labelsApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import MessageDetailPane from "./MessageDetailPane.js";
-import { EncryptedPreview, displaySubject } from "./reading/EncryptedPreview.js";
+import { ENCRYPTED_SUBJECT_PLACEHOLDER, EncryptedPreview, displaySubject } from "./reading/EncryptedPreview.js";
+import { useDecryptedMessages } from "../../mail/decryptedMessages.js";
 import { CollapsedCard, SkeletonCards, SubjectCard } from "./reading/MessageCard.js";
 import PendingMessageCard from "./reading/PendingMessageCard.js";
 import { useMailShell } from "./layout/MailShell.js";
@@ -192,6 +193,7 @@ export default function ConversationThreadPane({
     const client = useApiClient();
     // The replies and forwards this tab has sent, drawn at the top of the thread they continue until the server's own copy is in it.
     const outgoing = useOutgoingReplies();
+    const decryptedMessages = useDecryptedMessages();
     const [messages, setMessages] = useState<Message[]>([]);
     const [attachmentsByUid, setAttachmentsByUid] = useState<Record<string, Attachment[]>>({});
     const [expandedUids, setExpandedUids] = useState<Set<string>>(new Set());
@@ -495,7 +497,10 @@ export default function ConversationThreadPane({
     if (!conversation) {
         return <p className="p-8 text-sm text-text-muted">Select a conversation to read it.</p>;
     }
-    const subject = displaySubject(conversation.subject) || "(no subject)";
+    // An encrypted thread's subject is the placeholder until one of its messages has been decrypted here; the newest one that has says it.
+    const decryptedSubject =
+        conversation.subject === ENCRYPTED_SUBJECT_PLACEHOLDER ? messages.map((message) => decryptedMessages[message.uid]?.subject).find(Boolean) : undefined;
+    const subject = (decryptedSubject ?? displaySubject(conversation.subject)) || "(no subject)";
     // The newest message that is open carries the Reply / Forward buttons at the foot of its card.
     const footerUid = messages.find((message) => expandedUids.has(message.uid))?.uid;
 

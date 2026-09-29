@@ -39,6 +39,7 @@ describe("the key map", () => {
             replyAll: ["mod+shift+r"],
             forward: ["mod+shift+f"],
             delete: ["mod+d", "delete"],
+            permanentDelete: ["shift+delete"],
             archive: ["e", "backspace"],
             move: ["mod+shift+v"],
             markRead: ["ctrl+q"],

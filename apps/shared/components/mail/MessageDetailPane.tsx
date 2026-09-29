@@ -80,14 +80,16 @@ import Alert from "../../../../lib/components/feedback/Alert.js";
 import LabelMenuButton from "./labelMenu.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import EncryptedBody from "./reading/EncryptedBody.js";
-import { displaySubject } from "./reading/EncryptedPreview.js";
+import { ENCRYPTED_SUBJECT_PLACEHOLDER, displaySubject } from "./reading/EncryptedPreview.js";
+import { rememberDecrypted } from "../../mail/decryptedMessages.js";
 import MessageBody, { BodySkeleton } from "./reading/MessageBody.js";
 import { BODY_FONT_STYLE, CardShell, SenderAvatar, SubjectCard } from "./reading/MessageCard.js";
 import MessageMoreMenu, { MessageMenuActions } from "./reading/MessageMoreMenu.js";
 import MessageSourceDialog, { SourceMode, SourceState } from "./reading/MessageSourceDialog.js";
 import { useMessageActions } from "./reading/useMessageActions.js";
 import { saveAsEml } from "./reading/messageExport.js";
-import { buildPrintDocument, printDocument } from "./reading/printMessage.js";
+import { buildConversationPrintDocument, printDocument, type PrintableMessage } from "./reading/printMessage.js";
+import { olderConversationMessages, printHeaders, printableOlderMessage } from "./reading/conversationPrint.js";
 import { type BodyContent, fetchBodyContent } from "./reading/bodyContent.js";
 import { useViewOriginal } from "./reading/viewOriginal.js";
 import { ROW_FOCUS_CLASS, UnreadLabel, dateClass, senderClass } from "./unreadStyle.js";
@@ -1042,7 +1044,14 @@ function MessageDetailContent({
             ? senderKeyState!.conflict
             : undefined;
 
-    const shownSubject = (protectedSubject ?? displaySubject(message.subject)) || "(no subject)";
+    // An encrypted message's outer Subject is only RFC 9788's placeholder: whatever decrypting recovered is the subject, signed or not.
+    const decryptedSubject = message.subject === ENCRYPTED_SUBJECT_PLACEHOLDER ? security?.subject : undefined;
+    const shownSubject = (protectedSubject ?? decryptedSubject ?? displaySubject(message.subject)) || "(no subject)";
+    useEffect(() => {
+        if (decryptedSubject) {
+            rememberDecrypted(message.uid, message.mailboxUid, { subject: decryptedSubject });
+        }
+    }, [decryptedSubject, message.uid, message.mailboxUid]);
     // What the body area shows. Text or HTML the client recovered from a signed or encrypted message is shown as it is (its own sanitizing
     // happens in `MessageBody`, like every body's); anything else is the server's own `/content`. An encrypted message has nothing worth
     // fetching until it has been decrypted (the server only has the ciphertext), so it shows the skeleton meanwhile.
@@ -1104,24 +1113,34 @@ function MessageDetailContent({
 
     // ---- The "More actions" menu's own rows (Print, View, Save as, Create rule); the rest are `messageActions`. ----
 
-    /** Prints this one message: its header lines and the body the pane shows (what was decrypted or verified here, else the server's sanitized
-     * body), in a frame of its own - see `printMessage.ts`. */
+    /** Prints this message and the conversation it belongs to: the message first, then every earlier one, newest to oldest (the messages that
+     * came after it are left out). Each is the body the reading pane shows - what was decrypted or verified here for this one, else the server's
+     * sanitized body - in a frame of its own; see `printMessage.ts`. */
     async function handlePrint() {
         try {
             const content = bodyContent ?? (await fetchBodyContent(message.uid, message.version));
-            const format = (list: Recipient[]) => list.map((r) => formatMailAddress(r)).join(", ");
-            const printable = buildPrintDocument({
-                subject: shownSubject,
-                headers: [
-                    { name: "From", value: senderLabel },
-                    { name: "To", value: format(message.recipients.filter((r) => r.type !== "cc" && r.type !== "bcc")) },
-                    { name: "Cc", value: format(message.recipients.filter((r) => r.type === "cc")) },
-                    { name: "Date", value: new Date(message.receivedDate).toLocaleString() },
-                ],
-                content,
-                attachments,
-                inlineParts: innerAttachments,
-            });
+            const older = await olderConversationMessages(message, client).catch(() => []);
+            const earlier = await Promise.all(
+                older.map((other) =>
+                    printableOlderMessage(other).catch(
+                        (): PrintableMessage => ({
+                            subject: other.subject || "(no subject)",
+                            headers: printHeaders(other, formatMailAddress(other.from)),
+                            content: { kind: "text", text: "This message could not be loaded, so it is not printed." },
+                        }),
+                    ),
+                ),
+            );
+            const printable = buildConversationPrintDocument(shownSubject, [
+                {
+                    subject: shownSubject,
+                    headers: printHeaders(message, senderLabel),
+                    content,
+                    attachments,
+                    inlineParts: innerAttachments,
+                },
+                ...earlier,
+            ]);
             if (printable === undefined) {
                 notify({ kind: "warning", title: "This message is too large to print here" });
                 return;

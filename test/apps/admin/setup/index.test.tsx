@@ -239,7 +239,7 @@ describe("SetupPage", () => {
     it("shows branding on the branding step", async () => {
         mockSetup({ currentStep: "branding", domains: [domain] });
         renderPage();
-        expect(await screen.findByRole("heading", { name: "Step 5 of 6: Branding" })).toBeInTheDocument();
+        expect(await screen.findByRole("heading", { name: "Step 6 of 6: Branding" })).toBeInTheDocument();
         expect(await screen.findByLabelText("Company name")).toBeInTheDocument();
         // The step introduces branding, so the Branding page's title and introduction are left out.
         expect(screen.queryByRole("heading", { level: 1, name: "Branding" })).not.toBeInTheDocument();
@@ -284,6 +284,9 @@ describe("SetupPage", () => {
         expect(created[0]).toEqual(expect.objectContaining({ primarySmtpAddress: "admin@example.com", ownerUserUid: "admin-1", quotaBytes: 2_000_000_000 }));
         expect(screen.getByLabelText("Local part")).toHaveValue("");
 
+        // Branding is the last step, after the mailboxes.
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        expect(await screen.findByRole("heading", { name: "Step 6 of 6: Branding" })).toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Finish setup" }));
         await waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/admin"));
         expect(calls(fetchMock, "/api/system/setup/complete", "POST")).toHaveLength(1);
@@ -334,7 +337,7 @@ describe("SetupPage", () => {
     it("shows why domains couldn't load, retries, and needs a domain to finish", async () => {
         let domainsFail = true;
         mockSetup({
-            currentStep: "mailboxes",
+            currentStep: "branding",
             extra: (url) => {
                 if (!url.startsWith("/api/mail/domains?")) return undefined;
                 return domainsFail ? jsonResponse(500, { message: "Domains are unavailable." }) : jsonResponse(200, [domain]);
@@ -394,7 +397,7 @@ describe("SetupPage", () => {
         renderPage();
         await user.click(await screen.findByRole("button", { name: "3. Server settings" }));
         await user.click(screen.getByRole("button", { name: "4. Escrow" }));
-        await user.click(screen.getByRole("button", { name: "5. Branding" }));
+        await user.click(screen.getByRole("button", { name: "6. Branding" }));
         const puts = () => calls(fetchMock, "/api/system/setup", "PUT").map((c) => JSON.parse(c[1].body).currentStep);
         expect(puts()).toEqual(["settings"]);
 
@@ -403,7 +406,7 @@ describe("SetupPage", () => {
         await waitFor(() => expect(puts()).toEqual(["settings", "branding"]));
         releases[1]();
         expect(await screen.findByText("Your place in setup couldn’t be saved.")).toBeInTheDocument();
-        expect(screen.getByRole("heading", { name: "Step 5 of 6: Branding" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Step 6 of 6: Branding" })).toBeInTheDocument();
         warn.mockRestore();
     });
 
@@ -468,7 +471,7 @@ describe("SetupPage", () => {
 
     it("shows an error when finishing fails", async () => {
         mockSetup({
-            currentStep: "mailboxes",
+            currentStep: "branding",
             domains: [domain],
             mailboxes: [mailbox("admin", "admin-1")],
             extra: (url) => (url === "/api/system/setup/complete" ? jsonResponse(500, { message: "Try again" }) : undefined),
