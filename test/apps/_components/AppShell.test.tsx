@@ -736,7 +736,7 @@ describe("AppShell keyboard shortcuts", () => {
         press("B", CTRL_SHIFT);
         expect(router.navigate).toHaveBeenLastCalledWith("/contacts", expect.anything());
         press("S", CTRL_SHIFT);
-        expect(router.navigate).toHaveBeenLastCalledWith("/settings/auto-reply", expect.anything());
+        expect(router.navigate).toHaveBeenLastCalledWith("/settings/profile", expect.anything());
         expect(router.navigate).toHaveBeenCalledTimes(4);
         // Account is another site: an ordinary navigation.
         press("A", CTRL_SHIFT);

@@ -5,7 +5,17 @@
 import React, { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import useIsMobile from "../../../../lib/util/useIsMobile.js";
-import { HiOutlineArrowUturnLeft, HiOutlineShieldCheck } from "react-icons/hi2";
+import {
+    HiOutlineArrowRightOnRectangle,
+    HiOutlineArrowUturnLeft,
+    HiOutlineBell,
+    HiOutlineBellAlert,
+    HiOutlineClock,
+    HiOutlineCog6Tooth,
+    HiOutlineCommandLine,
+    HiOutlineShieldCheck,
+    HiOutlineUserCircle,
+} from "react-icons/hi2";
 import { formatProfileName, getMyProfile, getMyUsername, Profile, profileInitials } from "../../../../lib/auth/profileApi.js";
 import { listMailboxes, Mailbox } from "../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
@@ -46,8 +56,7 @@ export interface UserMenuProps {
     trustedRoles?: readonly string[];
     /** Shows a "Settings" item, above "Admin"/"Sign Out" — an account-scoped surface (like "Admin"), not
      * a content-scoped one, so it lives here rather than as a 5th `AppShell` rail icon. Links straight to
-     * `/settings/auto-reply`, the only settings section that exists today; repoint this at a real
-     * `/settings` landing page once a second section (Mail Filters, Signatures) makes one worth building. */
+     * `/settings/profile`, the first settings section; repoint this at a real `/settings` landing page once one is worth building. */
     showSettingsLink?: boolean;
     /** Shows the notification controls, above "Admin Console"/"Sign Out": a "Notifications" on/off switch for every pop-up and,
      * while the browser hasn't been asked, "Turn on desktop notifications". Both are per browser (see `notifications/preferences.ts`
@@ -346,8 +355,9 @@ export default function UserMenu({
                         <a
                             role="menuitem"
                             href={accountUrl}
-                            className="block px-3.5 py-2 text-sm text-text hover:bg-surface-alt"
+                            className="flex items-center gap-2 px-3.5 py-2 text-sm text-text hover:bg-surface-alt"
                         >
+                            <HiOutlineUserCircle size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
                             Account
                         </a>
                     )}
@@ -355,8 +365,9 @@ export default function UserMenu({
                         <a
                             role="menuitem"
                             href={SETTINGS_HREF}
-                            className="block px-3.5 py-2 text-sm text-text hover:bg-surface-alt"
+                            className="flex items-center gap-2 px-3.5 py-2 text-sm text-text hover:bg-surface-alt"
                         >
+                            <HiOutlineCog6Tooth size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
                             Settings
                         </a>
                     )}
@@ -368,7 +379,10 @@ export default function UserMenu({
                             onClick={togglePopups}
                             className="flex w-full items-center justify-between gap-2 px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
                         >
-                            <span>Notifications</span>
+                            <span className="flex items-center gap-2">
+                                <HiOutlineBell size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
+                                Notifications
+                            </span>
                             <span className="text-xs font-semibold text-text-muted">{popups ? "On" : "Off"}</span>
                         </button>
                     )}
@@ -377,8 +391,9 @@ export default function UserMenu({
                             role="menuitem"
                             type="button"
                             onClick={() => void enableDesktopNotifications()}
-                            className="block w-full px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
+                            className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
                         >
+                            <HiOutlineBellAlert size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
                             Turn on desktop notifications
                         </button>
                     )}
@@ -392,7 +407,10 @@ export default function UserMenu({
                             }}
                             className="flex w-full items-center justify-between gap-2 px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
                         >
-                            <span>Recent notifications</span>
+                            <span className="flex items-center gap-2">
+                                <HiOutlineClock size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
+                                Recent notifications
+                            </span>
                             {unseenErrors > 0 && (
                                 <span className="rounded-pill bg-danger px-1.5 text-xs font-bold text-white">
                                     <span aria-hidden="true">{unseenErrors}</span>
@@ -410,8 +428,9 @@ export default function UserMenu({
                                 setOpen(false);
                                 onShowShortcuts();
                             }}
-                            className="block w-full px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
+                            className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
                         >
+                            <HiOutlineCommandLine size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
                             Keyboard shortcuts
                         </button>
                     )}
@@ -429,8 +448,9 @@ export default function UserMenu({
                         role="menuitem"
                         type="button"
                         onClick={onSignOut}
-                        className="block w-full text-left px-3.5 py-2 text-sm text-text hover:bg-surface-alt"
+                        className="flex w-full items-center gap-2 text-left px-3.5 py-2 text-sm text-text hover:bg-surface-alt"
                     >
+                        <HiOutlineArrowRightOnRectangle size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
                         Sign Out
                     </button>
                 </div>,

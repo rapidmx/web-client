@@ -24,6 +24,8 @@ import {
     HiOutlineUserGroup,
     HiOutlineWrenchScrewdriver,
     HiOutlineBars3,
+    HiOutlineChevronDoubleLeft,
+    HiOutlineChevronDoubleRight,
 } from "react-icons/hi2";
 import { apiFetch, ApiRequestError } from "../../../../../lib/util/api.js";
 import { getSetupStatus } from "../../../../../lib/admin/setupApi.js";
@@ -35,6 +37,7 @@ import Drawer from "../../../../../lib/components/overlays/Drawer.js";
 import type { NavItem } from "../../../../../lib/components/navigation/BottomTabBar.js";
 import { FrameBrandingFooter, useBrandingHtml } from "../../layout/BrandingChrome.js";
 import RailIcon from "../../layout/RailIcon.js";
+import { readRailExpanded, writeRailExpanded } from "./railPreference.js";
 import AppearanceProvider from "../../../appearance/AppearanceProvider.js";
 import UserMenu from "../../layout/UserMenu.js";
 import {
@@ -192,6 +195,15 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
     const [status, setStatus] = useState<Status>("checking");
     const [error, setError] = useState<string | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
+    // The side rail shows icons alone, or icons with their labels. Read after the first render: the page is drawn on the server first, which cannot know.
+    const [railExpanded, setRailExpanded] = useState(false);
+    useEffect(() => setRailExpanded(readRailExpanded()), []);
+    function toggleRail() {
+        setRailExpanded((expanded) => {
+            writeRailExpanded(!expanded);
+            return !expanded;
+        });
+    }
     // `branding` only feeds the footer below: the admin-configured header is for the webmail and public pages, not the
     // console. `useBranding()` is still what injects the custom stylesheet and supplies the rail's icon.
     const { branding, iconSrc } = useBranding();
@@ -309,7 +321,10 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                 <div className="flex-1 flex min-h-0">
                     <nav
                         aria-label="Admin sections"
-                        className="hidden md:flex w-16 shrink-0 bg-surface border-r border-border flex-col items-center pb-3 gap-1"
+                        className={[
+                            "hidden md:flex shrink-0 bg-surface border-r border-border flex-col pb-3 gap-1",
+                            railExpanded ? "w-56 items-stretch" : "w-16 items-center",
+                        ].join(" ")}
                     >
                         <RailIcon src={iconSrc} />
                         {navItems.map(({ id, href, label, icon: Icon }) => (
@@ -318,17 +333,37 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                                 href={href}
                                 aria-label={label}
                                 aria-current={id === active ? "page" : undefined}
-                                title={label}
+                                title={railExpanded ? undefined : label}
                                 className={[
-                                    "w-10 h-10 flex items-center justify-center rounded-sm",
+                                    "h-10 flex items-center rounded-sm",
+                                    railExpanded ? "gap-3 px-3 mx-2 text-sm font-medium" : "w-10 justify-center",
                                     id === active
                                         ? "bg-primary/10 text-primary-dark"
                                         : "text-text-muted hover:bg-surface-alt hover:text-text",
                                 ].join(" ")}
                             >
-                                <Icon size={20} aria-hidden="true" />
+                                <Icon size={20} aria-hidden="true" className="shrink-0" />
+                                {railExpanded && <span className="truncate">{label}</span>}
                             </a>
                         ))}
+                        <button
+                            type="button"
+                            aria-expanded={railExpanded}
+                            aria-label={railExpanded ? "Collapse the menu" : "Expand the menu"}
+                            title={railExpanded ? "Collapse the menu" : "Expand the menu"}
+                            onClick={toggleRail}
+                            className={[
+                                "mt-auto h-10 flex items-center rounded-sm text-text-muted hover:bg-surface-alt hover:text-text",
+                                railExpanded ? "gap-3 px-3 mx-2 text-sm font-medium" : "w-10 justify-center",
+                            ].join(" ")}
+                        >
+                            {railExpanded ? (
+                                <HiOutlineChevronDoubleLeft size={20} aria-hidden="true" className="shrink-0" />
+                            ) : (
+                                <HiOutlineChevronDoubleRight size={20} aria-hidden="true" className="shrink-0" />
+                            )}
+                            {railExpanded && <span>Collapse</span>}
+                        </button>
                     </nav>
                     {/* Below `md` the sections are a menu that slides in from the left: ten or so of them don't fit a bar along the bottom. */}
                     <Drawer open={menuOpen} onClose={() => setMenuOpen(false)} title="Admin" fullScreen>

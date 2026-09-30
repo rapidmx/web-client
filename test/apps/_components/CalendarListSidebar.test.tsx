@@ -132,7 +132,11 @@ describe("CalendarListSidebar", () => {
         it("groups calendars into one section per mailbox, marking a shared one", () => {
             render(<CalendarListSidebar mailboxCalendars={both()} checkedFolderUids={new Set()} onToggle={vi.fn()} onAddCalendar={vi.fn()} />);
             expect(screen.getByText("My Mail")).toBeInTheDocument();
-            expect(screen.getByText("Support (shared)")).toBeInTheDocument();
+            expect(screen.getByText("Support")).toBeInTheDocument();
+            // The group icon marks it as shared, and says so to a screen reader.
+            expect(screen.getByText("(shared)")).toBeInTheDocument();
+            expect(screen.getByText("Support").querySelector("svg[aria-hidden='true']")).not.toBeNull();
+            expect(screen.getByText("My Mail").querySelector("svg")).toBeNull();
             expect(screen.queryByText("My calendars")).not.toBeInTheDocument();
             expect(screen.getByText("Support Calendar")).toBeInTheDocument();
         });

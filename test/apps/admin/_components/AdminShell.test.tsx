@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
@@ -454,6 +454,59 @@ describe("AdminShell", () => {
         expect(await screen.findByTestId("brand-footer")).toHaveTextContent("Acme footer");
         expect(screen.getByText("content")).toBeInTheDocument();
         expect(screen.queryByTestId("brand-header")).not.toBeInTheDocument();
+    });
+
+    describe("the side rail's labels", () => {
+        async function renderConsole() {
+            mockFetch(() => jsonResponse(200, {}));
+            render(
+                <AdminShell active="domains" userUid="admin-1" authServerUrl={AUTH_SERVER_URL}>
+                    content
+                </AdminShell>,
+            );
+            await screen.findByText("content");
+            return screen.getByRole("navigation", { name: "Admin sections" });
+        }
+
+        it("starts with icons alone, and a button to show the labels beside them", async () => {
+            const rail = await renderConsole();
+            expect(rail).toHaveClass("w-16");
+            expect(within(rail).queryByText("Domains")).not.toBeInTheDocument();
+            expect(within(rail).getByRole("link", { name: "Domains" })).toHaveAttribute("title", "Domains");
+            expect(within(rail).getByRole("button", { name: "Expand the menu" })).toHaveAttribute("aria-expanded", "false");
+        });
+
+        it("expands to show each section's label beside its icon, and collapses again", async () => {
+            const user = userEvent.setup();
+            const rail = await renderConsole();
+
+            await user.click(within(rail).getByRole("button", { name: "Expand the menu" }));
+            expect(rail).toHaveClass("w-56");
+            expect(within(rail).getByText("Domains")).toBeInTheDocument();
+            expect(within(rail).getByText("Mailboxes")).toBeInTheDocument();
+            // The labels are on show now, so the tooltips that stood in for them go.
+            expect(within(rail).getByRole("link", { name: "Domains" })).not.toHaveAttribute("title");
+            expect(within(rail).getByRole("link", { name: "Domains" })).toHaveAttribute("aria-current", "page");
+            expect(within(rail).getByRole("button", { name: "Collapse the menu" })).toHaveAttribute("aria-expanded", "true");
+            expect(within(rail).getByText("Collapse")).toBeInTheDocument();
+
+            await user.click(within(rail).getByRole("button", { name: "Collapse the menu" }));
+            expect(rail).toHaveClass("w-16");
+            expect(within(rail).queryByText("Domains")).not.toBeInTheDocument();
+        });
+
+        it("remembers the choice in this browser, and opens expanded when it was left that way", async () => {
+            const user = userEvent.setup();
+            const rail = await renderConsole();
+            await user.click(within(rail).getByRole("button", { name: "Expand the menu" }));
+            expect(localStorage.getItem("rapidmx:admin-rail-expanded")).toBe("true");
+            cleanup();
+
+            const again = await renderConsole();
+            await waitFor(() => expect(again).toHaveClass("w-56"));
+            await user.click(within(again).getByRole("button", { name: "Collapse the menu" }));
+            expect(localStorage.getItem("rapidmx:admin-rail-expanded")).toBe("false");
+        });
     });
 
     it("hides the icon rail below md, shows it at md and above", async () => {

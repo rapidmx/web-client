@@ -30,6 +30,7 @@ import {
 } from "../../../mail/folderCounts.js";
 import { ALL_MAILBOXES_SECTION, useSidebarSections } from "../../../mail/useCollapsedSections.js";
 import FolderBadgeChip from "./FolderBadgeChip.js";
+import { FolderTypeIcon, SharedMailboxMark } from "./folderIcons.js";
 import SidebarSection from "./SidebarSection.js";
 import { useUnreadTitle } from "../../../mail/useUnreadTitle.js";
 import { pendingCountFor, usePendingSends } from "../../../mail/outbox/pendingSends.js";
@@ -391,7 +392,10 @@ export default function MailShell({
                                                     : "text-text hover:bg-surface-alt",
                                             ].join(" ")}
                                         >
-                                            <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>{FOLDER_LABELS[type]}</span>
+                                            <span className={["flex items-center gap-2.5 min-w-0", badge?.kind === "unread" ? "font-semibold" : ""].join(" ")}>
+                                                <FolderTypeIcon type={type} />
+                                                <span className="truncate">{FOLDER_LABELS[type]}</span>
+                                            </span>
                                             {badge && <FolderBadgeChip badge={badge} />}
                                         </a>
                                     );
@@ -405,7 +409,7 @@ export default function MailShell({
                                 label={
                                     <>
                                         {mailbox.displayName}
-                                        {mailbox.ownerUserUid ? "" : " (shared)"}
+                                        {!mailbox.ownerUserUid && <SharedMailboxMark />}
                                     </>
                                 }
                                 collapsible={collapsible}
@@ -431,7 +435,10 @@ export default function MailShell({
                                                 data-folder-placeholder={row.type}
                                                 className="flex items-center justify-between text-sm rounded-sm py-1.5 px-2.5 text-text-muted"
                                             >
-                                                <span>{FOLDER_LABELS[row.type]}</span>
+                                                <span className="flex items-center gap-2.5 min-w-0">
+                                                    <FolderTypeIcon type={row.type} />
+                                                    <span className="truncate">{FOLDER_LABELS[row.type]}</span>
+                                                </span>
                                                 {row.type === "outbox" && <OutboxBadge total={sending} pendingHere={sending} />}
                                             </div>
                                         );
@@ -451,8 +458,9 @@ export default function MailShell({
                                                 : "text-text hover:bg-surface-alt",
                                         ].join(" ")}
                                     >
-                                        <span className={badge?.kind === "unread" ? "font-semibold" : undefined}>
-                                            {FOLDER_LABELS[folder.type] ?? folder.name}
+                                        <span className={["flex items-center gap-2.5 min-w-0", badge?.kind === "unread" ? "font-semibold" : ""].join(" ")}>
+                                            <FolderTypeIcon type={folder.type} />
+                                            <span className="truncate">{FOLDER_LABELS[folder.type] ?? folder.name}</span>
                                         </span>
                                         {badge &&
                                             (folder.type === "outbox" ? (

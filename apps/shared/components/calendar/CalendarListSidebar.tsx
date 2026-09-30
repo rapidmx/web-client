@@ -7,6 +7,7 @@ import { CALENDAR_COLOR_PALETTE, accentColorForMailbox, colorForFolder } from ".
 import { Folder, Mailbox } from "../../../../lib/mail/mailApi.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
+import { SharedMailboxMark } from "../mail/layout/folderIcons.js";
 
 export interface CalendarListSidebarMailbox {
     mailbox: Mailbox;
@@ -108,7 +109,7 @@ export default function CalendarListSidebar({
     return (
         <nav aria-label="My calendars" className="p-3 border-t border-border flex flex-col gap-3">
             {mailboxCalendars.map(({ mailbox, calendarFolders, error: mailboxError }) => {
-                const title = multiple ? `${mailbox.displayName}${mailbox.ownerUserUid ? "" : " (shared)"}` : "My calendars";
+                const title = multiple ? mailbox.displayName : "My calendars";
                 return (
                     <div key={mailbox.uid}>
                         <div className="flex items-center justify-between mb-1 gap-2">
@@ -120,7 +121,10 @@ export default function CalendarListSidebar({
                                         style={{ backgroundColor: accentColorForMailbox(mailbox.uid) }}
                                     />
                                 )}
-                                <span className="truncate">{title}</span>
+                                <span className="truncate">
+                                    {title}
+                                    {multiple && !mailbox.ownerUserUid && <SharedMailboxMark />}
+                                </span>
                             </h2>
                             <button
                                 type="button"

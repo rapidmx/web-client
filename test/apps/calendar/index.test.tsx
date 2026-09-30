@@ -607,7 +607,9 @@ describe("CalendarPage", () => {
 
             expect(await screen.findByText(/Support rotation/)).toBeInTheDocument();
             expect(screen.getByText(/Standup/)).toBeInTheDocument();
-            expect(screen.getAllByText("Support (shared)").length).toBeGreaterThan(0);
+            expect(screen.getAllByText("Support").length).toBeGreaterThan(0);
+            // A shared mailbox is marked with the group icon, and says so to a screen reader.
+            expect(screen.getAllByText("(shared)").length).toBeGreaterThan(0);
             expect(screen.getAllByText("Support Calendar").length).toBeGreaterThan(0);
         });
 

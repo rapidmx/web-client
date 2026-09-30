@@ -314,7 +314,33 @@ describe("UserMenu", () => {
         render(<UserMenu userUid="jane" onSignOut={vi.fn()} showSettingsLink />);
 
         await user.click(screen.getByRole("button", { name: "Account menu" }));
-        expect(screen.getByRole("menuitem", { name: "Settings" })).toHaveAttribute("href", "/settings/auto-reply");
+        expect(screen.getByRole("menuitem", { name: "Settings" })).toHaveAttribute("href", "/settings/profile");
+    });
+
+    it("draws an icon beside every item of the menu", async () => {
+        const user = userEvent.setup();
+        mockMatchMedia(false);
+        render(
+            <UserMenu
+                userUid="jane"
+                authServerUrl={AUTH_SERVER_URL}
+                onSignOut={vi.fn()}
+                showSettingsLink
+                showNotificationSettings
+                showAdminLink
+                onShowNotifications={vi.fn()}
+                onShowShortcuts={vi.fn()}
+            />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        const items = [...screen.getAllByRole("menuitem"), ...screen.getAllByRole("menuitemcheckbox")];
+        expect(items.map((item) => item.textContent)).toEqual(
+            expect.arrayContaining(["Account", "Settings", "Notifications" + "On", "Recent notifications", "Keyboard shortcuts", "Admin Console", "Sign Out"].map((text) => expect.stringContaining(text))),
+        );
+        for (const item of items) {
+            expect(item.querySelector("svg[aria-hidden='true']"), item.textContent ?? "").not.toBeNull();
+        }
     });
 
     it("hides the Settings item when showSettingsLink is not set", async () => {

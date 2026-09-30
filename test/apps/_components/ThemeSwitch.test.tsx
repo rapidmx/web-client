@@ -63,6 +63,11 @@ describe("ThemeSwitch", () => {
         radios.forEach((radio) => expect(radio.querySelector("svg")).toHaveAttribute("aria-hidden", "true"));
     });
 
+    it("draws an icon beside its label, like the other rows of the account menu", () => {
+        renderWith(fakeApi("system"));
+        expect(screen.getByText("Theme").querySelector("svg[aria-hidden='true']")).not.toBeNull();
+    });
+
     it("applies a click through setPrefs at once, and does nothing for the choice already made", async () => {
         const setPrefs = vi.fn();
         const user = userEvent.setup();

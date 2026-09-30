@@ -144,6 +144,23 @@ describe("SettingsShell", () => {
         expect(link).toHaveAttribute("href", "/settings/auto-reply?mailboxUid=mb-a");
     });
 
+    it("draws an icon beside every section's label, a plugin's too", async () => {
+        mockMailboxes([mailboxA]);
+        render(
+            <SettingsShell active="profile" userUid="u1" pluginNav={{ settingsSections: [{ id: "booking", href: "/settings/booking", label: "Booking Links" }] }}>
+                content
+            </SettingsShell>,
+        );
+
+        const nav = within(await screen.findByRole("navigation", { name: "Settings sections" }));
+        const links = nav.getAllByRole("link");
+        expect(links.length).toBeGreaterThan(10);
+        for (const link of links) {
+            expect(link.querySelector("svg[aria-hidden='true']"), link.textContent ?? "").not.toBeNull();
+        }
+        expect(nav.getByRole("link", { name: "Booking Links" })).toBeInTheDocument();
+    });
+
     it("lists Profile first, and links it to /settings/profile", async () => {
         mockMailboxes([mailboxA]);
         render(

@@ -4548,8 +4548,8 @@ describe("InboxPage", () => {
             await screen.findByText("Shared newer");
             const subjects = screen.getAllByText(/Own older|Shared newer/).map((el) => el.textContent);
             expect(subjects).toEqual(["Shared newer", "Own older"]);
-            // The sidebar header/compose picker say "Support (shared)"; the bare name is the row's own label.
-            expect(screen.getByText("Support")).toBeInTheDocument();
+            // The sidebar header (with the shared mailbox's group icon) and the row both carry the bare name; the compose picker says "Support (shared)".
+            expect(screen.getAllByText("Support").length).toBeGreaterThan(0);
             expect(screen.getByPlaceholderText("Search all mail…")).toBeEnabled();
             expect(screen.queryByPlaceholderText("Open a mailbox's own folder to search")).not.toBeInTheDocument();
             expect(screen.getByText(/Showing the most recent mail from each mailbox/)).toBeInTheDocument();

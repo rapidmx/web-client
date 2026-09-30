@@ -12,10 +12,10 @@ export const APP_HREFS = {
 } as const;
 
 /**
- * Settings is reached from the account menu, not the rail. It links straight to the first settings section, the only one that always
- * exists - repoint this at a real `/settings` landing page once there is one.
+ * Settings is reached from the account menu, not the rail. It links straight to the Profile section, the first of them and the one that
+ * always exists - repoint this at a real `/settings` landing page once there is one.
  */
-export const SETTINGS_HREF = "/settings/auto-reply";
+export const SETTINGS_HREF = "/settings/profile";
 
 /** Whether `pathname` is a page of Settings (any section), which is what "already there" means for it. */
 export function isSettingsPath(pathname: string): boolean {

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useContext, useId, useRef } from "react";
-import { HiOutlineComputerDesktop, HiOutlineMoon, HiOutlineSun } from "react-icons/hi2";
+import { HiOutlineComputerDesktop, HiOutlineMoon, HiOutlinePaintBrush, HiOutlineSun } from "react-icons/hi2";
 import type { AppearanceMode } from "../../../../lib/appearance/preferencesApi.js";
 import { AppearanceContext, INERT_APPEARANCE } from "../../appearance/appearanceContext.js";
 
@@ -49,7 +49,8 @@ export default function ThemeSwitch() {
 
     return (
         <div className="flex items-center justify-between gap-3 px-3.5 py-2 border-b border-border">
-            <span id={labelId} className="text-sm text-text">
+            <span id={labelId} className="flex items-center gap-2 text-sm text-text">
+                <HiOutlinePaintBrush size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
                 Theme
             </span>
             <div role="radiogroup" aria-labelledby={labelId} className="inline-flex rounded-sm border border-border bg-surface-alt p-0.5">

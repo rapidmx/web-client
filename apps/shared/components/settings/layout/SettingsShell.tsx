@@ -3,7 +3,22 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
-import { HiOutlineBars3 } from "react-icons/hi2";
+import type { IconType } from "react-icons";
+import {
+    HiOutlineArrowUturnLeft,
+    HiOutlineBars3,
+    HiOutlineEnvelopeOpen,
+    HiOutlineFunnel,
+    HiOutlineLockClosed,
+    HiOutlineNoSymbol,
+    HiOutlinePaintBrush,
+    HiOutlinePencilSquare,
+    HiOutlinePuzzlePiece,
+    HiOutlineShieldCheck,
+    HiOutlineTag,
+    HiOutlineUserCircle,
+    HiOutlineUsers,
+} from "react-icons/hi2";
 import { ApiRequestError } from "../../../../../lib/util/api.js";
 import Drawer from "../../../../../lib/components/overlays/Drawer.js";
 import { Mailbox, listMailboxes } from "../../../../../lib/mail/mailApi.js";
@@ -20,21 +35,23 @@ export interface SettingsSectionDef {
     id: string;
     href: string;
     label: string;
+    /** Drawn beside the label in the sidebar. */
+    icon: IconType;
 }
 
 /** Every settings section with its own sidebar entry. */
 export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
-    { id: "profile", href: "/settings/profile", label: "Profile" },
-    { id: "appearance", href: "/settings/appearance", label: "Appearance" },
-    { id: "auto-reply", href: "/settings/auto-reply", label: "Automatic Replies" },
-    { id: "filters", href: "/settings/filters", label: "Mail Filters" },
-    { id: "blocked-senders", href: "/settings/blocked-senders", label: "Blocked & Safe Senders" },
-    { id: "signatures", href: "/settings/signatures", label: "Signatures" },
-    { id: "labels", href: "/settings/labels", label: "Labels" },
-    { id: "read-receipts", href: "/settings/read-receipts", label: "Read Receipts" },
-    { id: "encryption", href: "/settings/encryption", label: "Encryption" },
-    { id: "sharing", href: "/settings/sharing", label: "Sharing" },
-    { id: "privacy", href: "/settings/privacy", label: "Privacy & Data" },
+    { id: "profile", href: "/settings/profile", label: "Profile", icon: HiOutlineUserCircle },
+    { id: "appearance", href: "/settings/appearance", label: "Appearance", icon: HiOutlinePaintBrush },
+    { id: "auto-reply", href: "/settings/auto-reply", label: "Automatic Replies", icon: HiOutlineArrowUturnLeft },
+    { id: "filters", href: "/settings/filters", label: "Mail Filters", icon: HiOutlineFunnel },
+    { id: "blocked-senders", href: "/settings/blocked-senders", label: "Blocked & Safe Senders", icon: HiOutlineNoSymbol },
+    { id: "signatures", href: "/settings/signatures", label: "Signatures", icon: HiOutlinePencilSquare },
+    { id: "labels", href: "/settings/labels", label: "Labels", icon: HiOutlineTag },
+    { id: "read-receipts", href: "/settings/read-receipts", label: "Read Receipts", icon: HiOutlineEnvelopeOpen },
+    { id: "encryption", href: "/settings/encryption", label: "Encryption", icon: HiOutlineLockClosed },
+    { id: "sharing", href: "/settings/sharing", label: "Sharing", icon: HiOutlineUsers },
+    { id: "privacy", href: "/settings/privacy", label: "Privacy & Data", icon: HiOutlineShieldCheck },
 ];
 
 /** A `SETTINGS_SECTIONS` id, or a plugin's `settingsSections` item id (see `PluginNav`). */
@@ -47,6 +64,7 @@ export function settingsSections(pluginNav?: PluginNav): SettingsSectionDef[] {
         id,
         href,
         label,
+        icon: HiOutlinePuzzlePiece,
     }));
 }
 
@@ -207,10 +225,11 @@ export default function SettingsShell({
                             href={`${section.href}?mailboxUid=${encodeURIComponent(mailboxUid!)}`}
                             aria-current={section.id === active ? "page" : undefined}
                             className={[
-                                "block px-2.5 py-1.5 rounded-sm text-sm",
+                                "flex items-center gap-2.5 px-2.5 py-1.5 rounded-sm text-sm",
                                 section.id === active ? "bg-primary/10 text-primary-dark font-medium" : "text-text hover:bg-surface-alt",
                             ].join(" ")}
                         >
+                            <section.icon size={18} aria-hidden="true" className="shrink-0" />
                             {section.label}
                         </a>
                     ))}

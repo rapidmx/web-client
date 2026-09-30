@@ -363,6 +363,21 @@ describe("MailShell", () => {
         expect(draftsLink.className).not.toContain("bg-primary/10");
     });
 
+    it("draws an icon to the left of every folder's name, in the All Mailboxes entries and in each mailbox", async () => {
+        mockPerMailboxFolders([mailboxA, mailboxB]);
+        render(<MailShell userUid="u1">content</MailShell>);
+        await screen.findByText("All Mailboxes");
+
+        const folderLinks = screen.getAllByRole("link", { hidden: true }).filter((el) => el.getAttribute("href")?.includes("folderUid=") || el.getAttribute("href")?.includes("aggregate="));
+        expect(folderLinks.length).toBeGreaterThan(4);
+        for (const link of folderLinks) {
+            const icon = link.querySelector("svg[aria-hidden='true']");
+            expect(icon, link.textContent ?? "").not.toBeNull();
+            // Before the name, not after it.
+            expect(link.firstElementChild!.firstElementChild).toBe(icon);
+        }
+    });
+
     it("renders every accessible mailbox's own folder tree at once, marking a shared one, with no mailbox switcher", async () => {
         mockPerMailboxFolders([mailboxA, mailboxB]);
         render(<MailShell userUid="u1">content</MailShell>);
@@ -370,7 +385,11 @@ describe("MailShell", () => {
         // "All Mailboxes" only renders once every mailbox's folders have loaded. Every mailbox's tree is in the document, though the shared one is collapsed (hidden) until opened.
         await screen.findByText("All Mailboxes");
         expect(screen.getByText("Mailbox A")).toBeInTheDocument();
-        expect(screen.getByText("Mailbox B (shared)")).toBeInTheDocument();
+        expect(screen.getByText("Mailbox B")).toBeInTheDocument();
+        // The group icon marks it as shared, and says so to a screen reader.
+        expect(screen.getByText("(shared)")).toBeInTheDocument();
+        expect(screen.getByText("Mailbox B").querySelector("svg[aria-hidden='true']")).not.toBeNull();
+        expect(screen.getByText("Mailbox A").querySelector("svg")).toBeNull();
         expect(screen.queryByLabelText("Mailbox")).not.toBeInTheDocument();
         const folderLinks = screen.getAllByRole("link", { hidden: true }).filter((el) => el.getAttribute("href")?.includes("folderUid="));
         expect(folderLinks.map((el) => el.getAttribute("href"))).toEqual([
@@ -1029,8 +1048,8 @@ describe("MailShell", () => {
             it("puts an unread folder's name in bold, and a folder with nothing to show in normal weight", async () => {
                 mockMailboxesAndFolders([mailboxA], [folderOf("inbox", "f1", 3, 10, "Inbox"), folderOf("user", "f2", 0, 5, "Projects")]);
                 render(<MailShell userUid="u1">content</MailShell>);
-                expect((await screen.findByText("Inbox")).className).toContain("font-semibold");
-                expect(screen.getByText("Projects").className).not.toContain("font-semibold");
+                expect((await screen.findByText("Inbox")).parentElement!.className).toContain("font-semibold");
+                expect(screen.getByText("Projects").parentElement!.className).not.toContain("font-semibold");
             });
 
             it("applies the same rules to the All Mailboxes entries", async () => {
@@ -1088,7 +1107,7 @@ describe("MailShell", () => {
                     act(() => {
                         beginPendingSend({ draftUid: "d1", mailboxUid: "mb-a", subject: "S", recipients: ["a@example.com"], scheduled: false });
                     });
-                    const row = screen.getByText("Outbox").parentElement!;
+                    const row = screen.getByText("Outbox").closest("[data-folder-placeholder]")!;
                     expect(row.tagName).toBe("DIV");
                     expect(row.textContent).toBe("Outbox1 1 message sending");
                     expect(within(row).getByTestId("outbox-badge")).toHaveAttribute("data-state", "sending");

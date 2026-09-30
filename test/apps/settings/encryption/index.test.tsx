@@ -164,6 +164,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    // The page comes down before the mocks it calls are reset: a late re-render would otherwise run its effects against mocks that return nothing.
+    cleanup();
     vi.unstubAllGlobals();
     vi.useRealTimers();
     getKeyVault.mockReset();
