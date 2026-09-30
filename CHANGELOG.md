@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-30
+
+### Added
+- Added the toolbar, paged list, API error notification, sparkline, metric tile, contact avatar and query helpers to the documented plugin UI surface
+- Added a Meet button to the app rail for a user with a personal meeting room, through a new resolveFrom on plugin app rail entries
+
+### Changed
+- Show the icon a plugin's manifest names for its app rail, admin and settings entries, from a fixed list of supported icons, instead of always the puzzle piece
+- Make the sender of each message in a conversation open their contact card from the thread header
+- Replace the Copy address text button on the contact card with a copy icon right after the address, and add one after each email address of the contact
+- Give the contact card's Email button a mail icon and rename Create contact to Add to contacts with an add person icon
+- Show a contact's own picture, else their Gravatar, else initials, on the contact card, contact details and contact list, and let the Edit Contact form add, change and remove the picture
+- Replace the Favorite checkbox with a star button on the contact card, the contact details and the Edit Contact form
+
+
 ## [0.26.0] - 2026-09-30
 
 ### Added
@@ -1162,7 +1177,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/rapidmx/web-client/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/rapidmx/web-client/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/rapidmx/web-client/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/rapidmx/web-client/compare/v0.24.0...v0.25.0
