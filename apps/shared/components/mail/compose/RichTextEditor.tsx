@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useRef, useState } from "react";
-import { EditorContent, useEditor } from "@tiptap/react";
+import React, { MutableRefObject, useEffect, useRef, useState } from "react";
+import { type Editor, EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TextStyleKit } from "@tiptap/extension-text-style";
 import TextAlign from "@tiptap/extension-text-align";
@@ -40,6 +40,8 @@ export interface RichTextEditorProps {
     appendHtml?: string;
     /** Called with the document as the editor serializes it, right after `appendHtml` was added. */
     onAppended?: (value: string) => void;
+    /** Set to the editor while it exists (and to `null` before and after), for a caller that has to put content into the message from outside the toolbar - a picture dropped on the window. */
+    editorRef?: MutableRefObject<Editor | null>;
 }
 
 /**
@@ -73,6 +75,7 @@ export default function RichTextEditor({
     onInitialized,
     appendHtml,
     onAppended,
+    editorRef,
 }: RichTextEditorProps) {
     const onChangeRef = useRef(onChange);
     onChangeRef.current = onChange;
@@ -118,6 +121,16 @@ export default function RichTextEditor({
             }
         },
     });
+
+    useEffect(() => {
+        if (!editorRef) {
+            return undefined;
+        }
+        editorRef.current = editor;
+        return () => {
+            editorRef.current = null;
+        };
+    }, [editor, editorRef]);
 
     // Added once, at the end, whatever the reader has typed meanwhile (the caret stays where it is).
     useEffect(() => {

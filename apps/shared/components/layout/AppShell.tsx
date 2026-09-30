@@ -20,6 +20,7 @@ import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import useBranding from "../../../../lib/branding/useBranding.js";
 import { useIdleKeyTimeout } from "../../../../lib/crypto/useIdleKeyTimeout.js";
 import ComposeProvider from "../mail/compose/ComposeContext.js";
+import ContactCardProvider from "../contacts/ContactCardProvider.js";
 import { flushComposeDrafts, markSigningOut } from "../mail/compose/composeFlushRegistry.js";
 import BottomTabBar, { NavItem } from "../../../../lib/components/navigation/BottomTabBar.js";
 import { FrameBrandingFooter, FrameBrandingHeader, useBrandingHtml } from "./BrandingChrome.js";
@@ -366,6 +367,8 @@ export function AppChrome({
             {/* An impersonating admin acts with the impersonated user's access, so their own trusted role
                 mustn't skip the per-mailbox checks. */}
             <ComposeProvider userUid={userUid} trusted={!!trusted && !impersonating}>
+            {/* Inside the compose provider: the contact card's Email action opens a compose window. */}
+            <ContactCardProvider userUid={userUid}>
             <div className="rr-frame-bg min-h-screen flex flex-col">
                 {!hideChrome && customHeader && (
                     <FrameBrandingHeader
@@ -444,6 +447,7 @@ export function AppChrome({
                 </div>
                 {!hideChrome && <FrameBrandingFooter parsed={footer} userMenu={menuInFooter ? renderUserMenu("up") : undefined} appTitle={activeLabel} />}
             </div>
+            </ContactCardProvider>
             </ComposeProvider>
         </UnlockPromptProvider>
         <NotificationHistoryDialog open={historyOpen} onClose={() => setHistoryOpen(false)} />

@@ -111,6 +111,10 @@ const fakeEncryptionKey = { fake: "encryption-key" } as unknown as CryptoKey;
 // Exposes `onUploadImage` via a button so tests can drive `ComposeWindow`'s own upload-handling logic
 // directly (success/failure/not-ready-yet) without needing a real TipTap editor — `ComposeToolbar`'s
 // own use of this same prop is already covered in its own test file.
+// What the stand-in editor below was asked to put into the message (`editorRef.current.chain().focus().setImage(...).run()`), and whether it offers an
+// editor at all (a drop can arrive before the real one has mounted).
+const { insertedImages, fakeEditor } = vi.hoisted(() => ({ insertedImages: [] as { src: string; alt: string }[], fakeEditor: { mounted: true } }));
+
 vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => ({
     default: ({
         value,
@@ -118,13 +122,26 @@ vi.mock("../../../apps/shared/components/mail/compose/RichTextEditor.js", () => 
         onUploadImage,
         autoFocusStart,
         onInitialized,
+        editorRef,
     }: {
         value: string;
         onChange: (v: string) => void;
         onUploadImage: (file: File) => Promise<string | null>;
         autoFocusStart?: boolean;
         onInitialized?: (v: string) => void;
+        editorRef?: { current: unknown };
     }) => {
+        React.useEffect(() => {
+            if (!editorRef || !fakeEditor.mounted) {
+                return undefined;
+            }
+            editorRef.current = {
+                chain: () => ({ focus: () => ({ setImage: (attrs: { src: string; alt: string }) => ({ run: () => void insertedImages.push(attrs) }) }) }),
+            };
+            return () => {
+                editorRef.current = null;
+            };
+        }, [editorRef]);
         const [uploadResult, setUploadResult] = React.useState<string>("");
         // Like the real editor, only the value it mounts with counts.
         const [mountedAutoFocusStart] = React.useState(!!autoFocusStart);
@@ -226,6 +243,8 @@ function recipientChips(label: string): (string | null)[] {
 }
 
 afterEach(() => {
+    insertedImages.length = 0;
+    fakeEditor.mounted = true;
     clearMailboxWritabilityCache();
     vi.unstubAllGlobals();
     getUnlockedKeys.mockReset();
@@ -1139,6 +1158,187 @@ describe("ComposeWindow", () => {
         expect(await screen.findByText("Please wait for the draft to finish loading before inserting an image.")).toBeInTheDocument();
         resolveDraft!();
         await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+    });
+
+    describe("dropping files on the window", () => {
+        const attachmentOf = (uid: string, filename: string, mimeType: string) => ({
+            uid,
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            messageUid: "m1",
+            folderUid: "f-drafts",
+            mailboxUid: "mb1",
+            filename,
+            mimeType,
+            sizeBytes: 6,
+            isInline: false,
+        });
+        /** Answers every upload with an attachment named after the file. */
+        function mockUploads(fail?: (filename: string) => boolean) {
+            let next = 0;
+            const uploaded: string[] = [];
+            const fetchMock = mockCompose((url, init) => {
+                if (!url.startsWith("/api/mail/attachments/upload") || (init?.method ?? "GET") !== "POST") return undefined;
+                const filename = new URL(url, "http://x").searchParams.get("filename") ?? (init?.body instanceof FormData ? (init.body.get("file") as File).name : "file");
+                uploaded.push(filename);
+                return fail?.(filename) ? jsonResponse(500, { message: "too large" }) : jsonResponse(200, attachmentOf(`a${++next}`, filename, "application/octet-stream"));
+            });
+            return { fetchMock, uploaded };
+        }
+        const composeWindow = () => screen.getByRole("dialog");
+        const dragOf = (files: File[], types: string[] = ["Files"]) => ({ dataTransfer: { types, files, dropEffect: "none" } });
+        const photo = () => new File(["pixels"], "photo.png", { type: "image/png" });
+        const notes = () => new File(["hello"], "notes.txt", { type: "text/plain" });
+
+        async function renderReady() {
+            const view = render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+            return view;
+        }
+
+        it("puts a dropped picture into the message at the caret, and does not list it as an attachment", async () => {
+            const { uploaded } = mockUploads();
+            await renderReady();
+
+            fireEvent.drop(composeWindow(), dragOf([photo()]));
+
+            await waitFor(() => expect(insertedImages).toEqual([{ src: "/api/mail/attachments/a1/content", alt: "photo.png" }]));
+            expect(uploaded).toHaveLength(1);
+            expect(screen.queryByText("photo.png")).not.toBeInTheDocument();
+        });
+
+        it("attaches a dropped file that is not a picture, and puts nothing into the message", async () => {
+            mockUploads();
+            await renderReady();
+
+            fireEvent.drop(composeWindow(), dragOf([notes()]));
+
+            expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+            expect(insertedImages).toEqual([]);
+        });
+
+        it("handles a mixed drop: the pictures go into the text in the order dropped, the rest are attached", async () => {
+            const { uploaded } = mockUploads();
+            await renderReady();
+
+            fireEvent.drop(composeWindow(), dragOf([new File(["1"], "one.jpg", { type: "image/jpeg" }), notes(), new File(["<svg/>"], "two.svg", { type: "image/svg+xml" })]));
+
+            expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+            expect(insertedImages.map((image) => image.alt)).toEqual(["one.jpg", "two.svg"]);
+            expect(uploaded).toEqual(["one.jpg", "two.svg", "notes.txt"]);
+        });
+
+        it("takes a picture the browser gave no type to by its name", async () => {
+            mockUploads();
+            await renderReady();
+
+            fireEvent.drop(composeWindow(), dragOf([new File(["x"], "scan.PNG", { type: "" }), new File(["x"], "data.bin", { type: "" })]));
+
+            await waitFor(() => expect(insertedImages.map((image) => image.alt)).toEqual(["scan.PNG"]));
+            expect(await screen.findByText("data.bin")).toBeInTheDocument();
+        });
+
+        it("shows why a picture could not be added, puts nothing into the message for it, and still attaches the other files", async () => {
+            mockUploads((filename) => filename === "photo.png");
+            await renderReady();
+
+            fireEvent.drop(composeWindow(), dragOf([photo(), notes()]));
+
+            expect(await screen.findByText("too large")).toBeInTheDocument();
+            expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+            expect(insertedImages).toEqual([]);
+        });
+
+        it("still uploads a picture when the editor has not mounted, without failing", async () => {
+            fakeEditor.mounted = false;
+            const { uploaded } = mockUploads();
+            await renderReady();
+
+            fireEvent.drop(composeWindow(), dragOf([photo()]));
+
+            await waitFor(() => expect(uploaded).toEqual(["photo.png"]));
+            expect(insertedImages).toEqual([]);
+        });
+
+        it("says to wait when files are dropped before the draft has loaded", async () => {
+            let resolveDraft: (() => void) | undefined;
+            const fetchMock = mockCompose((url, init) => {
+                if (url === "/api/mail/messages" && (init?.method ?? "GET") === "POST") {
+                    return new Promise((resolve) => {
+                        resolveDraft = () => resolve(jsonResponse(200, draft));
+                    }) as unknown as Response;
+                }
+                return undefined;
+            });
+            render(<ComposeWindow session={session()} onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            await waitFor(() => expect(resolveDraft).toBeDefined());
+
+            fireEvent.drop(composeWindow(), dragOf([photo(), notes()]));
+
+            expect(await screen.findByText("Please wait for the draft to finish loading before adding files.")).toBeInTheDocument();
+            expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/mail/attachments/upload"))).toBe(false);
+            resolveDraft!();
+            await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+        });
+
+        it("marks the window as a place to drop while files are dragged over it, and stops when they leave or are dropped", async () => {
+            mockUploads();
+            await renderReady();
+            const overlay = () => document.querySelector("[data-drop-overlay]");
+            expect(overlay()).toBeNull();
+
+            fireEvent.dragEnter(composeWindow(), dragOf([]));
+            expect(overlay()).not.toBeNull();
+            expect(overlay()).toHaveTextContent("Drop files to attach them");
+
+            // Moving from the window onto something inside it fires leave on the window and enter on the child: still over.
+            const child = screen.getByRole("button", { name: "Send" });
+            fireEvent.dragEnter(child, dragOf([]));
+            fireEvent.dragLeave(composeWindow(), dragOf([]));
+            expect(overlay()).not.toBeNull();
+            fireEvent.dragLeave(child, dragOf([]));
+            expect(overlay()).toBeNull();
+
+            fireEvent.dragEnter(composeWindow(), dragOf([]));
+            expect(overlay()).not.toBeNull();
+            fireEvent.drop(composeWindow(), dragOf([notes()]));
+            expect(overlay()).toBeNull();
+            await screen.findByText("notes.txt");
+        });
+
+        it("never counts below zero: a leave with no matching enter changes nothing", async () => {
+            mockUploads();
+            await renderReady();
+            fireEvent.dragLeave(composeWindow(), dragOf([]));
+            fireEvent.dragEnter(composeWindow(), dragOf([]));
+            expect(document.querySelector("[data-drop-overlay]")).not.toBeNull();
+            fireEvent.dragLeave(composeWindow(), dragOf([]));
+            expect(document.querySelector("[data-drop-overlay]")).toBeNull();
+        });
+
+        it("accepts a file drag as a copy, by cancelling the browser's own handling of it", async () => {
+            mockUploads();
+            await renderReady();
+            const drag = dragOf([notes()]);
+            // fireEvent returns false when the event was cancelled.
+            expect(fireEvent.dragOver(composeWindow(), drag)).toBe(false);
+            expect(drag.dataTransfer.dropEffect).toBe("copy");
+        });
+
+        it("leaves a drag that carries no files alone: text moved around the editor, say", async () => {
+            const { fetchMock } = mockUploads();
+            await renderReady();
+            const drag = dragOf([], ["text/plain"]);
+
+            fireEvent.dragEnter(composeWindow(), drag);
+            expect(document.querySelector("[data-drop-overlay]")).toBeNull();
+            expect(fireEvent.dragOver(composeWindow(), drag)).toBe(true);
+            expect(drag.dataTransfer.dropEffect).toBe("none");
+            fireEvent.dragLeave(composeWindow(), drag);
+            expect(fireEvent.drop(composeWindow(), drag)).toBe(true);
+            expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/mail/attachments/upload"))).toBe(false);
+        });
     });
 
     it("resizes wider/taller when the corner handle is dragged up and to the left.", async () => {

@@ -64,6 +64,10 @@ import { loadOriginalMessage, prefetchOriginalMessage } from "./compose/quotedBo
 import { formatRecipient } from "./compose/recipients.js";
 import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
 import MailAddress, { RecipientLine } from "./MailAddress.js";
+import ParticipantLink from "../contacts/ParticipantLink.js";
+import { fetchVCardText } from "../contacts/contactCardData.js";
+import { isVCardAttachment } from "../contacts/participantDetails.js";
+import VCardAttachmentChip from "./VCardAttachmentChip.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { ariaKeyShortcuts, withHint } from "../../keyboard/format.js";
 import { SHORTCUTS, ShortcutDef } from "../../keyboard/keymap.js";
@@ -184,6 +188,16 @@ export function trustSignerErrorMessage(err: unknown): string {
 export function formatFingerprint(fingerprint: string): string {
     const compact = fingerprint.replace(/[\s:]/g, "").toUpperCase();
     return compact.match(/.{1,4}/g)?.join(" ") ?? compact;
+}
+
+/** Saves the file at `url` under `filename`: the browser is handed the link as a download. */
+function downloadFromUrl(url: string, filename: string): void {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 }
 
 /** Saves one attachment recovered from inside a signed/encrypted entity. Always handed to the browser as an
@@ -1030,6 +1044,8 @@ function MessageDetailContent({
     const senderNameCheck = checkSenderName(senderName, senderAddress);
     // Always `Name <address>` (or the bare address): a name alone hides who a message is really from.
     const senderLabel = formatMailAddress({ displayName: senderName, address: senderAddress });
+    // What the contact card of anyone named in this message is given: the message, for its mailbox and any vCard it carries.
+    const cardContext = { message, attachments };
     // Offered only for a valid signature from a certificate nobody pinned for this sender - never to replace a pin.
     // A recorded signing-key conflict for this sender is resolved from the contact, never by trusting another key.
     const pendingConflict = senderUnpinned && senderKeyState?.conflict !== undefined;
@@ -1227,7 +1243,14 @@ function MessageDetailContent({
         <CardShell unread={cardUnread}>
             {/* Header row: who it is from, when, and what can be done with it. Wraps: on a phone the actions drop under the sender. */}
             <div className={["flex flex-wrap items-start gap-x-3 gap-y-1 px-4 pt-3 pb-2", cardUnread ? "bg-primary/[0.07]" : ""].join(" ")}>
-                <SenderAvatar from={senderRecipient} />
+                {threadHeader ? (
+                    // The sender line of a thread's message is the button that collapses it, so its contact card is opened from the avatar beside it.
+                    <ParticipantLink participant={{ address: senderAddress, displayName: senderName }} context={cardContext} label={`Contact card for ${senderLabel}`}>
+                        <SenderAvatar from={senderRecipient} />
+                    </ParticipantLink>
+                ) : (
+                    <SenderAvatar from={senderRecipient} />
+                )}
                 <div className="flex-1 min-w-[12rem]">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                         {threadHeader ? (
@@ -1250,7 +1273,10 @@ function MessageDetailContent({
                             </h2>
                         ) : (
                             <p className="text-sm break-words min-w-0">
-                                From <span className="font-semibold text-text">{senderLabel}</span>
+                                From{" "}
+                                <ParticipantLink participant={{ address: senderAddress, displayName: senderName }} context={cardContext} className="font-semibold text-text">
+                                    {senderLabel}
+                                </ParticipantLink>
                             </p>
                         )}
                         {security && <SecurityIndicator security={security} />}
@@ -1262,9 +1288,9 @@ function MessageDetailContent({
                         </p>
                     )}
                     {/* Every recipient with their address, grouped as the sender addressed them; a long list folds. */}
-                    <RecipientLine label="To" recipients={message.recipients.filter((r) => r.type !== "cc" && r.type !== "bcc")} />
-                    <RecipientLine label="Cc" recipients={message.recipients.filter((r) => r.type === "cc")} />
-                    <RecipientLine label="Bcc" recipients={message.recipients.filter((r) => r.type === "bcc")} />
+                    <RecipientLine label="To" recipients={message.recipients.filter((r) => r.type !== "cc" && r.type !== "bcc")} context={cardContext} />
+                    <RecipientLine label="Cc" recipients={message.recipients.filter((r) => r.type === "cc")} context={cardContext} />
+                    <RecipientLine label="Bcc" recipients={message.recipients.filter((r) => r.type === "bcc")} context={cardContext} />
                 </div>
                 <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
                     <time dateTime={message.receivedDate} className={["text-xs mr-1", dateClass(cardUnread)].join(" ")}>
@@ -1582,13 +1608,22 @@ function MessageDetailContent({
                           <ul className="flex flex-wrap gap-2">
                               {innerAttachments.map((attachment, index) => (
                                   <li key={`${index}:${attachment.filename ?? ""}`}>
-                                      <button
-                                          type="button"
-                                          onClick={() => downloadMimeAttachment(attachment)}
-                                          className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted hover:text-primary-dark"
-                                      >
-                                          {attachment.filename ?? `Unnamed ${attachment.contentType} attachment`}
-                                      </button>
+                                      {isVCardAttachment({ filename: attachment.filename, mimeType: attachment.contentType }) ? (
+                                          <VCardAttachmentChip
+                                              label={attachment.filename ?? `Unnamed ${attachment.contentType} attachment`}
+                                              message={message}
+                                              loadText={async () => new TextDecoder().decode(attachment.decode() ?? new Uint8Array(0))}
+                                              onDownload={() => downloadMimeAttachment(attachment)}
+                                          />
+                                      ) : (
+                                          <button
+                                              type="button"
+                                              onClick={() => downloadMimeAttachment(attachment)}
+                                              className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted hover:text-primary-dark"
+                                          >
+                                              {attachment.filename ?? `Unnamed ${attachment.contentType} attachment`}
+                                          </button>
+                                      )}
                                   </li>
                               ))}
                           </ul>
@@ -1597,12 +1632,22 @@ function MessageDetailContent({
                           <ul className="flex flex-wrap gap-2">
                               {listedAttachments.map((attachment) => (
                                   <li key={attachment.uid}>
-                                      <a
-                                          href={attachmentContentUrl(attachment.uid)}
-                                          className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted hover:text-primary-dark"
-                                      >
-                                          {attachment.filename} ({formatBytes(attachment.sizeBytes)})
-                                      </a>
+                                      {isVCardAttachment(attachment) ? (
+                                          // A contact card opens a menu (add it to the address book, or download it) instead of downloading at once.
+                                          <VCardAttachmentChip
+                                              label={`${attachment.filename} (${formatBytes(attachment.sizeBytes)})`}
+                                              message={message}
+                                              loadText={() => fetchVCardText(attachment.uid)}
+                                              onDownload={() => downloadFromUrl(attachmentContentUrl(attachment.uid), attachment.filename)}
+                                          />
+                                      ) : (
+                                          <a
+                                              href={attachmentContentUrl(attachment.uid)}
+                                              className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted hover:text-primary-dark"
+                                          >
+                                              {attachment.filename} ({formatBytes(attachment.sizeBytes)})
+                                          </a>
+                                      )}
                                   </li>
                               ))}
                           </ul>

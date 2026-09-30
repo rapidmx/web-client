@@ -2,11 +2,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { ChangeEvent, useEffect, useRef, useState } from "react";
+import React, { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
+import type { Editor } from "@tiptap/react";
 import {
     HiOutlineArrowsPointingIn,
     HiOutlineArrowsPointingOut,
     HiOutlineChevronDown,
+    HiOutlineIdentification,
     HiOutlineLockClosed,
     HiOutlineMinus,
     HiOutlinePaperClip,
@@ -37,8 +39,10 @@ import { resolveRecipientEncryption, RecipientEncryptionStatus } from "../../../
 import { getUnlockedKeys, subscribeKeySession } from "../../../../../lib/crypto/keySession.js";
 import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "../../../../../lib/crypto/keyvaultApi.js";
 import { useUnlockPrompt } from "../../layout/UnlockPromptProvider.js";
+import { buildOwnCardFile } from "../../contacts/contactCardData.js";
 import useIsMobile from "../../../../../lib/util/useIsMobile.js";
 import { notify } from "../../../notifications/store.js";
+import { isFileDrag, isInlineImage } from "./dropFiles.js";
 import { evaluateEncryptionRequirement } from "./encryptionRequirement.js";
 import { decideSend, SendBlock } from "../../../mail/outbox/sendDecision.js";
 import { SendRequest, sendDecisionInput, startSend } from "../../../mail/outbox/sendJob.js";
@@ -250,7 +254,14 @@ export default function ComposeWindow({
     const [html, setHtml] = useState(resume?.html ?? "");
     const [contentReady, setContentReady] = useState(!!resume);
     const [attachments, setAttachments] = useState<Attachment[]>(resume?.attachments ?? []);
+    // The sender's own contact card is on the message (or on its way): "Attach my contact card" then has nothing more to do.
+    const [ownCardAttached, setOwnCardAttached] = useState(false);
     const [attachError, setAttachError] = useState<string | null>(null);
+    // The message editor, for putting a dropped picture into the text; and whether files are being dragged over the window right now.
+    const editorRef = useRef<Editor | null>(null);
+    const [dropActive, setDropActive] = useState(false);
+    // Dragging over a child fires leave on the parent, then enter on the child: only when the count is back to zero has the drag left the window.
+    const dragDepthRef = useRef(0);
     // A problem with the message as composed (no recipient, an attachment that can't be signed): shown here, and the window stays open. What
     // goes wrong after Send was accepted is a pop-up instead (see `sendJob.ts`).
     const [sendError, setSendError] = useState<string | null>(null);
@@ -761,6 +772,12 @@ export default function ComposeWindow({
         const files = Array.from(e.target.files ?? []);
         e.target.value = "";
         setAttachError(null);
+        await attachFiles(files);
+    }
+
+    /** Uploads each of `files` as an attachment on the draft, one after another, saying why any that could not be. Resolves whether they all were. */
+    async function attachFiles(files: File[]): Promise<boolean> {
+        let allAttached = true;
         uploadStarted();
         try {
             for (const file of files) {
@@ -770,11 +787,80 @@ export default function ComposeWindow({
                     setAttachments((prev) => [...prev, attachment]);
                     void refreshDraftVersion(draft!.uid);
                 } catch (err) {
+                    allAttached = false;
                     setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload attachment.");
                 }
             }
         } finally {
             uploadFinished();
+        }
+        return allAttached;
+    }
+
+    /** Attaches the sender's own vCard ("Attach my contact card"), once: the button is off from the click on, and back on if the upload failed. */
+    async function handleAttachOwnCard() {
+        setOwnCardAttached(true);
+        setAttachError(null);
+        const file = await buildOwnCardFile(mailbox as Mailbox, mailboxes, userUid, client);
+        if (!(await attachFiles([file]))) {
+            setOwnCardAttached(false);
+        }
+    }
+
+    /**
+     * Files dropped on the window: a picture goes into the message, at the caret, the way "Insert image" would put it; anything else is attached,
+     * as "Attach files" would. Done in the order they were dropped.
+     */
+    async function handleDroppedFiles(files: File[]) {
+        if (!draft) {
+            setAttachError("Please wait for the draft to finish loading before adding files.");
+            return;
+        }
+        setAttachError(null);
+        const toAttach: File[] = [];
+        for (const file of files) {
+            if (!isInlineImage(file)) {
+                toAttach.push(file);
+                continue;
+            }
+            const url = await handleUploadImage(file);
+            if (url) {
+                editorRef.current?.chain().focus().setImage({ src: url, alt: file.name }).run();
+            }
+        }
+        await attachFiles(toAttach);
+    }
+
+    function handleDragEnter(e: DragEvent) {
+        if (isFileDrag(e.dataTransfer)) {
+            dragDepthRef.current += 1;
+            setDropActive(true);
+        }
+    }
+
+    function handleDragOver(e: DragEvent) {
+        if (isFileDrag(e.dataTransfer)) {
+            // What makes this a place a file may be dropped (otherwise the browser opens it instead).
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+        }
+    }
+
+    function handleDragLeave(e: DragEvent) {
+        if (isFileDrag(e.dataTransfer)) {
+            dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+            if (dragDepthRef.current === 0) {
+                setDropActive(false);
+            }
+        }
+    }
+
+    function handleDrop(e: DragEvent) {
+        if (isFileDrag(e.dataTransfer)) {
+            e.preventDefault();
+            dragDepthRef.current = 0;
+            setDropActive(false);
+            void handleDroppedFiles(Array.from(e.dataTransfer.files));
         }
     }
 
@@ -1372,6 +1458,10 @@ export default function ComposeWindow({
             role="dialog"
             data-shortcut-scope="compose"
             aria-labelledby={titleId}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
             style={!isMobile && manualSize ? { width: manualSize.width, height: manualSize.height } : undefined}
             className={[
                 "shrink-0 flex flex-col bg-surface border border-border shadow-modal overflow-hidden",
@@ -1382,6 +1472,15 @@ export default function ComposeWindow({
                     : ["relative border-b-0 rounded-t-md", manualSize ? "" : expanded ? "w-[720px] h-[85vh]" : "w-[480px] h-[520px]"].join(" "),
             ].join(" ")}
         >
+            {dropActive && (
+                <div
+                    data-drop-overlay=""
+                    className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-1 border-2 border-dashed border-primary bg-primary/10 text-center text-primary-dark"
+                >
+                    <span className="text-base font-semibold">Drop files to attach them</span>
+                    <span className="text-sm">Pictures go into the message where the cursor is</span>
+                </div>
+            )}
             {!isMobile && (
                 <>
                     <div
@@ -1590,6 +1689,7 @@ export default function ComposeWindow({
                             onUploadImage={handleUploadImage}
                             autoFocusStart={focusBodyOnMount}
                             onInitialized={handleEditorInitialized}
+                            editorRef={editorRef}
                         />
                     )}
                 </div>
@@ -1685,6 +1785,17 @@ export default function ComposeWindow({
                         <HiOutlinePaperClip size={18} />
                         <input type="file" multiple disabled={!draft} onChange={handleFilesSelected} className="sr-only" />
                     </label>
+                    <button
+                        type="button"
+                        aria-label="Attach my contact card"
+                        title={ownCardAttached ? "Your contact card is attached" : "Attach my contact card"}
+                        aria-pressed={ownCardAttached}
+                        disabled={!draft || !mailbox || ownCardAttached}
+                        onClick={() => void handleAttachOwnCard()}
+                        className="w-8 h-8 flex items-center justify-center rounded-full text-text-muted hover:not-disabled:bg-surface-alt hover:not-disabled:text-text disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                        <HiOutlineIdentification size={18} />
+                    </button>
 
                     <span role="status" aria-live="polite" className="ml-auto text-xs text-text-muted">
                         {waitingForUploads ? "Waiting for attachments to finish uploading…" : SAVE_STATUS_LABEL[saveStatus]}

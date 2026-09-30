@@ -109,7 +109,7 @@ export const PINNED_FINGERPRINT_MAX_PAGES = 20;
 
 /** Every contact in `folderUids`, paged (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages
  * per folder). A plain contacts read - never a Discovery lookup. */
-async function listContactsInFolders(folderUids: string[], client?: ApiClient): Promise<Contact[]> {
+export async function listContactsInFolders(folderUids: string[], client?: ApiClient): Promise<Contact[]> {
     const contacts: Contact[] = [];
     for (const folderUid of folderUids) {
         for (let page = 0; page < PINNED_FINGERPRINT_MAX_PAGES; page++) {

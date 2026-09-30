@@ -24,6 +24,7 @@ const KIND_LABELS: Record<RecipientSuggestionKind, string> = {
     room: "Room",
     equipment: "Equipment",
     list: "Group",
+    correspondent: "Recent",
 };
 
 export interface RecipientInputProps {

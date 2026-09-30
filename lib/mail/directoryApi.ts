@@ -5,13 +5,15 @@
 /**
  * Typed wrappers over `@rapidmx/restapi`'s `BaseDirectoryRoute` - recipient suggestions for compose. `GET
  * /mail/directory` searches the server's mailboxes (people, shared mailboxes, rooms and equipment) and distribution
- * lists; `GET /mail/directory/contacts` searches the caller's own contacts. Both match every word of the query against
- * the start of a name word or of an address, and return only a display name, an address and a kind.
+ * lists; `GET /mail/directory/contacts` searches the caller's own contacts; `GET /mail/directory/correspondents` searches
+ * everyone the caller's mailboxes have exchanged mail or shared an event with, address book or not. All match every word of
+ * the query against the start of a name word or of an address, and return only a display name, an address and a kind.
  */
 import { ApiClient, ApiRequestError, withClient } from "../util/api.js";
 
-/** What a suggestion names. `"contact"` comes from the caller's contacts, everything else from the server directory. */
-export type RecipientSuggestionKind = "user" | "shared" | "room" | "equipment" | "list" | "contact";
+/** What a suggestion names. `"contact"` comes from the caller's contacts, `"correspondent"` from the people they have written to, heard from or
+ * met with, everything else from the server directory. */
+export type RecipientSuggestionKind = "user" | "shared" | "room" | "equipment" | "list" | "contact" | "correspondent";
 
 export interface RecipientSuggestion {
     displayName: string;
@@ -104,16 +106,29 @@ export function searchContactSuggestions(
     );
 }
 
-/** Contacts first, then directory entries, without repeating an address (compared case-insensitively; the first
- * occurrence wins), at most `limit`. */
+/** Searches the people the caller's mailboxes have exchanged mail or shared an event with, whether or not they are in the address book. Rejects like
+ * `searchDirectory()`; a server that predates the endpoint answers 404, which `fetchRecipientSuggestions()` treats as "none". */
+export function searchCorrespondents(query: string, options: ContactSuggestionOptions = {}, client?: ApiClient): Promise<RecipientSuggestion[]> {
+    return fetchSuggestions(
+        "/mail/directory/correspondents",
+        query,
+        { limit: options.limit?.toString(), mailboxUid: options.mailboxUid },
+        options.signal,
+        client,
+    );
+}
+
+/** Contacts first, then directory entries, then the people the caller has corresponded with, without repeating an address (compared
+ * case-insensitively; the first occurrence wins), at most `limit`. */
 export function mergeRecipientSuggestions(
     contacts: RecipientSuggestion[],
     directory: RecipientSuggestion[],
     limit: number = RECIPIENT_SUGGESTION_DEFAULT_LIMIT,
+    correspondents: RecipientSuggestion[] = [],
 ): RecipientSuggestion[] {
     const seen = new Set<string>();
     const result: RecipientSuggestion[] = [];
-    for (const entry of [...contacts, ...directory]) {
+    for (const entry of [...contacts, ...directory, ...correspondents]) {
         const key = entry.address.trim().toLowerCase();
         if (result.length >= limit) {
             break;
@@ -131,9 +146,10 @@ function isAbort(error: unknown): boolean {
 }
 
 /**
- * Contacts and directory suggestions for `query`, merged by `mergeRecipientSuggestions()`. Either source failing (a 403
- * directory for a caller with no mailbox here, a 429, a network error) still returns the other's entries; only when
- * both fail does this reject, with the contacts error. An aborted `signal` always rejects with the `AbortError`.
+ * Contacts, directory and correspondent suggestions for `query`, merged by `mergeRecipientSuggestions()`. Any source failing (a 403
+ * directory for a caller with no mailbox here, a 429, a network error, a server without the correspondents endpoint) still returns
+ * the others' entries; only when the contacts and the directory both fail does this reject, with the contacts error - the
+ * correspondents are a bonus and never turn a working search into an error. An aborted `signal` always rejects with the `AbortError`.
  */
 export async function fetchRecipientSuggestions(
     query: string,
@@ -141,11 +157,12 @@ export async function fetchRecipientSuggestions(
     client?: ApiClient,
 ): Promise<RecipientSuggestion[]> {
     const limit = options.limit ?? RECIPIENT_SUGGESTION_DEFAULT_LIMIT;
-    const [contacts, directory] = await Promise.allSettled([
+    const [contacts, directory, correspondents] = await Promise.allSettled([
         searchContactSuggestions(query, { ...options, limit }, client),
         searchDirectory(query, { limit, signal: options.signal }, client),
+        searchCorrespondents(query, { ...options, limit }, client),
     ]);
-    for (const outcome of [contacts, directory]) {
+    for (const outcome of [contacts, directory, correspondents]) {
         if (outcome.status === "rejected" && isAbort(outcome.reason)) {
             throw outcome.reason;
         }
@@ -157,5 +174,6 @@ export async function fetchRecipientSuggestions(
         contacts.status === "fulfilled" ? contacts.value : [],
         directory.status === "fulfilled" ? directory.value : [],
         limit,
+        correspondents.status === "fulfilled" ? correspondents.value : [],
     );
 }

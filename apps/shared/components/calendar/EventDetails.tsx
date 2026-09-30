@@ -26,6 +26,7 @@ import { describeTimeZone, deviceTimeZone } from "../../../../lib/util/timeZone.
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
+import ParticipantLink from "../contacts/ParticipantLink.js";
 import EventDescriptionView from "./EventDescriptionView.js";
 import RequestChangeForm from "./RequestChangeForm.js";
 import { BUSY_STATUS_LABEL, RESPONSE_STATUS_LABEL, VISIBILITY_LABEL, describeGuestPermissions, describeReminder, formatStoredWhen, formatStoredWhenInZone } from "./eventFormat.js";
@@ -270,7 +271,9 @@ export default function EventDetails({
                 )}
 
                 <DetailRow icon={<HiOutlineUser size={18} />}>
-                    <div>{organizerName || occurrence.organizer.address}</div>
+                    <div>
+                        <ParticipantLink participant={occurrence.organizer}>{organizerName || occurrence.organizer.address}</ParticipantLink>
+                    </div>
                     <div className="text-text-muted">
                         {organizerName ? `${occurrence.organizer.address} · ` : ""}Organizer
                     </div>
@@ -285,7 +288,7 @@ export default function EventDetails({
                             {guests.map((guest, i) => (
                                 <li key={i} className="flex items-baseline justify-between gap-3">
                                     <span className="min-w-0 truncate">
-                                        {guest.displayName || guest.address}
+                                        <ParticipantLink participant={guest}>{guest.displayName || guest.address}</ParticipantLink>
                                         {ROLE_LABEL[guest.role] && <span className="text-text-muted"> ({ROLE_LABEL[guest.role]})</span>}
                                     </span>
                                     <span className="shrink-0 text-xs text-text-muted">{RESPONSE_STATUS_LABEL[guest.responseStatus]}</span>

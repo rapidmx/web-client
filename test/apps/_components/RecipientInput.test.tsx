@@ -142,6 +142,17 @@ describe("RecipientInput", () => {
     });
 
     describe("suggestions", () => {
+        it("names a person the user has only corresponded with 'Recent', like anyone else in the list", async () => {
+            const user = userEvent.setup();
+            const john = { displayName: "John Smith", address: "john.smith@gmail.com", kind: "correspondent" as const };
+            render(<Harness fetchSuggestions={async () => [john]} />);
+
+            await user.type(input(), "jo");
+
+            const listbox = await screen.findByRole("listbox", { name: "To suggestions" });
+            expect(within(listbox).getAllByRole("option").map((option) => option.textContent)).toEqual(["John Smithjohn.smith@gmail.comRecent"]);
+        });
+
         it("loads suggestions for two or more characters and picks one with the keyboard", async () => {
             const user = userEvent.setup();
             const fetchSuggestions = vi.fn(async () => [alice, allan, sales]);

@@ -18,6 +18,7 @@ import { guestPermissionsOf } from "../../../../lib/calendar/calendarApi.js";
 import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import Button from "../../../../lib/components/buttons/Button.js";
+import ParticipantLink from "../contacts/ParticipantLink.js";
 import EventDescriptionView from "../calendar/EventDescriptionView.js";
 import RequestChangeForm from "../calendar/RequestChangeForm.js";
 import { VISIBILITY_LABEL, describeGuestPermissions } from "../calendar/eventFormat.js";
@@ -70,12 +71,24 @@ const MAX_NAMED_ATTENDEES = 5;
 /** What the card is doing for the reader right now: an answer being sent, an add/remove, a proposal, an accepted proposal. */
 type Pending = InviteResponse | "add" | "remove" | "propose" | "acceptProposal";
 
-function attendeeSummary(attendees: InviteParticipant[]): string | undefined {
+function attendeeSummary(attendees: InviteParticipant[]): React.ReactNode {
     if (attendees.length === 0) {
         return undefined;
     }
     const count = `${attendees.length} ${attendees.length === 1 ? "attendee" : "attendees"}`;
-    return attendees.length <= MAX_NAMED_ATTENDEES ? `${count}: ${attendees.map((a) => a.displayName || a.address).join(", ")}` : count;
+    return attendees.length <= MAX_NAMED_ATTENDEES ? (
+        <>
+            {count}:{" "}
+            {attendees.map((attendee, index) => (
+                <React.Fragment key={index}>
+                    {index > 0 && ", "}
+                    <ParticipantLink participant={attendee}>{attendee.displayName || attendee.address}</ParticipantLink>
+                </React.Fragment>
+            ))}
+        </>
+    ) : (
+        count
+    );
 }
 
 export interface InviteCardProps {
@@ -150,6 +163,13 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
     const visibility = invite.visibility && invite.visibility !== "default" ? VISIBILITY_LABEL[invite.visibility] : undefined;
     const sender = invite.reply ?? invite.attendees[0];
     const senderName = sender ? sender.displayName || sender.address : "Someone";
+    const senderNode = sender ? (
+        <ParticipantLink participant={sender} className="font-semibold">
+            {senderName}
+        </ParticipantLink>
+    ) : (
+        <span className="font-semibold">{senderName}</span>
+    );
     const showResponses = invite.canRespond && !invite.isOrganizer;
     const conflicts = !isReply && !isCounter && method !== "CANCEL" && invite.conflicts.length > 0 ? conflictSummary(invite.conflicts) : undefined;
     const hasActions =
@@ -170,12 +190,12 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
             {isReply && (
                 // Someone answering the reader's own invitation: a line of news, nothing to do.
                 <p className="break-words">
-                    <span className="font-semibold">{senderName}</span> {(sender?.responseStatus && REPLY_VERBS[sender.responseStatus]) ?? "responded"}.
+                    {senderNode} {(sender?.responseStatus && REPLY_VERBS[sender.responseStatus]) ?? "responded"}.
                 </p>
             )}
             {isCounter && !changeRequest && (
                 <p className="break-words">
-                    <span className="font-semibold">{senderName}</span> proposed a new time{when ? <>: {when}</> : "."}
+                    {senderNode} proposed a new time{when ? <>: {when}</> : "."}
                 </p>
             )}
             {changeRequest && (
@@ -220,7 +240,9 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                     {invite.organizer && !isCounter && (
                         <>
                             <dt className="text-text-muted">Organizer</dt>
-                            <dd className="break-words">{formatMailAddress(invite.organizer)}</dd>
+                            <dd className="break-words">
+                                <ParticipantLink participant={invite.organizer}>{formatMailAddress(invite.organizer)}</ParticipantLink>
+                            </dd>
                         </>
                     )}
                     {attendees && (!isCounter || !!changeRequest) && (

@@ -4,6 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
 import { MailAddressLike, formatMailAddress, splitMailAddress } from "../../../../lib/mail/mailAddress.js";
+import type { ContactCardContext } from "../contacts/contactCardData.js";
+import ParticipantLink from "../contacts/ParticipantLink.js";
 
 export interface MailAddressProps {
     /** A message's `from`, a recipient, a conversation participant. */
@@ -52,9 +54,10 @@ export const RECIPIENT_LINE_LIMIT = 3;
 /**
  * A `To`/`Cc` line of a message header: every recipient as `Name <address>` in the text itself (never hover-only), wrapping
  * onto more lines as needed. A long list shows its first `RECIPIENT_LINE_LIMIT` and folds the rest behind a button -
- * "and 12 more" / "Show fewer" - so a message to a hundred people doesn't take the whole header. Nothing when empty.
+ * "and 12 more" / "Show fewer" - so a message to a hundred people doesn't take the whole header. Nothing when empty. Each recipient opens their
+ * contact card when clicked (see `ParticipantLink`); `context` is the message they are listed on.
  */
-export function RecipientLine({ label, recipients }: { label: string; recipients: MailAddressLike[] }) {
+export function RecipientLine({ label, recipients, context }: { label: string; recipients: MailAddressLike[]; context?: ContactCardContext }) {
     const [expanded, setExpanded] = useState(false);
     if (recipients.length === 0) {
         return null;
@@ -67,7 +70,9 @@ export function RecipientLine({ label, recipients }: { label: string; recipients
             {shown.map((recipient, index) => (
                 <React.Fragment key={index}>
                     {index > 0 && ", "}
-                    <span>{formatMailAddress(recipient)}</span>
+                    <ParticipantLink participant={recipient} context={context}>
+                        {formatMailAddress(recipient)}
+                    </ParticipantLink>
                 </React.Fragment>
             ))}
             {folded && (

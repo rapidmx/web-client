@@ -10,6 +10,7 @@ import {
     RecipientSuggestion,
     RECIPIENT_SUGGESTION_MAX_QUERY_LENGTH,
     searchContactSuggestions,
+    searchCorrespondents,
     searchDirectory,
 } from "../../../lib/mail/directoryApi.js";
 import { ApiRequestError, createApiClient } from "../../../lib/util/api.js";
@@ -21,6 +22,7 @@ afterEach(() => {
 const alice: RecipientSuggestion = { displayName: "Alice Johnson", address: "alice@example.com", kind: "user" };
 const aliceContact: RecipientSuggestion = { displayName: "Alice (home)", address: "ALICE@example.com", kind: "contact" };
 const sales: RecipientSuggestion = { displayName: "Sales", address: "sales@example.com", kind: "list" };
+const john: RecipientSuggestion = { displayName: "John Smith", address: "john.smith@gmail.com", kind: "correspondent" };
 
 describe("searchDirectory", () => {
     it("sends the trimmed query and limit, and keeps only well-formed entries", async () => {
@@ -66,7 +68,32 @@ describe("searchContactSuggestions", () => {
     });
 });
 
+describe("searchCorrespondents", () => {
+    it("sends the query, limit and mailboxUid to the correspondents endpoint", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, [john]));
+        expect(await searchCorrespondents("john", { limit: 4, mailboxUid: "mb1" })).toEqual([john]);
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/directory/correspondents?q=john&limit=4&mailboxUid=mb1");
+    });
+
+    it("sends just the query by default, and nothing for one that is too short", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await searchCorrespondents("jo");
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/directory/correspondents?q=jo");
+        expect(await searchCorrespondents("j")).toEqual([]);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+});
+
 describe("mergeRecipientSuggestions", () => {
+    it("puts the people the caller has corresponded with after the contacts and the directory, without repeating an address", () => {
+        const repeat: RecipientSuggestion = { displayName: "Alice", address: "Alice@Example.com", kind: "correspondent" };
+        expect(mergeRecipientSuggestions([aliceContact], [sales], 8, [repeat, john])).toEqual([aliceContact, sales, john]);
+        // Without them, as before.
+        expect(mergeRecipientSuggestions([aliceContact], [sales])).toEqual([aliceContact, sales]);
+        // They take what room is left.
+        expect(mergeRecipientSuggestions([aliceContact], [sales], 2, [john])).toEqual([aliceContact, sales]);
+    });
+
     it("puts contacts first, drops repeated addresses case-insensitively and keeps the limit", () => {
         expect(mergeRecipientSuggestions([aliceContact], [alice, sales])).toEqual([aliceContact, sales]);
         expect(mergeRecipientSuggestions([aliceContact, { ...sales, address: " Sales@example.com " }], [alice, sales], 10)).toEqual([
@@ -74,6 +101,46 @@ describe("mergeRecipientSuggestions", () => {
             { ...sales, address: " Sales@example.com " },
         ]);
         expect(mergeRecipientSuggestions([aliceContact], [alice, sales], 1)).toEqual([aliceContact]);
+    });
+});
+
+describe("fetchRecipientSuggestions and correspondents", () => {
+    const answer = (url: string, correspondents: () => Response) =>
+        url.startsWith("/api/mail/directory/correspondents")
+            ? correspondents()
+            : url.startsWith("/api/mail/directory/contacts")
+              ? jsonResponse(200, [aliceContact])
+              : jsonResponse(200, [sales]);
+
+    it("adds the people the caller has corresponded with to the contacts and the directory", async () => {
+        const fetchMock = mockFetch((url) => answer(url, () => jsonResponse(200, [john])));
+        expect(await fetchRecipientSuggestions("john")).toEqual([aliceContact, sales, john]);
+        expect(fetchMock.mock.calls.map(([url]) => String(url).split("?")[0]).sort()).toEqual([
+            "/api/mail/directory",
+            "/api/mail/directory/contacts",
+            "/api/mail/directory/correspondents",
+        ]);
+    });
+
+    it("carries on without them when the server has no such endpoint, or answers with an error", async () => {
+        mockFetch((url) => answer(url, () => jsonResponse(404, { message: "Not found" })));
+        expect(await fetchRecipientSuggestions("john")).toEqual([aliceContact, sales]);
+        mockFetch((url) => answer(url, () => jsonResponse(500, { message: "boom" })));
+        expect(await fetchRecipientSuggestions("john")).toEqual([aliceContact, sales]);
+    });
+
+    it("still rejects when the contacts and the directory both fail, however the correspondents fare", async () => {
+        mockFetch((url) => (url.startsWith("/api/mail/directory/correspondents") ? jsonResponse(200, [john]) : jsonResponse(500, { message: "down" })));
+        await expect(fetchRecipientSuggestions("john")).rejects.toMatchObject({ status: 500 });
+    });
+
+    it("rejects with the AbortError when only the correspondents request was aborted", async () => {
+        const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
+        mockFetch((url) => {
+            if (url.startsWith("/api/mail/directory/correspondents")) throw abort;
+            return url.startsWith("/api/mail/directory/contacts") ? jsonResponse(200, [aliceContact]) : jsonResponse(200, [sales]);
+        });
+        await expect(fetchRecipientSuggestions("john")).rejects.toBe(abort);
     });
 });
 
