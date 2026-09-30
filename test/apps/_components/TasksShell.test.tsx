@@ -310,6 +310,8 @@ describe("TasksShell", () => {
             const mailboxesCall = fetchMock.mock.calls.find(([url]) => (url as string).includes("/mail/mailboxes"))!;
             expect(mailboxesCall[0]).toMatch(/^https:\/\/acct-a\.example\.com\/api\/mail\/mailboxes\?/);
             expect(new Headers((mailboxesCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+            // The folders are asked for once the mailboxes are in, which can be after the content is drawn.
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => (url as string).includes("/mail/folders"))).toBe(true));
             const foldersCall = fetchMock.mock.calls.find(([url]) => (url as string).includes("/mail/folders"))!;
             expect(foldersCall[0]).toMatch(/^https:\/\/acct-a\.example\.com\/api\/mail\/folders/);
             expect(new Headers((foldersCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
