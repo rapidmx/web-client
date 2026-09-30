@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-30
+
+### Added
+- Added an icon beside every item of the user menu
+- Added an icon beside every Settings section
+- Added an icon to the left of every mail folder's name
+
+### Changed
+- Make the time zone picker fast: name the zones only while the list is open, work out each zone's offset once when sorting, and reuse the formatters that name them
+- Make the keyboard action failure test wait for the message to be selected before pressing the key
+- Let the keyboard shortcut tests wait for the shortcuts to be registered, which happens in an effect just after the rows are drawn, before pressing a key
+- Open Settings from the user menu on Profile
+- Let the admin console's side rail expand to show each section's label beside its icon, and remember the choice
+- Mark a shared mailbox with the group icon in the folder list and the calendar list instead of writing shared after its name
+- Take the Settings encryption page down before its mocks are reset so a late re-render cannot call one that returns nothing
+
 ## [0.24.0] - 2026-09-29
 
 ### Added
@@ -1127,7 +1143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/rapidmx/web-client/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/rapidmx/web-client/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/rapidmx/web-client/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/rapidmx/web-client/compare/v0.21.0...v0.22.0
