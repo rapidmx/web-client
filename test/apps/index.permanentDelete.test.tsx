@@ -531,6 +531,39 @@ describe("Empty folder", () => {
         expect(screen.queryByText(/\d+ items?$/)).not.toBeInTheDocument();
     });
 
+    it("is offered in the All mailboxes view of Deleted Items, and empties each mailbox's own", async () => {
+        at("?aggregate=deleted_items");
+        const { fetchMock } = mockServer({ messages: trash() });
+        const user = userEvent.setup();
+        render(<InboxPage userUid="u1" />);
+        await screen.findByText("Subject a");
+        expect(await screen.findByText("3 items")).toBeInTheDocument();
+
+        await user.click(emptyButton());
+        const dialog = await screen.findByRole("dialog", { name: "Empty Deleted Items" });
+        expect(within(dialog).getByText("Permanently delete all 3 items in Deleted Items? This can't be undone.")).toBeInTheDocument();
+        await user.click(confirmButton(dialog, "Delete all permanently"));
+
+        await waitFor(() => expect(emptyRequests(fetchMock)).toEqual(["/api/mail/messages?folderUid=f6"]));
+        await screen.findByText("No messages in this folder.");
+    });
+
+    it("is offered in the All mailboxes view of Junk Email under its own name", async () => {
+        at("?aggregate=junk");
+        mockServer({ messages: [message("j", "f5")] });
+        render(<InboxPage userUid="u1" />);
+        await screen.findByText("Subject j");
+        expect(emptyButton("Empty Junk Email")).toBeEnabled();
+    });
+
+    it("is not offered in the All mailboxes view of the Inbox", async () => {
+        at("?aggregate=inbox");
+        mockServer({ messages: trash() });
+        render(<InboxPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Select" });
+        expect(screen.queryByRole("button", { name: /^Empty / })).not.toBeInTheDocument();
+    });
+
     it("is offered for Junk Email too, and not for the Inbox", async () => {
         inJunk();
         const { fetchMock } = mockServer({ messages: [message("j", "f5"), message("k", "f5")] });

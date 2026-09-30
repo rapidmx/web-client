@@ -3395,26 +3395,6 @@ describe("InboxPage", () => {
             expect(screen.getByText("0 selected")).toBeInTheDocument();
         });
 
-        it("is unavailable in an aggregate view, whose rows come from several mailboxes", async () => {
-            const location = mockLocation();
-            (location as any).search = "?aggregate=inbox";
-            mockFetch((url, init) => {
-                if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
-                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
-                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
-                if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
-                if (url.startsWith("/api/mail/messages")) return jsonResponse(200, [messageFixture()]);
-                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
-            });
-            render(<InboxPage userUid="u1" />);
-            await screen.findByText("Hello there");
-
-            const select = screen.getByRole("button", { name: "Select" });
-            expect(select).toBeDisabled();
-            expect(select).toHaveAttribute("title", "Open a mailbox's own folder to select messages");
-            mockLocation();
-        });
-
         describe("keyboard shortcuts", () => {
             // Some tests below give the location a search string; put a plain one back for whatever runs next.
             afterEach(() => {
@@ -4587,7 +4567,7 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Own survives")).toBeInTheDocument();
         });
 
-        it("registers no delete, mark or flag keys in the listing (the selection bar isn't offered there), but the search key still focuses the search box", async () => {
+        it("still closes the open message with Escape and focuses the search box with /", async () => {
             const location = mockLocation();
             (location as any).search = "?aggregate=inbox";
             mockAggregate({ f1: [messageFixture({ uid: "m-own", subject: "Own row" })] });
@@ -4596,14 +4576,117 @@ describe("InboxPage", () => {
             await user.click(await screen.findByText("Own row"));
             expect(screen.getByTestId("detail-pane")).toHaveTextContent("message:m-own");
 
-            for (const [key, init] of [["d", { ctrlKey: true }], ["Delete", {}], ["q", { ctrlKey: true }], ["u", { ctrlKey: true }], ["Insert", {}]] as const) {
-                expect(fireEvent.keyDown(document.body, { key, ...init }), key).toBe(true);
-            }
-            // The keys that only need the list still work: Escape closes it.
             expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false);
-            // Search covers every mailbox, so the key that focuses its box works here too.
             expect(fireEvent.keyDown(document.body, { key: "/" })).toBe(false);
             expect(screen.getByPlaceholderText("Search all mail…")).toHaveFocus();
+        });
+
+        describe("selecting and acting on rows from several mailboxes", () => {
+            const ownDeleted = { ...inboxFolder, uid: "f6", name: "Deleted Items", type: "deleted_items" as const };
+            const sharedDeleted = { ...inboxFolder, uid: "f-shared-deleted", mailboxUid: "mb2", name: "Deleted Items", type: "deleted_items" as const };
+
+            function mockTwoMailboxes(byFolder: Record<string, any[]>, conversations?: Record<string, any[]>) {
+                const all = Object.values(byFolder).flat();
+                return mockFetch((url, init) => {
+                    if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+                    if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox]);
+                    if (url.startsWith("/api/mail/folders")) {
+                        return jsonResponse(200, url.includes("mailboxUid=mb2") ? [sharedInbox, sharedDeleted] : [inboxFolder, ownDeleted]);
+                    }
+                    if (url.startsWith("/api/mail/labels")) return jsonResponse(200, []);
+                    if (url.startsWith("/api/mail/messages/conversations/")) {
+                        const id = decodeURIComponent(url.split("/conversations/")[1].split("?")[0]);
+                        return jsonResponse(200, all.filter((m) => m.conversationId === id && url.includes(`mailboxUid=${m.mailboxUid}`)));
+                    }
+                    if (url.startsWith("/api/mail/messages/conversations")) {
+                        const mailboxUid = new URLSearchParams(url.split("?")[1]).get("mailboxUid") ?? "";
+                        return jsonResponse(200, conversations?.[mailboxUid] ?? []);
+                    }
+                    if ((init?.method ?? "GET") === "PUT" && url === "/api/mail/messages") {
+                        const updates = JSON.parse(init.body as string) as Record<string, unknown>[];
+                        return jsonResponse(200, updates.map((update) => ({ ...all.find((m) => m.uid === update.uid), ...update })));
+                    }
+                    if (url.startsWith("/api/mail/messages?") || url === "/api/mail/messages") {
+                        return jsonResponse(200, byFolder[new URLSearchParams(url.split("?")[1]).get("folderUid") ?? ""] ?? []);
+                    }
+                    if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+                    throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+                });
+            }
+
+            const ownRow = () => messageFixture({ uid: "m-own", subject: "Own row" });
+            const sharedRow = () => messageFixture({ uid: "m-shared", subject: "Shared row", mailboxUid: "mb2", folderUid: "f-shared-inbox" });
+
+            it("can be switched on, and deletes each ticked message into its own mailbox's Deleted Items", async () => {
+                const location = mockLocation();
+                (location as any).search = "?aggregate=inbox";
+                const fetchMock = mockTwoMailboxes({ f1: [ownRow()], "f-shared-inbox": [sharedRow()] });
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("Shared row");
+
+                expect(screen.getByRole("button", { name: "Select" })).toBeEnabled();
+                await selectRows(user, "Own row", "Shared row");
+                await screen.findByText("2 selected");
+                await user.click(screen.getByRole("button", { name: "Delete" }));
+
+                await waitFor(() => expect(screen.queryByText("Own row")).not.toBeInTheDocument());
+                expect(screen.queryByText("Shared row")).not.toBeInTheDocument();
+                const moves = fetchMock.mock.calls
+                    .filter(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT")
+                    .map(([, init]: [string, RequestInit]) => JSON.parse(init.body as string))
+                    .flat();
+                expect(moves).toEqual(
+                    expect.arrayContaining([
+                        expect.objectContaining({ uid: "m-own", folderUid: "f6" }),
+                        expect.objectContaining({ uid: "m-shared", folderUid: "f-shared-deleted" }),
+                    ]),
+                );
+            });
+
+            it("selects whole conversations of several mailboxes, even when two share an id, and reads every one's messages from its own mailbox", async () => {
+                localStorage.setItem(
+                    "rapidmx:mail-list-preferences:mb1",
+                    JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: true }),
+                );
+                const location = mockLocation();
+                (location as any).search = "?aggregate=inbox";
+                const own = messageFixture({ uid: "m-own", subject: "Own thread", conversationId: "same" });
+                const shared = messageFixture({ uid: "m-shared", subject: "Shared thread", mailboxUid: "mb2", folderUid: "f-shared-inbox", conversationId: "same" });
+                const fetchMock = mockTwoMailboxes(
+                    { f1: [own], "f-shared-inbox": [shared] },
+                    {
+                        mb1: [conversationFixture({ conversationId: "same", subject: "Own thread", latestMessageUid: "m-own", messageUids: ["m-own"] })],
+                        mb2: [conversationFixture({ conversationId: "same", subject: "Shared thread", latestMessageUid: "m-shared", messageUids: ["m-shared"], latestFolderUid: "f-shared-inbox", folderUids: ["f-shared-inbox"] })],
+                    },
+                );
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await screen.findByText("Shared thread");
+
+                await user.click(screen.getByRole("button", { name: "Select" }));
+                await user.click(await screen.findByRole("checkbox", { name: "Select conversation: Own thread" }));
+                expect(screen.getByRole("checkbox", { name: "Select conversation: Shared thread" })).not.toBeChecked();
+                await user.click(screen.getByRole("button", { name: "Select all" }));
+                await screen.findByText("2 conversations selected");
+                await waitFor(() =>
+                    expect(fetchMock.mock.calls.filter(([url]: [string]) => url.startsWith("/api/mail/messages/conversations/same")).map(([url]: [string]) => url)).toEqual(
+                        expect.arrayContaining([expect.stringContaining("mailboxUid=mb1"), expect.stringContaining("mailboxUid=mb2")]),
+                    ),
+                );
+
+                await user.click(screen.getByRole("button", { name: "Delete" }));
+                await waitFor(() =>
+                    expect(
+                        fetchMock.mock.calls.filter(([url, init]: [string, RequestInit]) => url === "/api/mail/messages" && init?.method === "PUT").flatMap(([, init]: [string, RequestInit]) => JSON.parse(init.body as string)),
+                    ).toEqual(
+                        expect.arrayContaining([
+                            expect.objectContaining({ uid: "m-own", folderUid: "f6" }),
+                            expect.objectContaining({ uid: "m-shared", folderUid: "f-shared-deleted" }),
+                        ]),
+                    ),
+                );
+            });
         });
     });
 

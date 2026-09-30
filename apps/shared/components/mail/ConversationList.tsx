@@ -47,9 +47,9 @@ export interface ConversationListProps {
      * conversation is what this list's rows are. A child row stays a plain "open this message" button - a
      * mixed conversation/message selection has no sensible bulk semantics (see `MailListToolbar`). */
     selectMode?: boolean;
-    /** The `conversationId`s currently ticked. */
+    /** The `conversationRowKey()`s currently ticked. */
     selectedConversationIds?: Set<string>;
-    onToggleSelected?: (conversation: ConversationSummary) => void;
+    onToggleSelected?: (conversation: ListedConversation) => void;
     /**
      * What swiping a parent row does on a phone: right to left archives the conversation (resolving whether it went through), left
      * to right asks where to move it. Absent, or `enabled: false` (a desktop), rows don't follow a finger.
@@ -175,7 +175,7 @@ export default function ConversationList({
                 // list itself is arranged in. Copied before reversing - the fetched array is cached.
                 const children = loaded && newestFirst ? [...loaded].reverse() : loaded;
                 const panelId = `conversation-messages-${conversation.mailboxUid ? `${conversation.mailboxUid}-` : ""}${conversation.conversationId}`;
-                const ticked = selectedConversationIds?.has(conversation.conversationId) ?? false;
+                const ticked = selectedConversationIds?.has(id) ?? false;
                 return (
                     <li key={id}>
                         <SwipeRow

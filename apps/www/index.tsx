@@ -80,7 +80,7 @@ import MailListToolbar from "../shared/components/mail/MailListToolbar.js";
 import MailSelectionBar from "../shared/components/mail/MailSelectionBar.js";
 import EmptyFolderBar from "../shared/components/mail/EmptyFolderBar.js";
 import { EMPTIABLE_FOLDER_TYPES } from "../shared/mail/permanentDelete.js";
-import { usePermanentDelete } from "../shared/mail/usePermanentDelete.js";
+import { type EmptiableFolder, usePermanentDelete } from "../shared/mail/usePermanentDelete.js";
 import { useMailboxUpdateAccess } from "../shared/mail/useMailboxUpdateAccess.js";
 import {
     CONVERSATION_SORT_NOTE,
@@ -1002,12 +1002,6 @@ function InboxContent({ userUid }: { userUid?: string }) {
             setSearchAllMailboxes(false);
         }
     }, [searchQuery]);
-    // Rows can be ticked in the results of a search over every mailbox, but not in the listing they came out of: clearing the search leaves select mode.
-    useEffect(() => {
-        if (aggregateFolderType && !isSearching) {
-            setSelectMode(false);
-        }
-    }, [aggregateFolderType, isSearching]);
 
     // Which listing this is, for the short-lived snapshot of each folder that makes going back to one instant (see
     // `listSnapshots.ts`). A search, an aggregate view and a folder that hasn't resolved have no snapshot.
@@ -1842,7 +1836,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * Items copy of its reply), and the list only ever showed this folder's half of it, so a bulk action
      * from here must not reach into the other folders' copies either. */
     const selectedConversationMessages = [...selectedConversationIds].flatMap((id) =>
-        (conversationMessagesById[id] ?? []).filter((m) => !folderUid || m.folderUid === folderUid),
+        (conversationMessagesById[id] ?? []).filter((m) => (aggregateFolderType ? folderTypeOf(m.folderUid) === aggregateFolderType : !folderUid || m.folderUid === folderUid)),
     );
     const selectedMessages = asConversations
         ? selectedConversationMessages
@@ -1886,23 +1880,24 @@ function InboxContent({ userUid }: { userUid?: string }) {
     /** Loads (once) the messages behind each of `ids`, so a ticked conversation resolves to the messages
      * every bulk action below acts on. If any of them fails to load, none of that batch stays ticked and
      * a pop-up says why - better than acting on the part of a selection that happened to arrive. */
-    async function resolveConversations(ids: string[]) {
-        const missing = ids.filter((id) => !conversationMessagesById[id]);
+    async function resolveConversations(rows: ListedConversation[]) {
+        const missing = rows.filter((row) => !conversationMessagesById[conversationKey(row)]);
         if (missing.length === 0) {
             return;
         }
         setResolvingSelection((n) => n + 1);
         try {
             const loaded = await Promise.all(
-                missing.map(async (id) => [id, await listConversationMessages(activeMailboxUid, id, {}, client)] as const),
+                // A row of the "All mailboxes" view names its own mailbox; any other list is the open mailbox's.
+                missing.map(async (row) => [conversationKey(row), await listConversationMessages(row.mailboxUid ?? activeMailboxUid, row.conversationId, {}, client)] as const),
             );
             setConversationMessagesById((prev) => ({ ...prev, ...Object.fromEntries(loaded) }));
         } catch (err) {
             notifyApiError(err, "Couldn't load the messages in one of those conversations");
             setSelectedConversationIds((prev) => {
                 const next = new Set(prev);
-                for (const id of missing) {
-                    next.delete(id);
+                for (const row of missing) {
+                    next.delete(conversationKey(row));
                 }
                 return next;
             });
@@ -1911,8 +1906,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
     }
 
-    function toggleConversationSelected(conversation: ConversationSummary) {
-        const id = conversation.conversationId;
+    function toggleConversationSelected(conversation: ListedConversation) {
+        const id = conversationKey(conversation);
         const ticking = !selectedConversationIds.has(id);
         setSelectedConversationIds((prev) => {
             const next = new Set(prev);
@@ -1924,14 +1919,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
             return next;
         });
         if (ticking) {
-            void resolveConversations([id]);
+            void resolveConversations([conversation]);
         }
     }
 
     function selectAllConversations() {
-        const ids = conversations.map(conversationKey);
-        setSelectedConversationIds(new Set(ids));
-        void resolveConversations(ids);
+        setSelectedConversationIds(new Set(conversations.map(conversationKey)));
+        void resolveConversations(conversations);
     }
 
     /**
@@ -2105,7 +2099,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     /** Empty folder: permanently deletes everything in the folder being listed (Deleted Items or Junk Email) after the reader has confirmed. */
-    async function emptyListedFolder(folder: Folder, count: number | undefined) {
+    async function emptyListedFolder(folder: EmptiableFolder, count: number | undefined) {
         const outcome = await permanent.requestEmptyFolder({ uid: folder.uid, name: folder.name }, count);
         if (!outcome) {
             return;
@@ -2348,7 +2342,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     const inConversations = asConversations;
     /** The selection bar isn't offered in the aggregate listing (its rows belong to several mailboxes), and neither are these - but the results of a
      * search over them are, each hit acted on in its own mailbox (see `inEachMailbox()`). */
-    const keyboardActions = !aggregateFolderType || isSearching;
+    const keyboardActions = true;
     /** What the keyboard acts on exists: the ticked rows in select mode, else the message (or conversation) open in the reading pane. */
     const keyboardTargetExists = selectMode ? selectedMessages.length > 0 : threadPane ? openThread !== null : selected !== null;
     const rowCount = inConversations ? listedConversations.length : messages.length;
@@ -2586,13 +2580,33 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // Delete is the permanent one for what is in Deleted Items: for the selection when there is one (search results can come from any folder),
     // else for the folder being viewed, so the button says so before anything is ticked.
     const deletesPermanently =
-        selectedMessages.length > 0 ? selectedMessages.every(inDeletedItems) : currentFolders.find((f) => f.uid === folderUid)?.type === "deleted_items";
-    // Empty folder is offered at the top of the list of a mailbox's own Deleted Items or Junk Email - not for search results, nor for the "All
-    // mailboxes" views, which have no one folder to empty.
-    const emptiableFolder = !isSearching && !aggregateFolderType ? currentFolders.find((f) => f.uid === folderUid && EMPTIABLE_FOLDER_TYPES.includes(f.type)) : undefined;
+        selectedMessages.length > 0
+            ? selectedMessages.every(inDeletedItems)
+            : aggregateFolderType
+              ? aggregateFolderType === "deleted_items"
+              : currentFolders.find((f) => f.uid === folderUid)?.type === "deleted_items";
+    // Empty folder is offered at the top of the list of a mailbox's own Deleted Items or Junk Email, and of the "All mailboxes" view of either, which
+    // empties each mailbox's own (a share the reader may not delete in refuses, and says so) - not for search results.
+    const emptiableFolders: Folder[] =
+        isSearching
+            ? []
+            : aggregateFolderType
+              ? EMPTIABLE_FOLDER_TYPES.includes(aggregateFolderType)
+                  ? mailboxFolders.flatMap((entry) => entry.folders.filter((f) => f.type === aggregateFolderType))
+                  : []
+              : currentFolders.filter((f) => f.uid === folderUid && EMPTIABLE_FOLDER_TYPES.includes(f.type));
+    const emptiableFolder: EmptiableFolder | undefined =
+        emptiableFolders.length === 0
+            ? undefined
+            : {
+                  uid: emptiableFolders[0].uid,
+                  name: aggregateFolderType ? (emptiableFolders[0].type === "junk" ? "Junk Email" : "Deleted Items") : emptiableFolders[0].name,
+                  uids: aggregateFolderType ? emptiableFolders.map((f) => f.uid) : undefined,
+              };
     // How many it holds as the sidebar's counts have it (kept right as messages leave), unless that says none while the list shows some.
-    const emptiableCount = emptiableFolder && folderCountOf(emptiableFolder).total > 0 ? folderCountOf(emptiableFolder).total : undefined;
-    const emptyDisabledReason = !mailboxWritable
+    const emptiableTotal = emptiableFolders.reduce((sum, f) => sum + folderCountOf(f).total, 0);
+    const emptiableCount = emptiableFolder && emptiableTotal > 0 ? emptiableTotal : undefined;
+    const emptyDisabledReason = !(aggregateFolderType ? emptiableFolders.length > 0 : mailboxWritable)
         ? "This mailbox is shared with you view-only"
         : listedRowCount === 0 && emptiableCount === undefined
           ? "This folder is already empty"
@@ -2698,14 +2712,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                     ? CONVERSATION_SORT_NOTE
                                     : undefined
                         }
-                        selectDisabled={(!!aggregateFolderType && !isSearching) || loading || listedRowCount === 0}
-                        selectDisabledReason={
-                            aggregateFolderType && !isSearching
-                                ? "Open a mailbox's own folder to select messages"
-                                : loading
-                                  ? "Wait for this folder to finish loading"
-                                  : "There is nothing here to select"
-                        }
+                        selectDisabled={loading || listedRowCount === 0}
+                        selectDisabledReason={loading ? "Wait for this folder to finish loading" : "There is nothing here to select"}
                     />
                 )}
                 {!isMobile && <div className="p-2 border-b border-border">{searchField}</div>}

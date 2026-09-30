@@ -1156,7 +1156,7 @@ describe("searching all mailboxes", () => {
             await waitFor(() => expect(screen.getByTestId("thread-pane")).toHaveTextContent("no-thread"));
         });
 
-        it("leaves select mode when the search is cleared, since the listing it came from has no selection", async () => {
+        it("stays in select mode when the search is cleared, now that the listing it came from can be selected too", async () => {
             at("?aggregate=inbox");
             mockMail({ messages: fixtures, search: twoHits });
             const user = userEvent.setup();
@@ -1168,9 +1168,8 @@ describe("searching all mailboxes", () => {
 
             await user.clear(screen.getByPlaceholderText("Search all mail…"));
 
-            await waitFor(() => expect(screen.queryByText("0 selected")).not.toBeInTheDocument());
-            expect(screen.getByRole("button", { name: "Select" })).toBeDisabled();
-            expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("title", "Open a mailbox's own folder to select messages");
+            await waitFor(() => expect(screen.queryByText("2 results")).not.toBeInTheDocument());
+            expect(screen.getByText("0 selected")).toBeInTheDocument();
         });
     });
 

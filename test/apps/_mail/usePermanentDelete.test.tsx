@@ -29,7 +29,7 @@ function message(uid: string): Message {
 
 const results: { messages?: PurgeOutcome | null; folder?: EmptyFolderOutcome | null } = {};
 
-function Harness({ messages, count }: { messages: Message[]; count?: number }) {
+function Harness({ messages, count, uids }: { messages: Message[]; count?: number; uids?: string[] }) {
     const permanent = usePermanentDelete();
     return (
         <div>
@@ -38,7 +38,7 @@ function Harness({ messages, count }: { messages: Message[]; count?: number }) {
             </button>
             <button
                 type="button"
-                onClick={() => void permanent.requestEmptyFolder({ uid: "trash", name: "Deleted Items" }, count).then((outcome) => (results.folder = outcome))}
+                onClick={() => void permanent.requestEmptyFolder({ uid: "trash", name: "Deleted Items", uids }, count).then((outcome) => (results.folder = outcome))}
             >
                 ask folder
             </button>
@@ -301,6 +301,35 @@ describe("usePermanentDelete - empty folder", () => {
         expect(titles()).toEqual(["Couldn't empty Deleted Items"]);
         expect(shell.refreshFolderCounts).toHaveBeenCalledTimes(1);
         dialogGone();
+    });
+});
+
+describe("usePermanentDelete - emptying the same folder of several mailboxes", () => {
+    it("empties every one of them and reports them as one", async () => {
+        const user = userEvent.setup();
+        render(<Harness messages={[]} count={5} uids={["trash", "trash2", "trash3"]} />);
+        await user.click(screen.getByRole("button", { name: "ask folder" }));
+
+        await user.click(await within(await screen.findByRole("dialog")).findByRole("button", { name: "Delete all permanently" }));
+
+        await waitFor(() => expect(results.folder).toEqual({ emptied: true, deleted: [], failed: [] }));
+        expect(api.emptyFolder.mock.calls.map((call) => call[0])).toEqual(["trash", "trash2", "trash3"]);
+        expect(titles()).toEqual(["5 messages permanently deleted"]);
+    });
+
+    it("carries on with the others when one fails outright, and says the folder is not empty", async () => {
+        api.emptyFolder.mockImplementation(async (uid: string) => {
+            if (uid === "trash2") throw new ApiRequestError("Internal error", 500);
+        });
+        const user = userEvent.setup();
+        render(<Harness messages={[]} count={5} uids={["trash", "trash2", "trash3"]} />);
+        await user.click(screen.getByRole("button", { name: "ask folder" }));
+
+        await user.click(await within(await screen.findByRole("dialog")).findByRole("button", { name: "Delete all permanently" }));
+
+        await waitFor(() => expect(results.folder).toEqual({ emptied: false, deleted: [], failed: [] }));
+        expect(api.emptyFolder).toHaveBeenCalledTimes(3);
+        expect(titles()).toContain("Couldn't empty Deleted Items");
     });
 });
 

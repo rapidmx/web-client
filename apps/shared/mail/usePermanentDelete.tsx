@@ -23,6 +23,8 @@ import {
 export interface EmptiableFolder {
     uid: string;
     name: string;
+    /** Every folder to empty, when "the folder" is the "All mailboxes" view of one type (each mailbox's own Deleted Items): `uid` is then the first of them. */
+    uids?: string[];
 }
 
 export interface PermanentDelete {
@@ -113,13 +115,18 @@ export function usePermanentDelete(): PermanentDelete {
             finish(outcome);
             return;
         }
-        let outcome: EmptyFolderOutcome;
-        try {
-            outcome = await purgeFolder(request.folder.uid, undefined, client);
-        } catch (err) {
-            notifyApiError(err, `Couldn't empty ${request.folder.name}`);
-            // Part of it may have gone before the failure: the caller reloads rather than assume nothing did.
-            outcome = { emptied: false, deleted: [], failed: [] };
+        const outcome: EmptyFolderOutcome = { emptied: true, deleted: [], failed: [] };
+        for (const folderUid of request.folder.uids ?? [request.folder.uid]) {
+            try {
+                const one = await purgeFolder(folderUid, undefined, client);
+                outcome.emptied &&= one.emptied;
+                outcome.deleted.push(...one.deleted);
+                outcome.failed.push(...one.failed);
+            } catch (err) {
+                notifyApiError(err, `Couldn't empty ${request.folder.name}`);
+                // Part of it may have gone before the failure: the caller reloads rather than assume nothing did.
+                outcome.emptied = false;
+            }
         }
         afterDeleted(outcome.deleted);
         // The whole-folder request does not say which messages went, so the counts are read back rather than adjusted.
