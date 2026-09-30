@@ -13,7 +13,6 @@ import {
     HiOutlineNoSymbol,
     HiOutlinePaintBrush,
     HiOutlinePencilSquare,
-    HiOutlinePuzzlePiece,
     HiOutlineShieldCheck,
     HiOutlineTag,
     HiOutlineUserCircle,
@@ -29,6 +28,7 @@ import AppShell, { AppShellProps } from "../../layout/AppShell.js";
 import { useLocation, useNavigate } from "../../../navigation/index.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { orderMailboxes, primaryMailboxUid } from "../../../mail/primaryMailbox.js";
+import { pluginIcon } from "../../../plugins/pluginIcons.js";
 import { mergePluginNavItems, PluginNav } from "../../../plugins/pluginNav.js";
 
 export interface SettingsSectionDef {
@@ -60,11 +60,11 @@ export type SettingsSectionId = string;
 /** `SETTINGS_SECTIONS` followed by the plugins' `settingsSections` items, core ids winning - see
  * `mergePluginNavItems`. */
 export function settingsSections(pluginNav?: PluginNav): SettingsSectionDef[] {
-    return mergePluginNavItems<SettingsSectionDef>(SETTINGS_SECTIONS, pluginNav?.settingsSections, ({ id, href, label }) => ({
+    return mergePluginNavItems<SettingsSectionDef>(SETTINGS_SECTIONS, pluginNav?.settingsSections, ({ id, href, label, icon }) => ({
         id,
         href,
         label,
-        icon: HiOutlinePuzzlePiece,
+        icon: pluginIcon(icon),
     }));
 }
 

@@ -355,10 +355,20 @@ any release.
 | `shared/components/admin/layout/AdminShell.js` | Admin console chrome, gated on administrator access - an administrator whose session isn't elevated is sent to auth-server's `/auth/elevate` page and returned. `active` is the plugin's `adminNav` item id. |
 | `shared/components/layout/BrandingChrome.js` | `BrandingHeader` and `BrandingFooter`, for pages that don't use a shell, such as public pages. |
 | `shared/plugins/pluginNav.js` | The `PluginNav`, `PluginUiNavItem` and `PluginNavProps` types. |
+| `shared/plugins/pluginIcons.js` | `PLUGIN_ICONS`, the icon names a nav entry's `icon` can use, and `pluginIcon()`, which resolves one. |
+
+### Page building blocks
+
+| Import | Use |
+| --- | --- |
+| `shared/components/layout/ResponsiveToolbar.js` | A toolbar whose buttons collapse into an overflow menu when space runs out. |
+| `shared/components/admin/usePagedList.js` | Loads a list a page at a time with "Load more", for tables of the plugin's own records. |
+| `shared/notifications/apiErrors.js` | `notifyApiError()`, which shows a failed API call as a notification. |
+| `shared/components/admin/diagnostics/Sparkline.js` and `MetricTile.js` | A small trend line and a labelled figure, for simple dashboards. |
 
 Every www and admin page receives a `pluginNav` prop from the server. It lists the settings sections, admin sections and
-app rail entries of every enabled plugin whose UI built. The shells append those entries after their own, with a generic
-icon. An entry whose id matches a core entry is skipped, and so is one whose `href` isn't a same-origin path. Pass the
+app rail entries of every enabled plugin whose UI built. The shells append those entries after their own, each with the
+icon its manifest names when that name is in `PLUGIN_ICONS`, and a generic puzzle piece otherwise. An entry whose id matches a core entry is skipped, and so is one whose `href` isn't a same-origin path. Pass the
 page props straight to the shell so the navigation shows:
 
 ```tsx
@@ -397,7 +407,9 @@ section above):
 - `components/buttons/Button.js`, `components/feedback/Alert.js` and `components/feedback/Skeleton.js`;
 - `components/forms/FormField.js`;
 - `components/overlays/Modal.js` and `components/overlays/Drawer.js`;
-- `components/pickers/MiniDatePicker.js`.
+- `components/pickers/MiniDatePicker.js`;
+- `components/avatar/ContactAvatar.js`;
+- `util/apiQuery.js`: `buildQuery()`, for paging a list route.
 
 ## Uninstalling a plugin with its data
 

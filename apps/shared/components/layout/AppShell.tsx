@@ -9,7 +9,6 @@ import {
     HiOutlineCalendarDays,
     HiOutlineClipboardDocumentList,
     HiOutlineEnvelope,
-    HiOutlinePuzzlePiece,
     HiOutlineUsers,
 } from "react-icons/hi2";
 import { useRouter } from "@rapidrest/react/client";
@@ -34,6 +33,7 @@ import { SIGN_OUT_CHANNEL, destroyAllLocalIndexes } from "../../search/localInde
 import { authApiFetch, setApiUnauthorizedObserver } from "../../../../lib/util/api.js";
 import { destroyUnlockedKeys } from "../../../../lib/crypto/keySession.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
+import { pluginIcon } from "../../plugins/pluginIcons.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../plugins/pluginNav.js";
 import { useInAppFrame } from "../../navigation/frameContext.js";
 import { APP_HREFS } from "../../navigation/appHrefs.js";
@@ -131,12 +131,12 @@ export const APPS: AppDef[] = [
  * core `active` value. */
 const RESERVED_APP_IDS = ["settings"];
 
-/** `APPS` followed by the plugins' `appRail` items (generic icon), core ids winning - see `mergePluginNavItems`. */
+/** `APPS` followed by the plugins' `appRail` items (their manifest `icon`, or a generic one), core ids winning - see `mergePluginNavItems`. */
 export function appRailItems(pluginNav?: PluginNav): NavItem[] {
     return mergePluginNavItems<NavItem>(
         APPS,
         pluginNav?.appRail,
-        ({ id, href, label }) => ({ id, href, label, icon: HiOutlinePuzzlePiece }),
+        ({ id, href, label, icon }) => ({ id, href, label, icon: pluginIcon(icon) }),
         RESERVED_APP_IDS,
     );
 }

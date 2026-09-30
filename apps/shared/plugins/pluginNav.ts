@@ -13,6 +13,8 @@ export interface PluginUiNavItem {
     label: string;
     /** A same-origin path under the host's prefix (`/settings/...`, `/admin/...`, `/...`). */
     href: string;
+    /** A `react-icons/hi2` icon name from `PLUGIN_ICONS` (`pluginIcons.ts`); anything else shows the generic puzzle piece. */
+    icon?: string;
 }
 
 /**

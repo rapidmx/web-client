@@ -48,6 +48,7 @@ import {
     recordElevationAttempt,
 } from "../elevation.js";
 import { signOutOfConsole } from "../signOut.js";
+import { pluginIcon } from "../../../plugins/pluginIcons.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../../plugins/pluginNav.js";
 
 export type AdminSection =
@@ -165,13 +166,13 @@ const SETUP_ITEM: NavItem = { id: "setup", href: "/admin/setup", label: "Setup",
 
 const OFF_RAIL_ITEMS: NavItem[] = [...MAILBOX_SCOPED_ITEMS, SETUP_ITEM];
 
-/** `NAV_ITEMS` followed by the plugins' `adminNav` items (generic icon). Core ids win, including the
+/** `NAV_ITEMS` followed by the plugins' `adminNav` items (their manifest `icon`, or a generic one). Core ids win, including the
  * off-rail sections' - see `mergePluginNavItems`. */
 export function adminNavItems(pluginNav?: PluginNav): NavItem[] {
     return mergePluginNavItems<NavItem>(
         NAV_ITEMS,
         pluginNav?.adminNav,
-        ({ id, href, label }) => ({ id, href, label, icon: HiOutlinePuzzlePiece }),
+        ({ id, href, label, icon }) => ({ id, href, label, icon: pluginIcon(icon) }),
         OFF_RAIL_ITEMS.map((item) => item.id),
     );
 }
