@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
@@ -35,6 +35,7 @@ interface Server {
     attachments?: Attachment[];
     files?: Record<string, string>;
     create?: (body: Record<string, unknown>) => Response;
+    update?: (body: Record<string, unknown>) => Response;
     mailboxes?: Response;
 }
 
@@ -55,6 +56,10 @@ function serve(server: Server = {}) {
     const posted: Record<string, unknown>[] = [];
     const fetchMock = mockFetch((url, init) => {
         const path = url.split("?")[0];
+        if (init?.method === "PUT") {
+            const body = JSON.parse(init.body as string);
+            return server.update ? server.update(body) : jsonResponse(200, { ...JANE, ...body });
+        }
         if (init?.method === "POST") {
             const body = JSON.parse(init.body as string);
             posted.push(body);
@@ -201,7 +206,7 @@ describe("ContactCard for someone who is not a contact", () => {
         const upcoming = within(dialog).getByRole("heading", { name: "Upcoming events" }).parentElement as HTMLElement;
         expect(await within(upcoming).findByRole("link", { name: /Design review/ })).toHaveAttribute("href", "/calendar");
 
-        const create = within(dialog).getByRole("button", { name: "Create contact" });
+        const create = within(dialog).getByRole("button", { name: "Add to contacts" });
         await waitFor(() => expect(create).toBeEnabled());
         await user.click(create);
         expect(await within(dialog).findByRole("link", { name: "Open contact" })).toHaveAttribute("href", "/contacts/new1");
@@ -256,7 +261,7 @@ describe("ContactCard for someone who is not a contact", () => {
         expect(within(dialog).getByText("Address Home")).toBeInTheDocument();
         expect(within(dialog).getByText(/1 Main St/)).toHaveTextContent("1 Main St 62701 Springfield IL USA");
         expect(within(dialog).getByText("Met at a conference")).toBeInTheDocument();
-        await user.click(within(dialog).getByRole("button", { name: "Create contact" }));
+        await user.click(within(dialog).getByRole("button", { name: "Add to contacts" }));
         await within(dialog).findByRole("link", { name: "Open contact" });
         expect(posted[0]).toMatchObject({ displayName: "Janet Doe", givenName: "Janet", surname: "Doe", company: "Acme", jobTitle: "CTO", notes: "Met at a conference" });
         // The name in the dialog title is still the participant's, and the card now shows the stored contact.
@@ -268,11 +273,11 @@ describe("ContactCard for someone who is not a contact", () => {
         const user = userEvent.setup();
         renderCard();
         const dialog = await openCard(user);
-        const create = within(dialog).getByRole("button", { name: "Create contact" });
+        const create = within(dialog).getByRole("button", { name: "Add to contacts" });
         await waitFor(() => expect(create).toBeEnabled());
         await user.click(create);
         await waitFor(() => expect(getNotificationsSnapshot().visible).toMatchObject([{ kind: "error", title: "Couldn't create this contact" }]));
-        expect(within(dialog).getByRole("button", { name: "Create contact" })).toBeEnabled();
+        expect(within(dialog).getByRole("button", { name: "Add to contacts" })).toBeEnabled();
         expect(within(dialog).queryByRole("link", { name: "Open contact" })).not.toBeInTheDocument();
     });
 
@@ -282,7 +287,7 @@ describe("ContactCard for someone who is not a contact", () => {
         // A mailbox owned by somebody else, none of the user's own, and no contacts folder in it.
         renderCard(undefined, connection("ready", [{ ...ME, ownerUserUid: "someone", accessRole: "delegate", uid: "other" }]));
         const dialog = await openCard(user);
-        const create = within(dialog).getByRole("button", { name: "Create contact" });
+        const create = within(dialog).getByRole("button", { name: "Add to contacts" });
         await waitFor(() => expect(create).toBeEnabled());
         await user.click(create);
         await waitFor(() => expect(getNotificationsSnapshot().visible).toMatchObject([{ kind: "error", title: "Couldn't create this contact" }]));
@@ -302,7 +307,7 @@ describe("ContactCard for someone who is not a contact", () => {
         const user = userEvent.setup();
         renderCard();
         const dialog = await openCard(user);
-        const create = within(dialog).getByRole("button", { name: "Create contact" });
+        const create = within(dialog).getByRole("button", { name: "Add to contacts" });
         await waitFor(() => expect(create).toBeEnabled());
         await user.click(create);
         await user.keyboard("{Escape}");
@@ -319,7 +324,7 @@ describe("ContactCard for a contact", () => {
         renderCard();
         const dialog = await openCard(user);
         expect(await within(dialog).findByRole("link", { name: "Open contact" })).toHaveAttribute("href", "/contacts/k1");
-        expect(within(dialog).queryByRole("button", { name: "Create contact" })).not.toBeInTheDocument();
+        expect(within(dialog).queryByRole("button", { name: "Add to contacts" })).not.toBeInTheDocument();
         expect(within(dialog).queryByText("Not in your address book.")).not.toBeInTheDocument();
         for (const text of ["JANE@other.org", "jd@home.net", "j@x.org", "+1 555 0100", "+1 555 0101", "Met at a conference", "Company", "Acme"]) {
             expect(within(dialog).getByText(text)).toBeInTheDocument();
@@ -413,7 +418,7 @@ describe("ContactCard failures", () => {
         const dialog = await openCard(user);
         expect(await within(dialog).findByText("Couldn't load recent messages.")).toBeInTheDocument();
         expect(within(dialog).getByText("Couldn't load upcoming events.")).toBeInTheDocument();
-        expect(within(dialog).getByRole("button", { name: "Create contact" })).toBeDisabled();
+        expect(within(dialog).getByRole("button", { name: "Add to contacts" })).toBeDisabled();
     });
 
     it("waits while the app frame is still checking the mailboxes", async () => {
@@ -480,5 +485,94 @@ describe("ContactCard outside the app frame", () => {
         await user.keyboard("{Escape}");
         await act(async () => release());
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+});
+
+describe("ContactCard actions and picture", () => {
+    it("stars and unstars a contact, right beside the name", async () => {
+        const { fetchMock } = serve({ contacts: [{ ...JANE, version: 3, favorite: false }] });
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+
+        const star = await within(dialog).findByRole("button", { name: "Favorite" });
+        expect(star).toHaveAttribute("aria-pressed", "false");
+        await user.click(star);
+        await waitFor(() => expect(within(dialog).getByRole("button", { name: "Favorite" })).toHaveAttribute("aria-pressed", "true"));
+        const put = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === "PUT")!;
+        expect(put[0]).toBe("/api/mail/contacts/k1");
+        expect(JSON.parse((put[1] as RequestInit).body as string)).toMatchObject({ uid: "k1", version: 3, favorite: true });
+
+        await user.click(within(dialog).getByRole("button", { name: "Favorite" }));
+        await waitFor(() => expect(within(dialog).getByRole("button", { name: "Favorite" })).toHaveAttribute("aria-pressed", "false"));
+    });
+
+    it("has no star for someone who is not a contact yet", async () => {
+        serve();
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+        await within(dialog).findByRole("button", { name: "Add to contacts" });
+        expect(within(dialog).queryByRole("button", { name: "Favorite" })).not.toBeInTheDocument();
+    });
+
+    it("says so when the star could not be changed, and keeps the card as it was", async () => {
+        serve({ contacts: [{ ...JANE, favorite: false }], update: () => jsonResponse(403, { message: "No." }) });
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+        await user.click(await within(dialog).findByRole("button", { name: "Favorite" }));
+        await waitFor(() => expect(getNotificationsSnapshot().visible.some((n) => n.title === "Couldn't update this contact")).toBe(true));
+        expect(within(dialog).getByRole("button", { name: "Favorite" })).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("ignores a star that finishes after the card is closed", async () => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        const { fetchMock } = serve({ contacts: [{ ...JANE, favorite: false }] });
+        const inner = fetchMock.getMockImplementation()!;
+        fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+            if (init?.method === "PUT") {
+                await gate;
+            }
+            return inner(url, init);
+        });
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+        await user.click(await within(dialog).findByRole("button", { name: "Favorite" }));
+        await user.keyboard("{Escape}");
+        await act(async () => release());
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("copies the address from an icon right after it, and again from the one after the contact's email", async () => {
+        serve({ contacts: [JANE] });
+        const user = userEvent.setup();
+        const writeText = vi.spyOn(navigator.clipboard, "writeText");
+        renderCard();
+        const dialog = await openCard(user);
+
+        await user.click(within(dialog).getByRole("button", { name: "Copy address" }));
+        await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("jane@other.org"));
+        const emails = await within(dialog).findAllByRole("button", { name: "Copy email address" });
+        expect(emails).toHaveLength(3);
+        await user.click(emails[1]);
+        await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("jd@home.net"));
+        expect(within(dialog).queryByText("Copy address")).not.toBeInTheDocument();
+    });
+
+    it("shows the contact's own picture, then their Gravatar, then initials as each fails to load", async () => {
+        serve({ contacts: [{ ...JANE, version: 4, photoBlobKey: "contact-photos/k1/abc" }] });
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+
+        await waitFor(() => expect(dialog.querySelector("img")?.getAttribute("src")).toBe("/api/mail/contacts/k1/photo?v=4"));
+        fireEvent.error(dialog.querySelector("img")!);
+        await waitFor(() => expect(dialog.querySelector("img")?.getAttribute("src")).toMatch(/^https:\/\/gravatar\.com\/avatar\/[0-9a-f]{64}\?s=144&d=404$/));
+        fireEvent.error(dialog.querySelector("img")!);
+        await waitFor(() => expect(dialog.querySelector("img")).toBeNull());
+        expect(within(dialog).getByText("JD")).toBeInTheDocument();
     });
 });

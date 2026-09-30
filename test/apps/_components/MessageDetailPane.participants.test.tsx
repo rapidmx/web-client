@@ -138,16 +138,34 @@ describe("contact cards in the reading pane", () => {
         }
     });
 
-    it("keeps the sender line of a thread's message the one button that collapses it, with the card on the avatar", async () => {
+    it("makes the sender's name of a thread's message open their contact card, and the rest of the line still collapse it", async () => {
         serve();
         const user = userEvent.setup();
         const toggle = vi.fn();
         renderPane({ inThread: true, threadHeader: { bodyId: "body-m1", unread: false, onToggle: toggle, buttonRef: () => undefined } });
         const header = screen.getByRole("heading", { level: 2 });
-        expect(within(header).getAllByRole("button")).toHaveLength(1);
-        await user.click(screen.getByRole("button", { name: "Contact card for Sender One <sender@other.org>" }));
+        // Two separate buttons, neither inside the other: the collapse button under the line, and the sender's name over it.
+        const buttons = within(header).getAllByRole("button");
+        expect(buttons).toHaveLength(2);
+        expect(buttons[0]).toHaveAttribute("aria-expanded", "true");
+        expect(buttons[0]).toHaveAccessibleName("Sender One <sender@other.org>");
+        expect(buttons[0]).not.toContainElement(buttons[1]);
+        expect(buttons[1]).not.toContainElement(buttons[0]);
+
+        await user.click(within(header).getByRole("button", { name: "Contact card for Sender One <sender@other.org>" }));
         expect(await screen.findByRole("dialog", { name: "Sender One" })).toBeInTheDocument();
         expect(toggle).not.toHaveBeenCalled();
+        await user.keyboard("{Escape}");
+
+        await user.click(buttons[0]);
+        expect(toggle).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks an unread thread message's collapse button as unread", () => {
+        serve();
+        renderPane({ inThread: true, threadHeader: { bodyId: "body-m1", unread: true, onToggle: vi.fn(), buttonRef: () => undefined } });
+        const header = screen.getByRole("heading", { level: 2 });
+        expect(within(header).getAllByRole("button")[0]).toHaveAccessibleName("Unread. Sender One <sender@other.org>");
     });
 
     it("draws the people as plain text outside a contact card provider", () => {

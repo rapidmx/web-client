@@ -103,6 +103,7 @@ function ContactDetailContent({ uid }: { uid: string }) {
                 onDelete={() => handleDelete(contact)}
                 backHref={backHref}
                 onKeysChanged={handleKeysChanged}
+                onChanged={setContact}
             />
         </div>
     );

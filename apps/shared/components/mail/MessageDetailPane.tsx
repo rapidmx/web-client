@@ -1243,33 +1243,33 @@ function MessageDetailContent({
         <CardShell unread={cardUnread}>
             {/* Header row: who it is from, when, and what can be done with it. Wraps: on a phone the actions drop under the sender. */}
             <div className={["flex flex-wrap items-start gap-x-3 gap-y-1 px-4 pt-3 pb-2", cardUnread ? "bg-primary/[0.07]" : ""].join(" ")}>
-                {threadHeader ? (
-                    // The sender line of a thread's message is the button that collapses it, so its contact card is opened from the avatar beside it.
-                    <ParticipantLink participant={{ address: senderAddress, displayName: senderName }} context={cardContext} label={`Contact card for ${senderLabel}`}>
-                        <SenderAvatar from={senderRecipient} />
-                    </ParticipantLink>
-                ) : (
-                    <SenderAvatar from={senderRecipient} />
-                )}
+                <SenderAvatar from={senderRecipient} />
                 <div className="flex-1 min-w-[12rem]">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                         {threadHeader ? (
-                            // The sender line of a message in a thread is the button that collapses it again.
-                            <h2 className="min-w-0 flex-1" style={BODY_FONT_STYLE}>
+                            // The sender line of a message in a thread collapses it again. A button cannot hold another, so the collapse button is laid
+                            // under the line (it fills the heading) and the sender's name, which opens their contact card, sits over it: a click anywhere
+                            // else on the line still reaches the collapse button.
+                            <h2 className="relative min-w-0 flex-1" style={BODY_FONT_STYLE}>
                                 <button
                                     type="button"
                                     ref={threadHeader.buttonRef}
                                     onClick={threadHeader.onToggle}
                                     aria-expanded={true}
                                     aria-controls={threadHeader.bodyId}
-                                    className={[
-                                        "w-full text-left rounded-sm text-sm",
-                                        ROW_FOCUS_CLASS,
-                                    ].join(" ")}
-                                >
-                                    <UnreadLabel unread={cardUnread} />
-                                    <MailAddress recipient={senderRecipient} className={senderClass(cardUnread)} />
-                                </button>
+                                    aria-label={`${cardUnread ? "Unread. " : ""}${senderLabel}`}
+                                    className={["absolute inset-0 w-full rounded-sm", ROW_FOCUS_CLASS].join(" ")}
+                                />
+                                <span className="pointer-events-none relative flex text-sm">
+                                    <ParticipantLink
+                                        participant={{ address: senderAddress, displayName: senderName }}
+                                        context={cardContext}
+                                        label={`Contact card for ${senderLabel}`}
+                                        className="pointer-events-auto min-w-0 max-w-full"
+                                    >
+                                        <MailAddress recipient={senderRecipient} className={senderClass(cardUnread)} />
+                                    </ParticipantLink>
+                                </span>
                             </h2>
                         ) : (
                             <p className="text-sm break-words min-w-0">

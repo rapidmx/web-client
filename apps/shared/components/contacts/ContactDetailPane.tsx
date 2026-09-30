@@ -3,7 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { Contact } from "../../../../lib/contacts/contactsApi.js";
+import { Contact, contactPhotoUrl, setContactFavorite } from "../../../../lib/contacts/contactsApi.js";
+import CopyIconButton from "../../../../lib/components/buttons/CopyIconButton.js";
+import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import { notifyApiError } from "../../notifications/apiErrors.js";
+import FavoriteStarButton from "./FavoriteStarButton.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import ContactAvatar from "../../../../lib/components/avatar/ContactAvatar.js";
@@ -37,6 +41,8 @@ export interface ContactDetailPaneProps {
     /** Called after one of the contact's key changes was accepted or kept, or turned out to be stale - the caller
      * re-reads the contact. */
     onKeysChanged?: () => void;
+    /** Called with the contact after the star was toggled, so the caller shows the changed contact. */
+    onChanged?: (contact: Contact) => void;
     /** `false` when the reader is known not to be able to change this contact's keys (the actions are hidden); `undefined`
      * when unknown (they're hidden after a 403). */
     canResolveKeys?: boolean;
@@ -47,12 +53,22 @@ export interface ContactDetailPaneProps {
  * always visible alongside the contact list) and the mobile detail route
  * (`apps/www/contacts/[uid].tsx`, a full page on its own reached by tapping a contact row).
  */
-export default function ContactDetailPane({ contact, onEdit, onDelete, backHref, onKeysChanged, canResolveKeys }: ContactDetailPaneProps) {
+export default function ContactDetailPane({ contact, onEdit, onDelete, backHref, onKeysChanged, onChanged, canResolveKeys }: ContactDetailPaneProps) {
+    const client = useApiClient();
     // The outcome of the last key decision, kept per contact so selecting another contact doesn't carry it over.
     const [keyNotice, setKeyNotice] = useState<{ contactUid: string; text: string } | null>(null);
     const notice = keyNotice?.contactUid === contact.uid ? keyNotice.text : null;
     const keyConflicts = contact.keyConflicts ?? [];
     const previousKeys = contact.previousKeys ?? [];
+
+    async function handleToggleFavorite() {
+        try {
+            const changed = await setContactFavorite(contact, !contact.favorite, client);
+            onChanged?.(changed);
+        } catch (err) {
+            notifyApiError(err, "Couldn't update this contact");
+        }
+    }
 
     // Pinned signing keys vouch for signatures, so the pinned-signer cache is dropped along with re-reading the contact.
     function refresh(text: string) {
@@ -70,9 +86,12 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, backHref,
             )}
             <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-3">
-                    <ContactAvatar displayName={contact.displayName} size={48} />
+                    <ContactAvatar displayName={contact.displayName} size={48} photoUrl={contactPhotoUrl(contact)} email={contact.emails[0]?.address} />
                     <div>
-                        <h1 className="text-xl font-bold tracking-tight">{contact.displayName}</h1>
+                        <h1 className="text-xl font-bold tracking-tight">
+                            {contact.displayName}
+                            <FavoriteStarButton favorite={!!contact.favorite} onToggle={() => void handleToggleFavorite()} className="ml-1 align-middle" />
+                        </h1>
                         {contact.jobTitle && contact.company && (
                             <p className="text-sm text-text-muted mt-0.5">
                                 {contact.jobTitle} at {contact.company}
@@ -96,7 +115,8 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, backHref,
                         <div className="text-text-muted text-xs font-bold uppercase tracking-wide mb-1">Email</div>
                         {contact.emails.map((e, i) => (
                             <div key={i}>
-                                {e.address} <span className="text-text-muted">({e.type})</span>
+                                {e.address}
+                                <CopyIconButton value={e.address} label="Copy email address" className="mx-0.5" /> <span className="text-text-muted">({e.type})</span>
                             </div>
                         ))}
                     </div>

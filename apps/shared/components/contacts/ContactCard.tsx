@@ -3,11 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useContext, useEffect, useRef, useState } from "react";
-import type { Contact, ContactAddressKind } from "../../../../lib/contacts/contactsApi.js";
+import { type Contact, type ContactAddressKind, contactPhotoUrl, setContactFavorite } from "../../../../lib/contacts/contactsApi.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 import ContactAvatar from "../../../../lib/components/avatar/ContactAvatar.js";
 import Button from "../../../../lib/components/buttons/Button.js";
-import CopyButton from "../../../../lib/components/buttons/CopyButton.js";
+import CopyIconButton from "../../../../lib/components/buttons/CopyIconButton.js";
+import { HiOutlineEnvelope, HiOutlineUserPlus } from "react-icons/hi2";
+import FavoriteStarButton from "./FavoriteStarButton.js";
 import Skeleton from "../../../../lib/components/feedback/Skeleton.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
 import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
@@ -143,6 +145,8 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
     const [listed, setListed] = useState<Section<Mailbox[]>>({ status: "loading" });
     const [created, setCreated] = useState<Contact | undefined>();
     const [creating, setCreating] = useState(false);
+    // The contact as last changed from this card (starred or unstarred), which is newer than the one looked up.
+    const [changed, setChanged] = useState<Contact | undefined>();
     const mounted = useRef(true);
     useEffect(() => {
         mounted.current = true;
@@ -182,7 +186,7 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
     const card = useSection(() => loadParticipantCard(participant, context, client));
 
     const name = participantName(participant);
-    const stored = created ?? (contact.status === "ready" ? contact.data : undefined);
+    const stored = changed ?? created ?? (contact.status === "ready" ? contact.data : undefined);
     const external = mailboxes.status === "ready" && isExternalAddress(participant.address, ownDomains(mailboxes.data));
     // What is known when there is no contact: the name, the address and the message's vCard.
     const known = stored ?? contactInputFor(participant, card.status === "ready" ? card.data : undefined, { mailboxUid: "", folderUid: "" });
@@ -211,6 +215,17 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
         }
     }
 
+    async function handleToggleFavorite(current: Contact) {
+        try {
+            const next = await setContactFavorite(current, !current.favorite, client);
+            if (mounted.current) {
+                setChanged(next);
+            }
+        } catch (err) {
+            notifyApiError(err, "Couldn't update this contact");
+        }
+    }
+
     function handleEmail() {
         openCompose({ to: formatMailAddress(participant) });
         onClose();
@@ -219,9 +234,12 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
     return (
         <Modal open onClose={onClose} title={name}>
             <div className="flex items-center gap-4">
-                <ContactAvatar displayName={name} size={72} />
-                <div className="min-w-0">
-                    <p className="text-sm text-text-muted break-words">{participant.address}</p>
+                <ContactAvatar displayName={name} size={72} photoUrl={stored && contactPhotoUrl(stored)} email={participant.address} />
+                <div className="min-w-0 flex-1">
+                    <p className="text-sm text-text-muted break-words">
+                        {participant.address}
+                        <CopyIconButton value={participant.address} label="Copy address" className="ml-1" />
+                    </p>
                     {external && (
                         <span className="inline-block mt-1 text-xs font-semibold py-0.5 px-2 rounded-pill bg-warning/15 text-text">External</span>
                     )}
@@ -229,14 +247,13 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
                         <p className="mt-1 text-sm break-words">{[known.jobTitle, known.company].filter(Boolean).join(", ")}</p>
                     )}
                 </div>
+                {stored && <FavoriteStarButton favorite={!!stored.favorite} onToggle={() => void handleToggleFavorite(stored)} className="shrink-0 self-start" />}
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button type="button" variant="secondary" className={ACTION_CLASS} onClick={handleEmail}>
+                <Button type="button" variant="secondary" className={`${ACTION_CLASS} inline-flex items-center gap-1.5`} onClick={handleEmail}>
+                    <HiOutlineEnvelope aria-hidden="true" className="size-4" />
                     Email
                 </Button>
-                <CopyButton value={participant.address} label="Copy address">
-                    Copy address
-                </CopyButton>
                 {stored ? (
                     <a
                         href={`${APP_HREFS.contacts}/${encodeURIComponent(stored.uid)}`}
@@ -246,8 +263,16 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
                         Open contact
                     </a>
                 ) : (
-                    <Button type="button" variant="secondary" className={ACTION_CLASS} disabled={!createWith || creating} loading={creating} onClick={() => void handleCreate(createWith as CreateWith)}>
-                        Create contact
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className={`${ACTION_CLASS} inline-flex items-center gap-1.5`}
+                        disabled={!createWith || creating}
+                        loading={creating}
+                        onClick={() => void handleCreate(createWith as CreateWith)}
+                    >
+                        <HiOutlineUserPlus aria-hidden="true" className="size-4" />
+                        Add to contacts
                     </Button>
                 )}
             </div>
@@ -265,6 +290,7 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
                     {known.emails.map((email) => (
                         <Detail key={`e:${email.address}`} label={["Email", kindLabel(email.type)].filter(Boolean).join(" ")}>
                             {email.address}
+                            <CopyIconButton value={email.address} label="Copy email address" className="ml-1" />
                         </Detail>
                     ))}
                     {known.phones.map((phone) => (

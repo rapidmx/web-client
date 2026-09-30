@@ -13,6 +13,7 @@ import {
     listContacts,
     listDeletedContacts,
     setContactFavorite,
+    contactPhotoUrl,
     updateContact,
 } from "../../../lib/contacts/contactsApi.js";
 import { contactsToVCardFile, contactToVCard, parseVCards } from "../../../lib/contacts/vcard.js";
@@ -513,7 +514,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                                         )}
                                         <td className="px-3 py-2">
                                             <button type="button" onClick={() => handleSelectRow(contact)} className="flex w-full min-w-0 items-center gap-2 text-left">
-                                                <ContactAvatar displayName={contact.displayName} size={28} />
+                                                <ContactAvatar displayName={contact.displayName} size={28} photoUrl={contactPhotoUrl(contact)} email={contact.emails[0]?.address} />
                                                 <span className="min-w-0 truncate font-medium">
                                                     {contact.displayName}
                                                     {contact.favorite && <span aria-label="Favorite"> ★</span>}
@@ -563,6 +564,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                             onEdit={() => setMode("edit")}
                             onDelete={() => handleDelete(selected)}
                             onKeysChanged={() => void reload()}
+                            onChanged={() => void reload()}
                             canResolveKeys={ownsMailbox || delegateCanUpdate}
                         />
                     </div>

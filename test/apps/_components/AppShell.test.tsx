@@ -182,6 +182,42 @@ describe("AppShell", () => {
             expect(screen.queryByRole("link", { name: "Admin Thing" })).not.toBeInTheDocument();
         });
 
+        describe("an entry worked out for the signed-in user", () => {
+            const meetNav = {
+                appRail: [{ id: "meet", href: "/meet", label: "Meet", icon: "HiOutlineVideoCamera", resolveFrom: "/mail/video-meetings/personal-room" }],
+            };
+            const answering = (respond: () => Response) =>
+                mockFetch((url) => (url === "/api/mail/video-meetings/personal-room" ? respond() : jsonResponse(404, {})));
+
+            it("appears in the rail and the tab bar once it is answered, linking where the answer said", async () => {
+                answering(() => jsonResponse(200, { href: "/meet/abc123", label: "Jean-Philippe's Meeting Room" }));
+                render(
+                    <AppShell active="mail" userUid="u1" pluginNav={meetNav}>
+                        content
+                    </AppShell>,
+                );
+
+                for (const name of ["Apps", "Mobile navigation"]) {
+                    const link = await within(screen.getByRole("navigation", { name })).findByRole("link", { name: "Meet" });
+                    expect(link).toHaveAttribute("href", "/meet/abc123");
+                    expect(link.querySelector("svg")).not.toBeNull();
+                }
+            });
+
+            it("is left out for a user with nothing to go to", async () => {
+                const fetchMock = answering(() => jsonResponse(404, { message: "No personal room." }));
+                render(
+                    <AppShell active="mail" userUid="u1" pluginNav={meetNav}>
+                        content
+                    </AppShell>,
+                );
+
+                await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/video-meetings/personal-room")).toBe(true));
+                expect(screen.queryByRole("link", { name: "Meet" })).not.toBeInTheDocument();
+                expect(within(screen.getByRole("navigation", { name: "Apps" })).getAllByRole("link")).toHaveLength(4);
+            });
+        });
+
         it("highlights a plugin app and titles the header with its label when it is active", () => {
             render(
                 <AppShell active="notes" userUid="u1" pluginNav={pluginNav}>

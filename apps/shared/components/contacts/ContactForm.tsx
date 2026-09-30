@@ -11,13 +11,18 @@ import {
     ContactPatch,
     ContactPhone,
     ContactPostalAddress,
+    contactPhotoUrl,
     createContact,
+    deleteContactPhoto,
     updateContact,
+    uploadContactPhoto,
 } from "../../../../lib/contacts/contactsApi.js";
 import { Mailbox } from "../../../../lib/mail/mailApi.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../lib/components/forms/FormField.js";
+import ContactPhotoField from "./ContactPhotoField.js";
+import FavoriteStarButton from "./FavoriteStarButton.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
@@ -62,6 +67,9 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
     // Every stored address is kept and editable - editing a contact must never silently drop addresses
     // beyond the first.
     const [addresses, setAddresses] = useState<ContactPostalAddress[]>(contact?.addresses ?? []);
+    // A picture chosen (or the current one dropped) is applied once the contact itself is saved.
+    const [pickedPhoto, setPickedPhoto] = useState<File | null>(null);
+    const [removePhoto, setRemovePhoto] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
 
@@ -143,6 +151,11 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                     client,
                 );
             }
+            if (pickedPhoto) {
+                saved = await uploadContactPhoto(saved.uid, saved.version, pickedPhoto);
+            } else if (removePhoto && saved.photoBlobKey) {
+                saved = await deleteContactPhoto(saved.uid, saved.version, client);
+            }
             // A message opened later in this page load must see the changed contact's signing keys.
             clearPinnedSignerCache();
             onSaved(saved);
@@ -191,6 +204,29 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 />
             </FormField>
 
+            <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                    <ContactPhotoField
+                        displayName={displayName}
+                        email={emails[0]?.address}
+                        currentUrl={contact && contactPhotoUrl(contact)}
+                        picked={pickedPhoto}
+                        removed={removePhoto}
+                        onPick={(file) => {
+                            setPickedPhoto(file);
+                            setRemovePhoto(false);
+                            setError(null);
+                        }}
+                        onRemove={() => {
+                            setPickedPhoto(null);
+                            setRemovePhoto(true);
+                        }}
+                        onReject={setError}
+                    />
+                </div>
+                <FavoriteStarButton favorite={favorite} onToggle={() => setFavorite((value) => !value)} />
+            </div>
+
             <div className="grid grid-cols-1 @md:grid-cols-2 gap-3">
                 <FormField label="First name" htmlFor="contact-givenName">
                     <input id="contact-givenName" type="text" className={INPUT_CLASS} value={givenName} onChange={(e) => setGivenName(e.target.value)} />
@@ -208,11 +244,6 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                     <input id="contact-jobTitle" type="text" className={INPUT_CLASS} value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} />
                 </FormField>
             </div>
-
-            <label className="flex items-center gap-2 text-sm mb-4">
-                <input type="checkbox" checked={favorite} onChange={(e) => setFavorite(e.target.checked)} />
-                Favorite
-            </label>
 
             <FormField label="Categories (comma-separated)" htmlFor="contact-categories">
                 <input

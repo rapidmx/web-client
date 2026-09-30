@@ -35,6 +35,7 @@ import { destroyUnlockedKeys } from "../../../../lib/crypto/keySession.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 import { pluginIcon } from "../../plugins/pluginIcons.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../plugins/pluginNav.js";
+import { type ResolvedRailLinks, useResolvedRailItems } from "../../plugins/useResolvedRailItems.js";
 import { useInAppFrame } from "../../navigation/frameContext.js";
 import { APP_HREFS } from "../../navigation/appHrefs.js";
 import { useNavigate } from "../../navigation/index.js";
@@ -132,10 +133,14 @@ export const APPS: AppDef[] = [
 const RESERVED_APP_IDS = ["settings"];
 
 /** `APPS` followed by the plugins' `appRail` items (their manifest `icon`, or a generic one), core ids winning - see `mergePluginNavItems`. */
-export function appRailItems(pluginNav?: PluginNav): NavItem[] {
+export function appRailItems(pluginNav?: PluginNav, resolved: ResolvedRailLinks = {}): NavItem[] {
+    // An entry worked out per user (`resolveFrom`) is there only for a user it was answered for, and links where the answer said; the others are as declared.
+    const shown = (pluginNav?.appRail ?? [])
+        .filter((item) => !item.resolveFrom || resolved[item.id] !== undefined)
+        .map((item) => (item.resolveFrom ? { ...item, href: resolved[item.id] } : item));
     return mergePluginNavItems<NavItem>(
         APPS,
-        pluginNav?.appRail,
+        shown,
         ({ id, href, label, icon }) => ({ id, href, label, icon: pluginIcon(icon) }),
         RESERVED_APP_IDS,
     );
@@ -320,11 +325,14 @@ export function AppChrome({
     // of it, so a new pathname is what puts the count back. (A folder change is shallow and keeps the title.)
     useUnreadTitle(inboxUnreadTotal(mail.mailboxFolders, mail.folderCounts.counts), { enabled: inFrame, resetKey: pathname });
 
+    // Plugin rail entries that depend on the user (the meet plugin's personal room) are asked for once they are signed in.
+    const resolvedRail = useResolvedRailItems(pluginNav?.appRail, userUid);
+
     if (!userUid) {
         return <div className="min-h-screen" />;
     }
 
-    const apps = appRailItems(pluginNav);
+    const apps = appRailItems(pluginNav, resolvedRail);
     // The header title: "settings" has no rail item, everything else is labelled by its own rail item.
     const activeLabel = active === "settings" ? "Settings" : apps.find((app) => app.id === active)?.label;
     // A custom header (`Branding.headerHtml`) replaces the app's own title bar and the icon at the top of the rail: it is the top of the app, and the

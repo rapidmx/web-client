@@ -727,14 +727,14 @@ describe("ContactsPage", () => {
         expect(screen.getByRole("button", { name: "+ Add address" })).toBeInTheDocument();
     });
 
-    it("saves the favorite checkbox and categories field.", async () => {
+    it("saves the favorite star and categories field.", async () => {
         const fetchMock = mockShellAndContacts([]);
         const user = userEvent.setup();
         render(<ContactsPage userUid="u1" />);
 
         await user.click(await screen.findByRole("button", { name: "New contact" }));
         await user.type(screen.getByLabelText("Display name"), "New Person");
-        await user.click(screen.getByRole("checkbox", { name: "Favorite" }));
+        await user.click(screen.getByRole("button", { name: "Favorite", pressed: false }));
         await user.type(screen.getByLabelText("Categories (comma-separated)"), "VIP, Work");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -786,6 +786,22 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
 
         expect(await screen.findByText("Fav Person")).toBeInTheDocument();
         expect(screen.queryByText("Jane Doe")).not.toBeInTheDocument();
+    });
+
+    it("the star in the detail pane favorites the selected contact and reloads the list.", async () => {
+        const fetchMock = mockShellAndContactsWithLists([jane], [], (_url, init) =>
+            init?.method === "PUT" ? jsonResponse(200, { ...jane, favorite: true }) : undefined,
+        );
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByText("Jane Doe"));
+        const gets = () => fetchMock.mock.calls.filter((c) => String(c[0]).startsWith("/api/mail/contacts") && ((c[1] as RequestInit | undefined)?.method ?? "GET") === "GET").length;
+        const before = gets();
+        await user.click(await screen.findByRole("button", { name: "Favorite", pressed: false }));
+
+        await waitFor(() => expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === "PUT")).toBe(true));
+        await waitFor(() => expect(gets()).toBeGreaterThan(before));
     });
 
     it("a contact list view shows only contacts in that list.", async () => {

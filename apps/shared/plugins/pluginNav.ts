@@ -15,6 +15,12 @@ export interface PluginUiNavItem {
     href: string;
     /** A `react-icons/hi2` icon name from `PLUGIN_ICONS` (`pluginIcons.ts`); anything else shows the generic puzzle piece. */
     icon?: string;
+    /**
+     * For an app-rail entry that depends on the signed-in user: an API path (without the `/api` prefix, e.g. `/mail/video-meetings/personal-room`)
+     * the shell requests for them. The entry is shown only when that answers `200 { href }` with a same-origin path, and links there instead of to
+     * `href`; anything else hides it. See `useResolvedRailItems()`.
+     */
+    resolveFrom?: string;
 }
 
 /**
