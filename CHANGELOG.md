@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-30
+
+### Added
+- Added a Create contact button to the card for someone who is not in the address book, filling the contact in from the message's vCard when there is one
+- Added an Attach my contact card button to the compose window
+
+### Changed
+- Attach files dropped on the compose window, and put dropped pictures into the message at the cursor
+- Open a contact card when a sender, recipient, organizer or guest of a message or event is clicked, showing their contact details, recent messages and upcoming events
+- Let a vCard attachment be added to the address book or downloaded
+- Suggest people the user has corresponded with when addressing a message or adding a guest, even if they are not in the address book
+
+
 ## [0.25.1] - 2026-09-30
 
 ### Changed
@@ -1149,7 +1162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.25.1...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/rapidmx/web-client/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/rapidmx/web-client/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/rapidmx/web-client/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/rapidmx/web-client/compare/v0.23.0...v0.24.0
