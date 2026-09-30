@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-30
+
+### Added
+- Added selecting messages and conversations, and every bulk action on them, in the All mailboxes views, acting on each one in its own mailbox
+
+### Changed
+- Offer Empty Deleted Items and Empty Junk Email in the All mailboxes views, emptying each mailbox's own folder
+
 ## [0.27.0] - 2026-09-30
 
 ### Added
@@ -1177,7 +1185,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/rapidmx/web-client/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/rapidmx/web-client/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/rapidmx/web-client/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/rapidmx/web-client/compare/v0.25.0...v0.25.1
