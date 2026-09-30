@@ -364,6 +364,7 @@ any release.
 | `shared/components/layout/ResponsiveToolbar.js` | A toolbar whose buttons collapse into an overflow menu when space runs out. |
 | `shared/components/admin/usePagedList.js` | Loads a list a page at a time with "Load more", for tables of the plugin's own records. |
 | `shared/notifications/apiErrors.js` | `notifyApiError()`, which shows a failed API call as a notification. |
+| `shared/components/mail/compose/RecipientInput.js` | Compose's address field: chips, and suggestions from the caller's contacts and the server directory as they type. Pass `fetchSuggestions` to narrow them (for example to `searchDirectory()` entries of kind `user`, people with an account). |
 | `shared/components/admin/diagnostics/Sparkline.js` and `MetricTile.js` | A small trend line and a labelled figure, for simple dashboards. |
 
 Every www and admin page receives a `pluginNav` prop from the server. It lists the settings sections, admin sections and
@@ -408,6 +409,8 @@ section above):
 - `components/forms/FormField.js`;
 - `components/overlays/Modal.js` and `components/overlays/Drawer.js`;
 - `components/pickers/MiniDatePicker.js`;
+- `components/pickers/TimeZonePicker.js`, with `util/timeZone.js`'s `timeZoneOptions()` for its `zones`;
+- `mail/directoryApi.js`: `searchDirectory()` and `fetchRecipientSuggestions()`, the address lookups compose uses;
 - `components/avatar/ContactAvatar.js`;
 - `util/apiQuery.js`: `buildQuery()`, for paging a list route.
 
