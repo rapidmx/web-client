@@ -63,6 +63,8 @@ import MailShell, {
 import MailAddress from "../shared/components/mail/MailAddress.js";
 import OutboxRowStatus from "../shared/components/mail/OutboxRowStatus.js";
 import { mergeFirstPage } from "../shared/mail/mergeFirstPage.js";
+import { ClickModifiers, isToggleClick, rangeBetween, resolveAnchor } from "../shared/mail/rangeSelection.js";
+import { ROW_EXIT_MS, canAnimateRowExit, collapseRow } from "../shared/mail/rowExit.js";
 import { isOwnMailbox, orderMailboxes, primaryMailboxUid } from "../shared/mail/primaryMailbox.js";
 import { listSnapshotKey, readListSnapshot, saveListScroll, writeListSnapshot } from "../shared/mail/listSnapshots.js";
 import { setReadStateMany } from "../shared/mail/messageReadState.js";
@@ -770,6 +772,18 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // Where the message the keyboard just removed from the list (deleted, archived, moved) was: the next Down/Up continues from that spot, so
     // clearing an inbox from the keyboard walks down it instead of jumping back to the top. Cleared by any selection.
     const removedAnchorRef = useRef<number | null>(null);
+    // The row a Shift+click range starts from: the row last clicked or opened (a `message.uid`, or a `conversationRowKey()` in the conversation list).
+    // A Shift+click selects from here to the clicked row but leaves it where it is, so the next Shift+click re-spans from the same row, as in Explorer and
+    // Outlook; a plain click or a Ctrl+click moves it to the row clicked. Forgotten when the listing is replaced. See `resolveAnchor()`.
+    const selectionAnchorRef = useRef<string | null>(null);
+    // Rows on their way out of the list (moved, deleted, archived): `message.uid`s, or `conversationRowKey()`s in the conversation list. They stay in the
+    // data while they collapse (`collapseRow()`, `ROW_EXIT_MS`), so the rows below slide up into the gap, and are dropped by `animateRowsOut()` after.
+    const [exitingKeys, setExitingKeys] = useState<Set<string>>(new Set());
+    const exitTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+    useEffect(() => {
+        const timers = exitTimersRef.current;
+        return () => timers.forEach(clearTimeout);
+    }, []);
     // State (via a callback ref), not a plain ref: the sentinel mounts and unmounts as the list loads,
     // filters, and empties, and the observer effect below must re-attach to whichever node is current.
     const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
@@ -1040,6 +1054,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         setSelectedUids(new Set());
         setSelectedConversationIds(new Set());
         setConversationMessagesById({});
+        selectionAnchorRef.current = null;
         listedOffsetRef.current = 0;
         compositeCursorRef.current = undefined;
         setHasMore(false);
@@ -1454,22 +1469,16 @@ function InboxContent({ userUid }: { userUid?: string }) {
     // a listing still loading and a "load more" in flight, and for events about folders the list isn't showing - a
     // conversation list, which can span folders, refreshes for any. Any failure is silent: the next tick tries again.
     const liveRunRef = useRef(0);
-    useEffect(() => {
-        if (live.tick === 0 || isSearching || loading || loadMoreInFlightRef.current || (!folderUid && !aggregateFolderType)) {
+    /**
+     * Quietly refetches the first page of whatever is listed and folds it in (see above) - the same refresh a push event makes, which a bulk action or
+     * a move also makes once its rows have left, so the list is brought up to date (counts, previews) without the skeleton or losing the reader's place.
+     * `listRun` is the listing the caller means: a refresh that finds another listing on screen by the time it lands is thrown away.
+     */
+    function refreshListQuietly(listRun = searchRunIdRef.current) {
+        if (isSearching || loading || loadMoreInFlightRef.current || (!folderUid && !aggregateFolderType)) {
             return;
         }
-        if (!asConversations && live.folderUids) {
-            const shown = new Set(
-                aggregateFolderType
-                    ? mailboxFolders.flatMap((entry) => entry.folders.filter((f) => f.type === aggregateFolderType).map((f) => f.uid))
-                    : [folderUid!],
-            );
-            if (![...live.folderUids].some((uid) => shown.has(uid))) {
-                return;
-            }
-        }
         // Superseded by a newer refresh, or by any reload of the list itself (which bumps the search run id).
-        const listRun = searchRunIdRef.current;
         const myRun = ++liveRunRef.current;
         const isCurrent = () => searchRunIdRef.current === listRun && liveRunRef.current === myRun;
         void (async () => {
@@ -1514,6 +1523,22 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 // Quiet by design - see above.
             }
         })();
+    }
+    useEffect(() => {
+        if (live.tick === 0) {
+            return;
+        }
+        if (!asConversations && live.folderUids) {
+            const shown = new Set(
+                aggregateFolderType
+                    ? mailboxFolders.flatMap((entry) => entry.folders.filter((f) => f.type === aggregateFolderType).map((f) => f.uid))
+                    : [folderUid!],
+            );
+            if (![...live.folderUids].some((uid) => shown.has(uid))) {
+                return;
+            }
+        }
+        refreshListQuietly();
     }, [live.tick]);
 
     function handleSearchAllMail() {
@@ -1788,14 +1813,66 @@ function InboxContent({ userUid }: { userUid?: string }) {
         }
     }
 
+    /**
+     * Takes rows out of the list without a jolt: they collapse over `ROW_EXIT_MS` (the rows below slide up into the gap - see `collapseRow()`), then
+     * `commit()` drops them from the data. `keys` are the rows' `exitingKeys`. With nothing to animate - none of them is listed, the browser can't
+     * animate, or the reader prefers reduced motion - `commit()` runs at once.
+     */
+    function animateRowsOut(keys: string[], commit: () => void) {
+        if (keys.length === 0 || !canAnimateRowExit()) {
+            commit();
+            return;
+        }
+        setExitingKeys((prev) => new Set([...prev, ...keys]));
+        const timer = setTimeout(() => {
+            exitTimersRef.current.delete(timer);
+            commit();
+            setExitingKeys((prev) => {
+                const next = new Set(prev);
+                keys.forEach((key) => next.delete(key));
+                return next;
+            });
+        }, ROW_EXIT_MS);
+        exitTimersRef.current.add(timer);
+    }
+
+    /**
+     * Takes the conversations whose every message is in `uids` out of the conversation list (animated), then quietly refreshes the list: a conversation
+     * that keeps messages elsewhere stays, with its count and preview brought up to date by the refresh rather than by reloading the whole list.
+     * `listRun` is the listing the caller acted on; if another is on screen by now there is nothing left to do.
+     */
+    function removeListedConversations(uids: Set<string>, listRun = searchRunIdRef.current) {
+        if (searchRunIdRef.current !== listRun) {
+            return;
+        }
+        const leaving = new Set(conversationsRef.current.filter((c) => c.messageUids.every((uid) => uids.has(uid))).map(conversationKey));
+        animateRowsOut([...leaving], () => {
+            if (searchRunIdRef.current !== listRun) {
+                return;
+            }
+            setConversations((prev) => prev.filter((c) => !leaving.has(conversationKey(c))));
+            // The refresh below merges into the ref, which only catches up with the state on the next render.
+            conversationsRef.current = conversationsRef.current.filter((c) => !leaving.has(conversationKey(c)));
+            listedOffsetRef.current = Math.max(0, listedOffsetRef.current - leaving.size);
+            refreshListQuietly(listRun);
+        });
+    }
+
     function removeListedMessages(uids: Set<string>) {
         const selectedIndex = messagesRef.current.findIndex((m) => m.uid === selectedUid);
         if (selectedUid && uids.has(selectedUid) && selectedIndex !== -1) {
             removedAnchorRef.current = selectedIndex;
         }
-        setMessages((prev) => prev.filter((m) => !uids.has(m.uid)));
-        listedOffsetRef.current = Math.max(0, listedOffsetRef.current - uids.size);
         setSelectedUid((prev) => (prev && uids.has(prev) ? null : prev));
+        if (asConversations) {
+            removeListedConversations(uids);
+            return;
+        }
+        listedOffsetRef.current = Math.max(0, listedOffsetRef.current - uids.size);
+        animateRowsOut(
+            messagesRef.current.filter((m) => uids.has(m.uid)).map((m) => m.uid),
+            () => setMessages((prev) => prev.filter((m) => !uids.has(m.uid))),
+        );
     }
 
     function removeListedMessage(uid: string) {
@@ -1929,6 +2006,55 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     /**
+     * Shift+click: the keys from the anchor to `target` in `keys` (the list in the order it is displayed), entering select mode. The anchor is the
+     * row last clicked or opened (`selectionAnchorRef`), else the row open in the reading pane (`openKey`), else the clicked row itself - and it is
+     * pinned where it was, not moved to `target`, so a second Shift+click elsewhere re-spans from the same row.
+     */
+    function selectRange(keys: string[], target: string, openKey: string | null): string[] {
+        const anchor = resolveAnchor(keys, selectionAnchorRef.current, openKey);
+        selectionAnchorRef.current = anchor ?? target;
+        setSelectMode(true);
+        return rangeBetween(keys, anchor, target);
+    }
+
+    /** Shift+click on a message row. Plain Shift makes the range the whole selection; Ctrl+Shift (`extend`) adds it to what is ticked already. */
+    function selectMessageRange(message: Message, extend: boolean) {
+        const range = selectRange(
+            displayedMessages.map((m) => m.uid),
+            message.uid,
+            selectedUid,
+        );
+        setSelectedUids((prev) => new Set(extend ? [...prev, ...range] : range));
+    }
+
+    /** Shift+click on a conversation row: as `selectMessageRange()`, over the rows in the order they are displayed, each resolved to its messages like a ticked one. */
+    function selectConversationRange(conversation: ListedConversation, extend: boolean) {
+        const keys = listedConversations.map(conversationKey);
+        const openIndex = selectedRowIndex();
+        const range = selectRange(keys, conversationKey(conversation), openIndex === -1 ? null : keys[openIndex]);
+        setSelectedConversationIds((prev) => new Set(extend ? [...prev, ...range] : range));
+        const inRange = new Set(range);
+        void resolveConversations(listedConversations.filter((c) => inRange.has(conversationKey(c))));
+    }
+
+    /** A plain click on a conversation's checkbox: ticks (or unticks) it and makes it the anchor of the next Shift+click. */
+    function tickConversation(conversation: ListedConversation) {
+        selectionAnchorRef.current = conversationKey(conversation);
+        toggleConversationSelected(conversation);
+    }
+
+    /** A Shift, Ctrl or Cmd click on a conversation row or its checkbox (the list hands those over rather than opening or ticking the row). */
+    function handleConversationModifierClick(conversation: ListedConversation, modifiers: ClickModifiers) {
+        if (modifiers.shiftKey) {
+            selectConversationRange(conversation, isToggleClick(modifiers));
+            return;
+        }
+        // Ctrl (Cmd): just this row, and select mode if the reader was not in it.
+        setSelectMode(true);
+        tickConversation(conversation);
+    }
+
+    /**
      * Runs one bulk action over the current selection, then either patches the affected rows in place or
      * drops them (a move takes them out of the folder being listed).
      *
@@ -1945,6 +2071,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
         removesRows: boolean,
         chosen: Message[] = selectedMessages,
     ): Promise<boolean> {
+        // The listing this acts on: the action takes a while, and the reader may have opened another folder by the time it is done.
+        const listRun = searchRunIdRef.current;
         setBulkBusy(true);
         try {
             const updated = await action(chosen);
@@ -1961,11 +2089,16 @@ function InboxContent({ userUid }: { userUid?: string }) {
             }
             if (asConversations) {
                 // A conversation row is a summary of its messages - its count, unread count, participants
-                // and preview all move when a bulk action changes or empties part of it - so the list is
-                // reloaded rather than patched row by row.
+                // and preview all move when a bulk action changes or empties part of it - so the rows that
+                // went collapse away and the list is then refetched quietly (no skeleton, nothing forgotten)
+                // rather than patched row by row.
                 setSelectedConversationIds(new Set());
                 setConversationMessagesById({});
-                setRefreshKey((n) => n + 1);
+                if (removesRows) {
+                    removeListedConversations(new Set(chosen.map((m) => m.uid)), listRun);
+                } else {
+                    refreshListQuietly(listRun);
+                }
             } else if (removesRows) {
                 removeListedMessages(new Set(chosen.map((m) => m.uid)));
             } else {
@@ -2080,6 +2213,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
      * (those stay listed, and the reload shows what is really there). Resolves whether anything was deleted.
      */
     async function purgeChosen(chosen: Message[]): Promise<boolean> {
+        const listRun = searchRunIdRef.current;
         const outcome = await permanent.requestPermanentDelete(chosen);
         if (!outcome) {
             return false;
@@ -2087,7 +2221,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
         if (asConversations) {
             setSelectedConversationIds(new Set());
             setConversationMessagesById({});
-            setRefreshKey((n) => n + 1);
+            removeListedConversations(new Set(outcome.deleted.map((m) => m.uid)), listRun);
         } else {
             removeListedMessages(new Set(outcome.deleted.map((m) => m.uid)));
             if (outcome.failed.length > 0) {
@@ -2179,6 +2313,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     /** One message's row of the flat list - and, in search results grouped by conversation, of a group. */
     function renderMessageRow(message: Message) {
+        const exiting = exitingKeys.has(message.uid);
         return (
             <SwipeRow
                 as="li"
@@ -2188,9 +2323,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
                 key={message.uid}
                 data-message-uid={message.uid}
                 data-unread={isUnread(message) ? "true" : undefined}
+                data-exiting={exiting ? "true" : undefined}
+                aria-hidden={exiting ? "true" : undefined}
+                inert={exiting}
                 className={rowClass(
                     { unread: isUnread(message), selected: message.uid === selectedUid || selectedUids.has(message.uid) },
-                    "flex items-stretch",
+                    exiting ? "flex items-stretch pointer-events-none" : "flex items-stretch",
                 )}
             >
                 <UnreadBar unread={isUnread(message)} />
@@ -2199,7 +2337,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         <input
                             type="checkbox"
                             checked={selectedUids.has(message.uid)}
-                            onChange={() => toggleSelected(message.uid)}
+                            // The change of a checkbox is caused by a click (or the Space key, which makes one): its modifiers are that event's.
+                            onChange={(event) => handleSelect(message, event.nativeEvent as MouseEvent)}
                             aria-label={`Select ${rowSubject(message)}`}
                             className="w-4 h-4 accent-primary"
                         />
@@ -2210,7 +2349,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                     <button
                         type="button"
                         data-row-open
-                        onClick={() => handleSelect(message)}
+                        onClick={(event) => handleSelect(message, event)}
                         className={["w-full text-left px-4 py-3", ROW_FOCUS_CLASS].join(" ")}
                     >
                         <UnreadLabel unread={isUnread(message)} />
@@ -2266,6 +2405,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
     /** Search results arranged by conversation: the messages that matched, grouped under the conversation each belongs to, in the order of the
      * first match of each - the order the results are ranked in. `null` when the list is not showing grouped results. */
     const resultGroups = groupedResults ? groupByConversation(messages) : null;
+    /** The messages in the order the list shows them - grouped results are listed group by group - which is the order a Shift+click range runs in. */
+    const displayedMessages = resultGroups ? resultGroups.flatMap((group) => group.messages) : messages;
 
     /** The search box: in the list on a desktop (flat lists only), in the shell's header beside the folders button on a phone. */
     const searchField = (
@@ -2280,7 +2421,22 @@ function InboxContent({ userUid }: { userUid?: string }) {
         />
     );
 
-    function handleSelect(message: Message) {
+    /**
+     * A click on a message row (or its checkbox), or the keyboard moving the selection to it (no `modifiers`). Shift+click selects the range from the
+     * anchor; Ctrl/Cmd+click toggles just this row, entering select mode if needed (Ctrl+Shift adds the range to the selection instead of replacing it);
+     * a plain click ticks the row in select mode and opens it otherwise.
+     */
+    function handleSelect(message: Message, modifiers?: ClickModifiers) {
+        if (modifiers?.shiftKey) {
+            selectMessageRange(message, isToggleClick(modifiers));
+            return;
+        }
+        selectionAnchorRef.current = message.uid;
+        if (isToggleClick(modifiers)) {
+            setSelectMode(true);
+            toggleSelected(message.uid);
+            return;
+        }
         if (selectMode) {
             toggleSelected(message.uid);
             return;
@@ -2319,6 +2475,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     /** Opens a conversation in the reading pane, positioned at one of its messages: the one a child row
      * stands for, or the latest for a parent row. The thread pane loads the thread itself. */
     function handleOpenConversation(conversation: ListedConversation, uid: string) {
+        selectionAnchorRef.current = conversationKey(conversation);
         if (selectMode) {
             // Same rule as `handleSelect()` for a message row: while selecting, a row's own button ticks
             // the row rather than opening it.
@@ -2346,7 +2503,15 @@ function InboxContent({ userUid }: { userUid?: string }) {
     /** What the keyboard acts on exists: the ticked rows in select mode, else the message (or conversation) open in the reading pane. */
     const keyboardTargetExists = selectMode ? selectedMessages.length > 0 : threadPane ? openThread !== null : selected !== null;
     const rowCount = inConversations ? listedConversations.length : messages.length;
-    const canMoveSelection = !selectMode && !isMobile && !loading && rowCount > 0;
+    // Not while rows are collapsing out of the list: their indexes are about to shift.
+    const canMoveSelection = !selectMode && !isMobile && !loading && rowCount > 0 && exitingKeys.size === 0;
+
+    // Starts the collapse of the rows that have just been marked as leaving (see `animateRowsOut()`).
+    useLayoutEffect(() => {
+        if (exitingKeys.size > 0) {
+            scrollContainerRef.current!.querySelectorAll<HTMLElement>("[data-exiting]").forEach((row) => collapseRow(row));
+        }
+    }, [exitingKeys]);
 
     /** The type of a message's folder - looked for in every mailbox's, as a search over several has messages from each. */
     function folderTypeOf(folderUidOfMessage: string): Folder["type"] | undefined {
@@ -2623,344 +2788,358 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     return (
         <div className="flex h-full min-h-0">
-            <div
-                ref={scrollContainerRef}
-                // Remembered as it moves (not when the list is left: by then React has already detached the element), so
-                // the folder - or Mail, after another app - comes back where it was.
-                onScroll={(event) => saveListScroll(listKey, event.currentTarget.scrollTop)}
-                className="w-full md:w-96 shrink-0 md:border-r border-border overflow-y-auto"
-            >
-                {selectMode ? (
-                    <MailSelectionBar
-                        selected={selectedMessages}
-                        listed={messages}
-                        totals={
-                            asConversations
-                                ? { selected: selectedConversationIds.size, listed: conversations.length, noun: "conversation" }
-                                : undefined
-                        }
-                        onSelectAll={() =>
-                            asConversations
-                                ? selectAllConversations()
-                                : setSelectedUids(new Set(messages.map((m) => m.uid)))
-                        }
-                        onClearSelection={() =>
-                            asConversations ? setSelectedConversationIds(new Set()) : setSelectedUids(new Set())
-                        }
-                        onCancel={leaveSelectMode}
-                        folders={foldersOf(selectionMailboxUid)}
-                        currentFolderUid={folderUid}
-                        labels={mailboxLabels}
-                        mailboxUid={selectionMailboxUid}
-                        moveDisabledReason={moveDisabledReason}
-                        labelsDisabledReason={labelsDisabledReason}
-                        onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
-                        onFolderCreated={onFolderCreated}
-                        onApplyLabels={applyLabelsToSelection}
-                        onSetRead={(read) =>
-                            void runBulkAction(
-                                // Optimistic: the rows and the folder badges change now, and change back if the server refuses.
-                                (chosen) => setReadStateMany(chosen, read, { patch: patchListedMessage, track: trackMessageChange }),
-                                false,
-                            )
-                        }
-                        onSetFlagged={(flagged) => void runBulkAction((chosen) => setMessagesFlagged(chosen, flagged, client), false)}
-                        shortcuts={keyboardActions}
-                        onArchive={() => void runBulkAction(bulkArchive, true)}
-                        onMoveTo={async (targetFolderUid) => {
-                            await runBulkAction((chosen) => moveMessages(chosen, targetFolderUid, client), true);
-                        }}
-                        onReportJunk={() => void moveSelectionToType("junk", "Junk Email")}
-                        onDelete={() =>
-                            void (deletesPermanently
-                                ? purgeChosen(selectedMessages)
-                                : // A mix (search results from several folders) moves only what is not in Deleted Items yet.
-                                  moveSelectionToType("deleted_items", "Deleted Items", selectedMessages.filter((m) => !inDeletedItems(m))))
-                        }
-                        deletesPermanently={deletesPermanently}
-                        busy={bulkBusy || resolvingSelection > 0 || permanent.busy}
-                    />
-                ) : (
-                    <MailListToolbar
-                        sortBy={preferences.sortBy}
-                        sortOrder={preferences.sortOrder}
-                        filter={preferences.filter}
-                        labelUids={preferences.labelUids}
-                        labels={mailboxLabels}
-                        mailboxUid={activeMailboxUid}
-                        onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
-                        onLabelUidsChange={(nextLabelUids) => updatePreferences({ labelUids: nextLabelUids })}
-                        showAsConversations={preferences.showAsConversations}
-                        onSortChange={(sortBy, sortOrder) => updatePreferences({ sortBy, sortOrder })}
-                        onFilterChange={(filter) => updatePreferences({ filter })}
-                        onShowAsConversationsChange={(showAsConversations) => updatePreferences({ showAsConversations })}
-                        selectMode={selectMode}
-                        onSelectModeChange={setSelectMode}
-                        offerClassificationFilters={offerClassificationFilters}
-                        filterDisabled={isSearching}
-                        filterDisabledReason="Filters don't apply to search results"
-                        sortKeysDisabled={isSearching || !!aggregateFolderType}
-                        // A conversation row is a thread summary, so only some of the keys have anything to
-                        // order by - the rest stay pickable and are applied to the rows already fetched.
-                        unavailableSortKeys={asConversations ? CONVERSATION_SORT_UNAVAILABLE : undefined}
-                        sortKeysNote={
-                            isSearching
-                                ? "Search results are ranked by relevance rather than sorted."
-                                : aggregateFolderType
-                                  ? "This view merges the newest mail from every mailbox and is always listed by date."
-                                  : asConversations
-                                    ? CONVERSATION_SORT_NOTE
+            {/* The list column: the toolbar (or the selection bar), the search box and the Focused/Other tabs are a fixed block at the top and only
+                the rows below scroll, each of the three columns (folders, list, reading pane) being its own scroller of the window's height. */}
+            <div data-testid="mail-list-column" className="w-full md:w-96 shrink-0 md:border-r border-border flex flex-col min-h-0">
+                <div data-testid="mail-list-header" className="shrink-0">
+                    {selectMode ? (
+                        <MailSelectionBar
+                            selected={selectedMessages}
+                            listed={messages}
+                            totals={
+                                asConversations
+                                    ? { selected: selectedConversationIds.size, listed: conversations.length, noun: "conversation" }
                                     : undefined
+                            }
+                            onSelectAll={() =>
+                                asConversations
+                                    ? selectAllConversations()
+                                    : setSelectedUids(new Set(messages.map((m) => m.uid)))
+                            }
+                            onClearSelection={() =>
+                                asConversations ? setSelectedConversationIds(new Set()) : setSelectedUids(new Set())
+                            }
+                            onCancel={leaveSelectMode}
+                            folders={foldersOf(selectionMailboxUid)}
+                            currentFolderUid={folderUid}
+                            labels={mailboxLabels}
+                            mailboxUid={selectionMailboxUid}
+                            moveDisabledReason={moveDisabledReason}
+                            labelsDisabledReason={labelsDisabledReason}
+                            onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
+                            onFolderCreated={onFolderCreated}
+                            onApplyLabels={applyLabelsToSelection}
+                            onSetRead={(read) =>
+                                void runBulkAction(
+                                    // Optimistic: the rows and the folder badges change now, and change back if the server refuses.
+                                    (chosen) => setReadStateMany(chosen, read, { patch: patchListedMessage, track: trackMessageChange }),
+                                    false,
+                                )
+                            }
+                            onSetFlagged={(flagged) => void runBulkAction((chosen) => setMessagesFlagged(chosen, flagged, client), false)}
+                            shortcuts={keyboardActions}
+                            onArchive={() => void runBulkAction(bulkArchive, true)}
+                            onMoveTo={async (targetFolderUid) => {
+                                await runBulkAction((chosen) => moveMessages(chosen, targetFolderUid, client), true);
+                            }}
+                            onReportJunk={() => void moveSelectionToType("junk", "Junk Email")}
+                            onDelete={() =>
+                                void (deletesPermanently
+                                    ? purgeChosen(selectedMessages)
+                                    : // A mix (search results from several folders) moves only what is not in Deleted Items yet.
+                                      moveSelectionToType("deleted_items", "Deleted Items", selectedMessages.filter((m) => !inDeletedItems(m))))
+                            }
+                            deletesPermanently={deletesPermanently}
+                            busy={bulkBusy || resolvingSelection > 0 || permanent.busy}
+                        />
+                    ) : (
+                        <MailListToolbar
+                            sortBy={preferences.sortBy}
+                            sortOrder={preferences.sortOrder}
+                            filter={preferences.filter}
+                            labelUids={preferences.labelUids}
+                            labels={mailboxLabels}
+                            mailboxUid={activeMailboxUid}
+                            onLabelCreated={(label) => setMailboxLabels((prev) => [...prev, label])}
+                            onLabelUidsChange={(nextLabelUids) => updatePreferences({ labelUids: nextLabelUids })}
+                            showAsConversations={preferences.showAsConversations}
+                            onSortChange={(sortBy, sortOrder) => updatePreferences({ sortBy, sortOrder })}
+                            onFilterChange={(filter) => updatePreferences({ filter })}
+                            onShowAsConversationsChange={(showAsConversations) => updatePreferences({ showAsConversations })}
+                            selectMode={selectMode}
+                            onSelectModeChange={setSelectMode}
+                            offerClassificationFilters={offerClassificationFilters}
+                            filterDisabled={isSearching}
+                            filterDisabledReason="Filters don't apply to search results"
+                            sortKeysDisabled={isSearching || !!aggregateFolderType}
+                            // A conversation row is a thread summary, so only some of the keys have anything to
+                            // order by - the rest stay pickable and are applied to the rows already fetched.
+                            unavailableSortKeys={asConversations ? CONVERSATION_SORT_UNAVAILABLE : undefined}
+                            sortKeysNote={
+                                isSearching
+                                    ? "Search results are ranked by relevance rather than sorted."
+                                    : aggregateFolderType
+                                      ? "This view merges the newest mail from every mailbox and is always listed by date."
+                                      : asConversations
+                                        ? CONVERSATION_SORT_NOTE
+                                        : undefined
+                            }
+                            selectDisabled={loading || listedRowCount === 0}
+                            selectDisabledReason={loading ? "Wait for this folder to finish loading" : "There is nothing here to select"}
+                        />
+                    )}
+                    {!isMobile && <div className="p-2 border-b border-border">{searchField}</div>}
+                    {isMobile && mobileSearchSlot && createPortal(searchField, mobileSearchSlot)}
+                    {emptiableFolder && !selectMode && (
+                        <EmptyFolderBar
+                            folderName={emptiableFolder.name}
+                            count={emptiableCount}
+                            disabled={!!emptyDisabledReason || permanent.busy || bulkBusy}
+                            disabledReason={emptyDisabledReason}
+                            onEmpty={() => void emptyListedFolder(emptiableFolder, emptiableCount)}
+                        />
+                    )}
+                    {permanent.dialog}
+                    {/* Two tabs, as Outlook has: Focused and Other. There is no "All" tab - the whole Inbox is
+                        still one pick away, in the Filter menu, which is where every other named filter lives
+                        and the only place that can show which of them is really in force. A stored `all` (or
+                        Unread, Flagged, ...) therefore still lists what it always did, with neither tab
+                        pressed, rather than being migrated into one of these two halves behind the reader's
+                        back - see `MAIL_LIST_FILTERS`, which still offers it. */}
+                    {offerClassificationFilters && (
+                        <div className="flex border-b border-border text-xs">
+                            {MAIL_LIST_CLASSIFICATION_FILTERS.map(({ value, label }) => (
+                                <button
+                                    key={value}
+                                    type="button"
+                                    aria-pressed={preferences.filter === value}
+                                    onClick={() => updatePreferences({ filter: value })}
+                                    className={[
+                                        "flex-1 py-1.5 font-semibold",
+                                        preferences.filter === value
+                                            ? "text-primary-dark border-b-2 border-primary-dark"
+                                            : "text-text-muted",
+                                    ].join(" ")}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                <div
+                    ref={scrollContainerRef}
+                    data-testid="mail-list-scroll"
+                    // Remembered as it moves (not when the list is left: by then React has already detached the element), so
+                    // the folder - or Mail, after another app - comes back where it was.
+                    onScroll={(event) => saveListScroll(listKey, event.currentTarget.scrollTop)}
+                    // A Shift+click selects a range: without this the browser would also select the text between the two rows.
+                    onMouseDown={(event) => {
+                        if (event.shiftKey) {
+                            event.preventDefault();
                         }
-                        selectDisabled={loading || listedRowCount === 0}
-                        selectDisabledReason={loading ? "Wait for this folder to finish loading" : "There is nothing here to select"}
-                    />
-                )}
-                {!isMobile && <div className="p-2 border-b border-border">{searchField}</div>}
-                {isMobile && mobileSearchSlot && createPortal(searchField, mobileSearchSlot)}
-                {emptiableFolder && !selectMode && (
-                    <EmptyFolderBar
-                        folderName={emptiableFolder.name}
-                        count={emptiableCount}
-                        disabled={!!emptyDisabledReason || permanent.busy || bulkBusy}
-                        disabledReason={emptyDisabledReason}
-                        onEmpty={() => void emptyListedFolder(emptiableFolder, emptiableCount)}
-                    />
-                )}
-                {permanent.dialog}
-                {/* Two tabs, as Outlook has: Focused and Other. There is no "All" tab - the whole Inbox is
-                    still one pick away, in the Filter menu, which is where every other named filter lives
-                    and the only place that can show which of them is really in force. A stored `all` (or
-                    Unread, Flagged, ...) therefore still lists what it always did, with neither tab
-                    pressed, rather than being migrated into one of these two halves behind the reader's
-                    back - see `MAIL_LIST_FILTERS`, which still offers it. */}
-                {offerClassificationFilters && (
-                    <div className="flex border-b border-border text-xs">
-                        {MAIL_LIST_CLASSIFICATION_FILTERS.map(({ value, label }) => (
-                            <button
-                                key={value}
-                                type="button"
-                                aria-pressed={preferences.filter === value}
-                                onClick={() => updatePreferences({ filter: value })}
-                                className={[
-                                    "flex-1 py-1.5 font-semibold",
-                                    preferences.filter === value
-                                        ? "text-primary-dark border-b-2 border-primary-dark"
-                                        : "text-text-muted",
-                                ].join(" ")}
-                            >
-                                {label}
-                            </button>
-                        ))}
-                    </div>
-                )}
-
-                {isSearching && (
-                    <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border flex items-center justify-between gap-2">
-                        {/* §_Progressive Results_: "Never show a hard count until every tier has reported.
-                            Display n of ??, or omit the count. A settled count is the signal that ordering
-                            is final." */}
-                        <span className="flex flex-col">
-                            <span>
-                                {tier1Done && tier2Done && tier3Done
-                                    ? `${messages.length} result${messages.length === 1 ? "" : "s"}`
-                                    : `${messages.length} of ??`}
+                    }}
+                    className="flex-1 min-h-0 overflow-y-auto"
+                >
+                    {isSearching && (
+                        <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border flex items-center justify-between gap-2">
+                            {/* §_Progressive Results_: "Never show a hard count until every tier has reported.
+                                Display n of ??, or omit the count. A settled count is the signal that ordering
+                                is final." */}
+                            <span className="flex flex-col">
+                                <span>
+                                    {tier1Done && tier2Done && tier3Done
+                                        ? `${messages.length} result${messages.length === 1 ? "" : "s"}`
+                                        : `${messages.length} of ??`}
+                                </span>
+                                {crossMailbox && <span data-testid="search-scope">All mailboxes</span>}
                             </span>
-                            {crossMailbox && <span data-testid="search-scope">All mailboxes</span>}
-                        </span>
-                        <span className="flex flex-col items-end gap-0.5">
-                            {tier2Done && !searchAllMail && (
+                            <span className="flex flex-col items-end gap-0.5">
+                                {tier2Done && !searchAllMail && (
+                                    <button
+                                        type="button"
+                                        onClick={handleSearchAllMail}
+                                        title={
+                                            crossMailbox
+                                                ? "Also search encrypted mail from before each mailbox's local index begins"
+                                                : undefined
+                                        }
+                                        className="text-primary-dark hover:underline font-medium shrink-0"
+                                    >
+                                        {/* "All mail" already means every mailbox here, so this says what it adds. */}
+                                        {crossMailbox ? "Search older encrypted mail" : "Search all mail"}
+                                    </button>
+                                )}
+                                {widenable && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setSearchAllMailboxes(!searchAllMailboxes)}
+                                        className="text-primary-dark hover:underline font-medium shrink-0"
+                                    >
+                                        {searchAllMailboxes ? "Search this mailbox only" : "Search all mailboxes"}
+                                    </button>
+                                )}
+                            </span>
+                        </div>
+                    )}
+                    {crossMailbox && isSearching && searchableMailboxes.length > searchedMailboxes.length && (
+                        <div role="status" className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
+                            Searched {searchedMailboxes.length} of {searchableMailboxes.length} mailboxes - the most that are searched at once.
+                        </div>
+                    )}
+                    {crossMailbox && isSearching && searchFailures.length > 0 && (
+                        <div role="status" className="px-4 py-1.5 text-xs text-text-muted border-b border-border bg-surface-alt">
+                            Some results may be missing: {describeFailures(searchFailures)}
+                        </div>
+                    )}
+                    {isSearching && !crossMailbox && coverage?.indexedFrom && (
+                        <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
+                            Local search covers messages back to {new Date(coverage.indexedFrom).toLocaleDateString()}
+                            {coverage.building ? " (still building)" : ""}
+                            {searchAllMail
+                                ? " - searching everything, not just recent mail."
+                                : " - older encrypted mail is still searched, just slower."}
+                        </div>
+                    )}
+                    {isSearching && crossMailbox && tier2Done && serverOnlyMailboxes.length > 0 && (
+                        <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
+                            There is no local index on this device for {serverOnlyMailboxes.map((mb) => mb.displayName).join(", ")}: its encrypted mail is searched
+                            through the server instead, which is slower and looks at a limited number of messages.
+                        </div>
+                    )}
+                    {isSearching && crossMailbox && lockedSearchMailboxes.length > 0 && (
+                        <div className="px-4 py-2 border-b border-border bg-surface-alt flex flex-col gap-1">
+                            {unlockableSearchMailboxes.length > 0 && (
                                 <button
                                     type="button"
-                                    onClick={handleSearchAllMail}
-                                    title={
-                                        crossMailbox
-                                            ? "Also search encrypted mail from before each mailbox's local index begins"
-                                            : undefined
-                                    }
-                                    className="text-primary-dark hover:underline font-medium shrink-0"
+                                    onClick={handleUnlockSearch}
+                                    className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
                                 >
-                                    {/* "All mail" already means every mailbox here, so this says what it adds. */}
-                                    {crossMailbox ? "Search older encrypted mail" : "Search all mail"}
+                                    <HiOutlineLockClosed size={12} aria-hidden="true" />
+                                    Unlock to include encrypted messages from {unlockableSearchMailboxes.map((mb) => mb.displayName).join(", ")}
                                 </button>
                             )}
-                            {widenable && (
-                                <button
-                                    type="button"
-                                    onClick={() => setSearchAllMailboxes(!searchAllMailboxes)}
-                                    className="text-primary-dark hover:underline font-medium shrink-0"
-                                >
-                                    {searchAllMailboxes ? "Search this mailbox only" : "Search all mailboxes"}
-                                </button>
+                            {sharedLockedSearchMailboxes.length > 0 && (
+                                <p className="text-xs text-text-muted">
+                                    Encrypted messages in {sharedLockedSearchMailboxes.map((mb) => mb.displayName).join(", ")} are not included: only the
+                                    mailbox&rsquo;s owner can unlock them.
+                                </p>
                             )}
-                        </span>
-                    </div>
-                )}
-                {crossMailbox && isSearching && searchableMailboxes.length > searchedMailboxes.length && (
-                    <div role="status" className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
-                        Searched {searchedMailboxes.length} of {searchableMailboxes.length} mailboxes - the most that are searched at once.
-                    </div>
-                )}
-                {crossMailbox && isSearching && searchFailures.length > 0 && (
-                    <div role="status" className="px-4 py-1.5 text-xs text-text-muted border-b border-border bg-surface-alt">
-                        Some results may be missing: {describeFailures(searchFailures)}
-                    </div>
-                )}
-                {isSearching && !crossMailbox && coverage?.indexedFrom && (
-                    <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
-                        Local search covers messages back to {new Date(coverage.indexedFrom).toLocaleDateString()}
-                        {coverage.building ? " (still building)" : ""}
-                        {searchAllMail
-                            ? " - searching everything, not just recent mail."
-                            : " - older encrypted mail is still searched, just slower."}
-                    </div>
-                )}
-                {isSearching && crossMailbox && tier2Done && serverOnlyMailboxes.length > 0 && (
-                    <div className="px-4 py-1.5 text-xs text-text-muted border-b border-border">
-                        There is no local index on this device for {serverOnlyMailboxes.map((mb) => mb.displayName).join(", ")}: its encrypted mail is searched
-                        through the server instead, which is slower and looks at a limited number of messages.
-                    </div>
-                )}
-                {isSearching && crossMailbox && lockedSearchMailboxes.length > 0 && (
-                    <div className="px-4 py-2 border-b border-border bg-surface-alt flex flex-col gap-1">
-                        {unlockableSearchMailboxes.length > 0 && (
+                        </div>
+                    )}
+                    {isSearching && !crossMailbox && !getUnlockedKeys(mailboxUid!) && (
+                        <div className="px-4 py-2 border-b border-border bg-surface-alt">
                             <button
                                 type="button"
                                 onClick={handleUnlockSearch}
                                 className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
                             >
                                 <HiOutlineLockClosed size={12} aria-hidden="true" />
-                                Unlock to include encrypted messages from {unlockableSearchMailboxes.map((mb) => mb.displayName).join(", ")}
+                                Unlock to include encrypted messages in these results
                             </button>
-                        )}
-                        {sharedLockedSearchMailboxes.length > 0 && (
-                            <p className="text-xs text-text-muted">
-                                Encrypted messages in {sharedLockedSearchMailboxes.map((mb) => mb.displayName).join(", ")} are not included: only the
-                                mailbox&rsquo;s owner can unlock them.
-                            </p>
-                        )}
-                    </div>
-                )}
-                {isSearching && !crossMailbox && !getUnlockedKeys(mailboxUid!) && (
-                    <div className="px-4 py-2 border-b border-border bg-surface-alt">
-                        <button
-                            type="button"
-                            onClick={handleUnlockSearch}
-                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
-                        >
-                            <HiOutlineLockClosed size={12} aria-hidden="true" />
-                            Unlock to include encrypted messages in these results
-                        </button>
-                    </div>
-                )}
-                {!isSearching && !asConversations && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(activeMailboxUid) && (
-                    <div className="px-4 py-2 border-b border-border bg-surface-alt">
-                        <button
-                            type="button"
-                            onClick={handleUnlockList}
-                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
-                        >
-                            <HiOutlineLockClosed size={12} aria-hidden="true" />
-                            Unlock to show {undecryptedEncryptedUids.length === 1 ? "an encrypted message's" : "encrypted messages'"} subject
-                        </button>
-                    </div>
-                )}
+                        </div>
+                    )}
+                    {!isSearching && !asConversations && undecryptedEncryptedUids.length > 0 && !getUnlockedKeys(activeMailboxUid) && (
+                        <div className="px-4 py-2 border-b border-border bg-surface-alt">
+                            <button
+                                type="button"
+                                onClick={handleUnlockList}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-primary-dark hover:underline"
+                            >
+                                <HiOutlineLockClosed size={12} aria-hidden="true" />
+                                Unlock to show {undecryptedEncryptedUids.length === 1 ? "an encrypted message's" : "encrypted messages'"} subject
+                            </button>
+                        </div>
+                    )}
 
-                {error && (
-                    <div className="p-4">
-                        <Alert>{error}</Alert>
-                    </div>
-                )}
+                    {error && (
+                        <div className="p-4">
+                            <Alert>{error}</Alert>
+                        </div>
+                    )}
 
-                {loading ? (
-                    // A skeleton of rows rather than a line of text: the list keeps its shape while a folder that was not shown a
-                    // moment ago loads (one that was is shown at once, from its snapshot).
-                    <div role="status" aria-busy="true" className="p-4">
-                        <span className="sr-only">Loading&hellip;</span>
-                        <SkeletonList count={8} />
-                    </div>
-                ) : asConversations ? (
-                    <>
-                        <ConversationList
-                            conversations={listedConversations}
-                            newestFirst={preferences.sortBy === "date" && preferences.sortOrder === "desc"}
-                            mailboxUid={activeMailboxUid}
-                            selectedUid={selectedUid}
-                            messageOverrides={conversationPatches}
-                            onMeetingResponded={patchListedMessage}
-                            onOpenMessage={handleOpenConversation}
-                            selectMode={selectMode}
-                            selectedConversationIds={selectedConversationIds}
-                            onToggleSelected={toggleConversationSelected}
-                            swipe={{
-                                enabled: swipeEnabled,
-                                onArchive: swipeArchive,
-                                onMove: (conversation) => setMoveDialog({ conversation }),
-                            }}
-                        />
-                        {hasMore && !rowCapReached && (
-                            <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
-                                {loadMoreStatus}
-                            </div>
-                        )}
-                        {rowCapReached && (
-                            <p className="p-4 text-center text-xs text-text-muted">
-                                Showing the most recent {rowCap} conversations &mdash; refine your search or filters to see more.
+                    {loading ? (
+                        // A skeleton of rows rather than a line of text: the list keeps its shape while a folder that was not shown a
+                        // moment ago loads (one that was is shown at once, from its snapshot).
+                        <div role="status" aria-busy="true" className="p-4">
+                            <span className="sr-only">Loading&hellip;</span>
+                            <SkeletonList count={8} />
+                        </div>
+                    ) : asConversations ? (
+                        <>
+                            <ConversationList
+                                conversations={listedConversations}
+                                newestFirst={preferences.sortBy === "date" && preferences.sortOrder === "desc"}
+                                mailboxUid={activeMailboxUid}
+                                selectedUid={selectedUid}
+                                messageOverrides={conversationPatches}
+                                onMeetingResponded={patchListedMessage}
+                                onOpenMessage={handleOpenConversation}
+                                selectMode={selectMode}
+                                selectedConversationIds={selectedConversationIds}
+                                onToggleSelected={tickConversation}
+                                onSelectWithModifier={handleConversationModifierClick}
+                                exitingKeys={exitingKeys}
+                                swipe={{
+                                    enabled: swipeEnabled,
+                                    onArchive: swipeArchive,
+                                    onMove: (conversation) => setMoveDialog({ conversation }),
+                                }}
+                            />
+                            {hasMore && !rowCapReached && (
+                                <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
+                                    {loadMoreStatus}
+                                </div>
+                            )}
+                            {rowCapReached && (
+                                <p className="p-4 text-center text-xs text-text-muted">
+                                    Showing the most recent {rowCap} conversations &mdash; refine your search or filters to see more.
+                                </p>
+                            )}
+                        </>
+                    ) : messages.length === 0 ? (
+                        <>
+                            <p className="p-4 text-sm text-text-muted">
+                                {isSearching
+                                    ? `No messages match "${searchQuery}".`
+                                    : effectiveFilter === "all"
+                                      ? "No messages in this folder."
+                                      : "No messages here."}
                             </p>
-                        )}
-                    </>
-                ) : messages.length === 0 ? (
-                    <>
-                        <p className="p-4 text-sm text-text-muted">
-                            {isSearching
-                                ? `No messages match "${searchQuery}".`
-                                : effectiveFilter === "all"
-                                  ? "No messages in this folder."
-                                  : "No messages here."}
-                        </p>
-                        {/* Still offered while a filter hides every loaded row - what it's looking for may be
-                            on a later page. */}
-                        {hasMore && (
-                            <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
-                                {loadMoreStatus}
-                            </div>
-                        )}
-                    </>
-                ) : (
-                    <>
-                        <ul className={swipeEnabled ? "overflow-x-clip" : undefined}>
-                            {resultGroups
-                                ? resultGroups.map((group) => (
-                                      <li key={`${group.mailboxUid}\u0000${group.id}`} data-search-group={group.id}>
-                                          <div className="px-4 py-1.5 bg-surface-alt border-b border-border text-xs text-text-muted flex items-center justify-between gap-2">
-                                              <span className="truncate font-semibold">{rowSubject(group.messages[0])}</span>
-                                              <span className="shrink-0">
-                                                  {group.messages.length} matching message{group.messages.length === 1 ? "" : "s"}
-                                              </span>
-                                          </div>
-                                          <ul>{group.messages.map(renderMessageRow)}</ul>
-                                      </li>
-                                  ))
-                                : messages.map(renderMessageRow)}
-                        </ul>
-                        {hasMore && !rowCapReached && (
-                            <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
-                                {loadMoreStatus}
-                            </div>
-                        )}
-                        {rowCapReached && (
-                            <p className="p-4 text-center text-xs text-text-muted">
-                                Showing the most recent {rowCap} messages &mdash; refine your search or filters to see more.
-                            </p>
-                        )}
-                        {aggregateFolderType && !isSearching && (
-                            <p className="p-4 text-center text-xs text-text-muted">
-                                Showing the most recent mail from each mailbox. Open a specific mailbox&rsquo;s folder to
-                                see older mail.
-                            </p>
-                        )}
-                    </>
-                )}
+                            {/* Still offered while a filter hides every loaded row - what it's looking for may be
+                                on a later page. */}
+                            {hasMore && (
+                                <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
+                                    {loadMoreStatus}
+                                </div>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            <ul className={swipeEnabled ? "overflow-x-clip" : undefined}>
+                                {resultGroups
+                                    ? resultGroups.map((group) => (
+                                          <li key={`${group.mailboxUid}\u0000${group.id}`} data-search-group={group.id}>
+                                              <div className="px-4 py-1.5 bg-surface-alt border-b border-border text-xs text-text-muted flex items-center justify-between gap-2">
+                                                  <span className="truncate font-semibold">{rowSubject(group.messages[0])}</span>
+                                                  <span className="shrink-0">
+                                                      {group.messages.length} matching message{group.messages.length === 1 ? "" : "s"}
+                                                  </span>
+                                              </div>
+                                              <ul>{group.messages.map(renderMessageRow)}</ul>
+                                          </li>
+                                      ))
+                                    : messages.map(renderMessageRow)}
+                            </ul>
+                            {hasMore && !rowCapReached && (
+                                <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
+                                    {loadMoreStatus}
+                                </div>
+                            )}
+                            {rowCapReached && (
+                                <p className="p-4 text-center text-xs text-text-muted">
+                                    Showing the most recent {rowCap} messages &mdash; refine your search or filters to see more.
+                                </p>
+                            )}
+                            {aggregateFolderType && !isSearching && (
+                                <p className="p-4 text-center text-xs text-text-muted">
+                                    Showing the most recent mail from each mailbox. Open a specific mailbox&rsquo;s folder to
+                                    see older mail.
+                                </p>
+                            )}
+                        </>
+                    )}
+                </div>
             </div>
             {/* The reading pane's own height: a row of the full-height mail view, stretched to it by the
                 flex chain rather than by a percentage (an explicit height would opt it out of that

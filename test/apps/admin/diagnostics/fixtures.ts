@@ -4,6 +4,7 @@
 import type {
     DiagnosticsComponent,
     DiagnosticsComponentName,
+    DiagnosticsInformation,
     DiagnosticsMetrics,
     DiagnosticsRuntime,
     DiagnosticsVersions,
@@ -155,6 +156,23 @@ export function metricsSample(overrides: Partial<DiagnosticsMetrics> = {}): Diag
             ],
             errors: [],
         },
+        ...overrides,
+    };
+}
+
+/** An environment and configuration as the server answers: secrets are listed by name and have no value. */
+export function informationFixture(overrides: Partial<DiagnosticsInformation> = {}): DiagnosticsInformation {
+    return {
+        environment: [
+            { name: "DB_PASSWORD", redacted: true },
+            { name: "NODE_ENV", value: "production", redacted: false },
+            { name: "TZ", value: "UTC", redacted: false },
+        ],
+        configuration: [
+            { name: "datastores:cache:type", value: "redis", redacted: false },
+            { name: "datastores:cache:url", value: "redis://cache:6379", redacted: false },
+            { name: "datastores:mongo:password", redacted: true },
+        ],
         ...overrides,
     };
 }

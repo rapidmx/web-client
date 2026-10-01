@@ -8,6 +8,7 @@ import { addDays, addMinutes, format, isToday, startOfDay } from "date-fns";
 import { dayDropId, eventDragId, resizeDragId, slotDropId } from "../../../../lib/calendar/calendarDragIds.js";
 import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { occursOnDay, startsOnDay } from "./allDay.js";
+import { occurrenceMarker, useActiveOccurrenceKey } from "./activeOccurrence.js";
 import { EventAnchor, anchorOf } from "./EventShell.js";
 
 const HOUR_HEIGHT_PX = 48;
@@ -34,6 +35,7 @@ export interface TimeGridViewProps {
 export default function TimeGridView({ days, occurrences, folderColors, onSelectEvent, onSelectSlot }: TimeGridViewProps) {
     const allDayEvents = occurrences.filter((occ) => occ.allDay);
     const timedEvents = occurrences.filter((occ) => !occ.allDay);
+    const activeKey = useActiveOccurrenceKey();
 
     return (
         <div data-calendar-scroller className="flex-1 flex flex-col min-h-0 overflow-y-auto">
@@ -55,17 +57,21 @@ export default function TimeGridView({ days, occurrences, folderColors, onSelect
                         <div key={day.toISOString()} className="flex-1 min-w-0 p-1 flex flex-col gap-0.5 border-l border-border">
                             {allDayEvents
                                 .filter((occ) => occursOnDay(occ, day))
-                                .map((occ) => (
-                                    <button
-                                        key={occ.occurrenceKey}
-                                        type="button"
-                                        onClick={() => onSelectEvent(occ)}
-                                        style={{ backgroundColor: folderColors[occ.folderUid], color: "#fff" }}
-                                        className="text-xs text-left truncate rounded-sm px-1.5 py-0.5"
-                                    >
-                                        {occ.title}
-                                    </button>
-                                ))}
+                                .map((occ) => {
+                                    const marker = occurrenceMarker(activeKey, occ);
+                                    return (
+                                        <button
+                                            key={occ.occurrenceKey}
+                                            type="button"
+                                            {...marker.attrs}
+                                            onClick={() => onSelectEvent(occ)}
+                                            style={{ backgroundColor: folderColors[occ.folderUid], color: "#fff" }}
+                                            className={["text-xs text-left truncate rounded-sm px-1.5 py-0.5", marker.className].join(" ")}
+                                        >
+                                            {occ.title}
+                                        </button>
+                                    );
+                                })}
                         </div>
                     ))}
                 </div>
@@ -175,11 +181,13 @@ function ContinuationBlock({
 }) {
     const isFree = occurrence.busyStatus === "free";
     const { top, height } = blockGeometry(occurrence, dayStart);
+    const marker = occurrenceMarker(useActiveOccurrenceKey(), occurrence);
     return (
         <div
+            {...marker.attrs}
             onClick={() => onSelect(occurrence)}
             style={{ position: "absolute", top, height, left: 2, right: 2, ...(isFree ? undefined : { backgroundColor: color, color: "#fff" }) }}
-            className={["rounded-sm px-1.5 py-0.5 text-xs text-left overflow-hidden cursor-pointer", isFree ? "bg-surface-alt text-text-muted" : ""].join(" ")}
+            className={["rounded-sm px-1.5 py-0.5 text-xs text-left overflow-hidden cursor-pointer", isFree ? "bg-surface-alt text-text-muted" : "", marker.className].join(" ")}
         >
             <div className="font-medium truncate">{occurrence.title}</div>
         </div>
@@ -207,6 +215,7 @@ function EventBlock({
 
     const start = new Date(occurrence.startDate);
     const { top, height } = blockGeometry(occurrence, dayStart);
+    const marker = occurrenceMarker(useActiveOccurrenceKey(), occurrence);
     // The resize handle's own drag position has no live pixel preview (it only applies its ns-resize
     // affordance) — the actual new end time is computed from whichever slot it's dropped onto (see
     // `resolveDragAction`'s "resize" case), snapped to the grid rather than following the pointer
@@ -215,6 +224,7 @@ function EventBlock({
     return (
         <div
             ref={setNodeRef}
+            {...marker.attrs}
             onClick={() => onSelect(occurrence)}
             style={{
                 position: "absolute",
@@ -230,6 +240,7 @@ function EventBlock({
                 "rounded-sm px-1.5 py-0.5 text-xs text-left overflow-hidden cursor-pointer",
                 isFree ? "bg-surface-alt text-text-muted" : "",
                 isDragging ? "opacity-50" : "",
+                marker.className,
             ].join(" ")}
             {...listeners}
             {...attributes}

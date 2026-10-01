@@ -7,6 +7,7 @@ import type { Editor } from "@tiptap/react";
 import {
     HiOutlineArrowsPointingIn,
     HiOutlineArrowsPointingOut,
+    HiOutlineArrowTopRightOnSquare,
     HiOutlineChevronDown,
     HiOutlineIdentification,
     HiOutlineLockClosed,
@@ -65,6 +66,11 @@ export interface ComposeWindowProps {
     session: ComposeSession;
     onClose: () => void;
     onToggleMinimize: () => void;
+    /** The window is a card in the reading pane, above the message being replied to (see `ComposeSession.inlineFor`), not a floating
+     * window: full width, a fixed height, never minimized, resized or expanded, and "Pop out" in place of those. */
+    inline?: boolean;
+    /** Moves an `inline` window out to the floating stack at the bottom right. */
+    onPopOut?: () => void;
     /** The signed-in user - identifies their own ("primary") mailbox, the default From when the session
      * doesn't name a mailbox. */
     userUid?: string;
@@ -199,13 +205,17 @@ export default function ComposeWindow({
     session,
     onClose,
     onToggleMinimize,
+    inline,
+    onPopOut,
     userUid,
     trusted,
     autosaveDelayMs = DEFAULT_AUTOSAVE_DELAY_MS,
     autosaveMaxWaitMs = DEFAULT_AUTOSAVE_MAX_WAIT_MS,
     cryptoRetryDelaysMs = DEFAULT_CRYPTO_RETRY_DELAYS_MS,
 }: ComposeWindowProps) {
-    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, initialEncrypt, signatureContext, suppressSigning, minimized, quotePending, late, resume } = session;
+    const { id, initialTo, initialCc, initialSubject, initialQuotedHtml, initialEncrypt, signatureContext, suppressSigning, quotePending, late, resume } = session;
+    // An inline card has no minimized state: the session's flag is for the floating window it may later be popped out to.
+    const minimized = session.minimized && !inline;
     // What a reply worked out after this window opened (see `OpenComposeInput.pending`): better recipients, applied below
     // only to fields still exactly as they opened - so these, not `initialTo`/`initialCc`, are what "untouched" is measured against.
     const baselineTo = late?.to ?? initialTo;
@@ -1455,19 +1465,21 @@ export default function ComposeWindow({
         <>
         <div
             ref={windowRef}
-            role="dialog"
+            role={inline ? "region" : "dialog"}
             data-shortcut-scope="compose"
             aria-labelledby={titleId}
             onDragEnter={handleDragEnter}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            style={!isMobile && manualSize ? { width: manualSize.width, height: manualSize.height } : undefined}
+            style={!inline && !isMobile && manualSize ? { width: manualSize.width, height: manualSize.height } : undefined}
             className={[
                 "shrink-0 flex flex-col bg-surface border border-border shadow-modal overflow-hidden",
                 // `fixed` and `relative` may not both be on the element: Tailwind emits `.relative` after `.fixed`, so it wins and the
                 // sheet sat in the flow of the little fixed container the windows are stacked in instead of covering the screen.
-                isMobile
+                inline
+                    ? "relative w-full h-[520px] rounded-md"
+                    : isMobile
                     ? "fixed inset-0 w-full h-full rounded-none border-0"
                     : ["relative border-b-0 rounded-t-md", manualSize ? "" : expanded ? "w-[720px] h-[85vh]" : "w-[480px] h-[520px]"].join(" "),
             ].join(" ")}
@@ -1481,7 +1493,7 @@ export default function ComposeWindow({
                     <span className="text-sm">Pictures go into the message where the cursor is</span>
                 </div>
             )}
-            {!isMobile && (
+            {!inline && !isMobile && (
                 <>
                     <div
                         onPointerDown={handleResizeStart("top")}
@@ -1503,15 +1515,19 @@ export default function ComposeWindow({
             )}
 
             <div
-                className="h-10 shrink-0 flex items-center justify-between gap-2 px-3 bg-primary-darker text-white cursor-pointer"
-                onClick={onToggleMinimize}
+                className={["h-10 shrink-0 flex items-center justify-between gap-2 px-3 bg-primary-darker text-white", inline ? "" : "cursor-pointer"].join(" ")}
+                onClick={inline ? undefined : onToggleMinimize}
             >
                 <span id={titleId} className="text-sm font-medium truncate">
                     {title}
                 </span>
                 <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
-                    <HeaderButton label="Minimize" onClick={onToggleMinimize} icon={HiOutlineMinus} />
-                    {!isMobile && (
+                    {inline ? (
+                        <HeaderButton label="Pop out" onClick={() => onPopOut?.()} icon={HiOutlineArrowTopRightOnSquare} />
+                    ) : (
+                        <HeaderButton label="Minimize" onClick={onToggleMinimize} icon={HiOutlineMinus} />
+                    )}
+                    {!inline && !isMobile && (
                         <HeaderButton
                             label={expanded ? "Collapse" : "Expand"}
                             onClick={toggleExpanded}

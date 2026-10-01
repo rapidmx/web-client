@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { format } from "date-fns";
+import { format, parseISO, startOfDay } from "date-fns";
 import { WeekdayCode } from "../../../../lib/calendar/calendarApi.js";
 import { CalendarOccurrence, toEventWallClock } from "../../../../lib/calendar/recurrence.js";
 
@@ -110,6 +110,11 @@ export function occursOnDay(occurrence: CalendarOccurrence, day: Date): boolean 
         return start >= dayStart && start < dayEnd;
     }
     return start < dayEnd && end > dayStart;
+}
+
+/** The local calendar day (midnight) `occurrence` starts on - the day a view shows to bring it into sight. */
+export function occurrenceDay(occurrence: CalendarOccurrence): Date {
+    return occurrence.allDay ? parseISO(allDayDateKey(occurrence.startDate)) : startOfDay(new Date(occurrence.startDate));
 }
 
 /**

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import DiagnosticsPage from "../../../../apps/admin/diagnostics/index.js";
 import { adminNavItems } from "../../../../apps/shared/components/admin/layout/AdminShell.js";
-import { runtimeFixture, versionsFixture } from "./fixtures.js";
+import { informationFixture, runtimeFixture, versionsFixture } from "./fixtures.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -23,6 +23,8 @@ function mockApi(canary: () => Response = () => jsonResponse(200, {})) {
                 return jsonResponse(200, { required: false });
             case "/api/admin/diagnostics/versions":
                 return jsonResponse(200, versionsFixture());
+            case "/api/admin/diagnostics/information":
+                return jsonResponse(200, informationFixture());
             case "/api/admin/diagnostics/runtime":
                 return jsonResponse(200, runtimeFixture());
             case "/api/system/plugins":

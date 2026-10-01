@@ -830,6 +830,7 @@ function MessageDetailContent({
                     mailboxUid: message.mailboxUid,
                     subject: forwardSubject(message.subject),
                     signatureContext: "reply_forward",
+                    inlineFor: message.uid,
                     encrypt,
                     threading,
                     pending: late,
@@ -843,6 +844,8 @@ function MessageDetailContent({
                     subject: replySubject(message.subject),
                     signatureContext: "reply_forward",
                     suppressSigning: isLikelyMailingList({ listUnsubscribe: message.listUnsubscribeHeader }),
+                    // A card above this message in the reading pane when it is in one, else the floating window (see `OpenComposeInput.inlineFor`).
+                    inlineFor: message.uid,
                     encrypt,
                     threading,
                     pending: late,

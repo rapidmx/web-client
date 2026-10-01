@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect } from "react";
-import { HiOutlineMinus, HiOutlineXMark } from "react-icons/hi2";
+import { HiOutlineArrowTopRightOnSquare, HiOutlineMinus, HiOutlineXMark } from "react-icons/hi2";
 import Skeleton from "../../../../../lib/components/feedback/Skeleton.js";
 import Alert from "../../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
@@ -18,6 +18,10 @@ export interface ComposeWindowPlaceholderProps {
     onRetry: () => void;
     onClose: () => void;
     onToggleMinimize: () => void;
+    /** The placeholder stands in for an inline card in the reading pane (see `ComposeWindowProps.inline`). */
+    inline?: boolean;
+    /** Moves an `inline` placeholder out to the floating stack. */
+    onPopOut?: () => void;
 }
 
 /**
@@ -28,14 +32,14 @@ export interface ComposeWindowPlaceholderProps {
  *
  * Nothing here can be typed into yet, and there is no draft to save or discard, so Close just closes.
  */
-export default function ComposeWindowPlaceholder({ session, failed, onRetry, onClose, onToggleMinimize }: ComposeWindowPlaceholderProps) {
+export default function ComposeWindowPlaceholder({ session, failed, onRetry, onClose, onToggleMinimize, inline, onPopOut }: ComposeWindowPlaceholderProps) {
     const isMobile = useIsMobile();
     const title = session.initialSubject?.trim() || "New Message";
     const titleId = `compose-title-${session.id}`;
 
     useEffect(() => markComposePhase(session.id, "shell"), [session.id]);
 
-    if (session.minimized) {
+    if (session.minimized && !inline) {
         return (
             <div role="dialog" aria-label={title} className="w-64 shrink-0 bg-surface border border-border border-b-0 rounded-t-md shadow-modal">
                 <div className="h-10 flex items-center justify-between gap-2 px-3 rounded-t-md bg-primary-darker text-white cursor-pointer" onClick={onToggleMinimize}>
@@ -47,27 +51,34 @@ export default function ComposeWindowPlaceholder({ session, failed, onRetry, onC
 
     return (
         <div
-            role="dialog"
+            role={inline ? "region" : "dialog"}
             aria-labelledby={titleId}
             aria-busy={!failed}
             className={[
                 "relative shrink-0 flex flex-col bg-surface border border-border shadow-modal overflow-hidden",
-                isMobile ? "fixed inset-0 w-full h-full rounded-none border-0" : "border-b-0 rounded-t-md w-[480px] h-[520px]",
+                inline
+                    ? "w-full h-[520px] rounded-md"
+                    : isMobile
+                      ? "fixed inset-0 w-full h-full rounded-none border-0"
+                      : "border-b-0 rounded-t-md w-[480px] h-[520px]",
             ].join(" ")}
         >
-            <div className="h-10 shrink-0 flex items-center justify-between gap-2 px-3 bg-primary-darker text-white cursor-pointer" onClick={onToggleMinimize}>
+            <div
+                className={["h-10 shrink-0 flex items-center justify-between gap-2 px-3 bg-primary-darker text-white", inline ? "" : "cursor-pointer"].join(" ")}
+                onClick={inline ? undefined : onToggleMinimize}
+            >
                 <span id={titleId} className="text-sm font-medium truncate">
                     {title}
                 </span>
                 <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
                     <button
                         type="button"
-                        aria-label="Minimize"
-                        title="Minimize"
-                        onClick={onToggleMinimize}
+                        aria-label={inline ? "Pop out" : "Minimize"}
+                        title={inline ? "Pop out" : "Minimize"}
+                        onClick={inline ? onPopOut : onToggleMinimize}
                         className="w-6 h-6 flex items-center justify-center rounded-sm text-white/80 hover:bg-white/15 hover:text-white"
                     >
-                        <HiOutlineMinus size={14} />
+                        {inline ? <HiOutlineArrowTopRightOnSquare size={14} /> : <HiOutlineMinus size={14} />}
                     </button>
                     <button
                         type="button"

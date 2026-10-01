@@ -114,6 +114,44 @@ describe("the compose window's code, and what stands in for it", () => {
         await waitFor(() => expect(download.loads).toBe(2));
     });
 
+    it("holds an inline reply's placeholder in the pane and pops it out to the floating stack while the code is still loading", async () => {
+        const user = userEvent.setup();
+        const gate = deferred();
+        download.gate = gate.promise;
+        const context = await import("../../../apps/shared/components/mail/compose/ComposeContext.js");
+        function Reader() {
+            const { openCompose } = context.useCompose();
+            const sessions = context.useInlineCompose(["m1"]);
+            return (
+                <>
+                    <button type="button" onClick={() => openCompose({ mailboxUid: "mb1", subject: "Re: Hi", inlineFor: "m1" })}>
+                        Reply
+                    </button>
+                    <ul data-testid="pane">
+                        {sessions.map((session) => (
+                            <context.InlineComposeSlot key={session.id} id={session.id} />
+                        ))}
+                    </ul>
+                </>
+            );
+        }
+        render(
+            <context.default>
+                <Reader />
+            </context.default>,
+        );
+        await user.click(screen.getByRole("button", { name: "Reply" }));
+        const region = await screen.findByRole("region", { name: "Re: Hi" });
+        expect(screen.getByTestId("pane")).toContainElement(region);
+
+        await user.click(screen.getByRole("button", { name: "Pop out" }));
+
+        expect(await screen.findByRole("dialog", { name: "Re: Hi" })).toBe(region);
+        expect(screen.getByTestId("pane")).toBeEmptyDOMElement();
+        gate.resolve();
+        expect(await screen.findByTestId("real-window")).toBeInTheDocument();
+    });
+
     it("lets the placeholder be minimized and closed while the code is still loading", async () => {
         const user = userEvent.setup();
         const gate = deferred();

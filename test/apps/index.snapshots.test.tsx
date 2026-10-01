@@ -269,7 +269,7 @@ describe("InboxPage: a folder shown a moment ago", () => {
         const first = render(<InboxPage userUid="u1" />);
         await screen.findByText("First subject");
         await waitFor(() => expect(readListSnapshot(listSnapshotKey({ mailboxUid: "mb1", folderUid: "f1", conversations: false, filter: "all", labels: "", sort: "date:desc" }))).toBeDefined());
-        const list = document.querySelector<HTMLElement>('[class*="md:w-96"]')!;
+        const list = screen.getByTestId("mail-list-scroll");
         list.scrollTop = 240;
         fireEvent.scroll(list);
         first.unmount();
@@ -278,7 +278,7 @@ describe("InboxPage: a folder shown a moment ago", () => {
         mockInbox(() => listing.promise);
         render(<InboxPage userUid="u1" />);
         await screen.findByText("First subject");
-        const again = document.querySelector<HTMLElement>('[class*="md:w-96"]')!;
+        const again = screen.getByTestId("mail-list-scroll");
         await waitFor(() => expect(again.scrollTop).toBe(240));
     }
 

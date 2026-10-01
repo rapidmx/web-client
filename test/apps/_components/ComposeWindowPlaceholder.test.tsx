@@ -13,10 +13,10 @@ import type { ComposeSession } from "../../../apps/shared/components/mail/compos
 const perf = vi.hoisted(() => ({ markComposePhase: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/compose/composePerf.js", () => perf);
 
-function renderPlaceholder(session: Partial<ComposeSession> = {}, props: { failed?: boolean } = {}) {
-    const handlers = { onRetry: vi.fn(), onClose: vi.fn(), onToggleMinimize: vi.fn() };
+function renderPlaceholder(session: Partial<ComposeSession> = {}, props: { failed?: boolean; inline?: boolean } = {}) {
+    const handlers = { onRetry: vi.fn(), onClose: vi.fn(), onToggleMinimize: vi.fn(), onPopOut: vi.fn() };
     const utils = render(
-        <ComposeWindowPlaceholder session={{ id: "s1", signatureContext: "new", minimized: false, ...session }} failed={!!props.failed} {...handlers} />,
+        <ComposeWindowPlaceholder session={{ id: "s1", signatureContext: "new", minimized: false, ...session }} failed={!!props.failed} inline={props.inline} {...handlers} />,
     );
     return { ...utils, ...handlers };
 }
@@ -27,6 +27,33 @@ afterEach(() => {
 });
 
 describe("ComposeWindowPlaceholder", () => {
+    describe("inline, as a card in the reading pane", () => {
+        it("is a full-width region with Pop out and Close, and no Minimize", async () => {
+            const user = userEvent.setup();
+            const { onClose, onPopOut, onToggleMinimize } = renderPlaceholder({ initialSubject: "Re: Hi" }, { inline: true });
+            const region = screen.getByRole("region", { name: "Re: Hi" });
+            expect(region.className).toContain("w-full");
+            expect(region.className).not.toContain("fixed");
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Minimize" })).not.toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: "Pop out" }));
+            expect(onPopOut).toHaveBeenCalledTimes(1);
+            await user.click(screen.getByRole("button", { name: "Close" }));
+            expect(onClose).toHaveBeenCalledTimes(1);
+            // The header does nothing when clicked.
+            await user.click(screen.getAllByText("Re: Hi")[0]);
+            expect(onToggleMinimize).not.toHaveBeenCalled();
+        });
+
+        it("is not fullscreen on mobile and is not a minimized chip even if the session is minimized", () => {
+            mockMatchMedia(true);
+            renderPlaceholder({ minimized: true }, { inline: true });
+            const region = screen.getByRole("region");
+            expect(region.className).not.toContain("fixed");
+            expect(screen.getByRole("button", { name: "Pop out" })).toBeInTheDocument();
+        });
+    });
+
     it("shows the window's frame with what it will open with, as a busy dialog titled by the subject", () => {
         renderPlaceholder({ initialTo: "sender@example.com", initialSubject: "Re: Hi" });
         const dialog = screen.getByRole("dialog", { name: "Re: Hi" });

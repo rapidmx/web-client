@@ -10,6 +10,7 @@ import Button from "../../../../lib/components/buttons/Button.js";
 import useIsMobile from "../../../../lib/util/useIsMobile.js";
 import EventDetails from "./EventDetails.js";
 import EventEditor from "./EventEditor.js";
+import EventMatchNav from "./EventMatchNav.js";
 import EventShell, { EventAnchor, EventShellVariant } from "./EventShell.js";
 import { QuickTab } from "./QuickCreateTabs.js";
 
@@ -51,6 +52,8 @@ export interface EventModalProps {
     /** Where the booking plugin's Settings pages are (`/settings/booking-types`) when it is running: a new event then has an Appointment
      * schedule tab, and its More options opens the plugin's own new-link page. Without it there are only the Event and Task tabs. */
     bookingHref?: string;
+    /** While the calendar's search is running: the existing event's card gets Previous / Next match buttons either side, which call these. */
+    matchNav?: { onPrevious: () => void; onNext: () => void };
     onSaved: () => void;
     onDeleted: () => void;
 }
@@ -92,6 +95,7 @@ export default function EventModal({
     initialAllDay,
     anchor,
     bookingHref,
+    matchNav,
     onSaved,
     onDeleted,
 }: EventModalProps) {
@@ -189,6 +193,7 @@ export default function EventModal({
                 />
             ) : (
                 <EventDetails
+                    key={occurrence.occurrenceKey}
                     occurrence={occurrence}
                     isInvited={isInvited}
                     myResponse={canRespond ? myAttendee.responseStatus : undefined}
@@ -201,6 +206,7 @@ export default function EventModal({
                     onDeleted={onDeleted}
                 />
             )}
+            {!isForm && matchNav && <EventMatchNav onPrevious={matchNav.onPrevious} onNext={matchNav.onNext} />}
         </EventShell>
     );
 }

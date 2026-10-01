@@ -16,9 +16,13 @@ import InstalledPlugins, {
 } from "../../../../apps/shared/components/admin/diagnostics/InstalledPlugins.js";
 import PackagesTable, { PACKAGES_PAGE_SIZE } from "../../../../apps/shared/components/admin/diagnostics/PackagesTable.js";
 import ServerVersionCard from "../../../../apps/shared/components/admin/diagnostics/ServerVersionCard.js";
-import VersionsPanel from "../../../../apps/shared/components/admin/diagnostics/VersionsPanel.js";
+import InformationPanel from "../../../../apps/shared/components/admin/diagnostics/InformationPanel.js";
+import SettingsTable, {
+    HIDDEN_VALUE,
+    SETTINGS_PAGE_SIZE,
+} from "../../../../apps/shared/components/admin/diagnostics/SettingsTable.js";
 import type { DiagnosticsComponent, DiagnosticsVersions } from "../../../../apps/shared/components/admin/diagnostics/diagnosticsApi.js";
-import { runningComponent, versionsFixture } from "./fixtures.js";
+import { informationFixture, runningComponent, versionsFixture } from "./fixtures.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -311,34 +315,104 @@ describe("InstalledPlugins", () => {
     });
 });
 
-describe("VersionsPanel", () => {
+describe("InformationPanel", () => {
     const idle = { data: undefined, error: undefined, loading: false };
 
-    it("shows the server, the containers, the plugins and the packages", () => {
+    it("shows the server, the containers, the plugins, the environment, the configuration and the packages", () => {
         render(
-            <VersionsPanel
+            <InformationPanel
                 versions={{ data: versionsFixture(), error: undefined, loading: false }}
                 plugins={{ data: { plugins: [plugin({ name: "@rapidmx/mapi", packageVersion: "1.1.0" })], status: statusFixture() }, error: undefined, loading: false }}
+                information={{ data: informationFixture(), error: undefined, loading: false }}
             />
         );
-        for (const name of ["Server", "Other containers", "Installed plugins", "Installed packages"]) {
+        for (const name of ["Server", "Other containers", "Installed plugins", "Environment variables", "Configuration", "Installed packages"]) {
             expect(screen.getByRole("region", { name })).toBeInTheDocument();
         }
     });
 
+    it("says the environment is loading, and shows why it could not be read, beside the rest of the tab", () => {
+        const versions = { data: versionsFixture(), error: undefined, loading: false };
+        const { rerender } = render(<InformationPanel versions={versions} plugins={idle} information={{ ...idle, loading: true }} />);
+        expect(screen.getByText(/Loading the environment/)).toBeInTheDocument();
+        rerender(<InformationPanel versions={versions} plugins={idle} information={{ ...idle, error: "Not found." }} />);
+        expect(screen.getByText("Not found.")).toBeInTheDocument();
+        expect(screen.queryByText(/Loading the environment/)).not.toBeInTheDocument();
+        expect(screen.queryByRole("region", { name: "Environment variables" })).not.toBeInTheDocument();
+        expect(screen.getByRole("region", { name: "Server" })).toBeInTheDocument();
+    });
+
+    it("copes with an information answer that leaves out the lists", () => {
+        const versions = { data: versionsFixture(), error: undefined, loading: false };
+        render(<InformationPanel versions={versions} plugins={idle} information={{ data: {} as never, error: undefined, loading: false }} />);
+        expect(screen.getAllByText("Nothing is set.")).toHaveLength(2);
+    });
+
     it("says it is loading, and shows an error", () => {
-        const { rerender } = render(<VersionsPanel versions={{ ...idle, loading: true }} plugins={idle} />);
+        const { rerender } = render(<InformationPanel versions={{ ...idle, loading: true }} plugins={idle} information={idle} />);
         expect(screen.getByText(/Loading/)).toBeInTheDocument();
-        rerender(<VersionsPanel versions={{ ...idle, error: "Nope." }} plugins={idle} />);
+        rerender(<InformationPanel versions={{ ...idle, error: "Nope." }} plugins={idle} information={idle} />);
         expect(screen.getByText("Nope.")).toBeInTheDocument();
         expect(screen.queryByText(/Loading/)).not.toBeInTheDocument();
     });
 
     it("copes with a server that leaves out the lists", () => {
         const sparse = { server: versionsFixture().server } as DiagnosticsVersions;
-        render(<VersionsPanel versions={{ data: sparse, error: undefined, loading: false }} plugins={idle} />);
+        render(<InformationPanel versions={{ data: sparse, error: undefined, loading: false }} plugins={idle} information={idle} />);
         expect(screen.getByText("0 packages")).toBeInTheDocument();
         // No kubernetes field is read as Kubernetes being unavailable.
         expect(screen.getByText("Kubernetes information is not available on this server.")).toBeInTheDocument();
+    });
+});
+
+describe("SettingsTable", () => {
+    const settings = Array.from({ length: 250 }, (_, index) => ({
+        name: `setting-${String(index).padStart(3, "0")}`,
+        value: `value-${index}`,
+        redacted: false,
+    }));
+    const props = { id: "diagnostics-test", title: "Test settings", description: "Some settings." };
+
+    it("shows a value, and the hidden text for a withheld one, counting them", () => {
+        render(<SettingsTable {...props} settings={informationFixture().environment} />);
+        const section = within(screen.getByRole("region", { name: "Test settings" }));
+        expect(section.getByText("Some settings.")).toBeInTheDocument();
+        expect(section.getByText("production")).toBeInTheDocument();
+        expect(section.getByText("DB_PASSWORD")).toBeInTheDocument();
+        expect(section.getByText(HIDDEN_VALUE)).toBeInTheDocument();
+        expect(section.getByRole("status")).toHaveTextContent("3 settings, 1 with a hidden value");
+    });
+
+    it("lists a page at a time", async () => {
+        const user = userEvent.setup();
+        render(<SettingsTable {...props} settings={settings} />);
+        expect(screen.getByRole("status")).toHaveTextContent("250 settings");
+        expect(screen.getAllByRole("row")).toHaveLength(SETTINGS_PAGE_SIZE + 1);
+        expect(screen.getByText("Showing 100 of 250")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Show more" }));
+        expect(screen.getAllByRole("row")).toHaveLength(201);
+        await user.click(screen.getByRole("button", { name: "Show more" }));
+        expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+    });
+
+    it("filters by name or shown value, never by a hidden one, and starts again from the first page", async () => {
+        const user = userEvent.setup();
+        render(<SettingsTable {...props} settings={[...settings, { name: "DB_PASSWORD", redacted: true }, { name: "NO_VALUE", redacted: false }]} />);
+        await user.click(screen.getByRole("button", { name: "Show more" }));
+        const filter = screen.getByRole("searchbox", { name: "Filter test settings" });
+        await user.type(filter, "VALUE-24");
+        expect(screen.getByRole("status")).toHaveTextContent("11 of 252 settings match, 1 with a hidden value");
+        expect(screen.getAllByRole("row")).toHaveLength(12);
+        await user.clear(filter);
+        await user.type(filter, "no_value");
+        expect(screen.getAllByRole("row")).toHaveLength(2);
+        await user.clear(filter);
+        await user.type(filter, "hidden");
+        expect(screen.getByText("No settings match.")).toBeInTheDocument();
+    });
+
+    it("says nothing is set for an empty list", () => {
+        render(<SettingsTable {...props} settings={[]} />);
+        expect(screen.getByText("Nothing is set.")).toBeInTheDocument();
     });
 });

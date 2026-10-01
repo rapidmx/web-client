@@ -29,9 +29,13 @@ import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calen
 import { resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
 import { createFolder } from "../../../lib/mail/mailApi.js";
 import { CalendarOccurrence, expandAllOccurrences } from "../../../lib/calendar/recurrence.js";
+import { initialMatchIndex, occurrencesInRange, searchOccurrences, searchTerms, stepMatchIndex } from "../../../lib/calendar/eventSearch.js";
 import Drawer from "../../../lib/components/overlays/Drawer.js";
 import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../shared/components/calendar/layout/CalendarShell.js";
 import CalendarListSidebar from "../../shared/components/calendar/CalendarListSidebar.js";
+import CalendarSearchBox from "../../shared/components/calendar/CalendarSearchBox.js";
+import { ActiveOccurrenceContext } from "../../shared/components/calendar/activeOccurrence.js";
+import { occurrenceDay } from "../../shared/components/calendar/allDay.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import EventModal from "../../shared/components/calendar/EventModal.js";
 import FloatingActionButton from "../../shared/components/layout/FloatingActionButton.js";
@@ -287,10 +291,71 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         [client],
     );
 
+    // Search: `searchText` is the box, `query` what it held once typing paused (or Enter was pressed) and is what is searched for. A search covers every
+    // event of the checked calendars whatever the view shows (see `searchOccurrences()`); while one runs the views show only its matches, and
+    // `activeKey` is the match being pointed at (Previous/Next match step through `matches`).
+    const [searchText, setSearchText] = useState("");
+    const [query, setQuery] = useState("");
+    const [activeKey, setActiveKey] = useState<string | null>(null);
+    const searchInputRef = useRef<HTMLInputElement | null>(null);
+    const searching = searchTerms(query).length > 0;
+    useEffect(() => {
+        const timer = setTimeout(() => setQuery(searchText), 300);
+        return () => clearTimeout(timer);
+    }, [searchText]);
+    const matches = useMemo(() => (searching ? searchOccurrences(events, query) : []), [events, query, searching]);
+    const activeIndex = matches.findIndex((m) => m.occurrenceKey === activeKey);
+
     const occurrences = useMemo(
-        () => expandAllOccurrences(events, rangeStart, rangeEnd),
-        [events, rangeStart, rangeEnd],
+        () => (searching ? occurrencesInRange(matches, rangeStart, rangeEnd) : expandAllOccurrences(events, rangeStart, rangeEnd)),
+        [events, matches, searching, rangeStart, rangeEnd],
     );
+
+    /** Points at `match`, moving the view to the day it is on unless the view already shows it. */
+    function showMatch(match: CalendarOccurrence) {
+        setActiveKey(match.occurrenceKey);
+        // An event's card that is open moves on to it, so the card and the view stay together.
+        setModal((current) => (current?.occurrence ? { occurrence: match } : current));
+        if (occurrencesInRange([match], rangeStart, rangeEnd).length === 0) {
+            setViewDate(occurrenceDay(match));
+        }
+    }
+
+    function stepMatch(direction: 1 | -1) {
+        const next = matches[stepMatchIndex(activeIndex, matches.length, direction)];
+        if (next) {
+            showMatch(next);
+        }
+    }
+
+    function clearSearch() {
+        setSearchText("");
+        setQuery("");
+    }
+
+    function submitSearch(backwards: boolean) {
+        if (searchText !== query) {
+            setQuery(searchText);
+        } else {
+            stepMatch(backwards ? -1 : 1);
+        }
+    }
+
+    // A new search goes to its first match: the first one in the view if there is one, else the first from the day being viewed on (the nearest
+    // before it when there is none after). Matches that change under the same query (a saved edit, a live update) leave the view where it is.
+    const searchedQueryRef = useRef("");
+    useEffect(() => {
+        if (!searching || matches.length === 0) {
+            searchedQueryRef.current = "";
+            setActiveKey(null);
+            return;
+        }
+        if (searchedQueryRef.current !== query) {
+            searchedQueryRef.current = query;
+            showMatch(matches[initialMatchIndex(matches, rangeStart, rangeEnd, startOfDay(viewDate))]);
+        }
+    }, [matches, query, searching]);
+
 
     const splitColumns = useMemo(
         () =>
@@ -345,6 +410,12 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         }
     }, [viewDate]);
 
+    // Brings the match being pointed at into sight (the views scroll their own hours; the page may too).
+    useEffect(() => {
+        const marked = Array.from(swipe.ref.current!.querySelectorAll<HTMLElement>("[data-occurrence-key]"));
+        marked.find((el) => el.dataset.occurrenceKey === activeKey)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }, [activeKey, viewDate, view, loading]);
+
     function goToday() {
         setViewDate(startOfDay(new Date()));
     }
@@ -371,6 +442,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     }
 
     function openEvent(occurrence: CalendarOccurrence) {
+        if (searching) {
+            setActiveKey(occurrence.occurrenceKey);
+        }
         setModal({ occurrence });
     }
 
@@ -387,6 +461,10 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     useShortcut(SHORTCUTS.calendar.workWeek, () => setView("workWeek"));
     useShortcut(SHORTCUTS.calendar.week, () => setView("week"));
     useShortcut(SHORTCUTS.calendar.month, () => setView("month"));
+    useShortcut(SHORTCUTS.calendar.search, () => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+    });
     const newEventHint = useShortcutProps("New event", SHORTCUTS.calendar.create, !!mailboxUid && !!folderUid);
     const previousHint = useShortcutProps("Previous", SHORTCUTS.calendar.previous);
     const todayHint = useShortcutProps("Today", SHORTCUTS.calendar.today);
@@ -490,7 +568,19 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                         </button>
                     </div>
                     <h1 className="hidden md:block text-lg font-bold tracking-tight">{title}</h1>
-                    <div className="ml-auto flex flex-wrap gap-1">
+                    <CalendarSearchBox
+                        value={searchText}
+                        onChange={setSearchText}
+                        onSubmit={submitSearch}
+                        onClear={clearSearch}
+                        onPrevious={() => stepMatch(-1)}
+                        onNext={() => stepMatch(1)}
+                        active={searching}
+                        count={matches.length}
+                        position={activeIndex}
+                        inputRef={searchInputRef}
+                    />
+                    <div className="flex flex-wrap gap-1">
                         {VIEW_TYPES.map((v) => (
                             <ViewButton key={v} view={v} current={view} onSelect={setView} />
                         ))}
@@ -509,39 +599,41 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                             {loading ? (
                                 <p className="p-4 text-sm text-text-muted">Loading&hellip;</p>
                             ) : (
-                                <DndContext
-                                    sensors={sensors}
-                                    onDragStart={() => setDragging(true)}
-                                    onDragEnd={handleDragEnd}
-                                    onDragCancel={() => setDragging(false)}
-                                >
-                                    {view === "month" ? (
-                                        <MonthView
-                                            viewDate={viewDate}
-                                            occurrences={occurrences}
-                                            folderColors={folderColors}
-                                            onSelectDay={handleSelectDay}
-                                            onSelectEvent={openEvent}
-                                            onSelectSlot={(start, end, anchor) => openNewEvent(start, end, undefined, anchor, true)}
-                                        />
-                                    ) : view === "split" ? (
-                                        <SplitDayView
-                                            day={viewDate}
-                                            columns={splitColumns}
-                                            occurrences={occurrences}
-                                            onSelectEvent={openEvent}
-                                            onSelectSlot={(start, end, targetFolderUid, anchor) => openNewEvent(start, end, targetFolderUid, anchor)}
-                                        />
-                                    ) : (
-                                        <TimeGridView
-                                            days={days}
-                                            occurrences={occurrences}
-                                            folderColors={folderColors}
-                                            onSelectEvent={openEvent}
-                                            onSelectSlot={(start, end, anchor) => openNewEvent(start, end, undefined, anchor)}
-                                        />
-                                    )}
-                                </DndContext>
+                                <ActiveOccurrenceContext.Provider value={searching ? activeKey : null}>
+                                    <DndContext
+                                        sensors={sensors}
+                                        onDragStart={() => setDragging(true)}
+                                        onDragEnd={handleDragEnd}
+                                        onDragCancel={() => setDragging(false)}
+                                    >
+                                        {view === "month" ? (
+                                            <MonthView
+                                                viewDate={viewDate}
+                                                occurrences={occurrences}
+                                                folderColors={folderColors}
+                                                onSelectDay={handleSelectDay}
+                                                onSelectEvent={openEvent}
+                                                onSelectSlot={(start, end, anchor) => openNewEvent(start, end, undefined, anchor, true)}
+                                            />
+                                        ) : view === "split" ? (
+                                            <SplitDayView
+                                                day={viewDate}
+                                                columns={splitColumns}
+                                                occurrences={occurrences}
+                                                onSelectEvent={openEvent}
+                                                onSelectSlot={(start, end, targetFolderUid, anchor) => openNewEvent(start, end, targetFolderUid, anchor)}
+                                            />
+                                        ) : (
+                                            <TimeGridView
+                                                days={days}
+                                                occurrences={occurrences}
+                                                folderColors={folderColors}
+                                                onSelectEvent={openEvent}
+                                                onSelectSlot={(start, end, anchor) => openNewEvent(start, end, undefined, anchor)}
+                                            />
+                                        )}
+                                    </DndContext>
+                                </ActiveOccurrenceContext.Provider>
                             )}
                         </div>
                     </div>
@@ -568,6 +660,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                         initialAllDay={modal.initialAllDay}
                         anchor={modal.anchor}
                         bookingHref={bookingHref}
+                        matchNav={searching && matches.length > 0 ? { onPrevious: () => stepMatch(-1), onNext: () => stepMatch(1) } : undefined}
                         onSaved={handleSaved}
                         onDeleted={handleDeleted}
                     />

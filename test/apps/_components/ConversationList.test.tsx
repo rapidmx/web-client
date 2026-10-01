@@ -661,4 +661,80 @@ describe("meeting requests among a conversation's messages", () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(screen.queryByRole("button", { name: /RSVP/ })).not.toBeInTheDocument();
     });
+
+    describe("modifier clicks and leaving rows", () => {
+        it("hands a Shift, Ctrl or Cmd click on a row to onSelectWithModifier instead of opening it", async () => {
+            const onSelectWithModifier = vi.fn();
+            const onOpenMessage = vi.fn();
+            const user = userEvent.setup();
+            renderList({ onSelectWithModifier, onOpenMessage });
+            const open = screen.getAllByRole("button").find((button) => button.hasAttribute("data-row-open"))!;
+
+            await user.keyboard('{Shift>}');
+            await user.click(open);
+            await user.keyboard('{/Shift}{Control>}');
+            await user.click(open);
+            await user.keyboard('{/Control}{Meta>}');
+            await user.click(open);
+            await user.keyboard('{/Meta}');
+
+            expect(onSelectWithModifier).toHaveBeenCalledTimes(3);
+            expect(onSelectWithModifier.mock.calls[0]).toEqual([expect.objectContaining({ conversationId: "c1" }), expect.objectContaining({ shiftKey: true })]);
+            expect(onSelectWithModifier.mock.calls[1][1]).toMatchObject({ ctrlKey: true });
+            expect(onSelectWithModifier.mock.calls[2][1]).toMatchObject({ metaKey: true });
+            expect(onOpenMessage).not.toHaveBeenCalled();
+        });
+
+        it("still opens on a plain click, and on a modified one when nobody listens for them", async () => {
+            const onOpenMessage = vi.fn();
+            const user = userEvent.setup();
+            const { rerender } = renderList({ onSelectWithModifier: vi.fn(), onOpenMessage });
+            const open = () => screen.getAllByRole("button").find((button) => button.hasAttribute("data-row-open"))!;
+
+            await user.click(open());
+            expect(onOpenMessage).toHaveBeenCalledTimes(1);
+
+            rerender(<ConversationList conversations={[conversationFixture()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={onOpenMessage} />);
+            await user.keyboard('{Shift>}');
+            await user.click(open());
+            await user.keyboard('{/Shift}');
+            expect(onOpenMessage).toHaveBeenCalledTimes(2);
+        });
+
+        it("hands a modified click on the checkbox over too, and ticks it plainly otherwise", async () => {
+            const onSelectWithModifier = vi.fn();
+            const onToggleSelected = vi.fn();
+            const user = userEvent.setup();
+            renderList({ selectMode: true, selectedConversationIds: new Set(), onSelectWithModifier, onToggleSelected });
+            const box = screen.getByRole("checkbox", { name: "Select conversation: Hello there" });
+
+            await user.keyboard('{Shift>}');
+            await user.click(box);
+            await user.keyboard('{/Shift}');
+            expect(onSelectWithModifier).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "c1" }), expect.objectContaining({ shiftKey: true }));
+            expect(onToggleSelected).not.toHaveBeenCalled();
+
+            await user.click(box);
+            expect(onToggleSelected).toHaveBeenCalledTimes(1);
+        });
+
+        it("marks a row that is leaving as hidden, non-interactive and exiting", () => {
+            renderList({ exitingKeys: new Set(["c1"]) });
+            const row = screen.getByText("Hello there").closest("li")!;
+
+            expect(row).toHaveAttribute("data-exiting", "true");
+            expect(row).toHaveAttribute("aria-hidden", "true");
+            expect(row).toHaveAttribute("inert");
+            expect(row.className).toContain("pointer-events-none");
+        });
+
+        it("leaves rows that are not leaving alone", () => {
+            renderList({ exitingKeys: new Set(["other"]) });
+            const row = screen.getByText("Hello there").closest("li")!;
+
+            expect(row).not.toHaveAttribute("data-exiting");
+            expect(row).not.toHaveAttribute("aria-hidden");
+            expect(row).not.toHaveAttribute("inert");
+        });
+    });
 });

@@ -6,6 +6,7 @@ import React from "react";
 import { addDays, addMinutes, format, startOfDay } from "date-fns";
 import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { occursOnDay } from "./allDay.js";
+import { occurrenceMarker, useActiveOccurrenceKey } from "./activeOccurrence.js";
 import { EventAnchor, anchorOf } from "./EventShell.js";
 
 const HOUR_HEIGHT_PX = 48;
@@ -91,6 +92,7 @@ function SplitColumn({
     onSelectEvent: (occurrence: CalendarOccurrence) => void;
     onSelectSlot: (start: Date, end: Date, folderUid: string, anchor: EventAnchor) => void;
 }) {
+    const activeKey = useActiveOccurrenceKey();
     return (
         <div className="flex-1 min-w-0 relative border-l border-border">
             {Array.from({ length: SLOTS_PER_DAY }, (_, i) => {
@@ -117,9 +119,11 @@ function SplitColumn({
                 const top = ((visibleStart - dayStart.getTime()) / 60_000 / 60) * HOUR_HEIGHT_PX;
                 const height = Math.max(((visibleEnd - visibleStart) / 60_000 / 60) * HOUR_HEIGHT_PX, 16);
                 const isFree = occurrence.busyStatus === "free";
+                const marker = occurrenceMarker(activeKey, occurrence);
                 return (
                     <div
                         key={occurrence.occurrenceKey}
+                        {...marker.attrs}
                         onClick={() => onSelectEvent(occurrence)}
                         style={{
                             position: "absolute",
@@ -132,6 +136,7 @@ function SplitColumn({
                         className={[
                             "rounded-sm px-1.5 py-0.5 text-xs text-left overflow-hidden cursor-pointer",
                             isFree ? "bg-surface-alt text-text-muted" : "",
+                            marker.className,
                         ].join(" ")}
                     >
                         <div className="font-medium truncate">{occurrence.title}</div>

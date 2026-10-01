@@ -19,7 +19,7 @@ vi.mock("../../../apps/shared/components/mail/reading/MessageBody.js", () => ({
     default: (props: Record<string, any>) => <div data-testid="body">body of {props.messageUid}</div>,
     BodySkeleton: () => <div data-testid="body-skeleton" />,
 }));
-vi.mock("../../../apps/shared/components/mail/compose/ComposeContext.js", () => ({ useCompose: () => ({ openCompose: vi.fn() }), prefetchComposeWindow: vi.fn() }));
+vi.mock("../../../apps/shared/components/mail/compose/ComposeContext.js", () => ({ useCompose: () => ({ openCompose: vi.fn() }), prefetchComposeWindow: vi.fn(), useInlineCompose: () => [], InlineComposeSlot: () => null }));
 vi.mock("../../../apps/shared/components/mail/compose/quotedBody.js", () => ({ loadOriginalMessage: vi.fn(), prefetchOriginalMessage: vi.fn() }));
 vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity: vi.fn() }));
 vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: vi.fn(), subscribeKeySession: () => () => undefined }));

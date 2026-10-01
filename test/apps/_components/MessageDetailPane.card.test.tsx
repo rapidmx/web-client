@@ -139,15 +139,15 @@ describe("the message card", () => {
 
             await user.click(reply);
             await vi.waitFor(() => expect(openCompose).toHaveBeenCalledTimes(1));
-            expect(openCompose.mock.calls[0][0]).toMatchObject({ subject: "Re: Hello there", to: "Sender One <sender@example.com>" });
+            expect(openCompose.mock.calls[0][0]).toMatchObject({ subject: "Re: Hello there", to: "Sender One <sender@example.com>", inlineFor: "m1" });
 
             await user.click(screen.getByRole("button", { name: "Reply all to this message" }));
             await vi.waitFor(() => expect(openCompose).toHaveBeenCalledTimes(2));
-            expect(openCompose.mock.calls[1][0]).toMatchObject({ subject: "Re: Hello there" });
+            expect(openCompose.mock.calls[1][0]).toMatchObject({ subject: "Re: Hello there", inlineFor: "m1" });
 
             await user.click(screen.getByRole("button", { name: "Forward this message" }));
             await vi.waitFor(() => expect(openCompose).toHaveBeenCalledTimes(3));
-            expect(openCompose.mock.calls[2][0]).toMatchObject({ subject: "Fwd: Hello there" });
+            expect(openCompose.mock.calls[2][0]).toMatchObject({ subject: "Fwd: Hello there", inlineFor: "m1" });
         });
 
         it("is only where the caller asks for it, in a thread", () => {

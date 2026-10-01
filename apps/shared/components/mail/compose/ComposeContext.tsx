@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { PropsWithChildren, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { PropsWithChildren, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { DraftThreading } from "../../../../../lib/mail/mailApi.js";
 import { ApiClient } from "../../../../../lib/util/api.js";
 import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
@@ -110,6 +111,8 @@ export interface ComposeSession {
     late?: ComposeLateInput;
     /** See `OpenComposeInput.resume`. */
     resume?: ResumeCompose;
+    /** See `OpenComposeInput.inlineFor`. Absent once the window was opened without a host for it. */
+    inlineFor?: string;
     minimized: boolean;
 }
 
@@ -166,6 +169,13 @@ export interface OpenComposeInput {
     /** Re-opens a message that was already composed - a failed send's "Open draft": the window continues that server draft, with every field
      * exactly as it was typed, instead of starting a new one. */
     resume?: ResumeCompose;
+    /**
+     * The uid of the message this reply or forward answers. When the reading pane is showing a thread that holds that message (see
+     * `useInlineCompose()`), the compose window opens as a card above the thread instead of floating at the bottom right; the
+     * user can still pop it out to the floating stack, and it goes there by itself when the thread is left. Ignored - the window
+     * floats - when no pane is showing that message. Absent for a new message, which always floats.
+     */
+    inlineFor?: string;
 }
 
 export interface ComposeContextValue {
@@ -182,6 +192,57 @@ export interface ComposeContextValue {
 }
 
 const ComposeContext = createContext<ComposeContextValue>({ openCompose: () => undefined });
+
+/** The part of a session a reading pane needs to draw its slot. */
+export interface InlineComposeSession {
+    id: string;
+    /** The uid of the message the window answers. */
+    inlineFor: string;
+}
+
+interface InlineComposeValue {
+    /** The sessions currently drawn inline, in the order they were opened. */
+    sessions: InlineComposeSession[];
+    /** Announces the messages a reading pane holds; the returned function withdraws it. */
+    register: (uids: string[]) => () => void;
+    /** The element a session's window is rendered into, for a slot to hold. */
+    containerFor: (id: string) => HTMLElement | undefined;
+}
+
+const InlineComposeContext = createContext<InlineComposeValue>({ sessions: [], register: () => () => undefined, containerFor: () => undefined });
+
+/**
+ * For a reading pane: announces that it is showing the messages `uids`, so a Reply or Forward of one of them opens its compose
+ * window as a card in that pane (drawn with `InlineComposeSlot`) rather than a floating window, and returns the sessions to
+ * draw a slot for. When the pane stops holding a message - it unmounts, or moves to another conversation - the window answering
+ * it moves out to the floating stack, with everything typed into it.
+ */
+export function useInlineCompose(uids: string[]): InlineComposeSession[] {
+    const { sessions, register } = useContext(InlineComposeContext);
+    const key = uids.join(",");
+    useEffect(() => register(uids), [key, register]);
+    return useMemo(() => sessions.filter((session) => uids.includes(session.inlineFor)), [sessions, key]);
+}
+
+/**
+ * The list item a reading pane holds an inline compose window in. The window itself is owned (and kept alive) by
+ * `ComposeProvider`; this only moves the element it renders into into place. `onPlaced` is called once, as it arrives, for the pane
+ * to bring it into view.
+ */
+export function InlineComposeSlot({ id, onPlaced }: { id: string; onPlaced?: (slot: HTMLLIElement) => void }) {
+    const { containerFor } = useContext(InlineComposeContext);
+    const slotRef = useRef<HTMLLIElement>(null);
+    useLayoutEffect(() => {
+        const slot = slotRef.current!;
+        // Nothing to hold outside a `ComposeProvider`.
+        const container = containerFor(id);
+        if (container) {
+            slot.appendChild(container);
+        }
+        onPlaced?.(slot);
+    }, [id]);
+    return <li ref={slotRef} data-inline-compose={id} />;
+}
 
 /** Opens the floating Compose window from anywhere inside `AppShell` (any of the four webmail apps). */
 export function useCompose(): ComposeContextValue {
@@ -201,9 +262,67 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
     const isMobile = useIsMobile();
     const { Component: ComposeWindow, failed, retry: retryLoad } = useComposeWindowComponent(sessions.length > 0);
 
-    // The top edge of the compose windows, published as `--rr-compose-top` so the pop-up stack (`NotificationCenter`) can keep clear of them.
+    // Every session's window is rendered (through a portal) into an element of its own that is *moved* between the floating stack
+    // and a reading pane's slot, never re-created: a window that changed parents in the React tree would remount and lose what was typed.
+    const containersRef = useRef(new Map<string, HTMLElement>());
+    // The messages the reading panes currently showing a thread hold, one entry per pane (a ref too, for `openCompose()` to read at the click).
+    const hostsRef = useRef(new Map<symbol, string[]>());
+    const [hostedUids, setHostedUids] = useState<string[]>([]);
+    // The inline sessions that were popped out or whose pane went away: floating for good, even if a pane shows their message again.
+    const [parked, setParked] = useState<Set<string>>(new Set());
+    const register = useCallback((uids: string[]) => {
+        const token = Symbol();
+        hostsRef.current.set(token, uids);
+        setHostedUids([...hostsRef.current.values()].flat());
+        return () => {
+            hostsRef.current.delete(token);
+            setHostedUids([...hostsRef.current.values()].flat());
+        };
+    }, []);
+    const hosted = new Set(hostedUids);
+    const isInline = (session: ComposeSession) => !!session.inlineFor && !parked.has(session.id) && hosted.has(session.inlineFor);
+    const inlineKey = sessions.filter(isInline).map((session) => `${session.id}:${session.inlineFor}`).join("|");
+    const inlineSessions = useMemo<InlineComposeSession[]>(
+        () => sessions.filter(isInline).map((session) => ({ id: session.id, inlineFor: session.inlineFor! })),
+        [inlineKey],
+    );
+    const inlineValue = useMemo<InlineComposeValue>(
+        () => ({ sessions: inlineSessions, register, containerFor: (id) => containersRef.current.get(id) }),
+        [inlineSessions, register],
+    );
+    const floatingSessions = sessions.filter((session) => !inlineSessions.some((inline) => inline.id === session.id));
+
+    // A session whose message is no longer in any pane (the reader went to another conversation) is parked in the stack.
+    useEffect(() => {
+        const orphans = sessions.filter((session) => session.inlineFor && !parked.has(session.id) && !hosted.has(session.inlineFor));
+        if (orphans.length > 0) {
+            setParked((prev) => new Set([...prev, ...orphans.map((session) => session.id)]));
+        }
+    }, [sessions, hostedUids, parked]);
+
+    // The elements of closed sessions go away with them.
+    useEffect(() => {
+        const open = new Set(sessions.map((session) => session.id));
+        for (const [id, element] of containersRef.current) {
+            if (!open.has(id)) {
+                element.remove();
+                containersRef.current.delete(id);
+            }
+        }
+    }, [sessions]);
+    useEffect(
+        () => () => {
+            for (const element of containersRef.current.values()) {
+                element.remove();
+            }
+            containersRef.current.clear();
+        },
+        [],
+    );
+
+    // The top edge of the floating compose windows, published as `--rr-compose-top` so the pop-up stack (`NotificationCenter`) can keep clear of them.
     const windowsRef = useRef<HTMLDivElement>(null);
-    const hasSessions = sessions.length > 0;
+    const hasSessions = floatingSessions.length > 0;
     useEffect(() => {
         const element = windowsRef.current;
         if (!element) {
@@ -233,9 +352,15 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
         threading,
         pending,
         resume,
+        inlineFor,
     }: OpenComposeInput) {
         const id = crypto.randomUUID();
         markComposePhase(id, "click");
+        // The window's own element, attached to the page from the start (it is moved to its slot or the stack as soon as that is drawn).
+        const container = document.createElement("div");
+        container.className = "contents";
+        document.body.appendChild(container);
+        containersRef.current.set(id, container);
         setSessions((prev) => [
             ...prev,
             {
@@ -251,6 +376,8 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
                 suppressSigning,
                 quotePending: !!pending,
                 resume,
+                // Only a pane that is showing the message can hold the window.
+                inlineFor: inlineFor && [...hostsRef.current.values()].some((uids) => uids.includes(inlineFor)) ? inlineFor : undefined,
                 minimized: false,
             },
         ]);
@@ -268,6 +395,18 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
 
     function closeCompose(id: string) {
         setSessions((prev) => prev.filter((s) => s.id !== id));
+        setParked((prev) => {
+            if (!prev.has(id)) {
+                return prev;
+            }
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+        });
+    }
+
+    function popOut(id: string) {
+        setParked((prev) => new Set(prev).add(id));
     }
 
     function toggleMinimize(id: string) {
@@ -278,46 +417,65 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
     // Code with no React context - a failed send's "Open draft" pop-up - opens windows through this.
     useEffect(() => registerComposeOpener((input) => value.openCompose(input)), [value]);
 
-    // On mobile, a non-minimized `ComposeWindow` renders full-screen (see that component's own doc
+    // On mobile, a non-minimized floating `ComposeWindow` renders full-screen (see that component's own doc
     // comment) — Gmail-style stacking of several full-screen overlays at once makes no sense there, so
     // at most one non-minimized session is ever shown: the most recently opened one. Minimized
     // sessions are small chips regardless of device, so every one of those still shows — an earlier
     // session becomes visible again (as its own chip, or full-screen if it's the new most-recent
     // non-minimized one) once whatever's currently "on top" is closed or minimized. The others stay
-    // mounted, just hidden: unmounting them would throw away everything typed into them.
-    const lastNonMinimizedId = isMobile ? [...sessions].reverse().find((s) => !s.minimized)?.id : undefined;
+    // mounted, just hidden: unmounting them would throw away everything typed into them. An inline card
+    // is part of the reading pane and is never hidden.
+    const lastNonMinimizedId = isMobile ? [...floatingSessions].reverse().find((s) => !s.minimized)?.id : undefined;
+
+    // Puts every floating session's element in the stack (an inline one is put in its slot by `InlineComposeSlot`), and hides those
+    // the mobile rule above hides.
+    useLayoutEffect(() => {
+        for (const session of sessions) {
+            const element = containersRef.current.get(session.id)!;
+            const floating = floatingSessions.some((s) => s.id === session.id);
+            const hidden = floating && isMobile && !session.minimized && session.id !== lastNonMinimizedId;
+            element.hidden = hidden;
+            element.className = hidden ? "hidden" : "contents";
+            if (floating && element.parentElement !== windowsRef.current) {
+                windowsRef.current!.appendChild(element);
+            }
+        }
+    });
 
     return (
         <ComposeContext.Provider value={value}>
-            {children}
-            {sessions.length > 0 && (
-                <div ref={windowsRef} className="fixed bottom-0 right-6 flex items-end gap-3 z-50">
-                    {sessions.map((session) => {
-                        const hidden = isMobile && !session.minimized && session.id !== lastNonMinimizedId;
-                        return (
-                            <div key={session.id} hidden={hidden} className={hidden ? "hidden" : "contents"}>
-                                {ComposeWindow ? (
-                                    <ComposeWindow
-                                        session={session}
-                                        userUid={userUid}
-                                        trusted={trusted}
-                                        onClose={() => closeCompose(session.id)}
-                                        onToggleMinimize={() => toggleMinimize(session.id)}
-                                    />
-                                ) : (
-                                    <ComposeWindowPlaceholder
-                                        session={session}
-                                        failed={failed}
-                                        onRetry={retryLoad}
-                                        onClose={() => closeCompose(session.id)}
-                                        onToggleMinimize={() => toggleMinimize(session.id)}
-                                    />
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
-            )}
+            <InlineComposeContext.Provider value={inlineValue}>
+                {children}
+                {sessions.map((session) => {
+                    const inline = inlineSessions.some((s) => s.id === session.id);
+                    return createPortal(
+                        ComposeWindow ? (
+                            <ComposeWindow
+                                session={session}
+                                userUid={userUid}
+                                trusted={trusted}
+                                inline={inline}
+                                onPopOut={() => popOut(session.id)}
+                                onClose={() => closeCompose(session.id)}
+                                onToggleMinimize={() => toggleMinimize(session.id)}
+                            />
+                        ) : (
+                            <ComposeWindowPlaceholder
+                                session={session}
+                                failed={failed}
+                                inline={inline}
+                                onPopOut={() => popOut(session.id)}
+                                onRetry={retryLoad}
+                                onClose={() => closeCompose(session.id)}
+                                onToggleMinimize={() => toggleMinimize(session.id)}
+                            />
+                        ),
+                        containersRef.current.get(session.id)!,
+                        session.id,
+                    );
+                })}
+                {hasSessions && <div ref={windowsRef} className="fixed bottom-0 right-6 flex items-end gap-3 z-50" />}
+            </InlineComposeContext.Provider>
         </ComposeContext.Provider>
     );
 }

@@ -68,6 +68,7 @@ describe("the key map", () => {
             workWeek: ["ctrl+alt+2"],
             week: ["ctrl+alt+3"],
             month: ["ctrl+alt+4"],
+            search: ["/", "mod+e"],
         });
         expect(keysOf(SHORTCUTS.contacts)).toEqual({ create: ["alt+n", "desktop:mod+n"], search: ["/", "mod+e"] });
         expect(keysOf(SHORTCUTS.tasks)).toEqual({ create: ["alt+n", "desktop:mod+n"] });

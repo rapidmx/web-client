@@ -4511,3 +4511,44 @@ describe("ComposeWindow keyboard shortcuts", () => {
         });
     });
 });
+
+describe("ComposeWindow inline, as a card in the reading pane", () => {
+    it("is a full-width region with Pop out and Close, without the floating window's resize handles, Minimize or Expand", async () => {
+        mockCompose();
+        const user = userEvent.setup();
+        const onPopOut = vi.fn();
+        const onClose = vi.fn();
+        const onToggleMinimize = vi.fn();
+        render(<ComposeWindow session={session({ initialSubject: "Re: Hi" })} inline onPopOut={onPopOut} onClose={onClose} onToggleMinimize={onToggleMinimize} />);
+        await screen.findByLabelText("Attach files");
+
+        const region = screen.getByRole("region", { name: "Re: Hi" });
+        expect(region.className).toContain("w-full");
+        expect(region.className).not.toContain("fixed");
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(screen.queryByRole("separator", { name: "Resize" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Minimize" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Expand" })).not.toBeInTheDocument();
+
+        // The header does nothing when clicked.
+        await user.click(screen.getByText("Re: Hi"));
+        expect(onToggleMinimize).not.toHaveBeenCalled();
+
+        await user.click(screen.getByRole("button", { name: "Pop out" }));
+        expect(onPopOut).toHaveBeenCalledTimes(1);
+    });
+
+    it("stays a card even on mobile, and even when the session is minimized", async () => {
+        mockMatchMedia(true);
+        mockCompose();
+        render(<ComposeWindow session={session({ minimized: true })} inline onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+        await screen.findByLabelText("Attach files");
+
+        const region = screen.getByRole("region");
+        expect(region.className).not.toContain("fixed");
+        expect(region.className).toContain("h-[520px]");
+        // With no handler, Pop out is inert rather than an error.
+        await userEvent.setup().click(screen.getByRole("button", { name: "Pop out" }));
+        expect(region).toBeInTheDocument();
+    });
+});

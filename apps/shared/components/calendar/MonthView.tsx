@@ -8,6 +8,7 @@ import { addDays, eachDayOfInterval, endOfMonth, endOfWeek, format, isSameMonth,
 import { dayDropId, eventDragId } from "../../../../lib/calendar/calendarDragIds.js";
 import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { occursOnDay, startsOnDay } from "./allDay.js";
+import { occurrenceMarker, useActiveOccurrenceKey } from "./activeOccurrence.js";
 import { EventAnchor, anchorOf } from "./EventShell.js";
 
 const MAX_CHIPS_PER_DAY = 3;
@@ -63,7 +64,13 @@ interface DayCellProps {
 
 function DayCell({ day, inCurrentMonth, occurrences, folderColors, onSelectDay, onSelectEvent, onSelectSlot }: DayCellProps) {
     const { setNodeRef, isOver } = useDroppable({ id: dayDropId(day) });
-    const visible = occurrences.slice(0, MAX_CHIPS_PER_DAY);
+    const activeKey = useActiveOccurrenceKey();
+    // The search's current result is always shown, even when it would be one of the "+N more".
+    const activeIndex = occurrences.findIndex((occ) => occ.occurrenceKey === activeKey);
+    const visible =
+        activeIndex >= MAX_CHIPS_PER_DAY
+            ? [...occurrences.slice(0, MAX_CHIPS_PER_DAY - 1), occurrences[activeIndex]]
+            : occurrences.slice(0, MAX_CHIPS_PER_DAY);
     const overflowCount = occurrences.length - visible.length;
 
     return (
@@ -136,10 +143,12 @@ function EventChip({
 }) {
     const { setNodeRef, listeners, attributes, transform, isDragging } = useDraggable({ id: eventDragId(occurrence) });
     const isFree = occurrence.busyStatus === "free";
+    const marker = occurrenceMarker(useActiveOccurrenceKey(), occurrence);
 
     return (
         <button
             ref={setNodeRef}
+            {...marker.attrs}
             type="button"
             onClick={() => onSelect(occurrence)}
             style={{
@@ -150,6 +159,7 @@ function EventChip({
                 "text-xs text-left truncate rounded-sm px-1.5 py-0.5 shrink-0",
                 isFree ? "bg-surface-alt text-text-muted" : "",
                 isDragging ? "opacity-50" : "",
+                marker.className,
             ].join(" ")}
             {...listeners}
             {...attributes}
@@ -172,12 +182,14 @@ function ContinuationChip({
     onSelect: (occurrence: CalendarOccurrence) => void;
 }) {
     const isFree = occurrence.busyStatus === "free";
+    const marker = occurrenceMarker(useActiveOccurrenceKey(), occurrence);
     return (
         <button
             type="button"
+            {...marker.attrs}
             onClick={() => onSelect(occurrence)}
             style={isFree ? undefined : { backgroundColor: color, color: "#fff" }}
-            className={["text-xs text-left truncate rounded-sm px-1.5 py-0.5 shrink-0", isFree ? "bg-surface-alt text-text-muted" : ""].join(" ")}
+            className={["text-xs text-left truncate rounded-sm px-1.5 py-0.5 shrink-0", isFree ? "bg-surface-alt text-text-muted" : "", marker.className].join(" ")}
         >
             {occurrence.title}
         </button>

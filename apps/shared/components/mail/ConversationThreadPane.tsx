@@ -15,6 +15,7 @@ import { ENCRYPTED_SUBJECT_PLACEHOLDER, EncryptedPreview, displaySubject } from 
 import { useDecryptedMessages } from "../../mail/decryptedMessages.js";
 import { CollapsedCard, SkeletonCards, SubjectCard } from "./reading/MessageCard.js";
 import PendingMessageCard from "./reading/PendingMessageCard.js";
+import { InlineComposeSlot, useInlineCompose } from "./compose/ComposeContext.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { setReadState } from "../../mail/messageReadState.js";
 import { adoptedOutgoing, belongsToThread, settleOutgoing, useOutgoingReplies } from "../../mail/outbox/outgoingReplies.js";
@@ -202,6 +203,9 @@ export default function ConversationThreadPane({
     const [error, setError] = useState<string | null>(null);
     /** The message to scroll to and focus once it has rendered, or `null` once that has happened. */
     const [pendingFocusUid, setPendingFocusUid] = useState<string | null>(null);
+    // The Reply / Reply all / Forward compose windows of this thread's messages, drawn as cards at the top of the list; the thread's messages are
+    // what makes the compose provider open a reply here rather than floating at the bottom right.
+    const inlineSessions = useInlineCompose(messages.map((message) => message.uid));
 
     // Bumped on every conversation switch - an in-flight load/attachments/mark-read response carrying an
     // older generation belongs to a superseded conversation and is dropped rather than applied.
@@ -538,6 +542,17 @@ export default function ConversationThreadPane({
                 </div>
             ) : (
             <ul className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3 flex flex-col gap-3">
+                {inlineSessions.map((session) => (
+                    <InlineComposeSlot
+                        key={session.id}
+                        id={session.id}
+                        onPlaced={(slot) => {
+                            // Brought into view like a message that has just been sent: the same scroll, inside the list.
+                            rowRefs.current[session.id] = slot;
+                            setPendingFocusUid(session.id);
+                        }}
+                    />
+                ))}
                 {pendingCards.map((reply) => (
                     <li
                         key={reply.uid}

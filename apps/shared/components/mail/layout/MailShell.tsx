@@ -42,6 +42,13 @@ import { useShortcut } from "../../../keyboard/useShortcut.js";
 
 export type MailShellProps = Omit<AppShellProps, "active">;
 
+/**
+ * From `md` up the sidebar and the content beside it are each exactly as tall as the window under the title bar, so each scrolls by itself (the frame's
+ * own height is open-ended - `min-h-screen` - so a column's `overflow` would otherwise never apply and the whole page would scroll instead). On a phone
+ * the page scrolls as a whole, as it always did. The same height the Contacts page uses; `--rr-header-h` is the title bar's (or branding header's) height.
+ */
+const DESKTOP_PANE_HEIGHT = "md:h-[calc(100dvh_-_var(--rr-header-h,4rem))]";
+
 /** One mailbox's own mail folders (already filtered to `MAIL_FOLDER_TYPES` and unsorted) - one entry per
  * mailbox in `mailboxes`, fetched in parallel so every accessible mailbox's folder tree can render
  * simultaneously (see `MailShell`'s own doc comment on why this replaced the old single-mailbox `folders`
@@ -485,11 +492,11 @@ export default function MailShell({
         inner = (
             <>
                 <MailShortcuts mailboxUid={defaultMailboxUid} />
-                <aside className="hidden md:flex w-64 shrink-0 bg-surface border-r border-border flex-col">{sidebarContent("desktop")}</aside>
+                <aside className={["hidden md:flex w-64 shrink-0 bg-surface border-r border-border flex-col", DESKTOP_PANE_HEIGHT].join(" ")}>{sidebarContent("desktop")}</aside>
                 <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Folders" fullScreen>
                     <div className="flex flex-col">{sidebarContent("mobile")}</div>
                 </Drawer>
-                <main className="flex-1 min-w-0 overflow-y-auto">
+                <main className={["flex-1 min-w-0 overflow-y-auto", DESKTOP_PANE_HEIGHT].join(" ")}>
                     <div className="md:hidden flex items-center gap-2 p-3">
                         <button
                             type="button"

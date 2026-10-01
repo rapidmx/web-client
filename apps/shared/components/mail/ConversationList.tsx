@@ -15,6 +15,7 @@ import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "./unreadStyle.js";
 import SwipeRow from "./SwipeRow.js";
 import InviteRowChip from "./invite/InviteRowChip.js";
+import { ClickModifiers, isSelectionClick } from "../../mail/rangeSelection.js";
 
 /** A conversation row of the list. `mailboxUid` is set only by a view that merges several mailboxes ("All Mailboxes"), whose rows are
  * each from a different one; a list of one mailbox's own leaves it out and every row is that mailbox's. */
@@ -50,6 +51,13 @@ export interface ConversationListProps {
     /** The `conversationRowKey()`s currently ticked. */
     selectedConversationIds?: Set<string>;
     onToggleSelected?: (conversation: ListedConversation) => void;
+    /**
+     * A Shift, Ctrl or Cmd click on a parent row (or on its checkbox): the caller extends or toggles the selection instead of this list opening or
+     * ticking the row itself (`onOpenMessage` / `onToggleSelected` are not called for it). Absent, those clicks behave as plain ones.
+     */
+    onSelectWithModifier?: (conversation: ListedConversation, modifiers: ClickModifiers) => void;
+    /** The `conversationRowKey()`s of rows on their way out of the list (moved, deleted): drawn non-interactive and hidden from assistive technology while the page collapses them. */
+    exitingKeys?: Set<string>;
     /**
      * What swiping a parent row does on a phone: right to left archives the conversation (resolving whether it went through), left
      * to right asks where to move it. Absent, or `enabled: false` (a desktop), rows don't follow a finger.
@@ -95,6 +103,8 @@ export default function ConversationList({
     selectMode,
     selectedConversationIds,
     onToggleSelected,
+    onSelectWithModifier,
+    exitingKeys,
     swipe,
     newestFirst,
 }: ConversationListProps) {
@@ -176,8 +186,15 @@ export default function ConversationList({
                 const children = loaded && newestFirst ? [...loaded].reverse() : loaded;
                 const panelId = `conversation-messages-${conversation.mailboxUid ? `${conversation.mailboxUid}-` : ""}${conversation.conversationId}`;
                 const ticked = selectedConversationIds?.has(id) ?? false;
+                const exiting = exitingKeys?.has(id) ?? false;
                 return (
-                    <li key={id}>
+                    <li
+                        key={id}
+                        data-exiting={exiting ? "true" : undefined}
+                        aria-hidden={exiting ? "true" : undefined}
+                        inert={exiting}
+                        className={exiting ? "pointer-events-none" : undefined}
+                    >
                         <SwipeRow
                             as="div"
                             enabled={!!swipe?.enabled && !selectMode}
@@ -193,7 +210,12 @@ export default function ConversationList({
                                     <input
                                         type="checkbox"
                                         checked={ticked}
-                                        onChange={() => onToggleSelected?.(conversation)}
+                                        onChange={(event) =>
+                                            // The change of a checkbox is caused by a click (or the Space key, which makes one): its modifiers are that event's.
+                                            onSelectWithModifier && isSelectionClick(event.nativeEvent as MouseEvent)
+                                                ? onSelectWithModifier(conversation, event.nativeEvent as MouseEvent)
+                                                : onToggleSelected?.(conversation)
+                                        }
                                         aria-label={`Select conversation: ${conversation.subject || "(no subject)"}`}
                                         className="w-4 h-4 accent-primary"
                                     />
@@ -218,7 +240,11 @@ export default function ConversationList({
                                 <button
                                     type="button"
                                     data-row-open
-                                    onClick={() => onOpenMessage(conversation, conversation.latestMessageUid)}
+                                    onClick={(event) =>
+                                        onSelectWithModifier && isSelectionClick(event)
+                                            ? onSelectWithModifier(conversation, event)
+                                            : onOpenMessage(conversation, conversation.latestMessageUid)
+                                    }
                                     className={["w-full text-left pr-4 py-3", ROW_FOCUS_CLASS].join(" ")}
                                 >
                                     <UnreadLabel unread={unread} />

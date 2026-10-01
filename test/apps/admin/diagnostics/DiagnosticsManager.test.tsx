@@ -10,7 +10,7 @@ import { jsonResponse, mockFetch } from "../../testUtils.js";
 import DiagnosticsManager from "../../../../apps/shared/components/admin/diagnostics/DiagnosticsManager.js";
 import { ELEVATION_MESSAGE } from "../../../../apps/shared/components/admin/diagnostics/format.js";
 import type { LogSocket } from "../../../../apps/shared/components/admin/diagnostics/logClient.js";
-import { metricsSample, runtimeFixture, versionsFixture } from "./fixtures.js";
+import { informationFixture, metricsSample, runtimeFixture, versionsFixture } from "./fixtures.js";
 
 class FakeSocket implements LogSocket {
     static instances: FakeSocket[] = [];
@@ -44,6 +44,7 @@ const plugin = {
 
 interface Options {
     versions?: () => Response;
+    information?: () => Response;
     runtime?: () => Response;
     metrics?: () => Response;
     plugins?: () => Response;
@@ -54,6 +55,8 @@ function mockApi(options: Options = {}) {
         switch (url) {
             case "/api/admin/diagnostics/versions":
                 return options.versions?.() ?? jsonResponse(200, versionsFixture());
+            case "/api/admin/diagnostics/information":
+                return options.information?.() ?? jsonResponse(200, informationFixture());
             case "/api/admin/diagnostics/runtime":
                 return options.runtime?.() ?? jsonResponse(200, runtimeFixture());
             case "/api/admin/diagnostics/metrics":
@@ -77,18 +80,21 @@ afterEach(() => {
 });
 
 describe("DiagnosticsManager", () => {
-    it("opens on Versions and reads versions, runtime and plugins once", async () => {
+    it("opens on Information and reads versions, information, runtime and plugins once", async () => {
         const fetchMock = mockApi();
         const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
         render(<DiagnosticsManager createLogSocket={createLogSocket} saveFile={vi.fn()} />);
         expect(screen.getByRole("heading", { level: 1, name: "Diagnostics" })).toBeInTheDocument();
-        expect(screen.getByRole("tab", { name: "Versions" })).toHaveAttribute("aria-selected", "true");
+        expect(screen.getByRole("tab", { name: "Information" })).toHaveAttribute("aria-selected", "true");
         expect(await screen.findByRole("region", { name: "Server" })).toBeInTheDocument();
         expect(await screen.findByText("MAPI")).toBeInTheDocument();
+        expect(await screen.findByRole("region", { name: "Environment variables" })).toBeInTheDocument();
+        expect(screen.getByRole("region", { name: "Configuration" })).toBeInTheDocument();
         expect(calls(fetchMock, "/api/admin/diagnostics/versions")).toBe(1);
+        expect(calls(fetchMock, "/api/admin/diagnostics/information")).toBe(1);
         expect(calls(fetchMock, "/api/admin/diagnostics/runtime")).toBe(1);
         expect(calls(fetchMock, "/api/system/plugins")).toBe(1);
-        // Versions and Runtime are never polled, and nothing else is running on this tab.
+        // Information and Runtime are never polled, and nothing else is running on this tab.
         expect(setIntervalSpy.mock.calls.some((call) => call[1] === 5000)).toBe(false);
         expect(calls(fetchMock, "/api/admin/diagnostics/metrics")).toBe(0);
         expect(FakeSocket.instances).toHaveLength(0);
@@ -116,6 +122,7 @@ describe("DiagnosticsManager", () => {
         await user.click(screen.getByRole("button", { name: "Refresh" }));
         expect(await screen.findByText("3m 20s")).toBeInTheDocument();
         expect(calls(fetchMock, "/api/admin/diagnostics/versions")).toBe(2);
+        expect(calls(fetchMock, "/api/admin/diagnostics/information")).toBe(2);
         expect(calls(fetchMock, "/api/admin/diagnostics/runtime")).toBe(2);
         expect(calls(fetchMock, "/api/system/plugins")).toBe(2);
     });
@@ -147,20 +154,20 @@ describe("DiagnosticsManager", () => {
         mockApi();
         render(<DiagnosticsManager createLogSocket={createLogSocket} saveFile={vi.fn()} />);
         const selected = () => screen.getAllByRole("tab").find((tab) => tab.getAttribute("aria-selected") === "true")?.textContent;
-        screen.getByRole("tab", { name: "Versions" }).focus();
+        screen.getByRole("tab", { name: "Information" }).focus();
         await user.keyboard("{ArrowRight}");
         expect(selected()).toBe("Runtime");
         expect(screen.getByRole("tab", { name: "Runtime" })).toHaveFocus();
         await user.keyboard("{ArrowLeft}{ArrowLeft}");
         expect(selected()).toBe("Logs");
         await user.keyboard("{ArrowRight}");
-        expect(selected()).toBe("Versions");
+        expect(selected()).toBe("Information");
         await user.keyboard("{End}");
         expect(selected()).toBe("Logs");
         await user.keyboard("{Home}");
-        expect(selected()).toBe("Versions");
+        expect(selected()).toBe("Information");
         await user.keyboard("x");
-        expect(selected()).toBe("Versions");
+        expect(selected()).toBe("Information");
         await screen.findByRole("region", { name: "Server" });
     });
 
@@ -173,7 +180,7 @@ describe("DiagnosticsManager", () => {
         expect(screen.getByRole("region", { name: "Node running this server" })).toBeInTheDocument();
         expect(calls(fetchMock, "/api/admin/diagnostics/metrics")).toBe(1);
         // Leaving the tab stops the sampling; coming back samples again.
-        await user.click(screen.getByRole("tab", { name: "Versions" }));
+        await user.click(screen.getByRole("tab", { name: "Information" }));
         await user.click(screen.getByRole("tab", { name: "System" }));
         await waitFor(() => expect(calls(fetchMock, "/api/admin/diagnostics/metrics")).toBe(2));
     });
@@ -206,7 +213,7 @@ describe("DiagnosticsManager", () => {
             await user.click(screen.getByRole("tab", { name: "Logs" }));
             receive('{"level":"info","message":"kept line"}');
             await screen.findByText("kept line");
-            await user.click(screen.getByRole("tab", { name: "Versions" }));
+            await user.click(screen.getByRole("tab", { name: "Information" }));
             await user.click(screen.getByRole("tab", { name: "Logs" }));
             expect(FakeSocket.instances).toHaveLength(1);
             expect(socket().closed).toBe(false);
@@ -221,7 +228,7 @@ describe("DiagnosticsManager", () => {
             await user.click(screen.getByRole("button", { name: "Stop" }));
             expect(socket().closed).toBe(true);
             expect(screen.getByText("Stopped")).toBeInTheDocument();
-            await user.click(screen.getByRole("tab", { name: "Versions" }));
+            await user.click(screen.getByRole("tab", { name: "Information" }));
             await user.click(screen.getByRole("tab", { name: "Logs" }));
             expect(FakeSocket.instances).toHaveLength(1);
             await user.click(screen.getByRole("button", { name: "Start" }));
@@ -285,11 +292,13 @@ describe("DiagnosticsManager", () => {
             expect(mime).toBe("application/json");
             const report = saved(saveFile);
             expect(report.versions.server.nodeVersion).toBe("v24.1.0");
+            expect(report.information.environment).toContainEqual({ name: "DB_PASSWORD", redacted: true });
+            expect(report.information.configuration).toContainEqual({ name: "datastores:cache:type", value: "redis", redacted: false });
             expect(report.runtime.version.gitVersion).toBe("v1.33.1+k3s1");
             expect(report.plugins.installed).toEqual([{ name: "@rapidmx/mapi", packageVersion: "1.1.0", enabled: true }]);
             expect(report.plugins.status.hash).toBe("h");
             expect(report.metrics.host.cpuPercent).toBe(35);
-            expect(report.errors).toEqual({ versions: null, runtime: null, plugins: null, metrics: null });
+            expect(report.errors).toEqual({ versions: null, information: null, runtime: null, plugins: null, metrics: null });
             expect(typeof report.generatedAt).toBe("string");
             expect(content).not.toContain("top secret");
             expect(content).not.toContain("logs\":");
@@ -314,6 +323,7 @@ describe("DiagnosticsManager", () => {
             const user = userEvent.setup();
             mockApi({
                 versions: () => jsonResponse(500, { message: "Versions broke." }),
+                information: () => jsonResponse(404, { message: "Information is missing." }),
                 runtime: () => jsonResponse(403, { code: "api-104", message: "x" }),
                 plugins: () => jsonResponse(500, { message: "Plugins broke." }),
                 metrics: () => jsonResponse(403, { code: "api-103", message: "no" }),
@@ -326,11 +336,13 @@ describe("DiagnosticsManager", () => {
             await waitFor(() => expect(saveFile).toHaveBeenCalledOnce());
             const report = saved(saveFile);
             expect(report.versions).toBeNull();
+            expect(report.information).toBeNull();
             expect(report.runtime).toBeNull();
             expect(report.plugins).toBeNull();
             expect(report.metrics).toBeNull();
             expect(report.errors).toEqual({
                 versions: "Versions broke.",
+                information: "Information is missing.",
                 runtime: ELEVATION_MESSAGE,
                 plugins: "Plugins broke.",
                 metrics: "You are not authorised to view diagnostics.",
