@@ -14,3 +14,4 @@ tmp-*
 **/.idea
 # Local environment overrides - never commit real secrets.
 .env
+/coverage-*
