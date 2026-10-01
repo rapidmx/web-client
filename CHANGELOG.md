@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-01
+
+### Added
+- Added a search to the calendar over title, location, description, organizer and attendees, with the number of matches, previous and next match buttons and the same buttons on the event card
+- Added a List view to the Calendar, listing every upcoming event for all time grouped by day, which a phone opens on and the Month view remains the default of on a desktop
+- Added a button to each attachment of a draft to remove it
+
+### Changed
+- List RecipientInput, TimeZonePicker with timeZoneOptions, and the directory lookups in the plugin UI surface
+- Open Reply, Reply All and Forward as a composer card above the newest message in the reading pane instead of the pop-up, which a new message still uses
+- Slide a deleted or moved message out of the list, and the rows below up into its place, instead of refreshing the list, and refresh conversation lists quietly
+- Select a range of messages or conversations with Shift+click and individual ones with Ctrl+click
+- Scroll the folder list, the message list and the reading pane independently, keeping the message list's toolbar, search and tabs pinned at its top
+- Rename the Diagnostics Versions tab to Information and add the server's environment variables and configuration to it, with secrets hidden
+- Show embedded images in received messages and in the quoted original of a reply or forward, by matching cid: references to the message's own attachments loosely and embedding the pictures as data URIs in the quote
+- Send images inserted into a message as inline attachments with a Content-ID, and keep spaces in attachment file names instead of turning them into plus signs
+- Replace the text buttons of the bulk selection bar with icons
+- Show the number of unread messages as a chip on the Mail icon of the app rail and the phone's tab bar
+- Slide the event card in from the left or right when stepping to the previous or next event
+- Remember the Calendar's last chosen view when navigating elsewhere and back
+- Show previous and next buttons on the event card in every view, stepping through all events in order or through the matches of a search
+- Show a More button at the end of the phone's tab bar holding the entries that do not fit when there are more than five
+- Stop tracking two temporary coverage files that were committed by mistake
+
 ## [0.28.0] - 2026-09-30
 
 ### Added
@@ -1185,7 +1209,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/rapidmx/web-client/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/rapidmx/web-client/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/rapidmx/web-client/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/rapidmx/web-client/compare/v0.25.1...v0.26.0
