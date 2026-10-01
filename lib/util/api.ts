@@ -196,15 +196,16 @@ async function recoverSession(): Promise<boolean> {
  * a deployment-level requirement owned by auth-server/the Helm chart, not configured here — and auth-server's
  * CORS config must explicitly allow this app's origin with credentials.
  *
- * `applyCsrfHeader()` is still called here for consistency, but it never actually finds a token for a truly
- * cross-origin call — see its own doc comment on `readCsrfCookie()` for why that's correct rather than a
- * gap: auth-server's CSRF protection for this call shape comes from its own Origin allow-list check, not a
- * double-submit cookie this app's JavaScript could never read in the first place.
+ * No `x-csrf-token` header is sent, deliberately. A double-submit token is only meaningful to the server that issued it, and the `csrf`
+ * cookie this app's JavaScript can read is *this* host's own (`mail.example.com`), never auth-server's - so echoing it
+ * would be a wrong token for the wrong server. Worse, auth-server's CORS rules do not allow that header, so the browser
+ * blocked the preflight of every such call (the silent session refresh, sign-out) before it ever reached the server: "Request header
+ * field x-csrf-token is not allowed by Access-Control-Allow-Headers". Auth-server's CSRF protection for this cross-origin call shape is
+ * its Origin allow-list check, which needs no header.
  */
 export async function authApiFetch<T = unknown>(authServerUrl: string, path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Content-Type", "application/json");
-    applyCsrfHeader(headers, init.method);
 
     const res = await fetch(`${authServerUrl}/api${path}`, { ...init, headers, credentials: "include" });
     return decodeApiResponse<T>(res);

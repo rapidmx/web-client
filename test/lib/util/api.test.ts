@@ -488,33 +488,27 @@ describe("authApiFetch", () => {
         });
     });
 
-    describe("CSRF header echo", () => {
+    describe("CSRF header", () => {
         afterEach(() => {
             document.cookie = "csrf=; Max-Age=0; path=/";
         });
 
-        // authApiFetch() calls the exact same applyCsrfHeader()/readCsrfCookie() helpers apiFetch() does —
-        // this test just confirms that wiring, using this app's own document.cookie. It does NOT, and
-        // can't, simulate the real cross-origin case: a genuine authApiFetch() call targets a different
-        // host than the page it runs on, and that host's CSRF cookie (host-only, per
-        // @rapidrest/service-core's src/http/csrf/csrf.ts) is never present in this app's document.cookie
-        // to begin with — that's a property of the cookie's Domain scope, enforced by the browser itself,
-        // not something this client-side code could get wrong. See applyCsrfHeader()'s own doc comment.
-        it("echoes whatever csrf cookie this app's own document.cookie holds, same as apiFetch()", async () => {
+        // The `csrf` cookie this page can read belongs to its own host, not auth-server's, and auth-server's CORS rules do not allow an
+        // `x-csrf-token` header: sending it made the browser block the preflight of the silent session refresh, so a session could never be renewed.
+        it.each(["POST", "PUT", "DELETE"])("never sends x-csrf-token on a %s, even though this page holds a csrf cookie of its own", async (method) => {
             document.cookie = "csrf=tok-abc123";
             const fetchMock = mockFetch(() => jsonResponse(200, {}));
-            await authApiFetch("https://auth.example.com", "/admin/impersonate/stop", { method: "POST" });
-            const init = fetchMock.mock.calls[0][1] as RequestInit;
-            const headers = init.headers as Headers;
-            expect(headers.get("x-csrf-token")).toBe("tok-abc123");
+            await authApiFetch("https://auth.example.com", "/auth/refresh", { method });
+            const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Headers;
+            expect(headers.has("x-csrf-token")).toBe(false);
+            expect(headers.get("Content-Type")).toBe("application/json");
         });
 
-        it("never sends x-csrf-token on a safe request, even with a cookie present", async () => {
+        it("never sends x-csrf-token on a safe request either", async () => {
             document.cookie = "csrf=tok-abc123";
             const fetchMock = mockFetch(() => jsonResponse(200, {}));
             await authApiFetch("https://auth.example.com", "/admin/impersonate");
-            const init = fetchMock.mock.calls[0][1] as RequestInit;
-            const headers = init.headers as Headers;
+            const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Headers;
             expect(headers.has("x-csrf-token")).toBe(false);
         });
     });

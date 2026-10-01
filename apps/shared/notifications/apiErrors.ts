@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { logSessionEvent } from "../../../lib/auth/session.js";
 import { ApiRequestError } from "../../../lib/util/api.js";
 import { describeSendFailure } from "../../../lib/mail/sendFailure.js";
 import { NotificationAction, notify } from "./store.js";
@@ -20,6 +21,7 @@ export function setSignInUrl(authServerUrl: string | undefined): void {
 
 /** The "Your session expired" pop-up: one however many requests noticed, with a "Sign in" action. Returns its id. */
 export function notifySessionExpired(): string {
+    logSessionEvent("notice:session-expired");
     return notify({
         kind: "error",
         title: "Your session expired",
