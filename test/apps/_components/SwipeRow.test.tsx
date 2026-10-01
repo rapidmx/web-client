@@ -6,6 +6,7 @@ import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SwipeRow from "../../../apps/shared/components/mail/SwipeRow.js";
+import { LONG_PRESS_MS } from "../../../apps/shared/gestures/useLongPress.js";
 
 const ROW_WIDTH = 320;
 
@@ -135,5 +136,65 @@ describe("SwipeRow", () => {
         await act(async () => refuse(false));
 
         expect(error).not.toHaveBeenCalled();
+    });
+
+    describe("press and hold", () => {
+        beforeEach(() => {
+            vi.useFakeTimers();
+        });
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+        const hold = () => act(() => void vi.advanceTimersByTime(LONG_PRESS_MS));
+
+        it("hears a held finger beside the swipe, and keeps the page's text from being selected under it", () => {
+            const onLongPress = vi.fn();
+            const { onArchive, onMove } = renderRow({ onLongPress });
+            const row = screen.getByTestId("row");
+            expect(row.style.touchAction).toBe("pan-y");
+            expect(row.style.userSelect).toBe("none");
+
+            fireEvent.touchStart(row, { touches: [{ clientX: 300, clientY: 100 }] });
+            hold();
+            fireEvent.touchEnd(row, { touches: [], changedTouches: [{ clientX: 300, clientY: 100 }] });
+
+            expect(onLongPress).toHaveBeenCalledOnce();
+            expect(onArchive).not.toHaveBeenCalled();
+            expect(onMove).not.toHaveBeenCalled();
+        });
+
+        it("gives the finger to a swipe as soon as it drags, and a swipe is still a swipe", async () => {
+            const onLongPress = vi.fn();
+            const { onArchive } = renderRow({ onLongPress });
+            const row = screen.getByTestId("row");
+
+            await act(async () => swipe(row, 100));
+            hold();
+
+            expect(onArchive).toHaveBeenCalledOnce();
+            expect(onLongPress).not.toHaveBeenCalled();
+        });
+
+        it("hears it while swipes are off too, and has none without a handler", () => {
+            const onLongPress = vi.fn();
+            const { rerender } = renderRow({ enabled: false, onLongPress });
+            const row = screen.getByTestId("row");
+            expect(row.style.touchAction).toBe("");
+            expect(row.style.userSelect).toBe("none");
+
+            fireEvent.touchStart(row, { touches: [{ clientX: 300, clientY: 100 }] });
+            hold();
+            expect(onLongPress).toHaveBeenCalledOnce();
+
+            rerender(
+                <ul>
+                    <SwipeRow as="li" enabled={false} onArchive={vi.fn()} onMove={vi.fn()} data-testid="row" />
+                </ul>,
+            );
+            expect(screen.getByTestId("row").style.userSelect).toBe("");
+            fireEvent.touchStart(screen.getByTestId("row"), { touches: [{ clientX: 300, clientY: 100 }] });
+            hold();
+            expect(onLongPress).toHaveBeenCalledOnce();
+        });
     });
 });

@@ -2037,6 +2037,23 @@ function InboxContent({ userUid }: { userUid?: string }) {
         void resolveConversations(listedConversations.filter((c) => inRange.has(conversationKey(c))));
     }
 
+    /**
+     * A press and hold on a phone: select mode, with this row the only one ticked and the anchor of the next Shift+click. From then on a tap ticks
+     * (`handleSelect()`, `handleOpenConversation()`). A conversation is resolved to its messages as a ticked one is.
+     */
+    function startSelectingMessage(message: Message) {
+        selectionAnchorRef.current = message.uid;
+        setSelectMode(true);
+        setSelectedUids(new Set([message.uid]));
+    }
+
+    function startSelectingConversation(conversation: ListedConversation) {
+        selectionAnchorRef.current = conversationKey(conversation);
+        setSelectMode(true);
+        setSelectedConversationIds(new Set([conversationKey(conversation)]));
+        void resolveConversations([conversation]);
+    }
+
     /** A plain click on a conversation's checkbox: ticks (or unticks) it and makes it the anchor of the next Shift+click. */
     function tickConversation(conversation: ListedConversation) {
         selectionAnchorRef.current = conversationKey(conversation);
@@ -2253,17 +2270,30 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     // ---- Swiping a row on a phone (see `SwipeRow`): right to left archives, left to right asks for a folder. Both go through the same
     // ---- bulk path as the selection bar's Archive and Move to, so the badges, the optimistic bookkeeping and the failure pop-up are one
-    // ---- implementation. Not offered where the actions aren't (an aggregate view spans mailboxes, search results are a mixed bag, the
-    // ---- Outbox is the server's send queue) or while rows are being ticked.
-    const listingOutbox = currentFolders.find((f) => f.uid === folderUid)?.type === "outbox";
-    const swipeEnabled = isMobile && !selectMode && !aggregateFolderType && !isSearching && !listingOutbox;
-    /** What a swipe's Move to is about, while its folder prompt is open: one message, or every message of a conversation in this folder. */
-    const [moveDialog, setMoveDialog] = useState<{ messages: Message[] } | { conversation: ConversationSummary } | null>(null);
+    // ---- implementation. Offered in every listing - a mailbox's own folders, the "All mailboxes" views and search results - and a row acts in
+    // ---- its own mailbox (its Archive, its folders), as a bulk action does. Not offered for the Outbox (the server's send queue) or while rows
+    // ---- are being ticked.
+    const listingOutbox = !isSearching && currentFolders.find((f) => f.uid === folderUid)?.type === "outbox";
+    const swipeEnabled = isMobile && !selectMode && !listingOutbox;
+    /** What a swipe's Move to is about, while its folder prompt is open: one message, or every message of a conversation in the folder being listed. */
+    const [moveDialog, setMoveDialog] = useState<{ messages: Message[] } | { conversation: ListedConversation } | null>(null);
+    /** Where what is being moved is now: its mailbox - whose folders the prompt offers - and the folder it is in. */
+    const movingFrom =
+        moveDialog === null
+            ? null
+            : "messages" in moveDialog
+              ? { mailboxUid: moveDialog.messages[0].mailboxUid, folderUid: moveDialog.messages[0].folderUid }
+              : { mailboxUid: moveDialog.conversation.mailboxUid ?? activeMailboxUid, folderUid: moveDialog.conversation.latestFolderUid };
 
-    /** The messages a swiped conversation stands for (the ones in the folder being listed), or `null` after saying why they couldn't be loaded. */
-    async function swipedConversationMessages(conversation: ConversationThreadHead): Promise<Message[] | null> {
+    /**
+     * The messages a swiped conversation stands for - the ones in the folder being listed - or `null` after saying why they couldn't be loaded. A row of
+     * an "All mailboxes" view is a different mailbox's: its messages are asked for there, and only the aggregate's own folders' count (not the Sent Items
+     * copy of a reply), as for a ticked row (`selectedConversationMessages`).
+     */
+    async function swipedConversationMessages(conversation: ListedConversation): Promise<Message[] | null> {
         try {
-            return await loadOpenConversation(conversation);
+            const loaded = await loadOpenConversation(conversation, conversation.mailboxUid ?? activeMailboxUid);
+            return aggregateFolderType ? loaded.filter((m) => folderTypeOf(m.folderUid) === aggregateFolderType) : loaded;
         } catch (err) {
             notifyApiError(err, "Couldn't load the messages in that conversation");
             return null;
@@ -2271,7 +2301,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
     }
 
     /** Archives what a swipe took away. Resolves whether it went through, so the row comes back when it didn't. */
-    async function swipeArchive(target: Message[] | ConversationSummary): Promise<boolean> {
+    async function swipeArchive(target: Message[] | ListedConversation): Promise<boolean> {
         if (bulkBusy || resolvingSelection > 0) {
             return false;
         }
@@ -2317,9 +2347,11 @@ function InboxContent({ userUid }: { userUid?: string }) {
         return (
             <SwipeRow
                 as="li"
-                enabled={swipeEnabled}
+                // A hit of a search over several mailboxes can be in an Outbox, which none of these actions are for.
+                enabled={swipeEnabled && folderTypeOf(message.folderUid) !== "outbox"}
                 onArchive={() => swipeArchive([message])}
                 onMove={() => setMoveDialog({ messages: [message] })}
+                onLongPress={isMobile && !selectMode ? () => startSelectingMessage(message) : undefined}
                 key={message.uid}
                 data-message-uid={message.uid}
                 data-unread={isUnread(message) ? "true" : undefined}
@@ -3075,6 +3107,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
                                     onArchive: swipeArchive,
                                     onMove: (conversation) => setMoveDialog({ conversation }),
                                 }}
+                                onLongPress={isMobile ? startSelectingConversation : undefined}
                             />
                             {hasMore && !rowCapReached && (
                                 <div ref={setSentinel} data-testid="load-more-sentinel" className="p-4 text-center text-xs text-text-muted">
@@ -3202,9 +3235,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
             <MoveToFolderDialog
                 open={moveDialog !== null}
                 onClose={() => setMoveDialog(null)}
-                mailboxUid={activeMailboxUid}
-                folders={currentFolders}
-                currentFolderUid={folderUid}
+                mailboxUid={movingFrom?.mailboxUid ?? activeMailboxUid}
+                folders={foldersOf(movingFrom?.mailboxUid ?? activeMailboxUid)}
+                currentFolderUid={movingFrom?.folderUid}
                 count={moveDialog === null ? 1 : "messages" in moveDialog ? moveDialog.messages.length : moveDialog.conversation.messageCount}
                 onMove={swipeMove}
                 onFolderCreated={onFolderCreated}

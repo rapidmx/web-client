@@ -6,9 +6,10 @@ import React from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation } from "./testUtils.js";
+import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
 import { SEARCH_LIMITS } from "../../apps/shared/search/crossMailboxSearch.js";
 import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.js";
+import { LONG_PRESS_MS } from "../../apps/shared/gestures/useLongPress.js";
 import InboxPageBase from "../../apps/www/index.js";
 import { withTestRouter } from "./routerTestUtils.js";
 
@@ -97,8 +98,8 @@ const own = mailboxFixture("mb1", { ownerUserUid: "u1", accessRole: "owner", dis
 const support = mailboxFixture("mb2", { accessRole: "delegate", displayName: "Support" });
 const sales = mailboxFixture("mb3", { accessRole: "delegate", displayName: "Sales" });
 
-function foldersOf(mailboxUid: string) {
-    return (["inbox", "sent_items", "archive", "deleted_items"] as const).map((type) => ({
+function foldersOf(mailboxUid: string, types: readonly ("inbox" | "sent_items" | "archive" | "deleted_items" | "outbox")[] = ["inbox", "sent_items", "archive", "deleted_items"]) {
+    return types.map((type) => ({
         uid: `${mailboxUid}-${type}`,
         version: 0,
         dateCreated: "2026-01-01T00:00:00.000Z",
@@ -162,6 +163,14 @@ interface MailOptions {
     /** Where a permanent delete (`DELETE /messages/:uid?purge=true`) goes; answers 204 unless it returns a response of its own. */
     onPurge?: (uid: string, purge: string | null) => Response | undefined;
     labels?: Record<string, unknown[]>;
+    /** Each mailbox's conversation rows for the "All mailboxes" conversation list, listed from its Inbox. */
+    conversationLists?: Record<string, unknown[]>;
+    /** Folders a mailbox has beyond the four every one has. */
+    extraFolders?: Record<string, Record<string, unknown>[]>;
+    /** Mailboxes the server has not yet made an Archive folder for (the first archive makes it). */
+    noArchive?: string[];
+    /** Where an archive of one message (`POST /messages/:uid/archive`) goes. */
+    onArchive?: (uid: string) => void;
 }
 
 function mockMail(options: MailOptions = {}) {
@@ -175,7 +184,9 @@ function mockMail(options: MailOptions = {}) {
         if (path === "/api/mail/mailboxes/auto-provision") return jsonResponse(404, { message: "not enabled" });
         if (path === "/api/mail/mailboxes") return jsonResponse(200, mailboxes);
         if (path === "/api/mail/folders") {
-            return options.foldersDenied?.includes(mailboxUid) ? jsonResponse(403, { message: "no access" }) : jsonResponse(200, foldersOf(mailboxUid));
+            if (options.foldersDenied?.includes(mailboxUid)) return jsonResponse(403, { message: "no access" });
+            const types = (["inbox", "sent_items", "archive", "deleted_items"] as const).filter((type) => type !== "archive" || !options.noArchive?.includes(mailboxUid));
+            return jsonResponse(200, [...foldersOf(mailboxUid, types), ...(options.extraFolders?.[mailboxUid] ?? [])]);
         }
         if (path === "/api/mail/labels") return jsonResponse(200, options.labels?.[mailboxUid] ?? []);
         if (path === "/api/mail/search") return (options.search ?? pages({}))(mailboxUid, parsed.searchParams);
@@ -183,7 +194,14 @@ function mockMail(options: MailOptions = {}) {
             const id = decodeURIComponent(path.slice("/api/mail/messages/conversations/".length));
             return jsonResponse(200, options.conversations?.[`${mailboxUid}|${id}`] ?? []);
         }
+        if (path === "/api/mail/messages/conversations") return jsonResponse(200, options.conversationLists?.[mailboxUid] ?? []);
         if (path === "/api/mail/attachments") return jsonResponse(200, []);
+        const archived = path.match(/^\/api\/mail\/messages\/([^/]+)\/archive$/);
+        if (archived) {
+            options.onArchive?.(archived[1]);
+            const message = messages.find((m) => m.uid === archived[1]) as { mailboxUid: string };
+            return jsonResponse(200, { ...message, folderUid: `${message.mailboxUid}-archive` });
+        }
         const single = path.match(/^\/api\/mail\/messages\/([^/]+)(\/raw)?$/);
         if (single) {
             const uid = single[1];
@@ -1310,6 +1328,276 @@ describe("searching all mailboxes", () => {
             await screen.findByText("2 results");
 
             expect(screen.queryByRole("button", { name: /^Search (all mailboxes|this mailbox only)$/ })).not.toBeInTheDocument();
+        });
+    });
+});
+
+describe("swiping and pressing rows on a phone in the views that span mailboxes", () => {
+    const swipe = (row: HTMLElement, from: number, to: number) => {
+        fireEvent.touchStart(row, { touches: [{ clientX: from, clientY: 100 }] });
+        fireEvent.touchMove(row, { touches: [{ clientX: (from + to) / 2, clientY: 102 }] });
+        fireEvent.touchMove(row, { touches: [{ clientX: to, clientY: 104 }] });
+        fireEvent.touchEnd(row);
+    };
+    const archiveLeft = (row: HTMLElement) => swipe(row, 300, 60);
+    const moveRight = (row: HTMLElement) => swipe(row, 40, 300);
+    const rowOf = (subject: string | RegExp) => screen.getByText(subject).closest("[data-message-uid]") as HTMLElement;
+    /** Support has a folder of its own, which is what tells its Move to apart from My Mail's. */
+    const escalations = { ...foldersOf("mb2", ["inbox"])[0], uid: "mb2-escalations", name: "Support Escalations", type: "user" };
+    const inbox = (uid: string, mailboxUid: string, subject: string, overrides: Record<string, unknown> = {}) =>
+        messageFixture(uid, mailboxUid, { subject, folderUid: `${mailboxUid}-inbox`, ...overrides });
+    function bulkUpdates() {
+        const updates: Record<string, unknown>[] = [];
+        return { updates, onBulkUpdate: (batch: Record<string, unknown>[]) => void updates.push(...batch) };
+    }
+    /** A finger held on a row until it counts as a press (the page keeps its real clock otherwise: it waits on the network). */
+    const hold = (row: HTMLElement) => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            fireEvent.touchStart(row, { touches: [{ clientX: 100, clientY: 100 }] });
+            act(() => void vi.advanceTimersByTime(LONG_PRESS_MS));
+        } finally {
+            vi.useRealTimers();
+        }
+    };
+
+    beforeEach(() => {
+        mockMatchMedia(true);
+    });
+
+    describe("in the All mailboxes view, listing messages", () => {
+        const messages = [inbox("a", "mb1", "Alpha"), inbox("c", "mb2", "Charlie")];
+
+        it("archives a row into its own mailbox's Archive and takes only that row away", async () => {
+            at("?aggregate=inbox");
+            const { updates, onBulkUpdate } = bulkUpdates();
+            mockMail({ messages, onBulkUpdate });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Charlie");
+
+            archiveLeft(rowOf("Charlie"));
+
+            await waitFor(() => expect(screen.queryByText("Charlie")).not.toBeInTheDocument());
+            expect(updates).toEqual([expect.objectContaining({ uid: "c", folderUid: "mb2-archive" })]);
+            expect(screen.getByText("Alpha")).toBeInTheDocument();
+
+            archiveLeft(rowOf("Alpha"));
+            await waitFor(() => expect(screen.queryByText("Alpha")).not.toBeInTheDocument());
+            expect(updates.map((u) => u.folderUid)).toEqual(["mb2-archive", "mb1-archive"]);
+        });
+
+        it("makes the Archive folder of a mailbox that has none, as a bulk archive does", async () => {
+            at("?aggregate=inbox");
+            const onArchive = vi.fn();
+            mockMail({ messages, noArchive: ["mb2"], onArchive });
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Charlie");
+
+            archiveLeft(rowOf("Charlie"));
+
+            await waitFor(() => expect(onArchive).toHaveBeenCalledExactlyOnceWith("c"));
+            await waitFor(() => expect(screen.queryByText("Charlie")).not.toBeInTheDocument());
+        });
+
+        it("asks for a folder of the row's own mailbox, and moves it there", async () => {
+            at("?aggregate=inbox");
+            const { updates, onBulkUpdate } = bulkUpdates();
+            mockMail({ messages, onBulkUpdate, extraFolders: { mb2: [escalations] } });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await screen.findByText("Charlie");
+
+            // My Mail's row is offered My Mail's folders...
+            moveRight(rowOf("Alpha"));
+            let dialog = await screen.findByRole("dialog", { name: "Move message to" });
+            expect(within(dialog).getByRole("button", { name: /^archive/ })).toBeEnabled();
+            expect(within(dialog).queryByRole("button", { name: /^Support Escalations/ })).not.toBeInTheDocument();
+            // ...with the folder it is in marked.
+            expect(within(dialog).getByRole("button", { name: /^inbox/ })).toBeDisabled();
+            await user.keyboard("{Escape}");
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+            // ...Support's row Support's.
+            moveRight(rowOf("Charlie"));
+            dialog = await screen.findByRole("dialog", { name: "Move message to" });
+            await user.click(within(dialog).getByRole("button", { name: /^Support Escalations/ }));
+
+            await waitFor(() => expect(screen.queryByText("Charlie")).not.toBeInTheDocument());
+            expect(updates).toEqual([expect.objectContaining({ uid: "c", folderUid: "mb2-escalations" })]);
+            expect(screen.getByText("Alpha")).toBeInTheDocument();
+        });
+    });
+
+    describe("in the All mailboxes view, listing conversations", () => {
+        const conversation = (mailboxUid: string, subject: string) => ({
+            conversationId: "c1",
+            subject,
+            messageUids: [`${mailboxUid}-in`],
+            folderUids: [`${mailboxUid}-inbox`],
+            messageCount: 1,
+            unreadCount: 0,
+            latestDate: mailboxUid === "mb1" ? "2026-01-02T00:00:00.000Z" : "2026-01-03T00:00:00.000Z",
+            participants: [{ address: "x@example.com", displayName: "X", type: "to" }],
+            hasAttachments: false,
+            flagged: false,
+            latestMessageUid: `${mailboxUid}-in`,
+            latestFrom: { address: "x@example.com", displayName: "X", type: "to" },
+            latestPreview: "",
+            latestFolderUid: `${mailboxUid}-inbox`,
+        });
+        /** The same conversation id in both mailboxes (a message sent to both), each with a copy in Sent Items that its row does not stand for. */
+        const thread = (mailboxUid: string) => [
+            inbox(`${mailboxUid}-in`, mailboxUid, "Shared thread", { conversationId: "c1" }),
+            messageFixture(`${mailboxUid}-out`, mailboxUid, { subject: "Shared thread", conversationId: "c1" }),
+        ];
+        const setup = (extra: Parameters<typeof mockMail>[0] = {}) => {
+            localStorage.setItem(
+                "rapidmx:mail-list-preferences:mb1",
+                JSON.stringify({ sortBy: "date", sortOrder: "desc", filter: "all", labelUids: [], showAsConversations: true }),
+            );
+            at("?aggregate=inbox");
+            const { updates, onBulkUpdate } = bulkUpdates();
+            const fetchMock = mockMail({
+                messages: [...thread("mb1"), ...thread("mb2")],
+                conversationLists: { mb1: [conversation("mb1", "Shared thread")], mb2: [conversation("mb2", "Shared thread")] },
+                conversations: { "mb1|c1": thread("mb1"), "mb2|c1": thread("mb2") },
+                onBulkUpdate,
+                ...extra,
+            });
+            return { updates, fetchMock };
+        };
+        const rows = () => document.querySelectorAll<HTMLElement>("[data-message-uid]");
+
+        it("archives a row's messages in the row's mailbox - the ones in the Inbox - and not the other mailbox's conversation of the same id", async () => {
+            const { updates } = setup();
+            render(<InboxPage userUid="u1" />);
+            await waitFor(() => expect(rows()).toHaveLength(2));
+
+            // Support's row is the newer, so it is first.
+            expect(rows()[0]).toHaveAttribute("data-message-uid", "mb2-in");
+            archiveLeft(rows()[0]);
+
+            await waitFor(() => expect(updates).toHaveLength(1));
+            expect(updates).toEqual([expect.objectContaining({ uid: "mb2-in", folderUid: "mb2-archive" })]);
+        });
+
+        it("asks for a folder of the row's mailbox and moves that mailbox's messages of the row there", async () => {
+            const { updates } = setup({ extraFolders: { mb2: [escalations] } });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await waitFor(() => expect(rows()).toHaveLength(2));
+
+            moveRight(rows()[0]);
+            const dialog = await screen.findByRole("dialog", { name: "Move message to" });
+            await user.click(within(dialog).getByRole("button", { name: /^Support Escalations/ }));
+
+            await waitFor(() => expect(updates).toHaveLength(1));
+            expect(updates).toEqual([expect.objectContaining({ uid: "mb2-in", folderUid: "mb2-escalations" })]);
+        });
+
+        it("starts select mode on a held row, ticks it, and archives it in its own mailbox from the selection bar", async () => {
+            const { updates } = setup();
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await waitFor(() => expect(rows()).toHaveLength(2));
+
+            hold(rows()[0]);
+
+            expect(await screen.findByText("1 conversation selected")).toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: "Archive" }));
+            await waitFor(() => expect(updates).toHaveLength(1));
+            expect(updates).toEqual([expect.objectContaining({ uid: "mb2-in", folderUid: "mb2-archive" })]);
+        });
+    });
+
+    describe("in search results", () => {
+        const messages = [inbox("a", "mb1", "Alpha"), inbox("c", "mb2", "Charlie"), messageFixture("o", "mb1", { subject: "Queued", folderUid: "mb1-outbox" })];
+        const hits = pages({ "mb1|": { results: [hit("a", 1), hit("o", 3)] }, "mb2|": { results: [hit("c", 2)] } });
+
+        it("archives a hit into its own mailbox's Archive", async () => {
+            at("?aggregate=inbox");
+            const { updates, onBulkUpdate } = bulkUpdates();
+            mockMail({ messages, search: hits, onBulkUpdate });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await searchFor(user, "budget");
+            await screen.findByText("3 results");
+
+            archiveLeft(rowOf("Charlie"));
+
+            await waitFor(() => expect(screen.queryByText("Charlie")).not.toBeInTheDocument());
+            expect(updates).toEqual([expect.objectContaining({ uid: "c", folderUid: "mb2-archive" })]);
+        });
+
+        it("asks for a folder of the hit's own mailbox", async () => {
+            at("?aggregate=inbox");
+            const { updates, onBulkUpdate } = bulkUpdates();
+            mockMail({ messages, search: hits, onBulkUpdate, extraFolders: { mb2: [escalations] } });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await searchFor(user, "budget");
+            await screen.findByText("3 results");
+
+            moveRight(rowOf("Alpha"));
+            let dialog = await screen.findByRole("dialog", { name: "Move message to" });
+            expect(within(dialog).queryByRole("button", { name: /^Support Escalations/ })).not.toBeInTheDocument();
+            await user.keyboard("{Escape}");
+            await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+            moveRight(rowOf("Charlie"));
+            dialog = await screen.findByRole("dialog", { name: "Move message to" });
+            await user.click(within(dialog).getByRole("button", { name: /^Support Escalations/ }));
+
+            await waitFor(() => expect(updates).toEqual([expect.objectContaining({ uid: "c", folderUid: "mb2-escalations" })]));
+        });
+
+        it("leaves a hit in an Outbox alone: it is the server's send queue", async () => {
+            at("?aggregate=inbox");
+            const { updates, onBulkUpdate } = bulkUpdates();
+            mockMail({
+                messages,
+                search: hits,
+                onBulkUpdate,
+                extraFolders: { mb1: foldersOf("mb1", ["outbox"]) },
+            });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await searchFor(user, "budget");
+            await screen.findByText("3 results");
+
+            expect(rowOf("Queued").style.touchAction).toBe("");
+            archiveLeft(rowOf("Queued"));
+            moveRight(rowOf("Queued"));
+
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+            expect(updates).toEqual([]);
+            // The rows around it are not so.
+            expect(rowOf("Alpha").style.touchAction).toBe("pan-y");
+        });
+
+        it("starts select mode with the held hit ticked, a tap ticks more, and the bar archives each in its own mailbox", async () => {
+            at("?aggregate=inbox");
+            const { updates, onBulkUpdate } = bulkUpdates();
+            mockMail({ messages, search: hits, onBulkUpdate });
+            const user = userEvent.setup();
+            render(<InboxPage userUid="u1" />);
+            await searchFor(user, "budget");
+            await screen.findByText("3 results");
+
+            hold(rowOf("Charlie"));
+            // The tap that ends the press opens nothing and ticks nothing off.
+            fireEvent.touchEnd(rowOf("Charlie"));
+            fireEvent.click(screen.getByText("Charlie"));
+
+            expect(await screen.findByText("1 selected")).toBeInTheDocument();
+            expect(screen.getByRole("checkbox", { name: "Select Charlie" })).toBeChecked();
+            expect(screen.getByRole("checkbox", { name: "Select Alpha" })).not.toBeChecked();
+            await user.click(screen.getByText("Alpha"));
+            expect(screen.getByText("2 selected")).toBeInTheDocument();
+            await user.click(screen.getByRole("button", { name: "Archive" }));
+
+            await waitFor(() => expect(updates).toHaveLength(2));
+            expect(Object.fromEntries(updates.map((u) => [u.uid, u.folderUid]))).toEqual({ a: "mb1-archive", c: "mb2-archive" });
         });
     });
 });

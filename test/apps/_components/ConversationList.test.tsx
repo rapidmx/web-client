@@ -3,11 +3,12 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import ConversationList from "../../../apps/shared/components/mail/ConversationList.js";
+import { LONG_PRESS_MS } from "../../../apps/shared/gestures/useLongPress.js";
 import { clearInviteCache } from "../../../apps/shared/components/mail/invite/inviteStore.js";
 import { createApiClient } from "../../../lib/util/api.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
@@ -660,6 +661,40 @@ describe("meeting requests among a conversation's messages", () => {
         await screen.findAllByRole("button", { name: /^Hello there|Sender One/ });
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(screen.queryByRole("button", { name: /RSVP/ })).not.toBeInTheDocument();
+    });
+
+    describe("press and hold", () => {
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+        const press = (row: HTMLElement) => {
+            fireEvent.touchStart(row, { touches: [{ clientX: 100, clientY: 100 }] });
+            act(() => void vi.advanceTimersByTime(LONG_PRESS_MS));
+        };
+
+        it("hands a held parent row to onLongPress with its conversation, and not once rows are being ticked", () => {
+            vi.useFakeTimers();
+            const onLongPress = vi.fn();
+            const onOpenMessage = vi.fn();
+            const row = conversationFixture({ mailboxUid: "mb2" });
+            const { rerender } = render(
+                <ConversationList conversations={[row]} mailboxUid="mb1" selectedUid={null} onOpenMessage={onOpenMessage} onLongPress={onLongPress} />,
+            );
+            const open = () => screen.getAllByRole("button").find((button) => button.hasAttribute("data-row-open"))!;
+
+            press(open());
+            fireEvent.touchEnd(open());
+            fireEvent.click(open());
+            expect(onLongPress).toHaveBeenCalledExactlyOnceWith(row);
+            // The tap that ends it opens nothing.
+            expect(onOpenMessage).not.toHaveBeenCalled();
+
+            rerender(
+                <ConversationList conversations={[row]} mailboxUid="mb1" selectedUid={null} onOpenMessage={onOpenMessage} onLongPress={onLongPress} selectMode />,
+            );
+            press(open());
+            expect(onLongPress).toHaveBeenCalledOnce();
+        });
     });
 
     describe("modifier clicks and leaving rows", () => {

@@ -64,9 +64,14 @@ export interface ConversationListProps {
      */
     swipe?: {
         enabled: boolean;
-        onArchive: (conversation: ConversationSummary) => Promise<boolean>;
-        onMove: (conversation: ConversationSummary) => void;
+        onArchive: (conversation: ListedConversation) => Promise<boolean>;
+        onMove: (conversation: ListedConversation) => void;
     };
+    /**
+     * A finger held on a parent row on a phone: the caller starts select mode with that conversation ticked. Absent, rows have no long press; it is not
+     * heard in select mode either, where a tap ticks a row already.
+     */
+    onLongPress?: (conversation: ListedConversation) => void;
     /**
      * Whether a conversation's own messages read newest first, matching the order sense the rows themselves
      * are in ("Newest on top"). `listConversationMessages()` always answers oldest first - the order a
@@ -106,6 +111,7 @@ export default function ConversationList({
     onSelectWithModifier,
     exitingKeys,
     swipe,
+    onLongPress,
     newestFirst,
 }: ConversationListProps) {
     const client = useApiClient();
@@ -200,6 +206,7 @@ export default function ConversationList({
                             enabled={!!swipe?.enabled && !selectMode}
                             onArchive={() => swipe!.onArchive(conversation)}
                             onMove={() => swipe!.onMove(conversation)}
+                            onLongPress={onLongPress && !selectMode ? () => onLongPress(conversation) : undefined}
                             data-message-uid={conversation.latestMessageUid}
                             data-unread={unread ? "true" : undefined}
                             className={rowClass({ unread, selected: conversation.latestMessageUid === selectedUid || ticked }, "flex items-stretch")}

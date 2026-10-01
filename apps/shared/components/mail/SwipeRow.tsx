@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { HTMLAttributes, ReactNode, useEffect, useRef, useState } from "react";
+import React, { HTMLAttributes, ReactNode, TouchEvent, useEffect, useRef, useState } from "react";
 import { HiOutlineArchiveBox, HiOutlineFolder } from "react-icons/hi2";
+import { useLongPress } from "../../gestures/useLongPress.js";
 import { useSwipe } from "../../gestures/useSwipe.js";
 
 export interface SwipeRowProps extends HTMLAttributes<HTMLElement> {
@@ -15,11 +16,21 @@ export interface SwipeRowProps extends HTMLAttributes<HTMLElement> {
     onArchive: () => Promise<boolean>;
     /** Left to right. The row comes back at once, and this asks where to (a prompt for the folder). */
     onMove: () => void;
+    /** A finger held on the row (see `useLongPress()`) - the phone's way into select mode. Heard whether or not swipes are `enabled`; absent, the row has none. */
+    onLongPress?: () => void;
     children: ReactNode;
 }
 
 /** How long the row takes to leave, or come back - `motion-reduce` skips it. */
 const SLIDE = "transform 150ms ease-out";
+
+/** Both hooks' handlers for one touch event; `useSwipe()` has none while swipes are off. */
+function both(first: (event: TouchEvent<HTMLElement>) => void, second?: (event: TouchEvent<HTMLElement>) => void) {
+    return (event: TouchEvent<HTMLElement>) => {
+        first(event);
+        second?.(event);
+    };
+}
 
 /**
  * A row of a list of mail that slides with a finger: right to left it takes the row away to Archive (a green panel with the
@@ -29,8 +40,10 @@ const SLIDE = "transform 150ms ease-out";
  *
  * Only a swipe that starts out horizontal counts (see `useSwipe()`), so scrolling the list is untouched, and it is an addition
  * to, never the only way of, archiving and moving: the selection bar and the reading pane do the same.
+ *
+ * The row is also where a press and hold is heard (`onLongPress`), which shares the finger with the swipe: a hold gives way to the first drag.
  */
-export default function SwipeRow({ as: Tag = "div", enabled, onArchive, onMove, children, className, style, ...rest }: SwipeRowProps) {
+export default function SwipeRow({ as: Tag = "div", enabled, onArchive, onMove, onLongPress, children, className, style, ...rest }: SwipeRowProps) {
     const [offset, setOffset] = useState(0);
     const [width, setWidth] = useState(0);
     /** The row is on its way out (or waiting for the server to confirm it), so a finger can't drag it. */
@@ -71,9 +84,13 @@ export default function SwipeRow({ as: Tag = "div", enabled, onArchive, onMove, 
         },
     });
 
+    // What `useSwipe()` hands over is `{}` while swipes are off.
+    const swipeTouch: Partial<ReturnType<typeof useLongPress>["handlers"]> = swipe.handlers;
+    const press = useLongPress({ enabled: !!onLongPress, onLongPress: onLongPress! });
+
     if (!enabled) {
         return (
-            <Tag className={className} style={style} {...rest}>
+            <Tag className={className} style={{ ...style, ...press.style }} {...rest} {...press.handlers}>
                 {children}
             </Tag>
         );
@@ -82,7 +99,11 @@ export default function SwipeRow({ as: Tag = "div", enabled, onArchive, onMove, 
     return (
         <Tag
             {...rest}
-            {...swipe.handlers}
+            {...press.handlers}
+            onTouchStart={both(press.handlers.onTouchStart, swipeTouch.onTouchStart)}
+            onTouchMove={both(press.handlers.onTouchMove, swipeTouch.onTouchMove)}
+            onTouchEnd={both(press.handlers.onTouchEnd, swipeTouch.onTouchEnd)}
+            onTouchCancel={both(press.handlers.onTouchCancel, swipeTouch.onTouchCancel)}
             ref={(node: HTMLElement | null) => {
                 element.current = node;
             }}
@@ -90,6 +111,7 @@ export default function SwipeRow({ as: Tag = "div", enabled, onArchive, onMove, 
             style={{
                 ...style,
                 ...swipe.style,
+                ...press.style,
                 transform: active ? `translateX(${offset}px)` : undefined,
                 transition: dragging ? "none" : SLIDE,
             }}

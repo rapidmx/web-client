@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockIntersectionObserver, mockLocation, mockMatchMedia } from "./testUtils.js";
 import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.js";
 import { clearInviteCache } from "../../apps/shared/components/mail/invite/inviteStore.js";
+import { LONG_PRESS_MS } from "../../apps/shared/gestures/useLongPress.js";
 import InboxPageBase from "../../apps/www/index.js";
 import { latestRouter, TestRouter, withTestRouter } from "./routerTestUtils.js";
 import { createApiClient } from "../../lib/util/api.js";
@@ -1536,6 +1537,33 @@ describe("InboxPage", () => {
                 const dialog = await screen.findByRole("dialog", { name: "Move 2 messages to" });
                 expect(bulkPut(fetchMock)).toBeUndefined();
                 await user.click(within(dialog).getByRole("button", { name: /^Archive/ }));
+                await waitFor(() => expect(bulkPut(fetchMock)).toBeDefined());
+                expect(JSON.parse(bulkPut(fetchMock)![1].body as string).map((update: { uid: string }) => update.uid)).toEqual(["m1", "m2"]);
+            });
+
+            it("starts select mode with the held conversation ticked, its messages resolved, and Archive then acts on all of them", async () => {
+                mockMatchMedia(true);
+                const messages = threadMessages();
+                const fetchMock = mockThread(messages);
+                const user = userEvent.setup();
+                render(<InboxPage userUid="u1" />);
+                await toggleConversations(user);
+                const row = (await screen.findByText("Thread subject")).closest("[data-message-uid]") as HTMLElement;
+
+                vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+                try {
+                    fireEvent.touchStart(row, { touches: [{ clientX: 100, clientY: 100 }] });
+                    act(() => void vi.advanceTimersByTime(LONG_PRESS_MS));
+                } finally {
+                    vi.useRealTimers();
+                }
+                fireEvent.touchEnd(row);
+                fireEvent.click(within(row).getByText("Thread subject"));
+
+                expect(await screen.findByText("1 conversation selected")).toBeInTheDocument();
+                expect(latestRouter().navigate).not.toHaveBeenCalled();
+                await waitFor(() => expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/messages/conversations/c1"))).toBe(true));
+                await user.click(screen.getByRole("button", { name: "Archive" }));
                 await waitFor(() => expect(bulkPut(fetchMock)).toBeDefined());
                 expect(JSON.parse(bulkPut(fetchMock)![1].body as string).map((update: { uid: string }) => update.uid)).toEqual(["m1", "m2"]);
             });
@@ -3149,6 +3177,96 @@ describe("InboxPage", () => {
                 swipe(rowOf("First"), [300, 100], [60, 100]);
                 expect(bulkPut(fetchMock)).toBeUndefined();
                 expect(rowOf("First").style.touchAction).toBe("");
+            });
+
+            describe("pressing and holding a row", () => {
+                /** A finger held on a row until it counts as a press (the page keeps its real clock otherwise: it waits on the network). */
+                const hold = (row: HTMLElement) => {
+                    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+                    try {
+                        fireEvent.touchStart(row, { touches: [{ clientX: 100, clientY: 100 }] });
+                        act(() => void vi.advanceTimersByTime(LONG_PRESS_MS));
+                    } finally {
+                        vi.useRealTimers();
+                    }
+                };
+
+                it("starts select mode with that message ticked, without opening it, and a tap ticks more until Cancel", async () => {
+                    mockMatchMedia(true);
+                    const vibrate = vi.fn();
+                    vi.stubGlobal("navigator", { ...navigator, vibrate });
+                    mockSelectable(twoMessages());
+                    const user = userEvent.setup();
+                    render(<InboxPage userUid="u1" />);
+                    await screen.findByText("First");
+
+                    hold(rowOf("First"));
+                    // The lift and the click that follow it are not a tap on the row.
+                    fireEvent.touchEnd(rowOf("First"));
+                    fireEvent.click(screen.getByText("First"));
+
+                    // The selection header has replaced the toolbar (there is no Select button now, but there is Cancel).
+                    expect(await screen.findByText("1 selected")).toBeInTheDocument();
+                    expect(screen.queryByRole("button", { name: "Select" })).not.toBeInTheDocument();
+                    expect(screen.getByRole("checkbox", { name: "Select First" })).toBeChecked();
+                    expect(screen.getByRole("checkbox", { name: "Select Second" })).not.toBeChecked();
+                    expect(vibrate).toHaveBeenCalledWith(10);
+                    expect(latestRouter().navigate).not.toHaveBeenCalled();
+
+                    // From then on a tap ticks and unticks; a second hold changes nothing.
+                    await user.click(screen.getByText("Second"));
+                    expect(screen.getByText("2 selected")).toBeInTheDocument();
+                    hold(rowOf("Second"));
+                    expect(screen.getByText("2 selected")).toBeInTheDocument();
+                    await user.click(screen.getByText("First"));
+                    expect(screen.getByText("1 selected")).toBeInTheDocument();
+                    expect(latestRouter().navigate).not.toHaveBeenCalled();
+
+                    await user.click(screen.getByRole("button", { name: "Cancel" }));
+                    await waitFor(() => expect(screen.getByRole("button", { name: "Select" })).toBeInTheDocument());
+                    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+                });
+
+                it("makes the held row the anchor of the next Shift+click", async () => {
+                    mockMatchMedia(true);
+                    mockSelectable([...twoMessages(), messageFixture({ uid: "m3", subject: "Third" })]);
+                    const user = userEvent.setup();
+                    render(<InboxPage userUid="u1" />);
+                    await screen.findByText("First");
+
+                    hold(rowOf("First"));
+                    await screen.findByText("1 selected");
+                    await user.keyboard("{Shift>}");
+                    await user.click(screen.getByText("Third"));
+                    await user.keyboard("{/Shift}");
+
+                    expect(screen.getByText("3 selected")).toBeInTheDocument();
+                });
+
+                it("does nothing on a desktop, and nothing when the finger moves off", async () => {
+                    mockSelectable(twoMessages());
+                    const { unmount } = render(<InboxPage userUid="u1" />);
+                    await screen.findByText("First");
+
+                    hold(rowOf("First"));
+                    expect(screen.queryByText("1 selected")).not.toBeInTheDocument();
+                    expect(rowOf("First").style.userSelect).toBe("");
+                    unmount();
+
+                    mockMatchMedia(true);
+                    mockSelectable(twoMessages());
+                    render(<InboxPage userUid="u1" />);
+                    await screen.findByText("First");
+                    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+                    try {
+                        fireEvent.touchStart(rowOf("First"), { touches: [{ clientX: 100, clientY: 100 }] });
+                        fireEvent.touchMove(rowOf("First"), { touches: [{ clientX: 100, clientY: 160 }] });
+                        act(() => void vi.advanceTimersByTime(LONG_PRESS_MS * 2));
+                    } finally {
+                        vi.useRealTimers();
+                    }
+                    expect(screen.queryByText("1 selected")).not.toBeInTheDocument();
+                });
             });
         });
 
