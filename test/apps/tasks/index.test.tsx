@@ -3,13 +3,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { addDays, endOfWeek, subDays } from "date-fns";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import TasksPageBase from "../../../apps/www/tasks/index.js";
-import { withTestRouter } from "../routerTestUtils.js";
+import { latestRouter, withTestRouter } from "../routerTestUtils.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import { createApiClient } from "../../../lib/util/api.js";
 
@@ -1127,5 +1127,165 @@ describe("TasksPage — explicit ApiClient (tauri-client-style host apps)", () =
         const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
         expect(postCall[0]).toBe("https://acct-a.example.com/api/mail/tasks");
         expect(new Headers((postCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+    });
+});
+
+describe("TasksPage races", () => {
+    const shared = { ...mailbox, uid: "mb2", ownerUserUid: "u9", primarySmtpAddress: "team@example.com", displayName: "Team" };
+    const teamTasksFolder = { ...tasksFolder, uid: "f-team-tasks", mailboxUid: "mb2" };
+    const teamInboxFolder = { ...inboxFolder, uid: "f-team-inbox", mailboxUid: "mb2" };
+
+    /** A response a test answers when it chooses. */
+    function deferred() {
+        let resolve!: (res: Response) => void;
+        const promise = new Promise<Response>((res) => (resolve = res));
+        return { promise, resolve };
+    }
+
+    /** Two mailboxes; `handler` answers first, and may hold a response back. */
+    function mockTwoMailboxes(handler: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined) {
+        return mockFetch((url, init) => {
+            const custom = handler(url, init);
+            if (custom) return custom;
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, shared]);
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, url.includes("mb2") ? [teamTasksFolder, teamInboxFolder] : [tasksFolder, inboxFolder]);
+            if (url.startsWith("/api/mail/task-lists")) return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+    }
+
+    it("keeps the list of the mailbox now shown when a slower answer for the one before it comes in late", async () => {
+        const slow = deferred();
+        const fetchMock = mockTwoMailboxes((url, init) => {
+            if (!url.startsWith("/api/mail/tasks") || (init?.method ?? "GET") !== "GET") return undefined;
+            return url.includes("folderUid=f-team-tasks") ? jsonResponse(200, [task({ uid: "t-team", title: "Team task", folderUid: "f-team-tasks" })]) : slow.promise;
+        });
+        render(<TasksPage userUid="u1" />);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("folderUid=f-tasks"), expect.anything()));
+
+        await act(async () => void (await latestRouter().navigate("/tasks?mailboxUid=mb2", { shallow: true })));
+        await screen.findByText("Team task");
+        slow.resolve(jsonResponse(200, [task({ uid: "t-mine", title: "My task" })]));
+        await act(async () => undefined);
+
+        expect(screen.getByText("Team task")).toBeInTheDocument();
+        expect(screen.queryByText("My task")).not.toBeInTheDocument();
+    });
+
+    it("shows no error for a list that failed to load after the mailbox it was for was left", async () => {
+        const slow = deferred();
+        const fetchMock = mockTwoMailboxes((url, init) => {
+            if (!url.startsWith("/api/mail/tasks") || (init?.method ?? "GET") !== "GET") return undefined;
+            return url.includes("folderUid=f-team-tasks") ? jsonResponse(200, [task({ uid: "t-team", title: "Team task", folderUid: "f-team-tasks" })]) : slow.promise;
+        });
+        render(<TasksPage userUid="u1" />);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("folderUid=f-tasks"), expect.anything()));
+
+        await act(async () => void (await latestRouter().navigate("/tasks?mailboxUid=mb2", { shallow: true })));
+        await screen.findByText("Team task");
+        slow.resolve(jsonResponse(500, { message: "old list failed" }));
+        await act(async () => undefined);
+
+        expect(screen.queryByText("old list failed")).not.toBeInTheDocument();
+        expect(screen.getByText("Team task")).toBeInTheDocument();
+    });
+
+    it("keeps the flagged email of the mailbox now shown when a slower answer for the one before it comes in late", async () => {
+        const slow = deferred();
+        const fetchMock = mockTwoMailboxes((url) => {
+            if (url.startsWith("/api/mail/tasks")) return jsonResponse(200, []);
+            if (url.includes("folderUid=f-team-inbox")) return jsonResponse(200, [{ ...flaggedMessage("team-msg", "2026-01-01T00:00:00.000Z"), mailboxUid: "mb2" }]);
+            if (url.includes("folderUid=f-inbox")) return slow.promise;
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+        await user.click(await screen.findByText("Flagged email"));
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("folderUid=f-inbox"), expect.anything()));
+
+        await act(async () => void (await latestRouter().navigate("/tasks?mailboxUid=mb2", { shallow: true })));
+        await screen.findByText("Subject team-msg");
+        slow.resolve(jsonResponse(200, [flaggedMessage("my-msg", "2026-01-01T00:00:00.000Z")]));
+        await act(async () => undefined);
+
+        expect(screen.getByText("Subject team-msg")).toBeInTheDocument();
+        expect(screen.queryByText("Subject my-msg")).not.toBeInTheDocument();
+    });
+
+    it("ignores a flagged email failure that comes in after the view was left and entered again", async () => {
+        const first = deferred();
+        const second = deferred();
+        const answers = [first.promise, second.promise];
+        const fetchMock = mockTwoMailboxes((url) => {
+            if (url.startsWith("/api/mail/tasks")) return jsonResponse(200, [task({ uid: "t-mine", title: "My task" })]);
+            if (url.includes("folderUid=f-inbox")) return answers.shift();
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+        await user.click(await screen.findByText("Flagged email"));
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("folderUid=f-inbox"), expect.anything()));
+        await user.click(screen.getByText("My Day"));
+        await user.click(screen.getByText("Flagged email"));
+        await waitFor(() => expect(answers).toHaveLength(0));
+
+        first.resolve(jsonResponse(500, { message: "flagged failed" }));
+        await act(async () => undefined);
+        second.resolve(jsonResponse(200, [flaggedMessage("my-msg", "2026-01-01T00:00:00.000Z")]));
+
+        expect(await screen.findByText("Subject my-msg")).toBeInTheDocument();
+        expect(screen.queryByText("flagged failed")).not.toBeInTheDocument();
+    });
+
+    it("saves a completion once however often the control is pressed meanwhile, with the control off until the answer is in", async () => {
+        const save = deferred();
+        const fetchMock = mockShellAndTasks([todayTask], (url, init) => (url === "/api/mail/tasks/t-today" && init?.method === "PUT" ? save.promise : undefined));
+        render(<TasksPage userUid="u1" />);
+        const toggle = await screen.findByLabelText('Mark "Today task" as complete');
+
+        // Pressed again before the page has re-rendered (so the control is not yet off), and after.
+        act(() => {
+            toggle.click();
+            toggle.click();
+        });
+        fireEvent.click(toggle);
+        const puts = () => fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === "PUT");
+        await waitFor(() => expect(puts()).toHaveLength(1));
+        expect(screen.getByLabelText('Mark "Today task" as not complete')).toBeDisabled();
+
+        save.resolve(jsonResponse(200, { ...todayTask, version: 1, completed: true }));
+        await waitFor(() => expect(screen.getByLabelText('Mark "Today task" as not complete')).toBeEnabled());
+        expect(puts()).toHaveLength(1);
+    });
+
+    it("lets a task whose completion failed to save be toggled again", async () => {
+        let attempts = 0;
+        mockShellAndTasks([todayTask], (url, init) => {
+            if (url === "/api/mail/tasks/t-today" && init?.method === "PUT") {
+                attempts += 1;
+                return attempts === 1 ? jsonResponse(500, { message: "toggle failed" }) : jsonResponse(200, { ...todayTask, completed: true });
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+        await user.click(await screen.findByLabelText('Mark "Today task" as complete'));
+        await screen.findByText("toggle failed");
+        await waitFor(() => expect(screen.getByLabelText('Mark "Today task" as complete')).toBeEnabled());
+        await user.click(screen.getByLabelText('Mark "Today task" as complete'));
+        expect(await screen.findByLabelText('Mark "Today task" as not complete')).toBeInTheDocument();
+    });
+
+    it("moves a task due today to Overdue when the page is open past midnight", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        vi.setSystemTime(new Date(2026, 5, 15, 23, 59, 30));
+        mockShellAndTasks([task({ uid: "t-due", title: "Due task", dueDate: new Date(2026, 5, 15, 12).toISOString() })]);
+        render(<TasksPage userUid="u1" />);
+
+        await screen.findByText("Due task");
+        expect(screen.getByRole("heading", { name: "Today" })).toBeInTheDocument();
+        await act(async () => void (await vi.advanceTimersByTimeAsync(60_000)));
+        expect(screen.getByRole("heading", { name: "Overdue" })).toBeInTheDocument();
+        expect(screen.queryByRole("heading", { name: "Today" })).not.toBeInTheDocument();
     });
 });

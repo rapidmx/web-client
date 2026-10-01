@@ -190,6 +190,42 @@ describe("TimeZonePicker", () => {
         }
     });
 
+    it("scrolls the zone the arrow keys reach into view, where the browser can", async () => {
+        const user = userEvent.setup();
+        const scrollIntoView = vi.fn(function (this: Element) {
+            return this;
+        });
+        Element.prototype.scrollIntoView = scrollIntoView;
+        try {
+            const { trigger } = setup();
+            trigger.focus();
+            await user.keyboard("{ArrowDown}{ArrowDown}");
+            const option = document.getElementById(searchBox().getAttribute("aria-activedescendant")!);
+            expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "nearest" });
+            expect(scrollIntoView.mock.contexts.at(-1)).toBe(option);
+        } finally {
+            delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+        }
+    });
+
+    it("closes when the focus moves on from the picker (Tab), not when it moves within it or nowhere in particular", async () => {
+        const user = userEvent.setup();
+        const { trigger } = setup();
+        await user.click(trigger);
+        expect(searchBox()).toHaveFocus();
+        // To the button of the picker itself, then back: still open.
+        await user.tab({ shift: true });
+        expect(trigger).toHaveFocus();
+        expect(screen.getByRole("listbox")).toBeInTheDocument();
+        // The window losing the focus is not the user moving on.
+        fireEvent.blur(trigger);
+        expect(screen.getByRole("listbox")).toBeInTheDocument();
+        await user.tab();
+        await user.tab();
+        expect(screen.getByRole("button", { name: "elsewhere" })).toHaveFocus();
+        expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    });
+
     it("reads offsets on now when no date is given, and passes its id and description on to the button", () => {
         render(<TimeZonePicker id="zone" aria-describedby="help" value="UTC" zones={["UTC"]} onChange={vi.fn()} />);
         const trigger = screen.getByRole("combobox");

@@ -38,7 +38,7 @@ const RELOADED_AT_KEY = "rapidmx.session.reloadedAt";
 const LOG_KEY = "rapidmx.session.log";
 
 /**
- * How long a refresh request may go unanswered before it is aborted. A refresh runs inside a cross-tab Web Lock, so one that hangs would hold the lock - and
+ * How long a refresh request may go unanswered before it is given up on (not aborted - see `postRefresh()`). A refresh runs inside a cross-tab Web Lock, so one that hangs would hold the lock - and
  * with it every tab's refresh, and every request waiting on a recovery - for good.
  */
 export const SESSION_REFRESH_TIMEOUT_MS = 15 * 1000;
@@ -144,17 +144,47 @@ function describeFailure(err: unknown): string {
     return `${err instanceof Error ? err.message : "unknown"}`.slice(0, 80);
 }
 
-/** One `POST /auth/refresh`, recording when it succeeded. Given up on after `SESSION_REFRESH_TIMEOUT_MS`, which is a failure worth retrying, not a rejection. */
+/** Counts the refresh requests made, so a request that answers after it was given up on can tell whether a newer one has started since. */
+let refreshSeq = 0;
+
+/**
+ * One `POST /auth/refresh`, recording when it succeeded. Given up on after `SESSION_REFRESH_TIMEOUT_MS`, which is a failure worth retrying, not a rejection.
+ * Giving up only stops waiting: the request is NOT aborted. Auth-server rotates the single-use refresh token as it answers, and a browser that aborts before the
+ * response headers arrive never stores the rotated cookie, leaving the consumed token behind - the next refresh would be refused and the user signed out.
+ * A late answer is still logged, and a late success still recorded unless a newer refresh has started since.
+ */
 async function postRefresh(authServerUrl: string): Promise<void> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), refreshTimeoutMs);
+    const seq = ++refreshSeq;
+    const request = authApiFetch(authServerUrl, "/auth/refresh", { method: "POST" });
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+            timedOut = true;
+            reject(new Error(`refresh timed out after ${refreshTimeoutMs}ms`));
+        }, refreshTimeoutMs);
+    });
+    // Handles the request's own outcome whenever it comes, so a rejection after the timeout is never unhandled.
+    request.then(
+        () => {
+            if (!timedOut) {
+                return;
+            }
+            if (seq === refreshSeq) {
+                writeTimestamp(() => localStorage, REFRESHED_AT_KEY, Date.now());
+                logSessionEvent("refresh:late-ok");
+            } else {
+                logSessionEvent("refresh:late-superseded");
+            }
+        },
+        (err) => {
+            if (timedOut) {
+                logSessionEvent("refresh:late-error", describeFailure(err));
+            }
+        },
+    );
     try {
-        await authApiFetch(authServerUrl, "/auth/refresh", { method: "POST", signal: controller.signal });
-    } catch (err) {
-        if (controller.signal.aborted) {
-            throw new Error(`refresh timed out after ${refreshTimeoutMs}ms`);
-        }
-        throw err;
+        await Promise.race([request, timeout]);
     } finally {
         clearTimeout(timer);
     }

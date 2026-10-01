@@ -297,6 +297,28 @@ describe("ImageEditBadge: Take photo", () => {
             expect(await screen.findByRole("alert")).toHaveTextContent(CAMERA_FAILED_MESSAGE);
         });
 
+        it("takes one picture however often Capture is pressed before the frame is encoded", async () => {
+            setMediaDevices(async () => STREAM);
+            canvasStub(null);
+            const callbacks: BlobCallback[] = [];
+            const toBlob = vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(((callback: BlobCallback) => callbacks.push(callback)));
+            const user = userEvent.setup();
+            const onFile = vi.fn();
+            render(<ImageEditBadge {...props({ onFile })} />);
+            await openCamera(user);
+            const video = screen.getByLabelText("Camera preview");
+            await waitFor(() => expect((video as HTMLVideoElement).srcObject).toBe(STREAM));
+            fireEvent.loadedMetadata(video);
+            const capture = screen.getByRole("button", { name: "Capture" });
+            fireEvent.click(capture);
+            fireEvent.click(capture);
+            expect(toBlob).toHaveBeenCalledTimes(1);
+            expect(capture).toBeDisabled();
+
+            act(() => callbacks[0](new Blob([new Uint8Array(3)], { type: "image/jpeg" })));
+            expect(onFile).toHaveBeenCalledTimes(1);
+        });
+
         it("says so, and keeps the camera, when the frame could not be turned into a picture", async () => {
             setMediaDevices(async () => STREAM);
             canvasStub(null);

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import ContactPhotoAvatar from "../../../../lib/components/avatar/ContactPhotoAvatar.js";
 import ImageEditBadge from "../../../../lib/components/forms/ImageEditBadge.js";
 import { type Contact, deleteContactPhoto, uploadContactPhoto } from "../../../../lib/contacts/contactsApi.js";
@@ -22,6 +22,8 @@ export interface ContactPhotoEditorProps {
     badgeSize?: "sm" | "md";
     /** Called with the contact as stored after its picture was set or removed. */
     onChanged: (contact: Contact) => void;
+    /** Told whether a change is under way, for what must not edit the contact meanwhile (its star: a second change would send the version this one is about to replace). */
+    onBusyChange?: (busy: boolean) => void;
 }
 
 const FAILURE_TITLE = "Couldn't change this contact's photo";
@@ -30,9 +32,23 @@ const FAILURE_TITLE = "Couldn't change this contact's photo";
  * A stored contact's avatar with the camera badge of `ImageEditBadge` at its lower right: unlike the edit form (`ContactPhotoField`), which keeps a chosen picture until the
  * contact is saved, a picture chosen or taken here is made ready and saved at once, and removing it is too. A refusal (a view-only share, a stale version) is a pop-up.
  */
-export default function ContactPhotoEditor({ contact, displayName, size, email, badgeSize, onChanged }: ContactPhotoEditorProps) {
+export default function ContactPhotoEditor({ contact, displayName, size, email, badgeSize, onChanged, onBusyChange }: ContactPhotoEditorProps) {
     const client = useApiClient();
     const [busy, setBusy] = useState(false);
+    const root = useRef<HTMLDivElement>(null);
+    // Preparing a picture takes seconds; what is uploaded against is the contact as it is by then (it may have been read again), not as it was when the picture was chosen.
+    const latest = useRef(contact);
+    latest.current = contact;
+    const wasBusy = useRef(false);
+
+    useEffect(() => {
+        onBusyChange?.(busy);
+        // The badge is disabled meanwhile, which drops its focus: it gets it back, unless the user has gone elsewhere.
+        if (wasBusy.current && !busy && (!document.activeElement || document.activeElement === document.body)) {
+            root.current?.querySelector<HTMLElement>('button[aria-haspopup="menu"]')?.focus();
+        }
+        wasBusy.current = busy;
+    }, [busy]);
 
     async function change(work: () => Promise<Contact>) {
         setBusy(true);
@@ -50,7 +66,7 @@ export default function ContactPhotoEditor({ contact, displayName, size, email, 
     }
 
     return (
-        <div className="relative inline-block shrink-0">
+        <div ref={root} className="relative inline-block shrink-0">
             <ContactPhotoAvatar displayName={displayName} size={size} contact={contact} email={email} />
             <ImageEditBadge
                 position="bottom-right"
@@ -60,9 +76,12 @@ export default function ContactPhotoEditor({ contact, displayName, size, email, 
                 hasImage={!!contact.photoBlobKey}
                 busy={busy}
                 onFile={(file) =>
-                    void change(async () => uploadContactPhoto(contact.uid, contact.version, await prepareContactPhoto(file), client))
+                    void change(async () => {
+                        const prepared = await prepareContactPhoto(file);
+                        return uploadContactPhoto(latest.current.uid, latest.current.version, prepared, client);
+                    })
                 }
-                onRemove={() => void change(() => deleteContactPhoto(contact.uid, contact.version, client))}
+                onRemove={() => void change(() => deleteContactPhoto(latest.current.uid, latest.current.version, client))}
             />
         </div>
     );

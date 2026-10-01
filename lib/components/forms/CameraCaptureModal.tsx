@@ -41,6 +41,8 @@ export default function CameraCaptureModal({ onCapture, onClose, onError }: Came
     const stream = useRef<MediaStream | null>(null);
     const [ready, setReady] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // From pressing Capture until the frame is encoded: a second press then would hand the caller a second picture.
+    const [capturing, setCapturing] = useState(false);
 
     function fail(message: string) {
         setError(message);
@@ -72,6 +74,7 @@ export default function CameraCaptureModal({ onCapture, onClose, onError }: Came
     }, []);
 
     function capture() {
+        setCapturing(true);
         const element = video.current!;
         const canvas = document.createElement("canvas");
         canvas.width = element.videoWidth;
@@ -80,6 +83,7 @@ export default function CameraCaptureModal({ onCapture, onClose, onError }: Came
         canvas.toBlob(
             (blob) => {
                 if (!blob) {
+                    setCapturing(false);
                     fail("The picture could not be captured - try again.");
                     return;
                 }
@@ -108,7 +112,7 @@ export default function CameraCaptureModal({ onCapture, onClose, onError }: Came
                 <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
                     Cancel
                 </Button>
-                <Button type="button" className="!w-auto" disabled={!ready || !!error} onClick={capture}>
+                <Button type="button" className="!w-auto" disabled={!ready || !!error || capturing} onClick={capture}>
                     Capture
                 </Button>
             </div>

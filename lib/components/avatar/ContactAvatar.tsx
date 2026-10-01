@@ -12,6 +12,10 @@ export interface ContactAvatarProps {
     photoUrl?: string;
     /** The contact's address: without a picture of their own, its Gravatar is shown when there is one (and the reader turned that on in Settings > Privacy). */
     email?: string;
+    /** The contact's own picture exists but has not arrived (it is being fetched): Gravatar is not asked about an address whose owner has a picture of their own. */
+    photoPending?: boolean;
+    /** Called once, when the avatar scrolls into view - for a picture that is only fetched by then. */
+    onVisible?: () => void;
 }
 
 /** A fixed palette of background colors, cycled by a hash of the contact's name, for the initials shown when there is no picture. */
@@ -39,14 +43,14 @@ function colorOf(displayName: string): string {
  * A small circular avatar for a contact, matching Outlook People's: the contact's own picture when they have one, else their Gravatar (when `email`
  * is given), else initials on a color that is deterministic per name. A picture that fails to load falls through to the next.
  */
-export default function ContactAvatar({ displayName, size = 32, photoUrl, email }: ContactAvatarProps) {
+export default function ContactAvatar({ displayName, size = 32, photoUrl, email, photoPending, onVisible }: ContactAvatarProps) {
     const [gravatar, setGravatar] = useState<string | undefined>();
     const [failed, setFailed] = useState<string[]>([]);
     const enabled = useSyncExternalStore(subscribeGravatarPreference, gravatarEnabled, () => false);
     // Without IntersectionObserver there is no telling what is on screen, so look up at once.
     const [visible, setVisible] = useState(() => typeof IntersectionObserver === "undefined");
     const placeholder = useRef<HTMLSpanElement>(null);
-    const ownPicture = !!photoUrl && !failed.includes(photoUrl);
+    const ownPicture = photoPending || (!!photoUrl && !failed.includes(photoUrl));
 
     // A new picture gets a fresh start, whatever failed to load before.
     useEffect(() => {
@@ -56,13 +60,18 @@ export default function ContactAvatar({ displayName, size = 32, photoUrl, email 
     // Only an avatar that is on screen (and has no picture of its own to show) asks Gravatar, so a long list does not send a request per row.
     useEffect(() => {
         const element = placeholder.current;
-        if (visible || !enabled || !email || ownPicture || !element) {
+        if (visible || !element || !(onVisible || (enabled && email && !ownPicture))) {
             return;
         }
-        const observer = new IntersectionObserver((entries) => entries.some((entry) => entry.isIntersecting) && setVisible(true));
+        const observer = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+                setVisible(true);
+                onVisible?.();
+            }
+        });
         observer.observe(element);
         return () => observer.disconnect();
-    }, [visible, enabled, email, ownPicture]);
+    }, [visible, enabled, email, ownPicture, onVisible]);
 
     useEffect(() => {
         setGravatar(undefined);
@@ -86,6 +95,8 @@ export default function ContactAvatar({ displayName, size = 32, photoUrl, email 
                 width={size}
                 height={size}
                 referrerPolicy="no-referrer"
+                loading="lazy"
+                decoding="async"
                 onError={() => {
                     if (src === gravatar) {
                         markGravatarMissing(src);

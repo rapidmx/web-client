@@ -3,11 +3,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React from "react";
+import React, { act } from "react";
 import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ContactPhotoAvatar from "../../../lib/components/avatar/ContactPhotoAvatar.js";
-import { clearContactPhotoCache, useContactPhotoSrc } from "../../../lib/contacts/useContactPhotoSrc.js";
+import { clearContactPhotoCache, useContactPhoto, useContactPhotoSrc } from "../../../lib/contacts/useContactPhotoSrc.js";
+import { GRAVATAR_PREFERENCE_KEY } from "../../../lib/contacts/gravatar.js";
+import { mockIntersectionObserver } from "../testUtils.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 
@@ -144,6 +146,63 @@ describe("useContactPhotoSrc with an explicit client", () => {
     });
 });
 
+describe("useContactPhotoSrc under load", () => {
+    it("is not trimmed away between being fetched and being claimed by the avatar that asked", async () => {
+        // More pictures shown than the cache holds: nothing of them can be dropped, so the one still arriving is the only candidate once any is released.
+        const shown = [];
+        for (let i = 0; i < 51; i++) {
+            const view = renderHook(() => useContactPhotoSrc(photoOf(`s${i}`), client));
+            await waitFor(() => expect(view.result.current).toBeDefined(), { interval: 1 });
+            shown.push(view);
+        }
+        const create = URL.createObjectURL as ReturnType<typeof vi.fn>;
+        const url = `blob:late`;
+        create.mockImplementationOnce(() => {
+            // Another avatar goes away right after the new entry is stored and before the avatar that asked has claimed it.
+            queueMicrotask(() => shown[0].unmount());
+            return url;
+        });
+        const late = renderHook(() => useContactPhotoSrc(photoOf("late"), client));
+        await waitFor(() => expect(late.result.current).toBe(url));
+        expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(url);
+    }, 30_000);
+
+    it("fetches no more than four pictures at a time, the rest waiting their turn", async () => {
+        const resolvers: ((blob: Blob) => void)[] = [];
+        fetchBlob.mockImplementation(() => new Promise<Blob>((r) => resolvers.push(r)));
+        const views = Array.from({ length: 10 }, (_, i) => renderHook(() => useContactPhotoSrc(photoOf(`q${i}`), client)));
+        await waitFor(() => expect(fetchBlob).toHaveBeenCalledTimes(4));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(fetchBlob).toHaveBeenCalledTimes(4);
+
+        resolvers[0](new Blob([new Uint8Array(1)]));
+        await waitFor(() => expect(fetchBlob).toHaveBeenCalledTimes(5));
+        for (let i = 1; i < 10; i++) {
+            await waitFor(() => expect(resolvers.length).toBeGreaterThan(i));
+            resolvers[i](new Blob([new Uint8Array(1)]));
+        }
+        for (const view of views) {
+            await waitFor(() => expect(view.result.current).toMatch(/^blob:/));
+        }
+        expect(fetchBlob).toHaveBeenCalledTimes(10);
+    });
+
+    it("fetches nothing until it is asked to, and tells a picture that could not be fetched from one still on its way", async () => {
+        const { result, rerender } = renderHook(({ active }) => useContactPhoto(photoOf("c1"), client, active), { initialProps: { active: false } });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(fetchBlob).not.toHaveBeenCalled();
+        expect(result.current).toEqual({ src: undefined, failed: false });
+
+        fetchBlob.mockRejectedValueOnce(new Error("offline"));
+        rerender({ active: true });
+        await waitFor(() => expect(result.current.failed).toBe(true));
+        expect(result.current.src).toBeUndefined();
+
+        const plain = renderHook(() => useContactPhoto(photoOf("c1")));
+        expect(plain.result.current).toEqual({ src: "/api/mail/contacts/c1/photo?v=1", failed: false });
+    });
+});
+
 describe("ContactPhotoAvatar", () => {
     it("shows the plain picture URL in the web app and a fetched blob under an explicit client, falling back to initials", async () => {
         const plain = render(<ContactPhotoAvatar displayName="Jane Doe" contact={photoOf("c1", 4)} />);
@@ -157,5 +216,50 @@ describe("ContactPhotoAvatar", () => {
         );
         expect(screen.getByText("JD")).toBeInTheDocument();
         await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:photo-1"));
+    });
+
+    describe("for a contact who has a picture of their own, under an explicit client", () => {
+        const wrap = (children: React.ReactNode) => <ApiClientContext.Provider value={client}>{children}</ApiClientContext.Provider>;
+        const GRAVATAR = /^https:\/\/gravatar\.com\/avatar\//;
+        afterEach(() => {
+            localStorage.clear();
+            vi.unstubAllGlobals();
+        });
+
+        it("asks Gravatar nothing while the picture loads, and shows it when it arrives", async () => {
+            localStorage.setItem(GRAVATAR_PREFERENCE_KEY, "on");
+            vi.stubGlobal("IntersectionObserver", undefined);
+            let resolve!: (blob: Blob) => void;
+            fetchBlob.mockImplementationOnce(() => new Promise<Blob>((r) => (resolve = r)));
+            const { container } = render(wrap(<ContactPhotoAvatar displayName="Jane Doe" contact={photoOf("c1")} email="jane@example.com" />));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(container.querySelector("img")).toBeNull();
+            resolve(new Blob([new Uint8Array(1)]));
+            await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:photo-1"));
+        });
+
+        it("falls back to Gravatar only once the picture could not be fetched", async () => {
+            localStorage.setItem(GRAVATAR_PREFERENCE_KEY, "on");
+            vi.stubGlobal("IntersectionObserver", undefined);
+            fetchBlob.mockRejectedValueOnce(new Error("offline"));
+            const { container } = render(wrap(<ContactPhotoAvatar displayName="Jane Doe" contact={photoOf("c1")} email="jane@example.com" />));
+            await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toMatch(GRAVATAR));
+        });
+
+        it("when lazy, fetches the picture only once the avatar scrolls into view", async () => {
+            const observer = mockIntersectionObserver();
+            const { container } = render(wrap(<ContactPhotoAvatar lazy displayName="Jane Doe" contact={photoOf("c1")} />));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(fetchBlob).not.toHaveBeenCalled();
+            act(() => observer.trigger());
+            await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:photo-1"));
+            expect(fetchBlob).toHaveBeenCalledTimes(1);
+        });
+
+        it("when lazy but nothing can tell what is on screen, fetches at once", async () => {
+            vi.stubGlobal("IntersectionObserver", undefined);
+            const { container } = render(wrap(<ContactPhotoAvatar lazy displayName="Jane Doe" contact={photoOf("c1")} />));
+            await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:photo-1"));
+        });
     });
 });

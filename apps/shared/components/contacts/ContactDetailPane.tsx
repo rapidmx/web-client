@@ -62,6 +62,9 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, backHref,
     const keyConflicts = contact.keyConflicts ?? [];
     const previousKeys = contact.previousKeys ?? [];
 
+    // Not while a picture is being changed: that goes against the version the star would replace.
+    const [photoBusy, setPhotoBusy] = useState(false);
+
     async function handleToggleFavorite() {
         try {
             const changed = await setContactFavorite(contact, !contact.favorite, client);
@@ -97,12 +100,13 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, backHref,
                             badgeSize="sm"
                             email={contact.emails[0]?.address}
                             onChanged={(changed) => onChanged?.(changed)}
+                            onBusyChange={setPhotoBusy}
                         />
                     )}
                     <div>
                         <h1 className="text-xl font-bold tracking-tight">
                             {contact.displayName}
-                            <FavoriteStarButton favorite={!!contact.favorite} onToggle={() => void handleToggleFavorite()} className="ml-1 align-middle" />
+                            <FavoriteStarButton favorite={!!contact.favorite} disabled={photoBusy} onToggle={() => void handleToggleFavorite()} className="ml-1 align-middle" />
                         </h1>
                         {contact.jobTitle && contact.company && (
                             <p className="text-sm text-text-muted mt-0.5">

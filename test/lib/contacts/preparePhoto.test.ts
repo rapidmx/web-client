@@ -117,8 +117,91 @@ describe("prepareContactPhoto: a picture the server already takes", () => {
     it("is returned as it is when the browser cannot read it to measure it (the server takes it anyway)", async () => {
         vi.stubGlobal("createImageBitmap", vi.fn().mockRejectedValue(new Error("no")));
         vi.stubGlobal("Image", class { set src(_: string) { (this as { onerror?: () => void }).onerror?.(); } });
-        const picture = file(300_000, "image/jpeg");
+        const picture = file(300_000, "image/png");
         await expect(prepareContactPhoto(picture)).resolves.toBe(picture);
+    });
+
+    it("is never a JPEG the browser could not read to strip its metadata from: a JPEG may carry the place it was taken", async () => {
+        vi.stubGlobal("createImageBitmap", vi.fn().mockRejectedValue(new Error("no")));
+        vi.stubGlobal("Image", class { set src(_: string) { (this as { onerror?: () => void }).onerror?.(); } });
+        await expect(prepareContactPhoto(file(300_000, "image/jpeg"))).rejects.toThrow(CONTACT_PHOTO_UNSUPPORTED_MESSAGE);
+    });
+
+    it("is drawn again and encoded when it is a small JPEG, which would otherwise keep its EXIF (camera, time, GPS position)", async () => {
+        const rec = install({ width: 400, height: 300 });
+        const picture = file(300_000, "image/jpeg", "me.jpg");
+        const result = await prepareContactPhoto(picture);
+        expect(result).not.toBe(picture);
+        expect(result.type).toBe("image/jpeg");
+        expect(rec.encodes[0]).toEqual({ type: "image/jpeg", quality: 0.85 });
+        // Even one that says it is a PNG, if it is a JPEG in fact.
+        const mislabeled = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0, 4, 0, 0])], "me.png", { type: "image/png" });
+        expect(await prepareContactPhoto(mislabeled)).not.toBe(mislabeled);
+    });
+});
+
+const bytes = (...parts: Array<number | string | number[]>): number[] =>
+    parts.flatMap((part) => (typeof part === "string" ? Array.from(part, (c) => c.charCodeAt(0)) : Array.isArray(part) ? part : [part]));
+const be16 = (n: number) => [n >> 8, n & 255];
+const le16 = (n: number) => [n & 255, n >> 8];
+const le24 = (n: number) => [n & 255, (n >> 8) & 255, (n >> 16) & 255];
+const be32 = (n: number) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+const pad = (head: number[], length = 64) => [...head, ...new Array(Math.max(0, length - head.length)).fill(0)];
+
+/** The start of a picture of `width` x `height` as each format writes it - just enough for its size to be read. */
+const HEADERS: Record<string, { type: string; header: (width: number, height: number) => number[] }> = {
+    png: { type: "image/png", header: (w, h) => pad(bytes(0x89, "PNG", 0x0d, 0x0a, 0x1a, 0x0a, be32(13), "IHDR", be32(w), be32(h))) },
+    gif: { type: "image/gif", header: (w, h) => pad(bytes("GIF89a", le16(w), le16(h))) },
+    jpeg: { type: "image/jpeg", header: (w, h) => pad(bytes(0xff, 0xd8, 0xff, 0xe0, be16(4), 0, 0, 0xff, 0xff, 0xc2, be16(11), 8, be16(h), be16(w), 3)) },
+    "webp (lossy)": { type: "image/webp", header: (w, h) => pad(bytes("RIFF", 0, 0, 0, 0, "WEBP", "VP8 ", 0, 0, 0, 0, 0, 0, 0, 0x9d, 0x01, 0x2a, le16(w), le16(h))) },
+    "webp (lossless)": {
+        type: "image/webp",
+        header: (w, h) => {
+            const bits = ((w - 1) & 0x3fff) | (((h - 1) & 0x3fff) << 14);
+            return pad(bytes("RIFF", 0, 0, 0, 0, "WEBP", "VP8L", 0, 0, 0, 0, 0x2f, bits & 255, (bits >> 8) & 255, (bits >> 16) & 255, (bits >> 24) & 255));
+        },
+    },
+    "webp (extended)": { type: "image/webp", header: (w, h) => pad(bytes("RIFF", 0, 0, 0, 0, "WEBP", "VP8X", 0, 0, 0, 0, 0, 0, 0, 0, le24(w - 1), le24(h - 1))) },
+};
+
+describe("prepareContactPhoto: a picture whose size says it cannot be decoded safely", () => {
+    for (const [name, { type, header }] of Object.entries(HEADERS)) {
+        it(`refuses a small ${name} file that says it is 30000 x 30000 pixels, without decoding it`, async () => {
+            const rec = install();
+            const picture = new File([new Uint8Array(header(30000, 30000))], "bomb", { type });
+            const failure = prepareContactPhoto(picture);
+            await expect(failure).rejects.toBeInstanceOf(ContactPhotoError);
+            await expect(failure).rejects.toThrow(CONTACT_PHOTO_TOO_LARGE_MESSAGE);
+            expect(createImageBitmap).not.toHaveBeenCalled();
+            expect(rec.sides).toEqual([]);
+        });
+
+        it(`decodes a ${name} file of 4000 x 3000 pixels (12 megapixels) as usual`, async () => {
+            install({ width: 4000, height: 3000 });
+            await expect(prepareContactPhoto(new File([new Uint8Array(header(4000, 3000))], "ok", { type }))).resolves.toBeInstanceOf(File);
+            expect(createImageBitmap).toHaveBeenCalled();
+        });
+    }
+
+    it("decodes a picture whose size it cannot read from its start, and a short or unknown one", async () => {
+        install({ width: 4000, height: 3000 });
+        const unknown: number[][] = [
+            [],
+            [0x89, 0x50],
+            bytes("RIFF", 0, 0, 0, 0, "WEBP", "VP8 "), // cut off
+            bytes("RIFF", 0, 0, 0, 0, "WEBP", "VP8Q", new Array(20).fill(0)), // a chunk that has no size
+            bytes("RIFF", 0, 0, 0, 0, "WAVE", "fmt ", new Array(20).fill(0)),
+            bytes(0xff, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00), // not a marker
+            bytes(0xff, 0xd8, 0xff),
+            bytes(0xff, 0xd8, 0xff, 0xda, be16(4), 0, 0), // the scan starts before any size
+            bytes(0xff, 0xd8, 0xff, 0xd0, 0xff, 0x01, 0xff, 0xe0, be16(2000), 0), // markers without a length, then a segment that runs past the end
+            bytes(0xff, 0xd8, 0xff, 0xc4, be16(4), 0, 0, 0xff, 0xc0, be16(11), 8, be16(30000)), // cut off inside the size
+            bytes("GIF8"),
+        ];
+        for (const head of unknown) {
+            await expect(prepareContactPhoto(new File([new Uint8Array(head)], "x.png", { type: "image/png" }))).resolves.toBeInstanceOf(File);
+        }
+        expect(createImageBitmap).toHaveBeenCalledTimes(unknown.length);
     });
 });
 

@@ -19,6 +19,7 @@ import {
 import { listFlaggedMessages } from "../../../lib/mail/flaggedMessages.js";
 import { Message } from "../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../lib/util/apiClientContext.js";
+import { useDayKey } from "../../../lib/calendar/useDayKey.js";
 import TasksShell, { TasksShellProps, useTasksShell } from "../../shared/components/tasks/layout/TasksShell.js";
 import TasksSidebar, { TasksView } from "../../shared/components/tasks/TasksSidebar.js";
 import TasksToolbar, { TasksViewMode } from "../../shared/components/tasks/TasksToolbar.js";
@@ -118,7 +119,10 @@ function TasksContent() {
     useShortcut(SHORTCUTS.tasks.create, () => addTaskRef.current!.focus(), { enabled: canAddTask });
     const addTaskHint = useShortcutProps("Add a task", SHORTCUTS.tasks.create, canAddTask);
 
+    // Which load is the latest: a slower, older one (another folder's, from before the mailbox changed) must not replace the list a newer one set.
+    const loadRun = useRef(0);
     function reload(): Promise<void> {
+        const run = ++loadRun.current;
         if (!folderUid) {
             setTasks([]);
             setTruncated(false);
@@ -129,11 +133,21 @@ function TasksContent() {
         setError(null);
         return listAllPages((page) => listTasks(folderUid, { limit: LIST_PAGE_SIZE, page }, client))
             .then((result) => {
-                setTasks(result.items);
-                setTruncated(result.truncated);
+                if (run === loadRun.current) {
+                    setTasks(result.items);
+                    setTruncated(result.truncated);
+                }
             })
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load tasks."))
-            .finally(() => setLoading(false));
+            .catch((err) => {
+                if (run === loadRun.current) {
+                    setError(err instanceof ApiRequestError ? err.message : "Could not load tasks.");
+                }
+            })
+            .finally(() => {
+                if (run === loadRun.current) {
+                    setLoading(false);
+                }
+            });
     }
 
     useEffect(() => {
@@ -149,12 +163,29 @@ function TasksContent() {
         if (view.type !== "flagged" || !mailboxUid) {
             return;
         }
+        // Set once the view or mailbox this load was for is no longer the one shown, so its answer is dropped.
+        let stale = false;
         setFlaggedLoading(true);
         setFlaggedError(null);
         listFlaggedMessages(mailboxUid, client)
-            .then(setFlaggedMessages)
-            .catch((err) => setFlaggedError(err instanceof ApiRequestError ? err.message : "Could not load flagged email."))
-            .finally(() => setFlaggedLoading(false));
+            .then((messages) => {
+                if (!stale) {
+                    setFlaggedMessages(messages);
+                }
+            })
+            .catch((err) => {
+                if (!stale) {
+                    setFlaggedError(err instanceof ApiRequestError ? err.message : "Could not load flagged email.");
+                }
+            })
+            .finally(() => {
+                if (!stale) {
+                    setFlaggedLoading(false);
+                }
+            });
+        return () => {
+            stale = true;
+        };
     }, [view, mailboxUid]);
 
     async function handleCreate(e: FormEvent) {
@@ -203,7 +234,24 @@ function TasksContent() {
         }
     }
 
+    // The tasks whose completion is being saved. The control is disabled meanwhile, and the ref (current at once, unlike state) turns away a second click that
+    // lands before the page has re-rendered: it would send the same stale `version` and be refused, rolling the task back to a state the server has left.
+    const togglingRef = useRef(new Set<string>());
+    const [toggling, setToggling] = useState<Set<string>>(new Set());
+    function setTogglePending(uid: string, pending: boolean) {
+        if (pending) {
+            togglingRef.current.add(uid);
+        } else {
+            togglingRef.current.delete(uid);
+        }
+        setToggling(new Set(togglingRef.current));
+    }
+
     async function handleToggle(task: Task) {
+        if (togglingRef.current.has(task.uid)) {
+            return;
+        }
+        setTogglePending(task.uid, true);
         const nextCompleted = !task.completed;
         setTasks((prev) => prev.map((t) => (t.uid === task.uid ? { ...t, completed: nextCompleted } : t)));
         try {
@@ -212,6 +260,8 @@ function TasksContent() {
         } catch (err) {
             setTasks((prev) => prev.map((t) => (t.uid === task.uid ? task : t)));
             notifyApiError(err, "Couldn't update the task");
+        } finally {
+            setTogglePending(task.uid, false);
         }
     }
 
@@ -313,6 +363,8 @@ function TasksContent() {
         }
     }
 
+    // Re-worked when the day changes, so a page left open past midnight moves Today's tasks to Overdue.
+    const dayKey = useDayKey();
     const grouped = useMemo(() => {
         const now = new Date();
         const map = new Map<Bucket, Task[]>(BUCKET_ORDER.map((b) => [b, []]));
@@ -323,7 +375,7 @@ function TasksContent() {
             map.get(bucketFor(task, now))!.push(task);
         }
         return map;
-    }, [viewFiltered]);
+    }, [viewFiltered, dayKey]);
 
     const completedTasks = viewFiltered.filter((t) => t.completed);
 
@@ -428,6 +480,7 @@ function TasksContent() {
                                     checkedUids={checkedUids}
                                     onToggleChecked={toggleChecked}
                                     onToggle={handleToggle}
+                                    toggling={toggling}
                                     onDelete={requestDelete}
                                 />
                             ) : (
@@ -445,6 +498,7 @@ function TasksContent() {
                                                 checkedUids={checkedUids}
                                                 onToggleChecked={toggleChecked}
                                                 onToggle={handleToggle}
+                                                toggling={toggling}
                                                 onDelete={requestDelete}
                                             />
                                         );
@@ -456,6 +510,7 @@ function TasksContent() {
                                             checkedUids={checkedUids}
                                             onToggleChecked={toggleChecked}
                                             onToggle={handleToggle}
+                                            toggling={toggling}
                                             onDelete={requestDelete}
                                         />
                                     )}
@@ -509,12 +564,13 @@ function FlaggedEmailList({ loading, error, messages }: { loading: boolean; erro
 
 /** A circular completion-toggle control matching Outlook's visual language (not a native checkbox), while
  * staying a real accessible toggle. */
-function CompletionToggle({ task, onToggle }: { task: Task; onToggle: (task: Task) => void }) {
+function CompletionToggle({ task, onToggle, pending }: { task: Task; onToggle: (task: Task) => void; pending: boolean }) {
     return (
         <button
             type="button"
             role="checkbox"
             aria-checked={task.completed}
+            disabled={pending}
             aria-label={`Mark "${task.title}" as ${task.completed ? "not complete" : "complete"}`}
             onClick={() => onToggle(task)}
             className={[
@@ -533,10 +589,12 @@ interface TaskGroupProps {
     checkedUids: Set<string>;
     onToggleChecked: (uid: string) => void;
     onToggle: (task: Task) => void;
+    /** The uids of the tasks whose completion is being saved. */
+    toggling: Set<string>;
     onDelete: (task: Task) => void;
 }
 
-function TaskGroup({ label, tasks, checkedUids, onToggleChecked, onToggle, onDelete }: TaskGroupProps) {
+function TaskGroup({ label, tasks, checkedUids, onToggleChecked, onToggle, toggling, onDelete }: TaskGroupProps) {
     return (
         <div>
             <h2 className="text-xs font-bold uppercase tracking-wide text-text-muted mb-2">{label}</h2>
@@ -549,7 +607,7 @@ function TaskGroup({ label, tasks, checkedUids, onToggleChecked, onToggle, onDel
                             checked={checkedUids.has(task.uid)}
                             onChange={() => onToggleChecked(task.uid)}
                         />
-                        <CompletionToggle task={task} onToggle={onToggle} />
+                        <CompletionToggle task={task} onToggle={onToggle} pending={toggling.has(task.uid)} />
                         <span className={["flex-1 text-sm", task.completed ? "line-through text-text-muted" : ""].join(" ")}>
                             {task.title}
                         </span>
@@ -581,10 +639,12 @@ interface TaskTableProps {
     checkedUids: Set<string>;
     onToggleChecked: (uid: string) => void;
     onToggle: (task: Task) => void;
+    /** The uids of the tasks whose completion is being saved. */
+    toggling: Set<string>;
     onDelete: (task: Task) => void;
 }
 
-function TaskTable({ tasks, checkedUids, onToggleChecked, onToggle, onDelete }: TaskTableProps) {
+function TaskTable({ tasks, checkedUids, onToggleChecked, onToggle, toggling, onDelete }: TaskTableProps) {
     const allChecked = tasks.length > 0 && tasks.every((t) => checkedUids.has(t.uid));
 
     function toggleAll() {
@@ -630,7 +690,7 @@ function TaskTable({ tasks, checkedUids, onToggleChecked, onToggle, onDelete }: 
                                 />
                             </td>
                             <td className="px-3 py-2">
-                                <CompletionToggle task={task} onToggle={onToggle} />
+                                <CompletionToggle task={task} onToggle={onToggle} pending={toggling.has(task.uid)} />
                             </td>
                             <td className={["px-3 py-2", task.completed ? "line-through text-text-muted" : ""].join(" ")}>{task.title}</td>
                             <td className="px-3 py-2 text-text-muted">{task.dueDate ? parseDueDate(task.dueDate).toLocaleDateString() : ""}</td>

@@ -10,8 +10,9 @@ const MIDNIGHT_SLACK_MS = 1000;
 
 /**
  * Today's local date as `YYYY-MM-DD`, kept current: it ticks over at the next local midnight, so a page left open overnight stops treating yesterday
- * as today (use it as a dependency of whatever was worked out from "now"). It is also re-read when the tab becomes visible again, as a hidden tab's timers
- * are throttled or suspended (a sleeping laptop).
+ * as today (use it as a dependency of whatever was worked out from "now"). It is also re-read when the tab becomes visible again or the window is focused or shown
+ * again, as a hidden tab's timers are throttled or suspended (a sleeping laptop, which may wake with the tab still "visible" and so with no `visibilitychange`).
+ * Every re-read sets the timer again from the real clock, so a timer that fired a day late cannot leave the key behind.
  */
 export function useDayKey(): string {
     const [dayKey, setDayKey] = useState(() => format(new Date(), "yyyy-MM-dd"));
@@ -31,9 +32,13 @@ export function useDayKey(): string {
         }
         arm();
         document.addEventListener("visibilitychange", onVisible);
+        window.addEventListener("focus", arm);
+        window.addEventListener("pageshow", arm);
         return () => {
             clearTimeout(timer);
             document.removeEventListener("visibilitychange", onVisible);
+            window.removeEventListener("focus", arm);
+            window.removeEventListener("pageshow", arm);
         };
     }, []);
     return dayKey;

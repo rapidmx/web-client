@@ -15,6 +15,11 @@ export const CONTACT_PHOTO_OUTPUT_SIDE = 512;
 /** JPEG qualities tried in turn until the picture fits `CONTACT_PHOTO_MAX_BYTES`. */
 export const CONTACT_PHOTO_QUALITIES = [0.85, 0.75, 0.65, 0.55, 0.45, 0.35];
 
+/** The most pixels (width x height) a picture may have to be decoded: a few kilobytes of PNG can say 30000 x 30000, which takes gigabytes of memory to decode. */
+export const CONTACT_PHOTO_MAX_PIXELS = 16_000_000;
+/** How much of the start of a picture is read to find its size: a JPEG's EXIF segment (up to 64 KB) comes before the size. */
+const HEADER_BYTES = 128 * 1024;
+
 export const CONTACT_PHOTO_UNSUPPORTED_MESSAGE = "This picture's format isn't supported by your browser — choose a JPEG or PNG instead.";
 export const CONTACT_PHOTO_TOO_LARGE_MESSAGE = "This picture could not be made small enough — choose another one.";
 
@@ -24,6 +29,58 @@ export class ContactPhotoError extends Error {
         super(message);
         this.name = "ContactPhotoError";
     }
+}
+
+/** What the start of a picture says about it: whether it is a JPEG, and its size when that can be read from it. */
+function inspect(head: Uint8Array): { jpeg: boolean; width?: number; height?: number } {
+    const at = (offset: number, text: string) => Array.from(text).every((char, i) => head[offset + i] === char.charCodeAt(0));
+    const be16 = (offset: number) => (head[offset] << 8) | head[offset + 1];
+    const be32 = (offset: number) => be16(offset) * 65536 + be16(offset + 2);
+    const le16 = (offset: number) => head[offset] | (head[offset + 1] << 8);
+    const le24 = (offset: number) => le16(offset) | (head[offset + 2] << 16);
+    const known = (width: number, height: number) => ({ jpeg: false, width, height });
+    if (at(0, "\x89PNG\r\n\x1a\n") && head.length >= 24) {
+        return known(be32(16), be32(20));
+    }
+    if (at(0, "GIF8") && head.length >= 10) {
+        return known(le16(6), le16(8));
+    }
+    if (at(0, "RIFF") && at(8, "WEBP") && head.length >= 30) {
+        if (at(12, "VP8 ")) {
+            return known(le16(26) & 0x3fff, le16(28) & 0x3fff);
+        }
+        if (at(12, "VP8L")) {
+            const bits = (le16(21) | (le16(23) << 16)) >>> 0;
+            return known((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
+        }
+        if (at(12, "VP8X")) {
+            return known(le24(24) + 1, le24(27) + 1);
+        }
+        return { jpeg: false };
+    }
+    if (!(head[0] === 0xff && head[1] === 0xd8)) {
+        return { jpeg: false };
+    }
+    // A JPEG is a run of segments (`FF marker`, then a length unless the marker stands alone); the size is in the first frame header, "SOFn".
+    let offset = 2;
+    while (offset + 4 <= head.length) {
+        if (head[offset] !== 0xff) {
+            break;
+        }
+        const marker = head[offset + 1];
+        if (marker === 0xff) {
+            offset++;
+        } else if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+            offset += 2;
+        } else if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+            return offset + 9 <= head.length ? { jpeg: true, width: be16(offset + 7), height: be16(offset + 5) } : { jpeg: true };
+        } else if (marker === 0xda) {
+            break;
+        } else {
+            offset += 2 + be16(offset + 2);
+        }
+    }
+    return { jpeg: true };
 }
 
 interface Decoded {
@@ -99,19 +156,26 @@ function renamed(name: string, extension: "jpg" | "png" | "webp"): string {
 
 /**
  * The picture to upload for `file`. A picture the server already takes (an accepted type within the byte limit and at most `CONTACT_PHOTO_MAX_SIDE` pixels a
- * side) is returned as it is - an animated GIF stays animated. Anything else (a phone's 6 MB photo, a HEIC, a huge PNG) is decoded with its EXIF orientation applied,
+ * side) is returned as it is - an animated GIF stays animated - unless it is a JPEG, which is always drawn again to drop its EXIF. Anything else (a phone's 6 MB photo, a HEIC, a huge PNG) is decoded with its EXIF orientation applied,
  * cropped to the centered square - avatars are circular, so the corners are never seen - scaled down to at most `CONTACT_PHOTO_OUTPUT_SIDE` pixels and encoded as a
  * JPEG (transparent parts on white, quality lowered step by step until it fits), or kept as PNG/WebP when it has transparency and still fits.
  *
- * @throws ContactPhotoError when the browser cannot decode it (HEIC, or not a picture at all) or it cannot be made small enough.
+ * @throws ContactPhotoError when the browser cannot decode it (HEIC, or not a picture at all), it says it has more than `CONTACT_PHOTO_MAX_PIXELS` pixels
+ * (it is not decoded at all then) or it cannot be made small enough.
  */
 export async function prepareContactPhoto(file: File): Promise<File> {
     const accepted = CONTACT_PHOTO_TYPES.includes(file.type) && file.size <= CONTACT_PHOTO_MAX_BYTES;
+    const head = inspect(new Uint8Array(await file.slice(0, HEADER_BYTES).arrayBuffer()));
+    if (head.width !== undefined && head.height !== undefined && head.width * head.height > CONTACT_PHOTO_MAX_PIXELS) {
+        throw new ContactPhotoError(CONTACT_PHOTO_TOO_LARGE_MESSAGE);
+    }
+    // A JPEG is always drawn again: its EXIF (the camera, the time, often where it was taken) would otherwise be uploaded and shown to whoever sees the contact.
+    const jpeg = head.jpeg || file.type === "image/jpeg";
     let decoded: Decoded;
     try {
         decoded = await decode(file);
     } catch (err) {
-        if (accepted) {
+        if (accepted && !jpeg) {
             // It cannot be measured here but the server takes it as it is.
             return file;
         }
@@ -119,7 +183,7 @@ export async function prepareContactPhoto(file: File): Promise<File> {
     }
     try {
         const { source, width, height } = decoded;
-        if (accepted && Math.max(width, height) <= CONTACT_PHOTO_MAX_SIDE) {
+        if (accepted && !jpeg && Math.max(width, height) <= CONTACT_PHOTO_MAX_SIDE) {
             return file;
         }
         const crop = Math.min(width, height);

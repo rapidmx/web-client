@@ -219,6 +219,9 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
         }
     }
 
+    // Not while a picture is being changed: that goes against the version the star would replace.
+    const [photoBusy, setPhotoBusy] = useState(false);
+
     async function handleToggleFavorite(current: Contact) {
         try {
             const next = await setContactFavorite(current, !current.favorite, client);
@@ -239,7 +242,7 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
         <Modal open onClose={onClose} title={name}>
             <div className="flex items-center gap-4">
                 {stored && canEditPhoto ? (
-                    <ContactPhotoEditor contact={stored} displayName={name} size={72} email={participant.address} onChanged={setChanged} />
+                    <ContactPhotoEditor contact={stored} displayName={name} size={72} email={participant.address} onChanged={setChanged} onBusyChange={setPhotoBusy} />
                 ) : (
                     <ContactPhotoAvatar displayName={name} size={72} contact={stored} email={participant.address} />
                 )}
@@ -255,7 +258,7 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
                         <p className="mt-1 text-sm break-words">{[known.jobTitle, known.company].filter(Boolean).join(", ")}</p>
                     )}
                 </div>
-                {stored && <FavoriteStarButton favorite={!!stored.favorite} onToggle={() => void handleToggleFavorite(stored)} className="shrink-0 self-start" />}
+                {stored && <FavoriteStarButton favorite={!!stored.favorite} disabled={photoBusy} onToggle={() => void handleToggleFavorite(stored)} className="shrink-0 self-start" />}
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-2">
                 <Button type="button" variant="secondary" className={`${ACTION_CLASS} inline-flex items-center gap-1.5`} onClick={handleEmail}>

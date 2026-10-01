@@ -268,6 +268,60 @@ describe("ContactForm picture and star", () => {
     });
 });
 
+describe("ContactForm retrying the picture", () => {
+    it("reads the contact again and retries once when the picture's version turns out to be stale (the first try had been applied)", async () => {
+        const puts: string[] = [];
+        const fetchMock = mockFetch((url, init) => {
+            if (url.includes("/photo")) {
+                puts.push(url);
+                if (puts.length === 1) {
+                    return jsonResponse(503, { message: "Gone." });
+                }
+                return puts.length === 2 ? jsonResponse(409, { message: "Version mismatch." }) : jsonResponse(200, contact({ version: 6, photoBlobKey: "contact-photos/c1/x" }));
+            }
+            if (init.method === "GET" || init.method === undefined) {
+                return jsonResponse(200, contact({ version: 5, photoBlobKey: "contact-photos/c1/x" }));
+            }
+            return jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string), version: 4 });
+        });
+        const onSaved = vi.fn();
+        const user = userEvent.setup();
+        render(<ContactForm contact={contact()} onSaved={onSaved} onCancel={vi.fn()} />);
+        await user.upload(screen.getByLabelText("Contact photo file"), png());
+        await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText(/Saved, but the picture could not be uploaded/)).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts).toEqual([
+            "/api/mail/contacts/c1/photo?version=4",
+            "/api/mail/contacts/c1/photo?version=4",
+            "/api/mail/contacts/c1/photo?version=5",
+        ]);
+        expect(onSaved.mock.calls[0][0]).toMatchObject({ version: 6 });
+        expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/contacts/c1")).toBe(true);
+    });
+
+    it("says what went wrong when the retry fails too, or the contact cannot be read again", async () => {
+        mockFetch((url, init) => {
+            if (url.includes("/photo")) {
+                return jsonResponse(409, { message: "Version mismatch." });
+            }
+            if (init.method === "GET" || init.method === undefined) {
+                return jsonResponse(404, { message: "Gone." });
+            }
+            return jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string), version: 4 });
+        });
+        const user = userEvent.setup();
+        render(<ContactForm contact={contact()} onSaved={vi.fn()} onCancel={vi.fn()} />);
+        await user.upload(screen.getByLabelText("Contact photo file"), png());
+        await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Saved, but the picture could not be uploaded: Gone.")).toBeInTheDocument();
+    });
+});
+
 describe("ContactForm under an explicit client", () => {
     function tokenClient() {
         const photo = new Blob([new Uint8Array(3)], { type: "image/jpeg" });

@@ -17,7 +17,8 @@ interface Entry {
 
 /** Least recently used first (a `Map` iterates in insertion order, and a use moves the entry to the end). */
 const entries = new Map<string, Entry>();
-const pending = new Map<string, Promise<string>>();
+/** Fetches in flight, and how many avatars are waiting on each (they are all counted as showing the picture the moment it is stored). */
+const pending = new Map<string, { request: Promise<string>; waiters: number }>();
 const clientIds = new WeakMap<ApiClient, number>();
 let nextClientId = 0;
 
@@ -44,28 +45,63 @@ function trim(): void {
     }
 }
 
+/** How many pictures are fetched at once; a list of a hundred contacts must not open a hundred requests together. */
+const MAX_CONCURRENT_FETCHES = 4;
+let fetching = 0;
+const waiting: (() => void)[] = [];
+
+/** Runs `task` once fewer than `MAX_CONCURRENT_FETCHES` others are running, in the order asked. */
+function limited<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const run = () => {
+            task()
+                .then(resolve, reject)
+                .finally(() => {
+                    // A waiting task takes over the slot; it is only given up when none waits.
+                    const next = waiting.shift();
+                    if (next) {
+                        next();
+                    } else {
+                        fetching--;
+                    }
+                });
+        };
+        if (fetching < MAX_CONCURRENT_FETCHES) {
+            fetching++;
+            run();
+        } else {
+            waiting.push(run);
+        }
+    });
+}
+
 /** The `blob:` URL for `key`, fetched with `load` unless it is cached, and counted as shown until `release()`. Concurrent callers share one fetch. */
 async function acquire(key: string, load: () => Promise<Blob>): Promise<string> {
-    let entry = entries.get(key);
-    if (!entry) {
-        let request = pending.get(key);
-        if (!request) {
-            request = load()
+    const entry = entries.get(key);
+    if (entry) {
+        entry.refs++;
+        entries.delete(key);
+        entries.set(key, entry);
+        return entry.url;
+    }
+    let shared = pending.get(key);
+    if (!shared) {
+        const created: { request: Promise<string>; waiters: number } = {
+            waiters: 0,
+            request: limited(load)
                 .then((blob) => {
                     const url = URL.createObjectURL(blob);
-                    entries.set(key, { url, refs: 0 });
+                    // Claimed by everyone waiting from the start: an entry nobody holds yet could be trimmed before its avatar got to it.
+                    entries.set(key, { url, refs: created.waiters });
                     return url;
                 })
-                .finally(() => pending.delete(key));
-            pending.set(key, request);
-        }
-        await request;
-        entry = entries.get(key)!;
+                .finally(() => pending.delete(key)),
+        };
+        pending.set(key, created);
+        shared = created;
     }
-    entry.refs++;
-    entries.delete(key);
-    entries.set(key, entry);
-    return entry.url;
+    shared.waiters++;
+    return shared.request;
 }
 
 function release(key: string): void {
@@ -91,8 +127,21 @@ export function clearContactPhotoCache(): void {
  * and shown as a `blob:` URL, cached per client, contact and version with a small LRU and revoked once it falls out of it and nothing shows it.
  */
 export function useContactPhotoSrc(contact: Pick<Contact, "uid" | "version" | "photoBlobKey"> | undefined, client?: ApiClient): string | undefined {
+    return useContactPhoto(contact, client).src;
+}
+
+/**
+ * `useContactPhotoSrc()`, also saying whether a picture that has to be fetched could not be (`failed`: no `src` is coming), and held back until `active` - an avatar
+ * that is not on screen yet has no reason to fetch its picture.
+ */
+export function useContactPhoto(
+    contact: Pick<Contact, "uid" | "version" | "photoBlobKey"> | undefined,
+    client?: ApiClient,
+    active = true,
+): { src: string | undefined; failed: boolean } {
     const [loaded, setLoaded] = useState<{ key: string; url: string } | undefined>();
-    const key = client && contact?.photoBlobKey ? keyOf(client, contact.uid, contact.version) : undefined;
+    const [failedKey, setFailedKey] = useState<string | undefined>();
+    const key = active && client && contact?.photoBlobKey ? keyOf(client, contact.uid, contact.version) : undefined;
     const uid = contact?.uid;
     const version = contact?.version;
 
@@ -111,7 +160,7 @@ export function useContactPhotoSrc(contact: Pick<Contact, "uid" | "version" | "p
                     setLoaded({ key, url });
                 }
             },
-            () => undefined,
+            () => !cancelled && setFailedKey(key),
         );
         return () => {
             cancelled = true;
@@ -122,7 +171,7 @@ export function useContactPhotoSrc(contact: Pick<Contact, "uid" | "version" | "p
     }, [key]);
 
     if (client) {
-        return key !== undefined && loaded?.key === key ? loaded.url : undefined;
+        return { src: key !== undefined && loaded?.key === key ? loaded.url : undefined, failed: key !== undefined && failedKey === key };
     }
-    return contact && contactPhotoUrl(contact);
+    return { src: contact && contactPhotoUrl(contact), failed: false };
 }

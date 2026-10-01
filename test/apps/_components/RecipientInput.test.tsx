@@ -292,8 +292,10 @@ describe("RecipientInput", () => {
             await waitFor(() => expect(signals.alic).toBeDefined());
             await user.type(input(), "e");
             await waitFor(() => expect(signals.alice).toBeDefined());
+            // The list for "ali" is not offered for "alic" (nor "alice") any more: it is for other text.
+            expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
             await act(async () => rejecters.alic(new Error("late")));
-            expect(screen.getAllByRole("option")).toHaveLength(1);
+            expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
             await act(async () => rejecters.alice(new Error("offline")));
             expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
 
@@ -302,6 +304,46 @@ describe("RecipientInput", () => {
             await waitFor(() => expect(signals.alices).toBeDefined());
             await user.clear(input());
             expect(signals.alices.aborted).toBe(true);
+        });
+
+        describe("when the typed text has changed since the list was loaded", () => {
+            /** A field whose suggestions for "al" are answered at once and every later query's never (yet), so "al"'s list is what is stale. */
+            function staleList() {
+                const fetchSuggestions = vi.fn((query: string) => (query === "al" ? Promise.resolve([alice]) : new Promise<RecipientSuggestion[]>(() => undefined)));
+                render(<Harness fetchSuggestions={fetchSuggestions} />);
+                return fetchSuggestions;
+            }
+
+            it("takes what was typed on Enter, not the person the earlier text suggested", async () => {
+                const user = userEvent.setup();
+                staleList();
+                await user.type(input(), "al");
+                await screen.findByRole("listbox");
+                await user.type(input(), "i@corp.com");
+                expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+                await user.keyboard("{Enter}");
+                expect(chips()).toEqual(["ali@corp.com"]);
+            });
+
+            it("takes what was typed on Tab too", async () => {
+                const user = userEvent.setup();
+                staleList();
+                await user.type(input(), "al");
+                await screen.findByRole("listbox");
+                await user.type(input(), "i@corp.com{Tab}");
+                expect(chips()).toEqual(["ali@corp.com"]);
+            });
+
+            it("shows the list again once the suggestions for the new text arrive", async () => {
+                const user = userEvent.setup();
+                render(<Harness fetchSuggestions={async (query) => (query === "al" ? [alice] : [allan])} />);
+                await user.type(input(), "al");
+                await screen.findByRole("listbox");
+                await user.type(input(), "l");
+                await waitFor(() => expect(screen.getByRole("option")).toHaveTextContent("Allan Room"));
+                await user.keyboard("{Enter}");
+                expect(chips()).toEqual(["Allan Room <allan@example.com>"]);
+            });
         });
 
         it("labels an unknown kind as a directory entry and scrolls the highlighted option into view", async () => {

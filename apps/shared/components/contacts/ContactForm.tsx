@@ -13,6 +13,7 @@ import {
     ContactPostalAddress,
     createContact,
     deleteContactPhoto,
+    getContact,
     updateContact,
     uploadContactPhoto,
 } from "../../../../lib/contacts/contactsApi.js";
@@ -163,11 +164,23 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 );
             }
             setStored({ contact: saved, key });
-            try {
+            const changePhoto = async (current: Contact) => {
                 if (pickedPhoto) {
-                    saved = await uploadContactPhoto(saved.uid, saved.version, pickedPhoto, client);
-                } else if (removePhoto && saved.photoBlobKey) {
-                    saved = await deleteContactPhoto(saved.uid, saved.version, client);
+                    return uploadContactPhoto(current.uid, current.version, pickedPhoto, client);
+                }
+                return removePhoto && current.photoBlobKey ? deleteContactPhoto(current.uid, current.version, client) : current;
+            };
+            try {
+                try {
+                    saved = await changePhoto(saved);
+                } catch (err) {
+                    if (!(err instanceof ApiRequestError && err.status === 409)) {
+                        throw err;
+                    }
+                    // A version that is stale means an earlier try had been applied after all (its answer never arrived): read the contact as it is and go again, once.
+                    const current = await getContact(saved.uid, client);
+                    setStored({ contact: current, key });
+                    saved = await changePhoto(current);
                 }
             } catch (err) {
                 // The contact is saved: stay open so the picture can be tried again, or let go of.

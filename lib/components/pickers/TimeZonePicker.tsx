@@ -67,6 +67,13 @@ export default function TimeZonePicker({ id, "aria-label": label, "aria-describe
         return () => document.removeEventListener("pointerdown", outside);
     }, [open]);
 
+    // The arrow keys move `active` (and `aria-activedescendant`) only: the list scrolls, so the zone they reach has to be brought into view.
+    useEffect(() => {
+        if (open && active >= 0) {
+            document.getElementById(`${listId}-${active}`)?.scrollIntoView?.({ block: "nearest" });
+        }
+    }, [open, active]);
+
     function close(refocus: boolean) {
         setOpen(false);
         setQuery("");
@@ -108,7 +115,16 @@ export default function TimeZonePicker({ id, "aria-label": label, "aria-describe
     }
 
     return (
-        <div ref={root} className="relative inline-block max-w-full">
+        <div
+            ref={root}
+            className="relative inline-block max-w-full"
+            // Tabbing away leaves the list open otherwise (only a press outside closed it). Focus that goes nowhere in particular (the window losing it) is not leaving.
+            onBlur={(event) => {
+                if (open && event.relatedTarget instanceof Node && !root.current?.contains(event.relatedTarget)) {
+                    close(false);
+                }
+            }}
+        >
             <button
                 ref={trigger}
                 id={id}

@@ -220,6 +220,61 @@ describe("ListView windowing", () => {
         expect(sections()).toHaveLength(LIST_INITIAL_DAYS);
     });
 
+    /** Renders `ListView` with a parent that swaps in `after` as the events in the same commit as a jump / a new match asks for days beyond the window, so the target is gone once they are rendered (a live refresh). */
+    function Refreshing({ after, trigger, active, focusDate, jumpNonce }: { after: CalendarOccurrence[]; trigger: boolean; active: string | null; focusDate: Date; jumpNonce: number }) {
+        const [events, setEvents] = React.useState(daily(200));
+        React.useEffect(() => {
+            if (trigger) {
+                setEvents(after);
+            }
+        }, [trigger]);
+        return (
+            <ActiveOccurrenceContext.Provider value={active}>
+                <ListView {...props({ occurrences: events, focusDate, jumpNonce })} />
+            </ActiveOccurrenceContext.Provider>
+        );
+    }
+
+    it("does not throw when the day a jump scrolls to is gone by the time the days are rendered", () => {
+        const base = { after: daily(10), active: null, trigger: false };
+        const { rerender } = render(<Refreshing {...base} focusDate={new Date(2026, 5, 15)} jumpNonce={0} />);
+        scrolled = [];
+        expect(() => rerender(<Refreshing {...base} trigger focusDate={new Date(2026, 5, 15 + 150)} jumpNonce={1} />)).not.toThrow();
+        expect(scrolled).toEqual([]);
+    });
+
+    it("does not throw when the match a search is on is gone by the time the days are rendered", () => {
+        const base = { after: daily(100), focusDate: new Date(2026, 5, 15), jumpNonce: 0 };
+        const { rerender } = render(<Refreshing {...base} active={null} trigger={false} />);
+        scrolled = [];
+        expect(() => rerender(<Refreshing {...base} active="d120" trigger />)).not.toThrow();
+        expect(scrolled).toEqual([]);
+    });
+
+    it("does not throw when the day a step scrolls to is gone by the time the days are rendered", () => {
+        const events = [...daily(60), occurrence("far", { startDate: new Date(2026, 11, 3, 10).toISOString(), endDate: new Date(2026, 11, 3, 11).toISOString() })];
+        function Stepping({ stepped, events: list }: { stepped: boolean; events: CalendarOccurrence[] }) {
+            const [shown, setShown] = React.useState(list);
+            React.useEffect(() => {
+                if (stepped) {
+                    setShown(daily(60));
+                }
+            }, [stepped]);
+            return <ListView {...props({ occurrences: shown, step: stepped ? { direction: 1, nonce: 1 } : null })} />;
+        }
+        const { rerender } = render(<Stepping stepped={false} events={events} />);
+        expect(() => rerender(<Stepping stepped events={events} />)).not.toThrow();
+    });
+
+    it("keeps both the jump and the match scroll when they ask for days beyond the window on opening", () => {
+        render(
+            <ActiveOccurrenceContext.Provider value="d170">
+                <ListView {...props({ occurrences: daily(200), focusDate: new Date(2026, 5, 15 + 120), jumpNonce: 0 })} />
+            </ActiveOccurrenceContext.Provider>,
+        );
+        expect(scrolled.map((el) => el.dataset.day ?? el.dataset.occurrenceKey)).toEqual(["2026-10-13", "d170"]);
+    });
+
     it("steps to the first day of a month that lies beyond the rendered days", () => {
         const events = [...daily(60), occurrence("far", { startDate: new Date(2026, 11, 3, 10).toISOString(), endDate: new Date(2026, 11, 3, 11).toISOString() })];
         const { rerender } = render(<ListView {...props({ occurrences: events })} />);

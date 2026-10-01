@@ -513,7 +513,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                                         )}
                                         <td className="px-3 py-2">
                                             <button type="button" onClick={() => handleSelectRow(contact)} className="flex w-full min-w-0 items-center gap-2 text-left">
-                                                <ContactPhotoAvatar displayName={contact.displayName} size={28} contact={contact} email={contact.emails[0]?.address} />
+                                                <ContactPhotoAvatar lazy displayName={contact.displayName} size={28} contact={contact} email={contact.emails[0]?.address} />
                                                 <span className="min-w-0 truncate font-medium">
                                                     {contact.displayName}
                                                     {contact.favorite && <span aria-label="Favorite"> ★</span>}

@@ -34,6 +34,13 @@ vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({
 const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
 
+// Sign-out also revokes the contact pictures fetched as blob: URLs.
+const { clearContactPhotoCache } = vi.hoisted(() => ({ clearContactPhotoCache: vi.fn() }));
+vi.mock("../../../lib/contacts/useContactPhotoSrc.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/contacts/useContactPhotoSrc.js")>()),
+    clearContactPhotoCache,
+}));
+
 const AUTH_SERVER_URL = "https://auth.example.com";
 
 beforeEach(() => {
@@ -47,6 +54,7 @@ afterEach(() => {
     vi.unstubAllGlobals();
     useIdleKeyTimeout.mockClear();
     clearPinnedSignerCache.mockClear();
+    clearContactPhotoCache.mockClear();
     clearSigningOut();
 });
 
@@ -364,6 +372,7 @@ describe("AppShell", () => {
         expect(destroyAllLocalIndexes).toHaveBeenCalled();
         expect(destroyUnlockedKeys).toHaveBeenCalledWith();
         expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
+        expect(clearContactPhotoCache).toHaveBeenCalledTimes(1);
         expect(fetchMock).toHaveBeenCalledWith(
             `${AUTH_SERVER_URL}/api/auth/logout`,
             expect.objectContaining({ method: "POST", credentials: "include" }),
@@ -514,6 +523,7 @@ describe("AppShell", () => {
         await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
         expect(destroyUnlockedKeys).toHaveBeenCalledWith();
         expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
+        expect(clearContactPhotoCache).toHaveBeenCalledTimes(1);
         expect(destroyAllLocalIndexes).toHaveBeenCalledTimes(1);
         unmount();
 

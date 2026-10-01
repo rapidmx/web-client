@@ -1019,6 +1019,9 @@ describe("assembleDraft", () => {
     describe("a picture embedded as a data: URI (a quoted original's image, one pasted into the editor)", () => {
         const PNG = "data:image/png;base64,iVBORw==";
         const JPG = "data:image/jpeg;base64,/9j/4A==";
+        const PNG_SIGNATURE = "\x89PNG\r\n\x1a\n";
+        /** A `data:` URI that really starts like a PNG, followed by `rest`. */
+        const pngUri = (rest: string) => `data:image/png;base64,${btoa(PNG_SIGNATURE + rest)}`;
         const input = (html: string) => ({ to: [{ address: "b@example.com" }], subject: "Hi", html });
         const sent = (fetchMock: ReturnType<typeof mockFetch>) => fetchMock.mock.calls.filter(([url]) => String(url).includes("/assemble")).map(([, init]) => JSON.parse(init.body as string));
         const uploads = (fetchMock: ReturnType<typeof mockFetch>) => fetchMock.mock.calls.filter(([url]) => String(url).includes("/attachments/upload"));
@@ -1061,22 +1064,81 @@ describe("assembleDraft", () => {
             const fetchMock = mockFetch(respond);
             const svg = `<img src="data:image/svg+xml;base64,${btoa("<svg xmlns='http://www.w3.org/2000/svg'/>")}">`;
             const tiff = `<img src="data:image/tiff;base64,${btoa("II*")}">`;
-            const big = `<img src="data:image/png;base64,${btoa("A".repeat(2_000_001))}">`;
+            const big = `<img src="${pngUri("A".repeat(2_000_001 - PNG_SIGNATURE.length))}">`;
             await assembleDraft("d-types", input(`${svg}${tiff}${big}`));
             expect(uploads(fetchMock)).toHaveLength(0);
             expect(sent(fetchMock).map((body) => body.html)).toEqual([`${svg}${tiff}${big}`]);
 
-            const atCap = `data:image/png;base64,${btoa("A".repeat(2_000_000))}`;
+            const atCap = pngUri("A".repeat(2_000_000 - PNG_SIGNATURE.length));
             await assembleDraft("d-types", input(`<img src="${atCap}">`));
             expect(uploads(fetchMock)).toHaveLength(1);
         });
 
         it("tells two pictures of the same size apart, and attaches each once", async () => {
             const fetchMock = mockFetch(respond);
-            const one = `data:image/png;base64,${btoa("A".repeat(500) + "x" + "A".repeat(500))}`;
-            const two = `data:image/png;base64,${btoa("A".repeat(500) + "y" + "A".repeat(500))}`;
+            const one = pngUri("A".repeat(500) + "x" + "A".repeat(500));
+            const two = pngUri("A".repeat(500) + "y" + "A".repeat(500));
             await assembleDraft("d-same", input(`<img src="${one}"><img src="${two}">`));
             await assembleDraft("d-same", input(`<img src="${two}"><img src="${one}">`));
+            expect(uploads(fetchMock)).toHaveLength(2);
+        });
+
+        it("uploads through the client it is given (its server, its token), not the cookie-based global fetch", async () => {
+            const fetchMock = mockFetch(respond);
+            const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+            await assembleDraft("d-client", input(`<img src="${PNG}">`), client);
+            const [url, init] = uploads(fetchMock)[0];
+            expect(url).toMatch(/^https:\/\/a\.example\.com\/api\/mail\/attachments\/upload\?/);
+            expect(new Headers((init as RequestInit).headers).get("Authorization")).toBe("jwt tok");
+        });
+
+        it("leaves a picture whose bytes are not of the type it declares as it was (a quote can label anything image/png)", async () => {
+            const fetchMock = mockFetch(respond);
+            const forged = `<img src="data:image/png;base64,${btoa("MZ this is an executable, not a PNG")}"><img src="data:image/jpeg;base64,${btoa("%PDF-1.7")}"><img src="data:image/gif;base64,${btoa("not a gif")}">`;
+            await assembleDraft("d-forged", input(forged));
+            expect(uploads(fetchMock)).toHaveLength(0);
+            expect(sent(fetchMock).map((body) => body.html)).toEqual([forged]);
+        });
+
+        it("attaches each kind of picture the type it declares, by its own signature", async () => {
+            const fetchMock = mockFetch(respond);
+            const uri = (type: string, bytes: number[]) => `<img src="data:image/${type};base64,${btoa(String.fromCharCode(...bytes))}">`;
+            const text = (value: string) => Array.from(value, (char) => char.charCodeAt(0));
+            const html = [
+                uri("png", [0x89, 0x50, 0x4e, 0x47]),
+                uri("jpg", [0xff, 0xd8, 0xff, 0xe0]),
+                uri("gif", text("GIF89a")),
+                uri("webp", [...text("RIFF"), 1, 2, 3, 4, ...text("WEBP")]),
+                uri("avif", [0, 0, 0, 0x1c, ...text("ftypavif")]),
+                uri("bmp", text("BM6")),
+            ].join("");
+            await assembleDraft("d-kinds", input(html));
+            expect(uploads(fetchMock)).toHaveLength(6);
+        });
+
+        it("attaches at most 20 pictures to a draft; the rest stay as they were", async () => {
+            const fetchMock = mockFetch(respond);
+            const pictures = Array.from({ length: 25 }, (_, n) => `<img src="${pngUri(`picture ${n}`)}">`);
+            await assembleDraft("d-cap", input(pictures.join("")));
+            expect(uploads(fetchMock)).toHaveLength(20);
+            const html = sent(fetchMock)[0].html as string;
+            expect(html.match(/data:image\/png/g)).toHaveLength(5);
+        });
+
+        it("tells apart pictures however alike their text, by a cryptographic digest of the whole of it", async () => {
+            const digest = vi.spyOn(crypto.subtle, "digest");
+            mockFetch(respond);
+            await assembleDraft("d-digest", input(`<img src="${PNG}">`));
+            expect(digest).toHaveBeenCalledWith("SHA-256", expect.anything());
+            digest.mockRestore();
+        });
+
+        it("still tells pictures apart where Web Crypto is not available", async () => {
+            const fetchMock = mockFetch(respond);
+            vi.stubGlobal("crypto", { randomUUID: () => "id" });
+            await assembleDraft("d-nosubtle", input(`<img src="${pngUri("a")}"><img src="${pngUri("b")}">`));
+            await assembleDraft("d-nosubtle", input(`<img src="${pngUri("b")}">`));
+            vi.unstubAllGlobals();
             expect(uploads(fetchMock)).toHaveLength(2);
         });
 
@@ -1094,7 +1156,7 @@ describe("assembleDraft", () => {
 
         it("holds a bounded number of pictures, the oldest going first", async () => {
             const fetchMock = mockFetch(respond);
-            const picture = (n: number) => `<img src="data:image/png;base64,${btoa(`picture ${n}`)}">`;
+            const picture = (n: number) => `<img src="${pngUri(`picture ${n}`)}">`;
             for (let n = 0; n < 300; n++) {
                 await assembleDraft("d-many", input(picture(n)));
             }

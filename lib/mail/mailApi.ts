@@ -1143,7 +1143,7 @@ export function emptyFolder(folderUid: string, client?: ApiClient): Promise<void
  * itself does no MIME composition). Does not send the message.
  */
 export async function assembleDraft(messageUid: string, input: AssembleDraftInput, client?: ApiClient): Promise<Message> {
-    const html = await attachDataImages(messageUid, input.html);
+    const html = await attachDataImages(messageUid, input.html, client);
     return withClient(client, `/mail/compose/${encodeURIComponent(messageUid)}/assemble`, {
         method: "POST",
         body: JSON.stringify({ ...input, html }),
@@ -1155,18 +1155,36 @@ const attachedDataImages = new Map<string, string>();
 /** The most pictures remembered; the oldest go first (a draft that was never sent or discarded here would otherwise keep its pictures forever). */
 const MAX_ATTACHED_DATA_IMAGES = 256;
 
-/** A 53-bit hash (cyrb53) of the whole of `text`, with its length - a fingerprint that stands for a `data:` URI of up to megabytes without holding it. */
-function fingerprint(text: string): string {
-    let h1 = 0xdeadbeef;
-    let h2 = 0x41c6ce57;
-    for (let i = 0; i < text.length; i++) {
-        const code = text.charCodeAt(i);
-        h1 = Math.imul(h1 ^ code, 2654435761);
-        h2 = Math.imul(h2 ^ code, 1597334677);
+/** The SHA-256 of the whole of `text`, in hex - what stands for a `data:` URI of up to megabytes without holding it, and which no two quoted pictures can be made to share. Where Web Crypto is not available the text itself stands for it. */
+async function fingerprint(text: string): Promise<string> {
+    if (!globalThis.crypto?.subtle) {
+        return text;
     }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return `${text.length}:${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}`;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** The most pictures attached to one draft from its text; a quote cannot make a person's reply upload (and be charged for) any number of them. */
+const MAX_DATA_IMAGES_PER_DRAFT = 20;
+
+/** Whether `bytes` start the way a picture of `contentType` does - the type a quote declares is its own word, and the bytes are what the server stores and shows. */
+function hasImageSignature(contentType: string, bytes: Uint8Array): boolean {
+    const at = (offset: number, text: string) => Array.from(text).every((char, i) => bytes[offset + i] === char.charCodeAt(0));
+    switch (contentType.split("/")[1]) {
+        case "png":
+            return at(0, "\x89PNG");
+        case "jpg":
+        case "jpeg":
+            return at(0, "\xff\xd8\xff");
+        case "gif":
+            return at(0, "GIF8");
+        case "webp":
+            return at(0, "RIFF") && at(8, "WEBP");
+        case "avif":
+            return at(4, "ftypavi");
+        default:
+            return at(0, "BM");
+    }
 }
 
 /** Forgets the pictures attached to draft `messageUid`, for when it has been sent or deleted (they are only remembered to avoid attaching one twice). */
@@ -1189,26 +1207,33 @@ function pictureName(contentType: string): string {
  * `html` with each `<img>` that embeds its picture as a `data:` URI (a quoted original's image, one pasted into the editor) pointed at an
  * attachment of the draft instead: the server drops `data:` images from the message it composes, and an attachment is what it makes an
  * inline part of. A picture is attached once per draft however often the draft is saved. Only what a quote itself embeds is attached - a raster
- * image (`EMBEDDED_IMAGE_TYPES`, never SVG) of at most `MAX_QUOTED_IMAGE_BYTES`; any other is left as it is, and the server drops it.
+ * image (`EMBEDDED_IMAGE_TYPES`, never SVG) of at most `MAX_QUOTED_IMAGE_BYTES` whose bytes are of the type it declares, and no more than
+ * `MAX_DATA_IMAGES_PER_DRAFT` of them; any other is left as it is, and the server drops it.
  */
-async function attachDataImages(messageUid: string, html: string): Promise<string> {
+async function attachDataImages(messageUid: string, html: string, client?: ApiClient): Promise<string> {
     const found = Array.from(html.matchAll(DATA_IMAGE_TAG));
     if (found.length === 0) {
         return html;
     }
     const urls = new Map<string, string>();
     for (const [, , , uri] of found) {
-        const key = `${messageUid}\n${fingerprint(uri)}`;
+        if (urls.has(uri)) {
+            continue;
+        }
+        if (urls.size >= MAX_DATA_IMAGES_PER_DRAFT) {
+            break;
+        }
+        const key = `${messageUid}\n${await fingerprint(uri)}`;
         const known = attachedDataImages.get(key);
         if (known) {
             urls.set(uri, known);
             continue;
         }
         const image = parseDataImage(uri);
-        if (!image || !EMBEDDED_IMAGE_TYPES.test(image.contentType) || image.bytes.length > MAX_QUOTED_IMAGE_BYTES) {
+        if (!image || !EMBEDDED_IMAGE_TYPES.test(image.contentType) || image.bytes.length > MAX_QUOTED_IMAGE_BYTES || !hasImageSignature(image.contentType, image.bytes)) {
             continue;
         }
-        const attachment = await uploadAttachment(messageUid, new File([image.bytes as BlobPart], pictureName(image.contentType), { type: image.contentType }), { inline: true });
+        const attachment = await uploadAttachment(messageUid, new File([image.bytes as BlobPart], pictureName(image.contentType), { type: image.contentType }), { inline: true }, client);
         const url = attachmentContentUrl(attachment.uid);
         attachedDataImages.set(key, url);
         if (attachedDataImages.size > MAX_ATTACHED_DATA_IMAGES) {

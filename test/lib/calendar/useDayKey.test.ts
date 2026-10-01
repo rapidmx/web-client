@@ -42,10 +42,26 @@ describe("useDayKey", () => {
         visibility.mockRestore();
     });
 
+    it.each([["focus"], ["pageshow"]])("is re-read on the window's %s event: a laptop that slept through midnight with the tab still visible gets no visibilitychange", (name) => {
+        const { result } = renderHook(() => useDayKey());
+        vi.setSystemTime(new Date(2026, 5, 16, 7, 0, 0));
+        expect(result.current).toBe("2026-06-15");
+        act(() => void window.dispatchEvent(new Event(name)));
+        expect(result.current).toBe("2026-06-16");
+        // The timer was set again from the real clock: the next midnight, not the stale one.
+        expect(vi.getTimerCount()).toBe(1);
+        act(() => void vi.advanceTimersByTime(17 * 60 * 60 * 1000 + 2000));
+        expect(result.current).toBe("2026-06-17");
+    });
+
     it("stops its timer and listener when unmounted", () => {
         const { unmount } = renderHook(() => useDayKey());
         expect(vi.getTimerCount()).toBe(1);
         unmount();
+        expect(vi.getTimerCount()).toBe(0);
+        // Nothing listens any more: the events change nothing and set no timer.
+        act(() => void window.dispatchEvent(new Event("focus")));
+        act(() => void window.dispatchEvent(new Event("pageshow")));
         expect(vi.getTimerCount()).toBe(0);
     });
 });

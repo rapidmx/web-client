@@ -132,23 +132,26 @@ function ListView({ occurrences, folderColors, onSelectEvent, focusDate, jumpNon
         return () => observer.disconnect();
     }, [more, shown]);
 
-    // What waits for the days it scrolls to be rendered.
-    const afterReveal = useRef<(() => void) | null>(null);
+    // What waits for the days it scrolls to be rendered: one slot per effect that asks, so one cannot replace another's scroll.
+    const afterReveal = useRef<Partial<Record<"jump" | "match" | "step", () => void>>>({});
     useEffect(() => {
-        const pending = afterReveal.current;
-        afterReveal.current = null;
-        pending?.();
+        const pending = Object.values(afterReveal.current);
+        afterReveal.current = {};
+        for (const scroll of pending) {
+            scroll();
+        }
     }, [shown]);
     /** Runs `scroll` once the day at `index` of `groups` is rendered: now, or after the rendered days have grown to reach it. */
-    function reveal(index: number, scroll: () => void) {
+    function reveal(slot: "jump" | "match" | "step", index: number, scroll: () => void) {
         if (index < rendered) {
             scroll();
             return;
         }
-        afterReveal.current = scroll;
-        setShown(index + LIST_DAYS_PER_PAGE);
+        afterReveal.current[slot] = scroll;
+        setShown((count) => Math.max(count, index + LIST_DAYS_PER_PAGE));
     }
-    const scrollToDay = (key: string) => scrollerRef.current!.querySelector<HTMLElement>(`[data-day="${key}"]`)!.scrollIntoView({ block: "start" });
+    // Both look the element up when the scroll runs, which can be after the list changed (a live refresh) and the element is gone: then there is nothing to scroll to.
+    const scrollToDay = (key: string) => scrollerRef.current?.querySelector<HTMLElement>(`[data-day="${key}"]`)?.scrollIntoView({ block: "start" });
 
     const dayElements = () => Array.from(scrollerRef.current!.querySelectorAll<HTMLElement>("[data-day]"));
 
@@ -160,17 +163,17 @@ function ListView({ occurrences, folderColors, onSelectEvent, focusDate, jumpNon
         const wanted = localDateKey(focusDate);
         const found = groups.findIndex((group) => group.key >= wanted);
         const index = found >= 0 ? found : groups.length - 1;
-        reveal(index, () => scrollToDay(groups[index].key));
+        reveal("jump", index, () => scrollToDay(groups[index].key));
     }, [jumpNonce]);
 
     // A search match beyond the rendered days: they grow to it, and it is scrolled to (the page's own scroll to the match found nothing there).
     useEffect(() => {
         const index = groups.findIndex((group) => group.items.some((occurrence) => occurrence.occurrenceKey === activeKey));
         if (index >= rendered) {
-            reveal(index, () =>
-                Array.from(scrollerRef.current!.querySelectorAll<HTMLElement>("[data-occurrence-key]"))
-                    .find((el) => el.dataset.occurrenceKey === activeKey)!
-                    .scrollIntoView({ block: "nearest", inline: "nearest" }),
+            reveal("match", index, () =>
+                Array.from(scrollerRef.current?.querySelectorAll<HTMLElement>("[data-occurrence-key]") ?? [])
+                    .find((el) => el.dataset.occurrenceKey === activeKey)
+                    ?.scrollIntoView({ block: "nearest", inline: "nearest" }),
             );
         }
     }, [activeKey]);
@@ -188,7 +191,7 @@ function ListView({ occurrences, folderColors, onSelectEvent, focusDate, jumpNon
         // Past the first or last month with events there is nowhere to go.
         const index = groups.findIndex((group) => group.key.startsWith(month));
         if (index >= 0) {
-            reveal(index, () => scrollToDay(groups[index].key));
+            reveal("step", index, () => scrollToDay(groups[index].key));
         }
     }, [step]);
 

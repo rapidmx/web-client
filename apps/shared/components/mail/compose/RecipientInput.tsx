@@ -125,7 +125,8 @@ export default function RecipientInput({
     dropdownZIndex,
 }: RecipientInputProps) {
     const [pending, setPending] = useState(initialPending);
-    const [suggestions, setSuggestions] = useState<RecipientSuggestion[]>([]);
+    // With the query they were loaded for: a list for earlier text is not offered (Enter or Tab would put somebody else in place of what was typed).
+    const [suggestionList, setSuggestionList] = useState<{ query: string; items: RecipientSuggestion[] }>({ query: "", items: [] });
     const [open, setOpen] = useState(false);
     const [activeIndex, setActiveIndex] = useState(0);
     const [position, setPosition] = useState<DropdownPosition | null>(null);
@@ -153,13 +154,13 @@ export default function RecipientInput({
     }, [pending, pendingActive]);
 
     const committedAddresses = new Set(chips.map((chip) => parseRecipient(chip).address.toLowerCase()));
-    const visible = suggestions.filter((suggestion) => !committedAddresses.has(suggestion.address.toLowerCase()));
+    const visible = (suggestionList.query === query ? suggestionList.items : []).filter((suggestion) => !committedAddresses.has(suggestion.address.toLowerCase()));
     const expanded = open && visible.length > 0 && query.length >= RECIPIENT_SUGGESTION_MIN_QUERY_LENGTH;
     const active = Math.min(activeIndex, visible.length - 1);
 
     useEffect(() => {
         if (query.length < RECIPIENT_SUGGESTION_MIN_QUERY_LENGTH) {
-            setSuggestions([]);
+            setSuggestionList({ query: "", items: [] });
             return;
         }
         const controller = new AbortController();
@@ -167,13 +168,13 @@ export default function RecipientInput({
             fetchRef.current(query, { mailboxUid, signal: controller.signal }).then(
                 (result) => {
                     if (!controller.signal.aborted) {
-                        setSuggestions(result);
+                        setSuggestionList({ query, items: result });
                         setActiveIndex(0);
                     }
                 },
                 () => {
                     if (!controller.signal.aborted) {
-                        setSuggestions([]);
+                        setSuggestionList({ query: "", items: [] });
                     }
                 },
             );
@@ -233,7 +234,7 @@ export default function RecipientInput({
         const next = committed.join(", ");
         setPending("");
         setOpen(false);
-        setSuggestions([]);
+        setSuggestionList({ query: "", items: [] });
         onChange(next);
         onEdit?.(committed, "");
         onCommit?.(next);

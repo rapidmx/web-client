@@ -8,7 +8,7 @@
 // `backHref` prop, which only the mobile detail route (`apps/www/contacts/[uid].tsx`) ever passes - plus key rotation
 // continuity: recorded key changes with accept/keep, key history and revocation labels.
 import React from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PinnedKeyChangedError, type PublicKey } from "../../../lib/crypto/keyvaultApi.js";
@@ -16,6 +16,7 @@ import { ApiRequestError } from "../../../lib/util/api.js";
 import ContactDetailPane from "../../../apps/shared/components/contacts/ContactDetailPane.js";
 import { KEY_CHANGE_FORBIDDEN_MESSAGE, KEY_CHANGE_STALE_MESSAGE } from "../../../apps/shared/components/contacts/contactKeys.js";
 import type { Contact } from "../../../lib/contacts/contactsApi.js";
+import { prepareContactPhoto } from "../../../lib/contacts/preparePhoto.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 
 // Making a picture small enough is `preparePhoto.test.ts`'s business (jsdom cannot decode or draw one): here the pane is handed the file as it was chosen.
@@ -310,6 +311,54 @@ describe("ContactDetailPane photo badge", () => {
         await user.upload(screen.getByLabelText("Contact photo file"), new File([new Uint8Array(4)], "me.png", { type: "image/png" }));
         await waitFor(() => expect(fetchMock).toHaveBeenCalled());
         await waitFor(() => expect(screen.getByRole("button", { name: "Change contact photo" })).toBeEnabled());
+    });
+
+    it("uploads against the contact as it is when the picture is ready, not as it was when it was chosen", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, contactFixture({ version: 8, photoBlobKey: "contact-photos/c1/x" })));
+        let ready!: (file: File) => void;
+        vi.mocked(prepareContactPhoto).mockImplementationOnce(() => new Promise<File>((resolve) => (ready = resolve)));
+        const picture = new File([new Uint8Array(4)], "me.png", { type: "image/png" });
+        const { rerender } = render(<ContactDetailPane contact={contactFixture({ version: 5 })} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        fireEvent.change(screen.getByLabelText("Contact photo file"), { target: { files: [picture] } });
+        // The contact is read again (the star was toggled, a live update arrived) while the picture is being made ready.
+        rerender(<ContactDetailPane contact={contactFixture({ version: 7 })} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        ready(picture);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/contacts/c1/photo?version=7");
+    });
+
+    it("turns the star off while the picture is being changed, and gives the badge its focus back afterwards", async () => {
+        mockFetch(() => jsonResponse(200, contactFixture({ version: 6 })));
+        let ready!: (file: File) => void;
+        vi.mocked(prepareContactPhoto).mockImplementationOnce(() => new Promise<File>((resolve) => (ready = resolve)));
+        const picture = new File([new Uint8Array(4)], "me.png", { type: "image/png" });
+        render(<ContactDetailPane contact={contactFixture({ version: 5 })} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        const badge = screen.getByRole("button", { name: "Change contact photo" });
+        badge.focus();
+        fireEvent.change(screen.getByLabelText("Contact photo file"), { target: { files: [picture] } });
+        await waitFor(() => expect(badge).toBeDisabled());
+        expect(screen.getByRole("button", { name: "Favorite" })).toBeDisabled();
+        // A browser drops the focus of a button that becomes disabled.
+        badge.blur();
+        ready(picture);
+        await waitFor(() => expect(badge).toBeEnabled());
+        expect(screen.getByRole("button", { name: "Favorite" })).toBeEnabled();
+        expect(badge).toHaveFocus();
+    });
+
+    it("leaves the focus where the user put it", async () => {
+        mockFetch(() => jsonResponse(200, contactFixture({ version: 6 })));
+        let ready!: (file: File) => void;
+        vi.mocked(prepareContactPhoto).mockImplementationOnce(() => new Promise<File>((resolve) => (ready = resolve)));
+        const picture = new File([new Uint8Array(4)], "me.png", { type: "image/png" });
+        render(<ContactDetailPane contact={contactFixture({ version: 5 })} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        const badge = screen.getByRole("button", { name: "Change contact photo" });
+        fireEvent.change(screen.getByLabelText("Contact photo file"), { target: { files: [picture] } });
+        await waitFor(() => expect(badge).toBeDisabled());
+        screen.getByRole("button", { name: "Edit" }).focus();
+        ready(picture);
+        await waitFor(() => expect(badge).toBeEnabled());
+        expect(screen.getByRole("button", { name: "Edit" })).toHaveFocus();
     });
 
     it("is hidden from a reader who may not change the contact", () => {

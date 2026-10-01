@@ -42,6 +42,22 @@ describe("ContactAvatar pictures", () => {
         expect(screen.getByText("JD")).toBeInTheDocument();
     });
 
+    it("loads its picture lazily and decodes it off the main thread, so a long list does not fetch and decode every row at once", () => {
+        const { container } = render(<ContactAvatar displayName="Jane Doe" photoUrl="/p" />);
+        expect(container.querySelector("img")).toHaveAttribute("loading", "lazy");
+        expect(container.querySelector("img")).toHaveAttribute("decoding", "async");
+    });
+
+    it("does not ask Gravatar for a contact whose own picture is still on its way", async () => {
+        enableGravatar();
+        const pending = render(<ContactAvatar displayName="Jane Doe" size={32} photoPending email="has-photo@example.com" />);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(pending.container.querySelector("img")).toBeNull();
+        expect(screen.getByText("JD")).toBeInTheDocument();
+        pending.rerender(<ContactAvatar displayName="Jane Doe" size={32} email="has-photo@example.com" />);
+        await waitFor(() => expect(pending.container.querySelector("img")?.getAttribute("src")).toMatch(GRAVATAR));
+    });
+
     it("falls from the contact's picture to the Gravatar when the picture fails", async () => {
         enableGravatar();
         const { container } = render(<ContactAvatar displayName="Jane Doe" size={32} photoUrl="/p" email="fallback@example.com" />);
@@ -139,6 +155,19 @@ describe("ContactAvatar pictures", () => {
             act(() => observers[0].callback([{ isIntersecting: true }]));
             await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toMatch(GRAVATAR));
             expect(observers[0].disconnect).toHaveBeenCalled();
+        });
+
+        it("tells when the avatar scrolls into view, once, even with nothing to look up", () => {
+            const observers = stubObserver();
+            const onVisible = vi.fn();
+            const { container } = render(<ContactAvatar displayName="Jane Doe" photoPending onVisible={onVisible} />);
+            expect(observers).toHaveLength(1);
+            expect(observers[0].observe).toHaveBeenCalledWith(container.querySelector("span"));
+            act(() => observers[0].callback([{ isIntersecting: false }]));
+            expect(onVisible).not.toHaveBeenCalled();
+            act(() => observers[0].callback([{ isIntersecting: true }]));
+            expect(onVisible).toHaveBeenCalledTimes(1);
+            expect(observers).toHaveLength(1);
         });
 
         it("does not watch an avatar that has nothing to look up", () => {

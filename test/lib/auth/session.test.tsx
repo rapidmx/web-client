@@ -896,8 +896,88 @@ describe("a refresh that never answers", () => {
         setSessionRefreshTimeout(50);
         const fetchMock = mockFetch(() => jsonResponse(200, {}));
         await expect(refreshSession(AUTH, true)).resolves.toBe(true);
-        // The timeout of a request that was answered is cleared: it never aborts it afterwards.
+        // The timer of a request that was answered is cleared: nothing fires afterwards.
         await vi.advanceTimersByTimeAsync(1000);
-        expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(getSessionLog().map((entry) => entry.e)).not.toContain("refresh:late-ok");
+    });
+
+    /** A fetch whose answer the test controls, and which records whether its request was aborted. */
+    function deferredFetch() {
+        let resolve!: (res: Response) => void;
+        let reject!: (err: unknown) => void;
+        const fetchMock = mockFetch(
+            (_url, init) =>
+                new Promise<Response>((res, rej) => {
+                    resolve = res;
+                    reject = rej;
+                    init?.signal?.addEventListener("abort", () => rej(new DOMException("The operation was aborted.", "AbortError")));
+                }),
+        );
+        return { fetchMock, resolve: (r: Response) => resolve(r), reject: (e: unknown) => reject(e) };
+    }
+
+    it("does not abort the request when it gives up waiting, so the browser still applies the rotated cookies, and records a late success", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        const deferred = deferredFetch();
+        const result = refreshSession(AUTH);
+        const assertion = expect(result).rejects.toThrow(/timed out/);
+        await vi.advanceTimersByTimeAsync(SESSION_REFRESH_TIMEOUT_MS);
+        await assertion;
+        // Given up on (transient, not a rejection: no sign-in), but the request itself was left running.
+        expect(deferred.fetchMock.mock.calls[0][1]?.signal?.aborted ?? false).toBe(false);
+        expect(refreshedRecently(SESSION_REFRESH_MIN_GAP_MS)).toBe(false);
+
+        deferred.resolve(jsonResponse(200, {}));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(refreshedRecently(SESSION_REFRESH_MIN_GAP_MS)).toBe(true);
+        expect(getSessionLog().map((entry) => entry.e)).toEqual(["refresh:start", "refresh:error", "refresh:late-ok"]);
+    });
+
+    it("only logs a request that fails after it was given up on", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        const deferred = deferredFetch();
+        const result = refreshSession(AUTH);
+        const assertion = expect(result).rejects.toThrow(/timed out/);
+        await vi.advanceTimersByTimeAsync(SESSION_REFRESH_TIMEOUT_MS);
+        await assertion;
+        deferred.reject(new TypeError("network down"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(refreshedRecently(SESSION_REFRESH_MIN_GAP_MS)).toBe(false);
+        expect(getSessionLog().map((entry) => entry.e)).toEqual(["refresh:start", "refresh:error", "refresh:late-error"]);
+    });
+
+    it("does not record a late success once a newer refresh has started", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        const slow = deferredFetch();
+        const first = refreshSession(AUTH);
+        const firstAssertion = expect(first).rejects.toThrow(/timed out/);
+        await vi.advanceTimersByTimeAsync(SESSION_REFRESH_TIMEOUT_MS);
+        await firstAssertion;
+
+        const newer = deferredFetch();
+        const second = refreshSession(AUTH, true);
+        const secondAssertion = expect(second).rejects.toThrow(/timed out/);
+        await vi.advanceTimersByTimeAsync(0);
+        // The first request answers late while the second is in flight.
+        slow.resolve(jsonResponse(200, {}));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(refreshedRecently(SESSION_REFRESH_MIN_GAP_MS)).toBe(false);
+        expect(getSessionLog().map((entry) => entry.e)).toContain("refresh:late-superseded");
+        await vi.advanceTimersByTimeAsync(SESSION_REFRESH_TIMEOUT_MS);
+        await secondAssertion;
+        newer.resolve(jsonResponse(200, {}));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(refreshedRecently(SESSION_REFRESH_MIN_GAP_MS)).toBe(true);
+    });
+
+    it("never signs the user in for a timed-out refresh", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval", "clearTimeout", "Date"] });
+        const location = mockLocation();
+        location.href = "https://mail.example.com/mail";
+        hangingFetch();
+        render(<RefreshComponent userUid="u1" authServerUrl={AUTH} />);
+        await vi.advanceTimersByTimeAsync(SESSION_REFRESH_TIMEOUT_MS + 10);
+        expect(location.href).toBe("https://mail.example.com/mail");
     });
 });
