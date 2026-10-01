@@ -265,6 +265,90 @@ describe("CalendarPage search", () => {
             expect(within(screen.getByRole("dialog")).getByText("Offsite planning")).toBeInTheDocument();
         });
 
+        it("slides the next card in from the right and the previous from the left, whichever way the step was made, but not a card that was just opened", async () => {
+            const animate = vi.fn();
+            Element.prototype.animate = animate;
+            try {
+                mockShellAndEvents([standup, june, retro, sprint]);
+                const { user, input } = await openPage();
+                await user.type(input, "offsite{Enter}");
+                await user.click(await screen.findByText(/Offsite planning/));
+
+                const slideOf = () => screen.getByRole("dialog").querySelector("[data-slide-from]");
+                expect(screen.getByRole("dialog")).toBeInTheDocument();
+                expect(slideOf()).toBeNull();
+                expect(animate).not.toHaveBeenCalled();
+
+                await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Next match" }));
+                await screen.findByRole("heading", { name: "September 2026" });
+                expect(slideOf()).toHaveAttribute("data-slide-from", "right");
+                expect(animate).toHaveBeenLastCalledWith(
+                    [expect.objectContaining({ transform: "translateX(48px)" }), expect.objectContaining({ transform: "translateX(0)" })],
+                    { duration: 220, easing: "ease-out" },
+                );
+
+                await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Previous match" }));
+                await screen.findByRole("heading", { name: "June 2026" });
+                expect(slideOf()).toHaveAttribute("data-slide-from", "left");
+                expect(animate).toHaveBeenLastCalledWith(
+                    [expect.objectContaining({ transform: "translateX(-48px)" }), expect.anything()],
+                    { duration: 220, easing: "ease-out" },
+                );
+
+                // The search bar's own buttons and the arrow keys step the open card the same way.
+                await user.click(within(screen.getByRole("search")).getByRole("button", { name: /next match/i }));
+                await screen.findByRole("heading", { name: "September 2026" });
+                expect(slideOf()).toHaveAttribute("data-slide-from", "right");
+                await user.keyboard("{ArrowLeft}");
+                await screen.findByRole("heading", { name: "June 2026" });
+                expect(slideOf()).toHaveAttribute("data-slide-from", "left");
+                expect(animate).toHaveBeenCalledTimes(4);
+
+                // A card opened afresh does not slide, even for the event the last step arrived at.
+                await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+                await user.click(await screen.findByText(/Offsite planning/));
+                expect(slideOf()).toBeNull();
+                expect(animate).toHaveBeenCalledTimes(4);
+            } finally {
+                delete (Element.prototype as { animate?: unknown }).animate;
+            }
+        });
+
+        it("does not animate for someone who asked for less motion", async () => {
+            const animate = vi.fn();
+            Element.prototype.animate = animate;
+            vi.stubGlobal("matchMedia", (query: string) => ({
+                matches: query.includes("prefers-reduced-motion"),
+                media: query,
+                addEventListener: () => undefined,
+                removeEventListener: () => undefined,
+            }));
+            try {
+                mockShellAndEvents([standup, june, retro, sprint]);
+                const { user, input } = await openPage();
+                await user.type(input, "offsite{Enter}");
+                await user.click(await screen.findByText(/Offsite planning/));
+                await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Next match" }));
+                await screen.findByRole("heading", { name: "September 2026" });
+
+                // The direction is still recorded, the animation is not run.
+                expect(screen.getByRole("dialog").querySelector("[data-slide-from]")).toHaveAttribute("data-slide-from", "right");
+                expect(animate).not.toHaveBeenCalled();
+            } finally {
+                delete (Element.prototype as { animate?: unknown }).animate;
+            }
+        });
+
+        it("steps without animating where the browser has no Element.animate()", async () => {
+            mockShellAndEvents([standup, june, retro, sprint]);
+            const { user, input } = await openPage();
+            await user.type(input, "offsite{Enter}");
+            await user.click(await screen.findByText(/Offsite planning/));
+            await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Next match" }));
+            expect(await screen.findByRole("heading", { name: "September 2026" })).toBeInTheDocument();
+            expect(within(screen.getByRole("dialog")).getByText("Offsite sprint")).toBeInTheDocument();
+        });
+
         it("has no such buttons without a search, nor while the event is being edited", async () => {
             mockShellAndEvents([standup, june]);
             const { user, input } = await openPage();

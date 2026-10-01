@@ -710,7 +710,7 @@ describe("CalendarPage keyboard shortcuts", () => {
         await waitFor(() => expect(screen.getByRole("heading", { name: "July 2026" })).toBeInTheDocument());
     });
 
-    it("switches to the day, work week, week and month views with Ctrl+Alt+1 to 4, as Outlook does", async () => {
+    it("switches to the day, work week, week and month views with Ctrl+Alt+1 to 5, as Outlook does (the List is the fifth)", async () => {
         await renderCalendar();
 
         expect(press("1", CTRL_ALT)).toBe(false);
@@ -721,8 +721,10 @@ describe("CalendarPage keyboard shortcuts", () => {
         expect(screen.getByRole("heading", { name: "Jun 15 – Jun 21, 2026" })).toBeInTheDocument();
         expect(press("4", CTRL_ALT)).toBe(false);
         expect(screen.getByRole("heading", { name: "June 2026" })).toBeInTheDocument();
+        expect(press("5", CTRL_ALT)).toBe(false);
+        expect(screen.getByRole("region", { name: "List" })).toBeInTheDocument();
         // There is no key for the split view, and no other digit is claimed.
-        expect(press("5", CTRL_ALT)).toBe(true);
+        expect(press("6", CTRL_ALT)).toBe(true);
     });
 
     it("leaves every key to a text field, and to the event form while it is open", async () => {

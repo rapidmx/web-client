@@ -60,6 +60,7 @@ import {
     stopImpersonating,
     updateFolder,
     updateMailbox,
+    deleteAttachment,
     uploadAttachment,
 } from "../../../lib/mail/mailApi.js";
 
@@ -807,6 +808,19 @@ describe("attachmentContentUrl", () => {
     });
 });
 
+describe("deleteAttachment", () => {
+    it("deletes the attachment at its version, through the client it is given", async () => {
+        const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
+        await deleteAttachment("a/1", 4);
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/attachments/a%2F1?version=4");
+        expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("DELETE");
+
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        await deleteAttachment("a1", 5, client);
+        expect(fetchMock.mock.calls[1][0]).toBe("https://a.example.com/api/mail/attachments/a1?version=5");
+    });
+});
+
 describe("uploadAttachment", () => {
     it("posts the file's raw bytes with its own content-type, not JSON", async () => {
         const file = new File(["hello"], "note.txt", { type: "text/plain" });
@@ -842,6 +856,28 @@ describe("uploadAttachment", () => {
             "/api/mail/attachments/upload?messageUid=m1&filename=note&mimeType=application%2Foctet-stream",
             expect.anything(),
         );
+    });
+
+    it("writes a space in the file name as %20, never as the + of a form (the server would keep the plus sign: Screenshot+2025.png)", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, attachment));
+        await uploadAttachment("m1", new File(["x"], "Screenshot 2025-12-02 223133.png", { type: "image/png" }));
+        const url = fetchMock.mock.calls[0][0] as string;
+        expect(url).toContain("filename=Screenshot%202025-12-02%20223133.png");
+        expect(url).not.toContain("+");
+    });
+
+    it("sends an inline image with the Content-ID it was given, so the server can point the message's cid: reference at it", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, attachment));
+        await uploadAttachment("m1", new File(["x"], "a.png", { type: "image/png" }), { inline: true, contentId: "pic@x" });
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/attachments/upload?messageUid=m1&filename=a.png&mimeType=image%2Fpng&isInline=true&contentId=pic%40x");
+    });
+
+    it("gives an inline image a Content-ID of its own when none was given", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, attachment));
+        await uploadAttachment("m1", new File(["x"], "a.png", { type: "image/png" }), { inline: true });
+        const params = new URL(fetchMock.mock.calls[0][0] as string, "http://localhost").searchParams;
+        expect(params.get("isInline")).toBe("true");
+        expect(params.get("contentId")).toMatch(/^[0-9a-f-]{36}@inline\.rapidmx$/);
     });
 
     it("throws ApiRequestError using the body's message field on a non-ok response", async () => {
@@ -977,6 +1013,53 @@ describe("assembleDraft", () => {
             expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
         );
         expect(result).toEqual(message);
+    });
+
+    describe("a picture embedded as a data: URI (a quoted original's image, one pasted into the editor)", () => {
+        const PNG = "data:image/png;base64,iVBORw==";
+        const JPG = "data:image/jpeg;base64,/9j/4A==";
+        const input = (html: string) => ({ to: [{ address: "b@example.com" }], subject: "Hi", html });
+        const sent = (fetchMock: ReturnType<typeof mockFetch>) => fetchMock.mock.calls.filter(([url]) => String(url).includes("/assemble")).map(([, init]) => JSON.parse(init.body as string));
+        const uploads = (fetchMock: ReturnType<typeof mockFetch>) => fetchMock.mock.calls.filter(([url]) => String(url).includes("/attachments/upload"));
+        const respond = (url: string) => (url.includes("/attachments/upload") ? jsonResponse(200, { ...attachment, uid: "att 1" }) : jsonResponse(200, message));
+
+        it("is attached to the draft as an inline part, and the message refers to the attachment instead - once, however often it is saved", async () => {
+            const fetchMock = mockFetch(respond);
+            const html = `<p>Hi</p><img src="${PNG}" alt="pic"><IMG alt='b' src='${PNG}'>`;
+
+            await assembleDraft("d-once", input(html));
+            await assembleDraft("d-once", input(html));
+
+            expect(uploads(fetchMock)).toHaveLength(1);
+            const url = new URL(uploads(fetchMock)[0][0] as string, "http://localhost");
+            expect(url.searchParams.get("messageUid")).toBe("d-once");
+            expect(url.searchParams.get("filename")).toBe("image.png");
+            expect(url.searchParams.get("mimeType")).toBe("image/png");
+            expect(url.searchParams.get("isInline")).toBe("true");
+            expect(url.searchParams.get("contentId")).toMatch(/@inline\.rapidmx$/);
+            const expected = `<p>Hi</p><img src="/api/mail/attachments/att%201/content" alt="pic"><IMG alt='b' src='/api/mail/attachments/att%201/content'>`;
+            expect(sent(fetchMock).map((body) => body.html)).toEqual([expected, expected]);
+        });
+
+        it("attaches each different picture, naming it after its type", async () => {
+            const fetchMock = mockFetch(respond);
+            await assembleDraft("d-two", input(`<img src="${PNG}"><img src="${JPG}">`));
+            expect(uploads(fetchMock).map(([url]) => new URL(url as string, "http://localhost").searchParams.get("filename"))).toEqual(["image.png", "image.jpg"]);
+        });
+
+        it("leaves one that is not a picture it can read as it was, and touches nothing when there is none", async () => {
+            const fetchMock = mockFetch(respond);
+            const broken = '<img src="data:image/png;base64,!!!">';
+            await assembleDraft("d-bad", input(broken));
+            await assembleDraft("d-none", input('<img src="https://example.com/a.png"><p>text</p>'));
+            expect(uploads(fetchMock)).toHaveLength(0);
+            expect(sent(fetchMock).map((body) => body.html)).toEqual([broken, '<img src="https://example.com/a.png"><p>text</p>']);
+        });
+
+        it("fails the save, rather than quietly dropping the picture, when it cannot be attached", async () => {
+            mockFetch((url) => (url.includes("/attachments/upload") ? jsonResponse(413, { message: "too large" }) : jsonResponse(200, message)));
+            await expect(assembleDraft("d-big", input(`<img src="${PNG}">`))).rejects.toMatchObject({ status: 413 });
+        });
     });
 });
 

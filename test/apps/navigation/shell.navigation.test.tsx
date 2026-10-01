@@ -260,7 +260,8 @@ async function mount(path = "/") {
     });
 }
 
-const railLink = (name: string) => within(screen.getByRole("navigation", { name: "Apps" })).getByRole("link", { name });
+// The Mail link's name carries its unread count ("Mail, 3 unread"), so a link is found by its label up to that.
+const railLink = (name: string) => within(screen.getByRole("navigation", { name: "Apps" })).getByRole("link", { name: new RegExp(`^${name}(,|$)`) });
 const rail = () => screen.getByRole("navigation", { name: "Apps" });
 const content = () => document.getElementById("app-content")!;
 /** The router's live region: the one polite status the router adds to the document (outside React's tree). */
@@ -468,10 +469,23 @@ describe("the webmail's app shell under the client router", () => {
         await waitFor(() => expect(announcement()).toHaveTextContent(/^Acme Mail: Mail$/));
     });
 
-    it("leaves the title alone with nothing unread", async () => {
+    it("shows the Inbox's unread count on the Mail icon of the rail and the tab bar, in every app", async () => {
+        await mount("/");
+        await waitFor(() => expect(railLink("Mail")).toHaveAccessibleName("Mail, 3 unread"));
+        expect(within(screen.getByRole("navigation", { name: "Mobile navigation" })).getByRole("link", { name: "Mail, 3 unread" })).toBeInTheDocument();
+        await click(railLink("Calendar"));
+        await screen.findByText("the calendar page");
+        expect(railLink("Mail")).toHaveAccessibleName("Mail, 3 unread");
+        expect(within(railLink("Mail")).getByTestId("nav-badge")).toHaveTextContent("3");
+        expect(within(railLink("Calendar")).queryByTestId("nav-badge")).not.toBeInTheDocument();
+    });
+
+    it("leaves the title and the Mail icon alone with nothing unread", async () => {
         mockApi(0);
         await mount("/");
         await screen.findAllByText("Inbox", {}, { timeout: 5000 });
+        expect(railLink("Mail")).toHaveAccessibleName("Mail");
+        expect(screen.queryByTestId("nav-badge")).not.toBeInTheDocument();
         expect(document.title).toBe("Acme Mail: Mail");
         await click(railLink("Calendar"));
         await screen.findByText("the calendar page");

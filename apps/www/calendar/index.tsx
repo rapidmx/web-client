@@ -29,23 +29,26 @@ import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calen
 import { resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
 import { createFolder } from "../../../lib/mail/mailApi.js";
 import { CalendarOccurrence, expandAllOccurrences } from "../../../lib/calendar/recurrence.js";
-import { initialMatchIndex, occurrencesInRange, searchOccurrences, searchTerms, stepMatchIndex } from "../../../lib/calendar/eventSearch.js";
+import { allOccurrences, initialMatchIndex, occurrencesInRange, searchOccurrences, searchTerms, stepSequenceIndex } from "../../../lib/calendar/eventSearch.js";
 import Drawer from "../../../lib/components/overlays/Drawer.js";
 import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../shared/components/calendar/layout/CalendarShell.js";
 import CalendarListSidebar from "../../shared/components/calendar/CalendarListSidebar.js";
 import CalendarSearchBox from "../../shared/components/calendar/CalendarSearchBox.js";
 import { ActiveOccurrenceContext } from "../../shared/components/calendar/activeOccurrence.js";
-import { occurrenceDay } from "../../shared/components/calendar/allDay.js";
+import { isUpcoming, occurrenceDay } from "../../shared/components/calendar/allDay.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import EventModal from "../../shared/components/calendar/EventModal.js";
 import FloatingActionButton from "../../shared/components/layout/FloatingActionButton.js";
 import { EventAnchor, anchorOf } from "../../shared/components/calendar/EventShell.js";
 import MiniDatePicker from "../../../lib/components/pickers/MiniDatePicker.js";
+import ListView, { ListStep } from "../../shared/components/calendar/ListView.js";
 import MonthView from "../../shared/components/calendar/MonthView.js";
 import SplitDayView from "../../shared/components/calendar/SplitDayView.js";
 import TimeGridView from "../../shared/components/calendar/TimeGridView.js";
 import Alert from "../../../lib/components/feedback/Alert.js";
 import Button from "../../../lib/components/buttons/Button.js";
+import { CALENDAR_VIEWS, CalendarView, getStoredCalendarView, isCalendarView, storeCalendarView } from "../../shared/components/calendar/calendarView.js";
+import { SlideFrom } from "../../shared/components/calendar/SlideIn.js";
 import { SWIPE_PERIOD_SHIFT } from "../../shared/components/calendar/swipeNavigation.js";
 import { nextHalfHour } from "../../shared/components/calendar/timePicker.js";
 import { useSwipeSlide } from "../../shared/gestures/useSwipeSlide.js";
@@ -58,6 +61,9 @@ import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { bookingSettingsHref } from "../../shared/calendar/bookingPlugin.js";
 import { redactedEventUidOf } from "../../shared/calendar/calendarLiveUpdates.js";
 
+/** The furthest instants a `Date` can hold: the List's "range" reaches both. */
+const MAX_DATE_MS = 8.64e15;
+
 function CalendarPage(props: CalendarShellProps) {
     return (
         <CalendarShell {...props}>
@@ -66,11 +72,11 @@ function CalendarPage(props: CalendarShellProps) {
     );
 }
 
-type ViewType = "month" | "week" | "workWeek" | "day" | "split";
-const VIEW_TYPES: ViewType[] = ["month", "week", "workWeek", "day", "split"];
-const VIEW_LABELS: Record<ViewType, string> = { month: "Month", week: "Week", workWeek: "Work Week", day: "Day", split: "Split" };
-/** The shortcut that switches to a view (Outlook's Ctrl+Alt+1-4); the split view has none. */
+type ViewType = CalendarView;
+const VIEW_LABELS: Record<ViewType, string> = { list: "List", month: "Month", week: "Week", workWeek: "Work Week", day: "Day", split: "Split" };
+/** The shortcut that switches to a view (Outlook's Ctrl+Alt+1-4, the List one more); the split view has none. */
 const VIEW_SHORTCUTS: Partial<Record<ViewType, ShortcutDef>> = {
+    list: SHORTCUTS.calendar.list,
     day: SHORTCUTS.calendar.day,
     workWeek: SHORTCUTS.calendar.workWeek,
     week: SHORTCUTS.calendar.week,
@@ -126,7 +132,20 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     );
 
     const [drawerOpen, setDrawerOpen] = useState(false);
-    const [view, setView] = useState<ViewType>("month");
+    // Month, until the effects below know better: a remembered view, or the List on a phone (never read while rendering, so the server's markup and the
+    // first client render agree). A desktop always opens on the Month unless the link or a remembered Week, Work Week, Day, Split or Month says otherwise.
+    const [view, setViewState] = useState<ViewType>("month");
+    // Whether the view was decided by the URL, a remembered choice or the reader (and so is not the device's default to follow).
+    const viewChosenRef = useRef(false);
+    /** Switches the view; a reader's own choice (`remember`) is also what the Calendar opens on next time - except the List on a desktop, which
+     * only a phone opens on, so it is never written there (and so can never turn up as the next desktop visit's view). */
+    function setView(next: ViewType, remember = true) {
+        viewChosenRef.current = true;
+        setViewState(next);
+        if (remember && (next !== "list" || isMobile)) {
+            storeCalendarView(next);
+        }
+    }
     const [viewDate, setViewDate] = useState(() => startOfDay(new Date()));
     const [events, setEvents] = useState<CalendarEvent[]>([]);
     const [loading, setLoading] = useState(true);
@@ -142,8 +161,13 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const requestedView = params.get("view");
-        if ((VIEW_TYPES as string[]).includes(requestedView ?? "")) {
-            setView(requestedView as ViewType);
+        const storedView = getStoredCalendarView();
+        if (isCalendarView(requestedView)) {
+            // Asked for by the link: shown, but not remembered - it is not a choice of the reader's.
+            setView(requestedView, false);
+        } else if (storedView && storedView !== "list") {
+            // A remembered List is not restored: it is the phone's default (below) and never the desktop's, whatever an older visit left in storage.
+            setView(storedView, false);
         }
         const requestedDate = params.get("date");
         // `parseISO()`, not `new Date()` - `?date=2026-06-16` is a local calendar day, but `new Date()` reads a
@@ -153,6 +177,14 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
             setViewDate(startOfDay(parsedDate));
         }
     }, []);
+
+    // With nothing remembered the device decides: the List on a phone, the Month elsewhere (`useIsMobile()` only knows after mounting).
+    const isMobile = useIsMobile();
+    useEffect(() => {
+        if (!viewChosenRef.current) {
+            setViewState(isMobile ? "list" : "month");
+        }
+    }, [isMobile]);
 
     const checkedFolderUids = checkedFolderUidsState ?? new Set(calendarFolders.map((f) => f.uid));
     const folderColors = useMemo(
@@ -179,6 +211,10 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     }
 
     const { rangeStart, rangeEnd, days } = useMemo(() => {
+        if (view === "list") {
+            // The list is not a range at all: every event, whenever it falls (a series bounded as the search bounds it - see `allOccurrences()`).
+            return { rangeStart: new Date(-MAX_DATE_MS), rangeEnd: new Date(MAX_DATE_MS), days: [] as Date[] };
+        }
         if (view === "month") {
             const start = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 1 });
             const end = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 1 });
@@ -303,13 +339,34 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         const timer = setTimeout(() => setQuery(searchText), 300);
         return () => clearTimeout(timer);
     }, [searchText]);
-    const matches = useMemo(() => (searching ? searchOccurrences(events, query) : []), [events, query, searching]);
+    // The List shows only what is from today on, so that is all a search steps through there; the other views reach the past ones.
+    const matches = useMemo(() => {
+        const found = searching ? searchOccurrences(events, query) : [];
+        const today = new Date();
+        return view === "list" ? found.filter((occurrence) => isUpcoming(occurrence, today)) : found;
+    }, [events, query, searching, view]);
     const activeIndex = matches.findIndex((m) => m.occurrenceKey === activeKey);
 
-    const occurrences = useMemo(
-        () => (searching ? occurrencesInRange(matches, rangeStart, rangeEnd) : expandAllOccurrences(events, rangeStart, rangeEnd)),
-        [events, matches, searching, rangeStart, rangeEnd],
-    );
+    // What an open event card steps through, in order: the matches while a search runs, else every event of the checked calendars (bounded as a
+    // search is). The List holds only what is from today on, so that is all its card steps through. Worked out only when something needs it.
+    const everything = useMemo(() => (view === "list" || modal?.occurrence ? allOccurrences(events) : []), [events, view, !!modal?.occurrence]);
+    const sequence = useMemo(() => {
+        if (searching) {
+            return matches;
+        }
+        if (view === "list") {
+            const today = new Date();
+            return everything.filter((occurrence) => isUpcoming(occurrence, today));
+        }
+        return everything;
+    }, [searching, matches, view, everything]);
+
+    const occurrences = useMemo(() => {
+        if (view === "list") {
+            return sequence;
+        }
+        return searching ? occurrencesInRange(matches, rangeStart, rangeEnd) : expandAllOccurrences(events, rangeStart, rangeEnd);
+    }, [events, matches, searching, view, sequence, rangeStart, rangeEnd]);
 
     /** Points at `match`, moving the view to the day it is on unless the view already shows it. */
     function showMatch(match: CalendarOccurrence) {
@@ -321,9 +378,19 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         }
     }
 
+    // The step that moved an open event card on, for the card to slide in from the side of the button pressed (also on a wrap-around).
+    const [slide, setSlide] = useState<{ from: SlideFrom; occurrenceKey: string } | undefined>(undefined);
+
+    // The card open is where the sequence stands; with none, the match the search is on. A search wraps round at either end, the events of the
+    // calendar do not.
+    const stepFrom = modal?.occurrence;
+    const stepIndex = (direction: 1 | -1) =>
+        stepSequenceIndex(sequence, stepFrom?.occurrenceKey ?? activeKey, stepFrom ? new Date(stepFrom.startDate) : undefined, direction, searching);
+
     function stepMatch(direction: 1 | -1) {
-        const next = matches[stepMatchIndex(activeIndex, matches.length, direction)];
+        const next = sequence[stepIndex(direction)];
         if (next) {
+            setSlide({ from: direction === 1 ? "right" : "left", occurrenceKey: next.occurrenceKey });
             showMatch(next);
         }
     }
@@ -352,7 +419,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         }
         if (searchedQueryRef.current !== query) {
             searchedQueryRef.current = query;
-            showMatch(matches[initialMatchIndex(matches, rangeStart, rangeEnd, startOfDay(viewDate))]);
+            // The List holds every match: it starts at the first from the day being viewed on rather than the first of all.
+            const from = startOfDay(viewDate);
+            showMatch(matches[view === "list" ? initialMatchIndex(matches, from, rangeEnd, from) : initialMatchIndex(matches, rangeStart, rangeEnd, from)]);
         }
     }, [matches, query, searching]);
 
@@ -366,6 +435,11 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     );
 
     function shiftView(direction: 1 | -1) {
+        if (view === "list") {
+            // Previous and Next move the list a month, from wherever it has been scrolled to (the list does the scrolling).
+            setListStep((step) => ({ direction, nonce: (step?.nonce ?? 0) + 1 }));
+            return;
+        }
         setViewDate((d) =>
             view === "month"
                 ? addMonths(d, direction)
@@ -379,9 +453,8 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     // the Previous/Next buttons and shortcuts do, and it is off while an event is being dragged or the editor is open. The views
     // never scroll sideways (their columns share the width), so there is no horizontal scroller for the gesture to fight with.
     // The view follows the finger and, once the swipe commits, slides out while the next period slides in (see `useSwipeSlide()`).
-    const isMobile = useIsMobile();
     const swipe = useSwipeSlide({
-        enabled: isMobile && !dragging && !modal,
+        enabled: isMobile && !dragging && !modal && view !== "list",
         onShift: (direction) => shiftView(SWIPE_PERIOD_SHIFT[direction]),
     });
 
@@ -393,7 +466,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     const arrivalEdge = useRef<WheelEdge | null>(null);
     const scrollerOf = (): HTMLElement | null => swipe.ref.current?.querySelector<HTMLElement>("[data-calendar-scroller]") ?? null;
     useWheelPaging(swipe.ref, {
-        enabled: !isMobile && !dragging && !modal,
+        enabled: !isMobile && !dragging && !modal && view !== "list",
         getScroller: () => (view === "month" ? null : scrollerOf()),
         onStep: (direction, edge) => {
             arrivalEdge.current = edge;
@@ -414,14 +487,18 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     useEffect(() => {
         const marked = Array.from(swipe.ref.current!.querySelectorAll<HTMLElement>("[data-occurrence-key]"));
         marked.find((el) => el.dataset.occurrenceKey === activeKey)?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    }, [activeKey, viewDate, view, loading]);
+    }, [activeKey, view === "list" ? null : viewDate, view, loading]);
 
+    // The List scrolls to `viewDate` when this changes (Today, a day picked in the mini calendar), even when it is the date it already has.
+    const [jumpNonce, setJumpNonce] = useState(0);
+    const [listStep, setListStep] = useState<ListStep | null>(null);
     function goToday() {
         setViewDate(startOfDay(new Date()));
+        setJumpNonce((n) => n + 1);
     }
 
     function handleSelectDay(date: Date) {
-        setView("day");
+        setView("day", false);
         setViewDate(startOfDay(date));
     }
 
@@ -442,9 +519,8 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     }
 
     function openEvent(occurrence: CalendarOccurrence) {
-        if (searching) {
-            setActiveKey(occurrence.occurrenceKey);
-        }
+        setSlide(undefined);
+        setActiveKey(occurrence.occurrenceKey);
         setModal({ occurrence });
     }
 
@@ -457,6 +533,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     useShortcut(SHORTCUTS.calendar.today, goToday);
     useShortcut(SHORTCUTS.calendar.previous, () => shiftView(-1));
     useShortcut(SHORTCUTS.calendar.next, () => shiftView(1));
+    useShortcut(SHORTCUTS.calendar.list, () => setView("list"));
     useShortcut(SHORTCUTS.calendar.day, () => setView("day"));
     useShortcut(SHORTCUTS.calendar.workWeek, () => setView("workWeek"));
     useShortcut(SHORTCUTS.calendar.week, () => setView("week"));
@@ -500,8 +577,10 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     }
 
     const title =
-        view === "month"
-            ? format(viewDate, "MMMM yyyy")
+        view === "list"
+            ? "Upcoming events"
+            : view === "month"
+              ? format(viewDate, "MMMM yyyy")
             : view === "week" || view === "workWeek"
               ? `${format(rangeStart, "MMM d")} – ${format(rangeEnd, "MMM d, yyyy")}`
               : format(viewDate, "EEEE, MMMM d, yyyy");
@@ -522,7 +601,13 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
 
     const sidebarContent = (
         <>
-            <MiniDatePicker selected={viewDate} onSelect={(date) => setViewDate(startOfDay(date))} />
+            <MiniDatePicker
+                selected={viewDate}
+                onSelect={(date) => {
+                    setViewDate(startOfDay(date));
+                    setJumpNonce((n) => n + 1);
+                }}
+            />
             <CalendarListSidebar
                 mailboxCalendars={mailboxCalendars}
                 checkedFolderUids={checkedFolderUids}
@@ -581,7 +666,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                         inputRef={searchInputRef}
                     />
                     <div className="flex flex-wrap gap-1">
-                        {VIEW_TYPES.map((v) => (
+                        {CALENDAR_VIEWS.map((v) => (
                             <ViewButton key={v} view={v} current={view} onSelect={setView} />
                         ))}
                     </div>
@@ -606,7 +691,16 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                                         onDragEnd={handleDragEnd}
                                         onDragCancel={() => setDragging(false)}
                                     >
-                                        {view === "month" ? (
+                                        {view === "list" ? (
+                                            <ListView
+                                                occurrences={occurrences}
+                                                folderColors={folderColors}
+                                                onSelectEvent={openEvent}
+                                                focusDate={viewDate}
+                                                jumpNonce={jumpNonce}
+                                                step={listStep}
+                                            />
+                                        ) : view === "month" ? (
                                             <MonthView
                                                 viewDate={viewDate}
                                                 occurrences={occurrences}
@@ -660,7 +754,18 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                         initialAllDay={modal.initialAllDay}
                         anchor={modal.anchor}
                         bookingHref={bookingHref}
-                        matchNav={searching && matches.length > 0 ? { onPrevious: () => stepMatch(-1), onNext: () => stepMatch(1) } : undefined}
+                        matchNav={
+                            modal.occurrence && sequence.length > 0
+                                ? {
+                                      onPrevious: () => stepMatch(-1),
+                                      onNext: () => stepMatch(1),
+                                      canPrevious: stepIndex(-1) >= 0,
+                                      canNext: stepIndex(1) >= 0,
+                                      noun: searching ? "match" : "event",
+                                      slide,
+                                  }
+                                : undefined
+                        }
                         onSaved={handleSaved}
                         onDeleted={handleDeleted}
                     />

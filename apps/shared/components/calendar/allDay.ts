@@ -112,6 +112,16 @@ export function occursOnDay(occurrence: CalendarOccurrence, day: Date): boolean 
     return start < dayEnd && end > dayStart;
 }
 
+/** Whether `occurrence` is on show on `today` (a local day) or later: it ends after that day begins, so one still running today counts and one that ended is not. */
+export function isUpcoming(occurrence: CalendarOccurrence, today: Date): boolean {
+    if (occurrence.allDay) {
+        const key = localDateKey(today);
+        return allDayDateKey(occurrence.endDate) > key || allDayDateKey(occurrence.startDate) >= key;
+    }
+    const dayStart = startOfDay(today);
+    return new Date(occurrence.endDate) > dayStart || new Date(occurrence.startDate) >= dayStart;
+}
+
 /** The local calendar day (midnight) `occurrence` starts on - the day a view shows to bring it into sight. */
 export function occurrenceDay(occurrence: CalendarOccurrence): Date {
     return occurrence.allDay ? parseISO(allDayDateKey(occurrence.startDate)) : startOfDay(new Date(occurrence.startDate));

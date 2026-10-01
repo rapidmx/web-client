@@ -30,6 +30,7 @@ import {
     getMessage,
     listFolders,
     listMailboxes,
+    deleteAttachment,
     uploadAttachment,
 } from "../../../../../lib/mail/mailApi.js";
 import { listMailSignatures } from "../../../../../lib/mail/mailSignaturesApi.js";
@@ -264,6 +265,8 @@ export default function ComposeWindow({
     const [html, setHtml] = useState(resume?.html ?? "");
     const [contentReady, setContentReady] = useState(!!resume);
     const [attachments, setAttachments] = useState<Attachment[]>(resume?.attachments ?? []);
+    // The attachment being removed from the draft, whose chip is held until the server has answered.
+    const [removingAttachmentUid, setRemovingAttachmentUid] = useState<string | null>(null);
     // The sender's own contact card is on the message (or on its way): "Attach my contact card" then has nothing more to do.
     const [ownCardAttached, setOwnCardAttached] = useState(false);
     const [attachError, setAttachError] = useState<string | null>(null);
@@ -736,7 +739,8 @@ export default function ComposeWindow({
         }
         uploadStarted();
         try {
-            const attachment = await uploadAttachment(draft.uid, file);
+            // An inline part with a Content-ID of its own: without one the server has nothing to point the message's `cid:` reference at.
+            const attachment = await uploadAttachment(draft.uid, file, { inline: true });
             setHasUploads(true);
             void refreshDraftVersion(draft.uid);
             return attachmentContentUrl(attachment.uid);
@@ -805,6 +809,24 @@ export default function ComposeWindow({
             uploadFinished();
         }
         return allAttached;
+    }
+
+    /** Removes one attachment from the draft, saying why when the server would not. A removed vCard can be attached again. */
+    async function handleRemoveAttachment(attachment: Attachment) {
+        setAttachError(null);
+        setRemovingAttachmentUid(attachment.uid);
+        try {
+            await deleteAttachment(attachment.uid, attachment.version, client);
+            setAttachments((prev) => prev.filter((other) => other.uid !== attachment.uid));
+            if (attachment.mimeType === "text/vcard") {
+                setOwnCardAttached(false);
+            }
+            void refreshDraftVersion(draft!.uid);
+        } catch (err) {
+            setAttachError(err instanceof ApiRequestError ? err.message : "Could not remove attachment.");
+        } finally {
+            setRemovingAttachmentUid(null);
+        }
     }
 
     /** Attaches the sender's own vCard ("Attach my contact card"), once: the button is off from the click on, and back on if the upload failed. */
@@ -1719,8 +1741,21 @@ export default function ComposeWindow({
                 {attachments.length > 0 && (
                     <ul className="flex flex-wrap gap-2 px-3 pb-2">
                         {attachments.map((attachment) => (
-                            <li key={attachment.uid} className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted">
+                            <li
+                                key={attachment.uid}
+                                className="inline-flex items-center gap-1 text-xs font-medium py-1 pl-2.5 pr-1 rounded-pill bg-surface-alt text-text-muted"
+                            >
                                 {attachment.filename}
+                                <button
+                                    type="button"
+                                    aria-label={`Remove ${attachment.filename}`}
+                                    title={`Remove ${attachment.filename}`}
+                                    disabled={removingAttachmentUid === attachment.uid}
+                                    onClick={() => void handleRemoveAttachment(attachment)}
+                                    className="inline-flex items-center justify-center rounded-pill p-0.5 hover:bg-border hover:text-text disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-primary"
+                                >
+                                    <HiOutlineXMark size={12} aria-hidden="true" />
+                                </button>
                             </li>
                         ))}
                     </ul>

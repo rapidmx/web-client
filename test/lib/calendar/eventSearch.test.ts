@@ -6,12 +6,14 @@ import { describe, expect, it } from "vitest";
 import { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
 import {
     SEARCH_MAX_OCCURRENCES_PER_SERIES,
+    allOccurrences,
     eventMatchesTerms,
     initialMatchIndex,
     occurrencesInRange,
     searchOccurrences,
     searchTerms,
     stepMatchIndex,
+    stepSequenceIndex,
 } from "../../../lib/calendar/eventSearch.js";
 import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 
@@ -80,6 +82,22 @@ describe("eventMatchesTerms", () => {
         expect(eventMatchesTerms(event({ title: "Busy", redacted: true }), ["busy"])).toBe(false);
         const bare = { ...event({ description: null }), organizer: undefined, attendees: undefined } as unknown as CalendarEvent;
         expect(eventMatchesTerms(bare, ["standup"])).toBe(true);
+    });
+});
+
+describe("allOccurrences", () => {
+    it("lists every event, redacted ones too, with a series bounded as a search bounds it", () => {
+        const old = event({ uid: "old", startDate: "2019-01-01T10:00:00.000Z", endDate: "2019-01-01T11:00:00.000Z", redacted: true });
+        const daily = event({
+            uid: "d",
+            startDate: "2026-06-01T15:00:00.000Z",
+            endDate: "2026-06-01T15:30:00.000Z",
+            recurrenceRule: { freq: "daily", interval: 1, exceptions: [] },
+        });
+        const found = allOccurrences([daily, old], NOW);
+        expect(found[0].occurrenceKey).toBe("old");
+        expect(found).toHaveLength(1 + SEARCH_MAX_OCCURRENCES_PER_SERIES);
+        expect(allOccurrences([])).toEqual([]);
     });
 });
 
@@ -176,5 +194,43 @@ describe("stepMatchIndex", () => {
         expect(stepMatchIndex(-1, 3, 1)).toBe(0);
         expect(stepMatchIndex(-1, 3, -1)).toBe(2);
         expect(stepMatchIndex(-1, 0, 1)).toBe(-1);
+    });
+});
+
+describe("stepSequenceIndex", () => {
+    const seq = [
+        occurrence("2026-06-01T10:00:00.000Z", "2026-06-01T11:00:00.000Z", "A"),
+        occurrence("2026-06-02T10:00:00.000Z", "2026-06-02T11:00:00.000Z", "B"),
+        occurrence("2026-06-04T10:00:00.000Z", "2026-06-04T11:00:00.000Z", "C"),
+    ];
+    const key = (i: number) => seq[i].occurrenceKey;
+
+    it("has nothing to step to in an empty sequence", () => {
+        expect(stepSequenceIndex([], null, undefined, 1, true)).toBe(-1);
+    });
+
+    it("steps from the current one, wrapping round only when asked to", () => {
+        expect(stepSequenceIndex(seq, key(1), undefined, 1, false)).toBe(2);
+        expect(stepSequenceIndex(seq, key(1), undefined, -1, false)).toBe(0);
+        expect(stepSequenceIndex(seq, key(2), undefined, 1, false)).toBe(-1);
+        expect(stepSequenceIndex(seq, key(0), undefined, -1, false)).toBe(-1);
+        expect(stepSequenceIndex(seq, key(2), undefined, 1, true)).toBe(0);
+        expect(stepSequenceIndex(seq, key(0), undefined, -1, true)).toBe(2);
+    });
+
+    it("starts from the first or last when there is no current one and no start to go by", () => {
+        expect(stepSequenceIndex(seq, null, undefined, 1, true)).toBe(0);
+        expect(stepSequenceIndex(seq, "gone", undefined, -1, false)).toBe(2);
+    });
+
+    it("steps from where a missing one started: the first after it, the last before it", () => {
+        const between = new Date("2026-06-03T00:00:00.000Z");
+        expect(stepSequenceIndex(seq, "gone", between, 1, false)).toBe(2);
+        expect(stepSequenceIndex(seq, "gone", between, -1, false)).toBe(1);
+        // None that way: nothing, or the other end of a sequence that wraps.
+        expect(stepSequenceIndex(seq, "gone", new Date("2026-07-01T00:00:00.000Z"), 1, false)).toBe(-1);
+        expect(stepSequenceIndex(seq, "gone", new Date("2026-07-01T00:00:00.000Z"), 1, true)).toBe(0);
+        expect(stepSequenceIndex(seq, "gone", new Date("2026-05-01T00:00:00.000Z"), -1, false)).toBe(-1);
+        expect(stepSequenceIndex(seq, "gone", new Date("2026-05-01T00:00:00.000Z"), -1, true)).toBe(2);
     });
 });

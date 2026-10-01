@@ -7,6 +7,7 @@ import {
     addDaysToKey,
     allDayDateKey,
     allDayInstant,
+    isUpcoming,
     localDateKey,
     occursOnDay,
     recurrenceUntilDateKey,
@@ -154,5 +155,26 @@ describe("allDay helpers", () => {
         expect(occursOnDay(instant, new Date(2026, 5, 9))).toBe(false);
         expect(startsOnDay(overnight, new Date(2026, 5, 10))).toBe(true);
         expect(startsOnDay(overnight, new Date(2026, 5, 11))).toBe(false);
+    });
+});
+
+describe("isUpcoming", () => {
+    const occurrence = (overrides: Partial<CalendarOccurrence>) => ({ allDay: false, ...overrides }) as CalendarOccurrence;
+    const today = new Date(2026, 5, 15, 12);
+
+    it("counts a timed event that ends after today begins, or starts then, and not one that ended before", () => {
+        expect(isUpcoming(occurrence({ startDate: new Date(2026, 5, 14, 22).toISOString(), endDate: new Date(2026, 5, 15, 1).toISOString() }), today)).toBe(true);
+        expect(isUpcoming(occurrence({ startDate: new Date(2026, 5, 15, 0).toISOString(), endDate: new Date(2026, 5, 15, 0).toISOString() }), today)).toBe(true);
+        expect(isUpcoming(occurrence({ startDate: new Date(2026, 5, 14, 22).toISOString(), endDate: new Date(2026, 5, 15, 0).toISOString() }), today)).toBe(false);
+        expect(isUpcoming(occurrence({ startDate: new Date(2026, 5, 10, 9).toISOString(), endDate: new Date(2026, 5, 10, 10).toISOString() }), today)).toBe(false);
+    });
+
+    it("counts an all-day event that covers today or later, and not one that ended yesterday", () => {
+        const allDay = (start: string, end: string) => occurrence({ allDay: true, startDate: `${start}T00:00:00.000Z`, endDate: `${end}T00:00:00.000Z` });
+        expect(isUpcoming(allDay("2026-06-15", "2026-06-16"), today)).toBe(true);
+        expect(isUpcoming(allDay("2026-06-14", "2026-06-16"), today)).toBe(true);
+        expect(isUpcoming(allDay("2026-06-20", "2026-06-21"), today)).toBe(true);
+        expect(isUpcoming(allDay("2026-06-15", "2026-06-15"), today)).toBe(true);
+        expect(isUpcoming(allDay("2026-06-14", "2026-06-15"), today)).toBe(false);
     });
 });

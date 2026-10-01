@@ -160,6 +160,27 @@ describe("prepareBodyHtml", () => {
         expect(container.innerHTML).not.toContain("tracker.example");
     });
 
+    it("asks for the picture of an image the server left with only its alt text, and counts it as inline when one is found", () => {
+        const resolveCid = vi.fn((cid: string | undefined, alt?: string) => (cid === undefined && alt === "shot.png" ? "https://mail.example/api/mail/attachments/a2/content" : undefined));
+        const { prepared, container } = prepare('<img id="named" alt="shot.png"><img id="other" alt="other.png"><img id="blank" src="  " alt="shot.png"><img id="bare">', { resolveCid });
+        const src = (id: string) => container.querySelector(`#${id}`)!.getAttribute("src");
+        expect(src("named")).toBe("https://mail.example/api/mail/attachments/a2/content");
+        expect(src("other")).toBeNull();
+        expect(src("blank")).toBe("https://mail.example/api/mail/attachments/a2/content");
+        expect(src("bare")).toBeNull();
+        expect(resolveCid).toHaveBeenCalledWith(undefined, "shot.png");
+        expect(resolveCid).toHaveBeenCalledWith(undefined, undefined);
+        expect(prepared.inlineImages).toBe(2);
+    });
+
+    it("hands the resolver the alt text of a cid: image too; a remote image is only ever replaced by an attachment of the message, never loaded", () => {
+        const resolveCid = vi.fn(() => undefined);
+        prepare('<img src="cid:a@x" alt="A"><img src="https://tracker.example/p.gif" alt="A">', { resolveCid });
+        expect(resolveCid).toHaveBeenCalledTimes(2);
+        expect(resolveCid).toHaveBeenCalledWith("a@x", "A");
+        expect(resolveCid).toHaveBeenCalledWith(undefined, "A");
+    });
+
     it("treats every cid: image as unresolved when there is no resolver", () => {
         const { prepared, container } = prepare('<img src="cid:a@x">');
         expect(container.querySelector("img")!.getAttribute("src")).toBeNull();

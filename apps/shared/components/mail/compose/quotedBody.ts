@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { apiUrl } from "../../../../../lib/util/api.js";
-import { Message, Recipient, getMessageRawContent } from "../../../../../lib/mail/mailApi.js";
+import { Message, Recipient, attachmentContentUrl, getMessageRawContent, listAttachments } from "../../../../../lib/mail/mailApi.js";
 import type { QuotedBody } from "../../../../../lib/mail/compose/composeQuoting.js";
+import { MAX_QUOTED_IMAGE_BYTES, QuotedImageReference, embedQuotedImages } from "../../../../../lib/mail/compose/quotedImages.js";
+import { EMBEDDED_IMAGE_TYPES, findInlineAttachment, toDataUri } from "../../../../../lib/mail/inlineImages.js";
 import type { MessageSecurityResult } from "../../../../../lib/crypto/messageSecurity.js";
-import { decodeHeaderText, extractDisplayBody, parseMimeEntity } from "../../../../../lib/crypto/mime.js";
+import { MimeAttachment, decodeHeaderText, extractDisplayBody, parseMimeEntity } from "../../../../../lib/crypto/mime.js";
 import { parseRecipientList } from "./recipients.js";
 
 /** What a Reply/Reply All/Forward needs from the message being answered, beyond what its `Message` record holds. */
@@ -92,6 +94,38 @@ function headerRecipients(value: string | undefined, type: "to" | "cc"): Recipie
         .map((recipient) => ({ address: recipient.address, ...(recipient.displayName ? { displayName: recipient.displayName } : {}), type }));
 }
 
+/** The `data:` URI of the picture a quoted image of `message` stands for - one of the message's own attachments, fetched with the session -
+ * or `undefined` when there is none, it is not a raster image, it is too large or it could not be had. Never rejects. */
+function serverImageResolver(message: Message): (reference: QuotedImageReference) => Promise<string | undefined> {
+    let attachments: Promise<Awaited<ReturnType<typeof listAttachments>>> | undefined;
+    return async (reference) => {
+        try {
+            attachments ??= listAttachments(message.folderUid, message.uid);
+            const attachment = findInlineAttachment(await attachments, reference);
+            const type = attachment?.mimeType.split(";")[0].trim().toLowerCase();
+            if (!attachment || !type || !EMBEDDED_IMAGE_TYPES.test(type) || attachment.sizeBytes > MAX_QUOTED_IMAGE_BYTES) {
+                return undefined;
+            }
+            const res = await fetch(attachmentContentUrl(attachment.uid), { credentials: "include" });
+            const bytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : undefined;
+            return bytes && bytes.length <= MAX_QUOTED_IMAGE_BYTES ? toDataUri(type, bytes) : undefined;
+        } catch {
+            return undefined;
+        }
+    };
+}
+
+/** As `serverImageResolver()`, for the parts of a message this browser decrypted or verified (`MessageSecurityResult.attachments`). */
+function partImageResolver(parts: MimeAttachment[]): (reference: QuotedImageReference) => Promise<string | undefined> {
+    const candidates = parts.map((part, index) => ({ uid: String(index), filename: part.filename ?? "", mimeType: part.contentType, contentId: part.contentId }));
+    return async (reference) => {
+        const found = findInlineAttachment(candidates, reference);
+        const part = found ? parts[Number(found.uid)] : undefined;
+        const bytes = part && EMBEDDED_IMAGE_TYPES.test(part.contentType) ? part.decode() : undefined;
+        return part && bytes && bytes.length <= MAX_QUOTED_IMAGE_BYTES ? toDataUri(part.contentType, bytes) : undefined;
+    };
+}
+
 /**
  * Loads what a Reply/Reply All/Forward needs from `message`: the full body to quote - the same content
  * `MessageDetailPane` shows, never the truncated `bodyPreview` unless nothing else can be had - and, with
@@ -112,6 +146,9 @@ function headerRecipients(value: string | undefined, type: "to" | "cc"): Recipie
  * `To`/`Cc` headers - restapi records only the envelope recipient of a delivered message (`ScanQueueJob`), so
  * `message.recipients` alone would reduce every Reply All to a plain reply. Unprotected headers are the sender's own
  * claim, exactly as in every other mail client's Reply All.
+ *
+ * The original's embedded images (`cid:`) are replaced by `data:` URIs of the pictures themselves - fetched from the message's
+ * attachments, or taken from the decrypted entity - so the quote shows them and the new message can carry them (see `quotedImages.ts`).
  *
  * The quote builders sanitize whatever HTML this returns (`sanitizeQuotedHtml()`), whichever source it came from.
  */
@@ -156,6 +193,12 @@ export async function loadOriginalMessage(
     } catch {
         // Whatever was loaded before the failure stands: the quote falls back to the preview, Reply All to the
         // message's own recipients.
+    }
+    if (result.body.html !== undefined) {
+        const resolver = recovered ? partImageResolver(security?.attachments ?? []) : serverImageResolver(message);
+        const html = result.body.html;
+        // Bounded like the body's own request: a picture that will not arrive is left out of the quote, not waited for.
+        result.body = { html: await withTimeout(embedQuotedImages(html, resolver), QUOTE_FETCH_TIMEOUT_MS).catch(() => html) };
     }
     return result;
 }

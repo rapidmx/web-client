@@ -1084,7 +1084,7 @@ describe("ComposeWindow", () => {
     });
 
     it("uploads an image via onUploadImage and resolves to the attachment's content URL.", async () => {
-        mockCompose((url, init) =>
+        const fetchMock = mockCompose((url, init) =>
             url.startsWith("/api/mail/attachments/upload") && (init?.method ?? "GET") === "POST"
                 ? jsonResponse(200, {
                       uid: "a1",
@@ -1108,6 +1108,10 @@ describe("ComposeWindow", () => {
         await user.click(screen.getByText("fake-upload-image"));
 
         await waitFor(() => expect(screen.getByTestId("upload-result")).toHaveTextContent("/api/mail/attachments/a1/content"));
+        // As an inline part with a Content-ID of its own, so the sent message's cid: reference has a part to name.
+        const upload = new URL(String(fetchMock.mock.calls.find(([url]) => String(url).startsWith("/api/mail/attachments/upload"))![0]), "http://localhost");
+        expect(upload.searchParams.get("isInline")).toBe("true");
+        expect(upload.searchParams.get("contentId")).toMatch(/@inline[.]rapidmx$/);
     });
 
     it("resolves to null and shows an error when the image upload fails.", async () => {

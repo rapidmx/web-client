@@ -219,6 +219,8 @@ export interface LabelMenuButtonProps extends Omit<LabelSectionsOptions, "state"
     disabled?: boolean;
     title?: string;
     className?: string;
+    /** The trigger is just its icon (`className` then styles all of it) - `aria-label` and `title` name it. */
+    iconOnly?: boolean;
     /** With `onLabelCreated`, adds a "New label" row that opens this component's own dialog. */
     mailboxUid?: string;
     onLabelCreated?: (label: Label) => void;
@@ -240,6 +242,7 @@ export default function LabelMenuButton({
     disabled,
     title,
     className,
+    iconOnly,
     mailboxUid,
     onLabelCreated,
 }: LabelMenuButtonProps) {
@@ -255,6 +258,7 @@ export default function LabelMenuButton({
             disabled={disabled}
             title={title}
             className={className}
+            iconOnly={iconOnly}
             onOpenChange={setOpen}
             sections={labelSections({
                 labels,

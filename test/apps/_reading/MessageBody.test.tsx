@@ -314,6 +314,28 @@ describe("MessageBody frame", () => {
         expect(srcdoc.match(/ src=/g)).toHaveLength(1);
     });
 
+    it("shows an external client's inline image whose Content-ID differs from its cid: in brackets, percent-encoding and case", () => {
+        const attachments = [{ uid: "a1", contentId: "<Image001.PNG@01DC>", filename: "image001.png", mimeType: "image/png", sizeBytes: 10, isInline: true }] as never;
+        render(<MessageBody messageUid="m1" messageVersion={1} title="Hello" attachments={attachments} content={{ kind: "html", html: '<img src="cid:image001.png%4001dc">' }} />);
+        expect(screen.getByTitle("Hello").getAttribute("srcdoc")).toContain(`src="${window.location.origin}/api/mail/attachments/a1/content"`);
+    });
+
+    it("shows the picture of a message whose image lost its source - attached without a Content-ID by an older composer - from the attachment of that name", () => {
+        const attachments = [{ uid: "a1", filename: "Screenshot 2025-12-02 223133.png", mimeType: "image/png", sizeBytes: 45_000, isInline: false }] as never;
+        render(
+            <MessageBody
+                messageUid="m1"
+                messageVersion={1}
+                title="Hello"
+                attachments={attachments}
+                content={{ kind: "html", html: '<p>Look</p><img alt="Screenshot 2025-12-02 223133.png">' }}
+            />,
+        );
+        const srcdoc = screen.getByTitle("Hello").getAttribute("srcdoc")!;
+        expect(srcdoc).toContain(`src="${window.location.origin}/api/mail/attachments/a1/content"`);
+        expect(srcdoc).toContain(`img-src data: ${window.location.origin}/api/mail/attachments/;`);
+    });
+
     it("resolves an inline image of a decrypted message from the part inside it, as an embedded image", () => {
         const parts = [{ contentType: "image/png", disposition: "inline", contentId: "logo@x", decode: () => new Uint8Array([137, 80, 78, 71]) }] as never;
         render(<MessageBody messageUid="m1" messageVersion={1} title="Hello" inlineParts={parts} content={{ kind: "html", html: '<img src="cid:logo@x">' }} />);

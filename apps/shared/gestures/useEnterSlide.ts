@@ -13,7 +13,7 @@ const ENTER_START_OPACITY = 0.35;
 const ENTER_SETTLE_MS = 20;
 
 /** Whether the user asked their device for less motion. */
-function prefersReducedMotion(): boolean {
+export function prefersReducedMotion(): boolean {
     return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 

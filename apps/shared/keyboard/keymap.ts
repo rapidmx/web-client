@@ -95,6 +95,7 @@ export const SHORTCUTS = {
         workWeek: def({ id: "calendar.workWeek", keys: ["ctrl+alt+2"], label: "Work week view", scope: "calendar" }),
         week: def({ id: "calendar.week", keys: ["ctrl+alt+3"], label: "Week view", scope: "calendar" }),
         month: def({ id: "calendar.month", keys: ["ctrl+alt+4"], label: "Month view", scope: "calendar" }),
+        list: def({ id: "calendar.list", keys: ["ctrl+alt+5"], label: "List view", scope: "calendar" }),
         search: def({ id: "calendar.search", keys: ["/", "mod+e"], label: "Search events", scope: "calendar" }),
     },
     contacts: {

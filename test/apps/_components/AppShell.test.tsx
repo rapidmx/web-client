@@ -156,26 +156,34 @@ describe("AppShell", () => {
             adminNav: [{ id: "admin-thing", href: "/admin/thing", label: "Admin Thing" }],
         };
 
-        it("appends them after the core apps in the rail and the tab bar, skipping ids a core app already uses", () => {
+        it("appends them after the core apps in the rail, and behind More in the tab bar, skipping ids a core app already uses", async () => {
+            const user = userEvent.setup();
             render(
                 <AppShell active="mail" userUid="u1" pluginNav={pluginNav}>
                     content
                 </AppShell>,
             );
 
-            for (const name of ["Apps", "Mobile navigation"]) {
-                const nav = within(screen.getByRole("navigation", { name }));
-                expect(nav.getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual([
-                    "Mail",
-                    "Calendar",
-                    "Contacts",
-                    "Tasks",
-                    "Notes",
-                    "Board",
-                ]);
-                expect(nav.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
-                expect(nav.getByRole("link", { name: "Notes" }).querySelector("svg")).not.toBeNull();
-            }
+            const rail = within(screen.getByRole("navigation", { name: "Apps" }));
+            expect(rail.getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual([
+                "Mail",
+                "Calendar",
+                "Contacts",
+                "Tasks",
+                "Notes",
+                "Board",
+            ]);
+            expect(rail.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+            expect(rail.getByRole("link", { name: "Notes" }).querySelector("svg")).not.toBeNull();
+
+            // Six apps do not fit a phone's bar: four, then a More button holding the rest.
+            const bar = within(screen.getByRole("navigation", { name: "Mobile navigation" }));
+            expect(bar.getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(["Mail", "Calendar", "Contacts", "Tasks"]);
+            await user.click(bar.getByRole("button", { name: "More" }));
+            const menu = within(screen.getByRole("menu", { name: "More" }));
+            expect(menu.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Notes", "Board"]);
+            expect(menu.getByRole("menuitem", { name: "Notes" })).toHaveAttribute("href", "/notes");
+            expect(menu.getByRole("menuitem", { name: "Notes" }).querySelector("svg")).not.toBeNull();
             expect(screen.queryByRole("link", { name: "Plugin Mail" })).not.toBeInTheDocument();
             expect(screen.queryByRole("link", { name: "Plugin Settings" })).not.toBeInTheDocument();
             expect(screen.queryByRole("link", { name: "Other Section" })).not.toBeInTheDocument();

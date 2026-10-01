@@ -67,11 +67,21 @@ function byStart(a: CalendarOccurrence, b: CalendarOccurrence): number {
  */
 export function searchOccurrences(events: CalendarEvent[], query: string, now: Date = new Date()): CalendarOccurrence[] {
     const terms = searchTerms(query);
+    return occurrencesOf(events, (event) => eventMatchesTerms(event, terms), now);
+}
+
+/** Every occurrence of every event, in chronological order, bounded the same way a search is - the calendar's List view shows these. */
+export function allOccurrences(events: CalendarEvent[], now: Date = new Date()): CalendarOccurrence[] {
+    return occurrencesOf(events, () => true, now);
+}
+
+/** The chronological occurrences of the `events` that `include` accepts (see `searchOccurrences()` for how a series is bounded). */
+function occurrencesOf(events: CalendarEvent[], include: (event: CalendarEvent) => boolean, now: Date): CalendarOccurrence[] {
     const from = addYears(now, -SEARCH_WINDOW_YEARS);
     const to = addYears(now, SEARCH_WINDOW_YEARS);
     const found: CalendarOccurrence[] = [];
     for (const event of events) {
-        if (!eventMatchesTerms(event, terms)) {
+        if (!include(event)) {
             continue;
         }
         if (!event.recurrenceRule) {
@@ -107,6 +117,47 @@ export function initialMatchIndex(matches: CalendarOccurrence[], rangeStart: Dat
     }
     const after = matches.findIndex((o) => new Date(o.endDate) > from);
     return after >= 0 ? after : matches.length - 1;
+}
+
+/**
+ * The index of the occurrence one step from the current one in `sequence` (chronological), or `-1` for none. The current occurrence is found by
+ * `currentKey`; when it is not in the sequence (it was deleted or changed under an open card) the step is from where it started
+ * (`currentStart`): the first after it or the last before it, and from the first or last when that is not known either. Past either end it
+ * wraps round when `wrap`, else there is nothing there (`-1`).
+ */
+export function stepSequenceIndex(
+    sequence: CalendarOccurrence[],
+    currentKey: string | null,
+    currentStart: Date | undefined,
+    direction: 1 | -1,
+    wrap: boolean,
+): number {
+    const count = sequence.length;
+    if (count === 0) {
+        return -1;
+    }
+    const edge = direction === 1 ? 0 : count - 1;
+    const index = sequence.findIndex((o) => o.occurrenceKey === currentKey);
+    if (index >= 0) {
+        const target = index + direction;
+        if (target >= 0 && target < count) {
+            return target;
+        }
+        return wrap ? edge : -1;
+    }
+    if (!currentStart) {
+        return edge;
+    }
+    const from = currentStart.getTime();
+    let target = -1;
+    if (direction === 1) {
+        target = sequence.findIndex((o) => new Date(o.startDate).getTime() > from);
+    } else {
+        for (let i = count - 1; i >= 0 && target < 0; i--) {
+            target = new Date(sequence[i].startDate).getTime() < from ? i : -1;
+        }
+    }
+    return target >= 0 ? target : wrap ? edge : -1;
 }
 
 /** The index one step from `index` (`-1`: none is current) in `direction` through `count` matches, wrapping round at either end. `-1` with none. */

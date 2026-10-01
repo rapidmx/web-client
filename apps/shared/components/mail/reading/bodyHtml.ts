@@ -39,8 +39,9 @@ export interface PreparedBody {
 
 export interface PrepareOptions {
     /** The URL an inline image's `cid:` reference stands for, or `undefined` when there is no such part. Only `data:` URIs of an
-     * image type and `http(s)` URLs are accepted; anything else is treated as unresolved. */
-    resolveCid?: (contentId: string) => string | undefined;
+     * image type and `http(s)` URLs are accepted; anything else is treated as unresolved. An image with no source at all (the
+     * server removes one it could not point at a part) is asked for with no `contentId` and its `alt`. */
+    resolveCid?: (contentId: string | undefined, alt?: string) => string | undefined;
 }
 
 /** What a stylesheet or a `style` attribute may not contain, whatever the sanitizers before it did. */
@@ -222,10 +223,14 @@ function hardenLink(element: Element): void {
     }
 }
 
-function hardenImage(element: Element, options: PrepareOptions): void {
+/** Whether the image ends up pointing at a part of the message (so the frame's CSP must allow this server's attachment URLs). */
+function hardenImage(element: Element, options: PrepareOptions): boolean {
     const src = (element.getAttribute("src") ?? "").trim();
-    const inline = /^cid:/i.test(src);
-    const target = inline ? options.resolveCid?.(src.slice(4).replace(/^<|>$/g, "")) : src;
+    const cid = /^cid:/i.test(src);
+    // A picture the server could not tie to a part keeps its `alt` and loses its `src`: the message's own attachment of that name, if any.
+    const inline = cid || src === "";
+    const alt = element.getAttribute("alt") ?? undefined;
+    const target = cid ? options.resolveCid?.(src.slice(4).replace(/^<|>$/g, ""), alt) : inline ? options.resolveCid?.(undefined, alt) : src;
     // Remote images are never fetched (they would tell the sender the message was read); an inline image resolves to an embedded
     // image or to this server's own attachment URL, and one that doesn't resolve has nothing to show.
     if (target !== undefined && (IMAGE_DATA_URI.test(target) || (inline && /^https?:\/\//i.test(target)))) {
@@ -233,6 +238,7 @@ function hardenImage(element: Element, options: PrepareOptions): void {
     } else {
         element.removeAttribute("src");
     }
+    return cid || (inline && element.hasAttribute("src"));
 }
 
 /**
@@ -265,10 +271,9 @@ function harden(body: HTMLElement, options: PrepareOptions): { elements: number;
         } else if (tag === "a" || tag === "area") {
             hardenLink(element);
         } else if (tag === "img") {
-            if (/^cid:/i.test(element.getAttribute("src") ?? "")) {
+            if (hardenImage(element, options)) {
                 inlineImages++;
             }
-            hardenImage(element, options);
         }
     }
     return { elements: all.length, inlineImages };

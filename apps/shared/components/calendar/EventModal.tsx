@@ -12,6 +12,7 @@ import EventDetails from "./EventDetails.js";
 import EventEditor from "./EventEditor.js";
 import EventMatchNav from "./EventMatchNav.js";
 import EventShell, { EventAnchor, EventShellVariant } from "./EventShell.js";
+import SlideIn, { SlideFrom } from "./SlideIn.js";
 import { QuickTab } from "./QuickCreateTabs.js";
 
 export { VIDEO_LOCATION_PLACEHOLDER } from "./EventEditor.js";
@@ -52,8 +53,18 @@ export interface EventModalProps {
     /** Where the booking plugin's Settings pages are (`/settings/booking-types`) when it is running: a new event then has an Appointment
      * schedule tab, and its More options opens the plugin's own new-link page. Without it there are only the Event and Task tabs. */
     bookingHref?: string;
-    /** While the calendar's search is running: the existing event's card gets Previous / Next match buttons either side, which call these. */
-    matchNav?: { onPrevious: () => void; onNext: () => void };
+    /** The existing event's card gets Previous / Next buttons either side, which call these: the previous or next match while the calendar's
+     * search is running, the previous or next event otherwise (`canPrevious` / `canNext` false: none that way, so the button is disabled). */
+    matchNav?: {
+        onPrevious: () => void;
+        onNext: () => void;
+        canPrevious?: boolean;
+        canNext?: boolean;
+        noun?: "match" | "event";
+        /** The step that moved the card on, if one did: the card slides in from the side it came from - left for a Previous, right for a Next - when
+         * `occurrenceKey` is the event now showing (a card that changed any other way does not slide). */
+        slide?: { from: SlideFrom; occurrenceKey: string };
+    };
     onSaved: () => void;
     onDeleted: () => void;
 }
@@ -192,21 +203,25 @@ export default function EventModal({
                     }
                 />
             ) : (
-                <EventDetails
+                <SlideIn
                     key={occurrence.occurrenceKey}
-                    occurrence={occurrence}
-                    isInvited={isInvited}
-                    myResponse={canRespond ? myAttendee.responseStatus : undefined}
-                    isOwnAddress={isOwnAddress}
-                    calendarName={calendars?.find((cal) => cal.uid === occurrence.folderUid)?.name}
-                    calendarColor={folderColors?.[occurrence.folderUid]}
-                    onClose={onClose}
-                    onModify={() => setEditing(true)}
-                    onSaved={onSaved}
-                    onDeleted={onDeleted}
-                />
+                    from={matchNav?.slide?.occurrenceKey === occurrence.occurrenceKey ? matchNav.slide.from : undefined}
+                >
+                    <EventDetails
+                        occurrence={occurrence}
+                        isInvited={isInvited}
+                        myResponse={canRespond ? myAttendee.responseStatus : undefined}
+                        isOwnAddress={isOwnAddress}
+                        calendarName={calendars?.find((cal) => cal.uid === occurrence.folderUid)?.name}
+                        calendarColor={folderColors?.[occurrence.folderUid]}
+                        onClose={onClose}
+                        onModify={() => setEditing(true)}
+                        onSaved={onSaved}
+                        onDeleted={onDeleted}
+                    />
+                </SlideIn>
             )}
-            {!isForm && matchNav && <EventMatchNav onPrevious={matchNav.onPrevious} onNext={matchNav.onNext} />}
+            {!isForm && matchNav && <EventMatchNav onPrevious={matchNav.onPrevious} onNext={matchNav.onNext} canPrevious={matchNav.canPrevious} canNext={matchNav.canNext} noun={matchNav.noun} />}
         </EventShell>
     );
 }

@@ -22,6 +22,7 @@ import ComposeProvider from "../mail/compose/ComposeContext.js";
 import ContactCardProvider from "../contacts/ContactCardProvider.js";
 import { flushComposeDrafts, markSigningOut } from "../mail/compose/composeFlushRegistry.js";
 import BottomTabBar, { NavItem } from "../../../../lib/components/navigation/BottomTabBar.js";
+import NavBadge, { navItemLabel } from "../../../../lib/components/navigation/NavBadge.js";
 import { FrameBrandingFooter, FrameBrandingHeader, useBrandingHtml } from "./BrandingChrome.js";
 import RailIcon from "./RailIcon.js";
 import AppearanceProvider from "../../appearance/AppearanceProvider.js";
@@ -323,7 +324,10 @@ export function AppChrome({
     }, [fetchedBranding?.title, inFrame]);
     // The router sets the document's title to the page's own whenever the page changes, which drops the unread count this puts in front
     // of it, so a new pathname is what puts the count back. (A folder change is shallow and keeps the title.)
-    useUnreadTitle(inboxUnreadTotal(mail.mailboxFolders, mail.folderCounts.counts), { enabled: inFrame, resetKey: pathname });
+    // The same count is the chip on the Mail icon (rail and bottom tab bar). It is zero - no chip - until the folders are listed, with no
+    // mailbox, and wherever the connection is off, so nothing shows when mail isn't available.
+    const unreadTotal = inboxUnreadTotal(mail.mailboxFolders, mail.folderCounts.counts);
+    useUnreadTitle(unreadTotal, { enabled: inFrame, resetKey: pathname });
 
     // Plugin rail entries that depend on the user (the meet plugin's personal room) are asked for once they are signed in.
     const resolvedRail = useResolvedRailItems(pluginNav?.appRail, userUid);
@@ -332,7 +336,7 @@ export function AppChrome({
         return <div className="min-h-screen" />;
     }
 
-    const apps = appRailItems(pluginNav, resolvedRail);
+    const apps = appRailItems(pluginNav, resolvedRail).map((app) => (app.id === "mail" ? { ...app, badge: unreadTotal } : app));
     // The header title: "settings" has no rail item, everything else is labelled by its own rail item.
     const activeLabel = active === "settings" ? "Settings" : apps.find((app) => app.id === active)?.label;
     // A custom header (`Branding.headerHtml`) replaces the app's own title bar and the icon at the top of the rail: it is the top of the app, and the
@@ -414,13 +418,13 @@ export function AppChrome({
                         {!customHeader && (
                             <RailIcon src={iconSrc} />
                         )}
-                        {apps.map(({ id, href, label, icon: Icon }) => (
+                        {apps.map(({ id, href, label, icon: Icon, badge }) => (
                             <a
                                 key={id}
                                 href={href}
-                                aria-label={label}
+                                aria-label={navItemLabel(label, badge)}
                                 aria-current={id === active ? "page" : undefined}
-                                title={label}
+                                title={navItemLabel(label, badge)}
                                 className={[
                                     "w-10 h-10 flex items-center justify-center rounded-sm",
                                     id === active
@@ -428,7 +432,10 @@ export function AppChrome({
                                         : "text-text-muted hover:bg-surface-alt hover:text-text",
                                 ].join(" ")}
                             >
-                                <Icon size={20} aria-hidden="true" />
+                                <span className="relative inline-flex">
+                                    <Icon size={20} aria-hidden="true" />
+                                    <NavBadge count={badge} />
+                                </span>
                             </a>
                         ))}
                     </nav>

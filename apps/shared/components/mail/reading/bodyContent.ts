@@ -5,6 +5,7 @@
 import { ApiRequestError, apiUrl } from "../../../../../lib/util/api.js";
 import { Attachment, attachmentContentUrl } from "../../../../../lib/mail/mailApi.js";
 import type { MimeAttachment } from "../../../../../lib/crypto/mime.js";
+import { bytesToBase64, findInlineAttachment, toDataUri } from "../../../../../lib/mail/inlineImages.js";
 
 /** What a message's body is: server-sanitized HTML, or plain text (a message with no HTML part, or the server's plain-text fallback). */
 export type BodyContent = { kind: "html"; html: string } | { kind: "text"; text: string };
@@ -61,14 +62,6 @@ export async function fetchBodyContent(uid: string, version: number, signal?: Ab
 export const MAX_INLINE_IMAGE_BYTES = 5_000_000;
 const INLINE_IMAGE_TYPES = /^image\/(?:png|jpe?g|gif|webp|avif|bmp|svg\+xml)$/;
 
-function base64(bytes: Uint8Array): string {
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    }
-    return btoa(binary);
-}
-
 /** A server attachment record as it may really arrive: the model carries the part's `Content-ID`, though the client type doesn't list it. */
 export type InlineCapable = Attachment & { contentId?: string };
 
@@ -86,15 +79,24 @@ export function attachmentSource(): string {
  * How an inline `cid:` image is resolved to something the frame may load: for a message shown from the server, the attachment whose
  * `Content-ID` matches (its URL on this server); for a decrypted or verified one, the part inside the signed/encrypted entity, embedded
  * as a `data:` URI (raster and SVG images up to `MAX_INLINE_IMAGE_BYTES`). Anything else has no source, so the image is not shown.
+ *
+ * The `Content-ID` is matched without regard to angle brackets, percent-encoding or case. An image that names no part (`contentId`
+ * undefined: the server left it with only its `alt`, as it does for a picture a sender attached without a `Content-ID`) is matched to the
+ * one image attachment of the same file name, when `alt` says it.
  */
-export function makeCidResolver(attachments: InlineCapable[] | undefined, parts: MimeAttachment[] | undefined): (contentId: string) => string | undefined {
-    return (contentId) => {
+export function makeCidResolver(
+    attachments: InlineCapable[] | undefined,
+    parts: MimeAttachment[] | undefined,
+): (contentId: string | undefined, alt?: string) => string | undefined {
+    return (contentId, alt) => {
         if (parts) {
-            const part = parts.find((candidate) => candidate.contentId === contentId);
+            const candidates = parts.map((part, index) => ({ uid: String(index), filename: part.filename ?? "", mimeType: part.contentType, contentId: part.contentId }));
+            const found = findInlineAttachment(candidates, { cid: contentId, alt });
+            const part = found ? parts[Number(found.uid)] : undefined;
             const bytes = part && INLINE_IMAGE_TYPES.test(part.contentType) ? part.decode() : undefined;
-            return part && bytes && bytes.length <= MAX_INLINE_IMAGE_BYTES ? `data:${part.contentType};base64,${base64(bytes)}` : undefined;
+            return part && bytes && bytes.length <= MAX_INLINE_IMAGE_BYTES ? toDataUri(part.contentType, bytes) : undefined;
         }
-        const attachment = attachments?.find((candidate) => candidate.contentId === contentId);
+        const attachment = findInlineAttachment(attachments, { cid: contentId, alt });
         return attachment ? absoluteAttachmentUrl(attachment.uid) : undefined;
     };
 }

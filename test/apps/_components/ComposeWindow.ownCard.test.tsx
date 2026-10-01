@@ -43,12 +43,23 @@ const DRAFT = {
 };
 const ME = { uid: "k1", displayName: "Jane Roe", emails: [{ address: "JANE@example.com", type: "work" }], phones: [{ phoneNumber: "+1 555 0100", type: "work" }], addresses: [], company: "Acme", jobTitle: "CTO" };
 
+/** The attachment deletions the server was asked for. */
+const removals: string[] = [];
+
 /** Serves a compose session for `MAILBOX`; `upload` answers the attachment upload. Returns what was uploaded. */
-function serve(upload: (file: File) => Response = () => jsonResponse(200, { uid: "a1", filename: "Jane Roe.vcf", mimeType: "text/vcard", sizeBytes: 10 })) {
+function serve(
+    upload: (file: File) => Response = () => jsonResponse(200, { uid: "a1", version: 3, filename: "Jane Roe.vcf", mimeType: "text/vcard", sizeBytes: 10 }),
+    remove: (url: string) => Response = () => new Response(null, { status: 204 }),
+) {
     const uploads: { params: URLSearchParams; file: File }[] = [];
+    removals.length = 0;
     mockFetch((url, init) => {
         const path = url.split("?")[0];
         const method = init?.method ?? "GET";
+        if (method === "DELETE" && path.startsWith("/api/mail/attachments/")) {
+            removals.push(url);
+            return remove(url);
+        }
         if (path === "/api/mail/attachments/upload") {
             const file = init.body as File;
             uploads.push({ params: new URLSearchParams(url.split("?")[1]), file });
@@ -126,5 +137,74 @@ describe("Attach my contact card", () => {
         expect(await screen.findByText("Jane Roe.vcf")).toBeInTheDocument();
         expect(screen.queryByText("too large")).not.toBeInTheDocument();
         expect(uploads).toHaveLength(2);
+    });
+});
+
+describe("Removing an attachment from the draft", () => {
+    it("takes the attachment off the draft, at its version, and lets the contact card be attached again", async () => {
+        serve();
+        const user = userEvent.setup();
+        const button = await renderCompose();
+        await user.click(button);
+        await screen.findByText("Jane Roe.vcf");
+        await waitFor(() => expect(button).toBeDisabled());
+
+        await user.click(screen.getByRole("button", { name: "Remove Jane Roe.vcf" }));
+
+        await waitFor(() => expect(screen.queryByText("Jane Roe.vcf")).not.toBeInTheDocument());
+        expect(removals).toEqual(["/api/mail/attachments/a1?version=3"]);
+        await waitFor(() => expect(button).toBeEnabled());
+        expect(button).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("holds the chip's button while the server answers", async () => {
+        let answer: () => void = () => undefined;
+        serve(undefined, () => {
+            throw new Error("answered below");
+        });
+        const user = userEvent.setup();
+        const button = await renderCompose();
+        await user.click(button);
+        await screen.findByText("Jane Roe.vcf");
+        const inFlight = new Promise<void>((resolve) => (answer = resolve));
+        mockFetch(async (url, init) => {
+            if (init?.method === "DELETE") {
+                await inFlight;
+                return new Response(null, { status: 204 });
+            }
+            return jsonResponse(200, { ...DRAFT, version: 1 });
+        });
+
+        await user.click(screen.getByRole("button", { name: "Remove Jane Roe.vcf" }));
+        expect(screen.getByRole("button", { name: "Remove Jane Roe.vcf" })).toBeDisabled();
+        answer();
+        await waitFor(() => expect(screen.queryByText("Jane Roe.vcf")).not.toBeInTheDocument());
+    });
+
+    it("keeps the attachment and says why when the server will not remove it", async () => {
+        serve(undefined, () => jsonResponse(409, { message: "This message is being sent." }));
+        const user = userEvent.setup();
+        await user.click(await renderCompose());
+        await screen.findByText("Jane Roe.vcf");
+
+        await user.click(screen.getByRole("button", { name: "Remove Jane Roe.vcf" }));
+
+        expect(await screen.findByText("This message is being sent.")).toBeInTheDocument();
+        expect(screen.getByText("Jane Roe.vcf")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Remove Jane Roe.vcf" })).toBeEnabled();
+    });
+
+    it("says so plainly when the request itself failed, and leaves the other attachments alone", async () => {
+        serve(undefined, () => {
+            throw new TypeError("network down");
+        });
+        const user = userEvent.setup();
+        await user.click(await renderCompose());
+        await screen.findByText("Jane Roe.vcf");
+
+        await user.click(screen.getByRole("button", { name: "Remove Jane Roe.vcf" }));
+
+        expect(await screen.findByText("Could not remove attachment.")).toBeInTheDocument();
+        expect(screen.getByText("Jane Roe.vcf")).toBeInTheDocument();
     });
 });

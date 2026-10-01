@@ -325,7 +325,8 @@ describe("MailSelectionBar", () => {
     it("leaves Move to and Apply label as they were without those reasons", () => {
         renderBar();
         expect(screen.getByRole("button", { name: "Move to" })).toBeEnabled();
-        expect(screen.getByRole("button", { name: "Move to" })).not.toHaveAttribute("title");
+        // Icon-only, so the name is the tooltip too.
+        expect(screen.getByRole("button", { name: "Move to" })).toHaveAttribute("title", "Move to");
         expect(screen.getByRole("button", { name: "Apply label" })).toBeEnabled();
     });
 
@@ -387,7 +388,8 @@ describe("MailSelectionBar keyboard shortcut hints", () => {
         renderBar();
         expect(screen.getByRole("button", { name: "Mark read" })).not.toHaveAttribute("aria-keyshortcuts");
         expect(screen.getByRole("button", { name: "Delete" })).not.toHaveAttribute("aria-keyshortcuts");
-        expect(screen.getByRole("button", { name: "Delete" })).not.toHaveAttribute("title");
+        expect(screen.getByRole("button", { name: "Delete" })).toHaveAttribute("title", "Delete");
+        expect(screen.getByRole("button", { name: "Apply label" })).toHaveAttribute("title", "Apply label");
     });
 
     it("names the shortcut on Delete permanently too, since the same keys do it", () => {

@@ -96,7 +96,8 @@ export default function RichTextEditor({
             TextStyleKit.configure({ backgroundColor: false, lineHeight: false }),
             TextAlign.configure({ types: ["heading", "paragraph"] }),
             Highlight,
-            Image,
+            // A quoted original's pictures arrive as `data:` URIs; `assembleDraft()` attaches them to the draft when it is saved.
+            Image.configure({ allowBase64: true }),
             TableKit.configure({ table: { resizable: true } }),
             Placeholder.configure({ placeholder: "Write your message…" }),
         ],

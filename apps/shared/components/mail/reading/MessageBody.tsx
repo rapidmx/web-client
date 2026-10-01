@@ -156,7 +156,7 @@ function HtmlBody({
     const theme = useResolvedTheme();
     const surface = useThemeSurface(theme);
     // Keyed on what the resolver reads rather than on the arrays, which a caller may rebuild on every render.
-    const inlineKey = [...(attachments ?? []).map((a) => `${a.uid}:${(a as { contentId?: string }).contentId ?? ""}`), inlineParts ? `parts:${inlineParts.length}` : ""].join("|");
+    const inlineKey = [...(attachments ?? []).map((a) => `${a.uid}:${(a as { contentId?: string }).contentId ?? ""}:${a.filename}:${a.mimeType}`), inlineParts ? `parts:${inlineParts.length}` : ""].join("|");
     const resolveCid = useMemo(() => makeCidResolver(attachments, inlineParts), [inlineKey]);
     const prepared = useMemo(() => prepareBodyHtml(html, { resolveCid }), [html, resolveCid]);
     const mode: FrameMode = prepared.declaresDarkSupport ? "native" : original ? "original" : "adapt";

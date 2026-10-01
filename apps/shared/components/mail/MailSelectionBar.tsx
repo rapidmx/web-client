@@ -3,6 +3,18 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
+import {
+    HiOutlineArchiveBox,
+    HiOutlineCheckCircle,
+    HiOutlineEnvelope,
+    HiOutlineEnvelopeOpen,
+    HiOutlineFlag,
+    HiOutlineFolderArrowDown,
+    HiOutlineMinusCircle,
+    HiOutlineNoSymbol,
+    HiOutlineTrash,
+    HiOutlineXMark,
+} from "react-icons/hi2";
 import { Folder, Message } from "../../../../lib/mail/mailApi.js";
 import { Label } from "../../../../lib/mail/labelsApi.js";
 import LabelMenuButton from "./labelMenu.js";
@@ -65,8 +77,43 @@ export interface MailSelectionBarProps {
     labelsDisabledReason?: string;
 }
 
-function actionClassName(destructive = false): string {
-    return `px-2 py-1 rounded-md text-sm ${destructive ? "text-danger font-semibold" : "text-text"} hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent`;
+/** The look of the bar's icon buttons - the reading pane's own command row (`ICON_BUTTON_CLASS` in `MessageDetailPane`), without its border, which nine of them in a row don't need. */
+function iconClassName(destructive = false): string {
+    return `inline-flex items-center justify-center p-1.5 rounded-md text-sm ${destructive ? "text-danger" : "text-text"} hover:bg-surface-alt disabled:opacity-50 disabled:hover:bg-transparent`;
+}
+
+/** One of the bar's actions as an icon button: the action's name is its `aria-label` (so it has the accessible name its text button had) and its tooltip,
+ * unless there is a `reason` it is unavailable, or a keyboard shortcut to name (`title` and `aria-keyshortcuts` from `hint()`). */
+function BarAction({
+    icon,
+    label,
+    onClick,
+    disabled,
+    reason,
+    destructive,
+    hint,
+}: {
+    icon: React.ReactNode;
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+    reason?: string;
+    destructive?: boolean;
+    hint?: { title?: string; "aria-keyshortcuts"?: string };
+}) {
+    return (
+        <button
+            type="button"
+            aria-label={label}
+            onClick={onClick}
+            disabled={disabled}
+            className={iconClassName(destructive)}
+            {...hint}
+            title={reason ?? hint?.title ?? label}
+        >
+            {icon}
+        </button>
+    );
 }
 
 /**
@@ -148,47 +195,67 @@ export default function MailSelectionBar({
                 onMove={onMoveTo}
                 onFolderCreated={onFolderCreated}
             />
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-alt">
-                <span aria-live="polite" className="text-sm font-semibold text-text">
+            <div className="flex items-center gap-1 px-3 py-1.5 bg-surface-alt">
+                <span aria-live="polite" className="text-sm font-semibold text-text mr-auto">
                     {selectedCount}
                     {totals ? ` ${totals.noun}${selectedCount === 1 ? "" : "s"}` : ""} selected
                 </span>
-                <button type="button" onClick={onSelectAll} disabled={allSelected || listedCount === 0} className={actionClassName()}>
-                    Select all
-                </button>
-                <button type="button" onClick={onClearSelection} disabled={selectedCount === 0} className={actionClassName()}>
-                    Clear
-                </button>
-                <button type="button" onClick={onCancel} className={`${actionClassName()} ml-auto`}>
-                    Cancel
-                </button>
+                <BarAction
+                    icon={<HiOutlineCheckCircle size={16} aria-hidden="true" />}
+                    label="Select all"
+                    onClick={onSelectAll}
+                    disabled={allSelected || listedCount === 0}
+                />
+                <BarAction icon={<HiOutlineMinusCircle size={16} aria-hidden="true" />} label="Clear" onClick={onClearSelection} disabled={selectedCount === 0} />
+                <BarAction icon={<HiOutlineXMark size={16} aria-hidden="true" />} label="Cancel" onClick={onCancel} />
             </div>
+            {/* Icon-only, so all nine fit one row of the 24rem list column; wraps if the column is ever narrower. */}
             <div className="flex flex-wrap items-center gap-0.5 px-1.5 py-1">
-                <button type="button" onClick={() => onSetRead(true)} disabled={none || busy} className={actionClassName()} {...hint("Mark read", SHORTCUTS.mail.markRead)}>
-                    Mark read
-                </button>
-                <button type="button" onClick={() => onSetRead(false)} disabled={none || busy} className={actionClassName()} {...hint("Mark unread", SHORTCUTS.mail.markUnread)}>
-                    Mark unread
-                </button>
-                <button type="button" onClick={() => onSetFlagged(true)} disabled={none || busy} className={actionClassName()} {...hint("Flag", SHORTCUTS.mail.flag)}>
-                    Flag
-                </button>
-                <button type="button" onClick={() => onSetFlagged(false)} disabled={none || busy} className={actionClassName()}>
-                    Unflag
-                </button>
-                <button
-                    type="button"
+                <BarAction
+                    icon={<HiOutlineEnvelopeOpen size={16} aria-hidden="true" />}
+                    label="Mark read"
+                    onClick={() => onSetRead(true)}
+                    disabled={none || busy}
+                    hint={hint("Mark read", SHORTCUTS.mail.markRead)}
+                />
+                <BarAction
+                    icon={<HiOutlineEnvelope size={16} aria-hidden="true" />}
+                    label="Mark unread"
+                    onClick={() => onSetRead(false)}
+                    disabled={none || busy}
+                    hint={hint("Mark unread", SHORTCUTS.mail.markUnread)}
+                />
+                <BarAction
+                    icon={<HiOutlineFlag size={16} aria-hidden="true" />}
+                    label="Flag"
+                    onClick={() => onSetFlagged(true)}
+                    disabled={none || busy}
+                    hint={hint("Flag", SHORTCUTS.mail.flag)}
+                />
+                <BarAction
+                    icon={
+                        // `hi2` has no flag-with-a-line-through glyph: the flag, struck through.
+                        <span className="relative inline-flex" aria-hidden="true">
+                            <HiOutlineFlag size={16} />
+                            <span className="absolute left-1/2 top-[-1px] h-[18px] w-[1.5px] -translate-x-1/2 rotate-45 rounded bg-current" />
+                        </span>
+                    }
+                    label="Unflag"
+                    onClick={() => onSetFlagged(false)}
+                    disabled={none || busy}
+                />
+                <BarAction
+                    icon={<HiOutlineArchiveBox size={16} aria-hidden="true" />}
+                    label="Archive"
                     onClick={onArchive}
                     disabled={none || busy || !!archiveReason}
-                    title={archiveReason}
-                    className={actionClassName()}
-                >
-                    Archive
-                </button>
+                    reason={archiveReason}
+                />
                 <LabelMenuButton
                     aria-label="Apply label"
                     label="Apply label"
-                    className="text-sm"
+                    iconOnly
+                    className={iconClassName()}
                     labels={labels}
                     mailboxUid={mailboxUid}
                     onLabelCreated={onLabelCreated}
@@ -197,7 +264,7 @@ export default function MailSelectionBar({
                     onCommit={onApplyLabels}
                     busy={busy}
                     disabled={none || busy || !!labelsDisabledReason}
-                    title={labelsDisabledReason}
+                    title={labelsDisabledReason ?? "Apply label"}
                     note={
                         selected.length === 1
                             ? "Ticked labels are applied, unticked ones removed."
@@ -207,33 +274,28 @@ export default function MailSelectionBar({
                     commit={{ label: "Apply" }}
                     clear={{ label: "Remove all labels" }}
                 />
-                <button
-                    type="button"
+                <BarAction
+                    icon={<HiOutlineFolderArrowDown size={16} aria-hidden="true" />}
+                    label="Move to"
                     onClick={() => setMovePrompt(true)}
                     disabled={none || busy || !!moveDisabledReason}
-                    title={moveDisabledReason}
-                    className={actionClassName()}
-                >
-                    Move to
-                </button>
-                <button
-                    type="button"
+                    reason={moveDisabledReason}
+                />
+                <BarAction
+                    icon={<HiOutlineNoSymbol size={16} aria-hidden="true" />}
+                    label="Report junk"
                     onClick={onReportJunk}
                     disabled={none || busy || !!junkReason}
-                    title={junkReason}
-                    className={actionClassName()}
-                >
-                    Report junk
-                </button>
-                <button
-                    type="button"
+                    reason={junkReason}
+                />
+                <BarAction
+                    icon={<HiOutlineTrash size={16} aria-hidden="true" />}
+                    label={deleteLabel}
                     onClick={onDelete}
                     disabled={none || busy}
-                    className={actionClassName(deletesPermanently)}
-                    {...hint(deleteLabel, SHORTCUTS.mail.delete)}
-                >
-                    {deleteLabel}
-                </button>
+                    destructive={deletesPermanently}
+                    hint={hint(deleteLabel, SHORTCUTS.mail.delete)}
+                />
             </div>
         </div>
     );

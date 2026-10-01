@@ -18,6 +18,7 @@ import { ListParams, buildQuery } from "../util/apiQuery.js";
 import { deviceTimeZone } from "../util/timeZone.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
 import { bytesToBinaryString } from "../crypto/mime.js";
+import { newContentId, parseDataImage } from "./inlineImages.js";
 import type { ResolvedPrincipal } from "./mailboxAccessApi.js";
 
 export type { ListParams };
@@ -1005,11 +1006,18 @@ export interface Attachment {
     mimeType: string;
     sizeBytes: number;
     isInline: boolean;
+    /** The part's `Content-ID`, without angle brackets: what an inline image's `cid:` reference names. */
+    contentId?: string;
 }
 
 /** Lists the attachments belonging to a single message. */
 export function listAttachments(folderUid: string, messageUid: string, client?: ApiClient): Promise<Attachment[]> {
     return withClient(client, `/mail/attachments?${buildQuery({ limit: 200 }, { folderUid, messageUid })}`);
+}
+
+/** Removes an attachment (from a draft). The server re-derives the message's `hasAttachments` itself. */
+export function deleteAttachment(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/attachments/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }
 
 /** The URL to download/display an attachment's binary content — not fetched via `apiFetch`, used directly as
@@ -1023,9 +1031,19 @@ export function attachmentContentUrl(uid: string): string {
  * always forces `Content-Type: application/json`, which would corrupt binary content; this sends the file's
  * own bytes/type directly instead, matching `BaseAttachmentRoute.upload`'s expectation of a raw request body.
  */
-export async function uploadAttachment(messageUid: string, file: File): Promise<Attachment> {
-    const params = new URLSearchParams({ messageUid, filename: file.name, mimeType: file.type || "application/octet-stream" });
-    const res = await fetch(apiUrl(`/mail/attachments/upload?${params.toString()}`), {
+export async function uploadAttachment(messageUid: string, file: File, options: { inline?: boolean; contentId?: string } = {}): Promise<Attachment> {
+    // Percent-encoded, not form-encoded (`URLSearchParams` writes a space as `+`, which the server reads as a plus sign: "My+photo.png").
+    const query: Record<string, string> = { messageUid, filename: file.name, mimeType: file.type || "application/octet-stream" };
+    if (options.inline) {
+        // An image shown in the text of the message: it goes out as an inline part, which the text refers to by this `Content-ID`
+        // (`BaseMailComposeRoute.rewriteInlineImageSources()` turns the editor's preview URL into that `cid:` reference).
+        query.isInline = "true";
+        query.contentId = options.contentId ?? newContentId();
+    }
+    const params = Object.entries(query)
+        .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+        .join("&");
+    const res = await fetch(apiUrl(`/mail/attachments/upload?${params}`), {
         method: "POST",
         credentials: "include",
         headers: withCsrfHeader({ "Content-Type": file.type || "application/octet-stream" }),
@@ -1130,11 +1148,52 @@ export function emptyFolder(folderUid: string, client?: ApiClient): Promise<void
  * — see `BaseMailComposeRoute` (this app's own compose-assembly glue, since `@rapidmx/restapi`'s `send()`
  * itself does no MIME composition). Does not send the message.
  */
-export function assembleDraft(messageUid: string, input: AssembleDraftInput, client?: ApiClient): Promise<Message> {
+export async function assembleDraft(messageUid: string, input: AssembleDraftInput, client?: ApiClient): Promise<Message> {
+    const html = await attachDataImages(messageUid, input.html);
     return withClient(client, `/mail/compose/${encodeURIComponent(messageUid)}/assemble`, {
         method: "POST",
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, html }),
     });
+}
+
+/** `data:` images already attached to a draft: its uid and the image, to the URL of the attachment it became. */
+const attachedDataImages = new Map<string, string>();
+
+const DATA_IMAGE_TAG = /(<img\b[^>]*?\bsrc\s*=\s*)(["'])(data:image\/[^"']*)\2/gi;
+
+/** Names a picture by its type, for the attachment it becomes. */
+function pictureName(contentType: string): string {
+    return `image.${contentType.split("/")[1].replace(/\+.*/, "").replace("jpeg", "jpg")}`;
+}
+
+/**
+ * `html` with each `<img>` that embeds its picture as a `data:` URI (a quoted original's image, one pasted into the editor) pointed at an
+ * attachment of the draft instead: the server drops `data:` images from the message it composes, and an attachment is what it makes an
+ * inline part of. A picture is attached once per draft however often the draft is saved.
+ */
+async function attachDataImages(messageUid: string, html: string): Promise<string> {
+    const found = Array.from(html.matchAll(DATA_IMAGE_TAG));
+    if (found.length === 0) {
+        return html;
+    }
+    const urls = new Map<string, string>();
+    for (const [, , , uri] of found) {
+        const key = `${messageUid}\n${uri}`;
+        const known = attachedDataImages.get(key);
+        if (known) {
+            urls.set(uri, known);
+            continue;
+        }
+        const image = parseDataImage(uri);
+        if (!image) {
+            continue;
+        }
+        const attachment = await uploadAttachment(messageUid, new File([image.bytes as BlobPart], pictureName(image.contentType), { type: image.contentType }), { inline: true });
+        const url = attachmentContentUrl(attachment.uid);
+        attachedDataImages.set(key, url);
+        urls.set(uri, url);
+    }
+    return html.replace(DATA_IMAGE_TAG, (match, start: string, quote: string, uri: string) => (urls.has(uri) ? `${start}${quote}${urls.get(uri)}${quote}` : match));
 }
 
 export interface AssembleDraftRawInput {

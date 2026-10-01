@@ -9,6 +9,11 @@ import { isTextEntry } from "../../keyboard/targets.js";
 export interface EventMatchNavProps {
     onPrevious: () => void;
     onNext: () => void;
+    /** Whether there is an event before / after this one to go to (default: yes). A button with none is disabled, and its arrow key does nothing. */
+    canPrevious?: boolean;
+    canNext?: boolean;
+    /** What is stepped through, for the buttons' names: the matches of a search, or the events of the calendar. */
+    noun?: "match" | "event";
 }
 
 /**
@@ -17,7 +22,7 @@ export interface EventMatchNavProps {
  * centered card on a desktop, the bottom corners on a phone, where the card fills the width. The left and right arrow keys do the same unless
  * a field is taking them.
  */
-export default function EventMatchNav({ onPrevious, onNext }: EventMatchNavProps) {
+export default function EventMatchNav({ onPrevious, onNext, canPrevious = true, canNext = true, noun = "match" }: EventMatchNavProps) {
     useEffect(() => {
         function handleKeyDown(event: KeyboardEvent) {
             if ((event.key !== "ArrowLeft" && event.key !== "ArrowRight") || event.defaultPrevented || isTextEntry(event.target)) {
@@ -27,32 +32,38 @@ export default function EventMatchNav({ onPrevious, onNext }: EventMatchNavProps
                 return;
             }
             event.preventDefault();
-            (event.key === "ArrowLeft" ? onPrevious : onNext)();
+            if (event.key === "ArrowLeft" ? canPrevious : canNext) {
+                (event.key === "ArrowLeft" ? onPrevious : onNext)();
+            }
         }
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [onPrevious, onNext]);
+    }, [onPrevious, onNext, canPrevious, canNext]);
 
     // The card is centered, at most 480px wide (`DETAILS_WIDTH`): 240px either side of the middle, then a gap and the button itself.
     const buttonClass =
-        "fixed bottom-4 md:bottom-auto md:top-1/2 md:-translate-y-1/2 w-10 h-10 flex items-center justify-center rounded-full bg-surface border border-border shadow-modal text-text-muted hover:bg-surface-alt hover:text-text";
+        "fixed bottom-4 md:bottom-auto md:top-1/2 md:-translate-y-1/2 w-10 h-10 flex items-center justify-center rounded-full bg-surface border border-border shadow-modal text-text-muted";
+    const enabledClass = "hover:bg-surface-alt hover:text-text";
+    const disabledClass = "opacity-40 cursor-not-allowed";
     return (
         <>
             <button
                 type="button"
-                aria-label="Previous match"
-                title="Previous match (Left arrow)"
-                onClick={onPrevious}
-                className={`${buttonClass} left-4 md:left-[calc(50vw-296px)]`}
+                aria-label={`Previous ${noun}`}
+                aria-disabled={canPrevious ? undefined : true}
+                title={`Previous ${noun} (Left arrow)`}
+                onClick={canPrevious ? onPrevious : undefined}
+                className={`${buttonClass} ${canPrevious ? enabledClass : disabledClass} left-4 md:left-[calc(50vw-296px)]`}
             >
                 <HiOutlineChevronLeft size={20} aria-hidden="true" />
             </button>
             <button
                 type="button"
-                aria-label="Next match"
-                title="Next match (Right arrow)"
-                onClick={onNext}
-                className={`${buttonClass} right-4 md:right-[calc(50vw-296px)]`}
+                aria-label={`Next ${noun}`}
+                aria-disabled={canNext ? undefined : true}
+                title={`Next ${noun} (Right arrow)`}
+                onClick={canNext ? onNext : undefined}
+                className={`${buttonClass} ${canNext ? enabledClass : disabledClass} right-4 md:right-[calc(50vw-296px)]`}
             >
                 <HiOutlineChevronRight size={20} aria-hidden="true" />
             </button>

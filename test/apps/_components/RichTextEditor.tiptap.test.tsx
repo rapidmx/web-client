@@ -35,6 +35,13 @@ afterEach(() => {
 });
 
 describe("RichTextEditor with a real TipTap editor", () => {
+    it("keeps the picture of a quoted original, which arrives as a data: URI", async () => {
+        const uri = "data:image/png;base64,iVBORw==";
+        const { container } = render(<RichTextEditor value={`<p></p><blockquote><img src="${uri}" alt="pic"></blockquote>`} onChange={vi.fn()} onUploadImage={vi.fn()} />);
+        const editor = await mountedEditor(container);
+        expect(editor.getHTML()).toContain(`<img src="${uri}" alt="pic">`);
+    });
+
     it("with autoFocusStart, focuses the editor with the caret in the empty first paragraph, and typing lands above the quote", async () => {
         const onChange = vi.fn();
         const onInitialized = vi.fn();

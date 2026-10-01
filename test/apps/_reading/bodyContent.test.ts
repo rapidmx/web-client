@@ -120,6 +120,30 @@ describe("makeCidResolver", () => {
         expect(Uint8Array.from(atob(uri.split(",")[1]), (c) => c.charCodeAt(0))).toEqual(big);
     });
 
+    it("matches the Content-ID whatever its brackets, encoding or case (an external client's <Image001@01D>)", () => {
+        const resolve = makeCidResolver([{ uid: "a1", contentId: "<Image001@01D>", filename: "i.png", mimeType: "image/png" }] as never, undefined);
+        expect(resolve("image001@01d")).toBe(`${window.location.origin}/api/mail/attachments/a1/content`);
+        expect(resolve("Image001%4001D")).toBe(`${window.location.origin}/api/mail/attachments/a1/content`);
+    });
+
+    it("finds a picture attached without a Content-ID by the alt text of an image with no source (a message sent before inline parts had one)", () => {
+        const sent = [
+            { uid: "a1", filename: "Screenshot 2025-12-02 223133.png", mimeType: "image/png", isInline: false },
+            { uid: "a2", filename: "notes.pdf", mimeType: "application/pdf", isInline: false },
+        ] as never;
+        const resolve = makeCidResolver(sent, undefined);
+        expect(resolve(undefined, "Screenshot 2025-12-02 223133.png")).toBe(`${window.location.origin}/api/mail/attachments/a1/content`);
+        expect(resolve(undefined, "notes.pdf")).toBeUndefined();
+        expect(resolve(undefined, undefined)).toBeUndefined();
+    });
+
+    it("does the same inside a decrypted message", () => {
+        const png = { filename: "pic.png", contentType: "image/png", disposition: "attachment", decode: () => new Uint8Array([137, 80, 78, 71]) };
+        const unnamed = { contentType: "image/gif", disposition: "inline", decode: () => new Uint8Array([1]) };
+        expect(makeCidResolver(undefined, [unnamed as never, png as never])(undefined, "pic.png")).toBe("data:image/png;base64,iVBORw==");
+        expect(makeCidResolver(undefined, [unnamed as never])(undefined, "pic.png")).toBeUndefined();
+    });
+
     it("looks only inside the decrypted content for a decrypted message, never at the server's attachments", () => {
         expect(makeCidResolver(attachments, [])("logo@x")).toBeUndefined();
     });

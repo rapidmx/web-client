@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockFetch } from "../testUtils.js";
+import { buildReplyQuote } from "../../../lib/mail/compose/composeQuoting.js";
 import {
     QUOTE_CACHE_MS,
     QUOTE_FETCH_TIMEOUT_MS,
@@ -195,5 +196,132 @@ describe("what a reply fetches, and when", () => {
         clearOriginalMessageCache();
         await loadOriginalMessage(message, null);
         expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe("a quoted original's embedded images", () => {
+    const original = { uid: "img1", folderUid: "f1", mailboxUid: "mb1", bodyPreview: "" } as never;
+    const PNG_BYTES = new Uint8Array([137, 80, 78, 71]);
+    const PNG_URI = "data:image/png;base64,iVBORw==";
+    const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    const html = (body: string) => new Response(body, { headers: { "content-type": "text/html" } });
+    const shot = { uid: "a1", filename: "Screenshot 2025-12-02 223133.png", mimeType: "image/png", sizeBytes: 4, isInline: false };
+    const logo = { uid: "a2", filename: "logo.png", mimeType: "image/png; name=logo.png", sizeBytes: 4, isInline: true, contentId: "Logo@x" };
+
+    /** The server's answers: the body, the message's attachments and the bytes of each. */
+    function server(body: string, attachments: unknown[] | Response, bytes: (uid: string) => Response = () => new Response(PNG_BYTES)) {
+        return mockFetch((url) => {
+            if (url.endsWith("/img1/content")) return html(body);
+            if (url.startsWith("/api/mail/attachments?")) return attachments instanceof Response ? attachments : json(attachments);
+            const match = /\/api\/mail\/attachments\/([^/]+)\/content$/.exec(url);
+            return match ? bytes(match[1]) : new Response("no", { status: 404 });
+        });
+    }
+
+    afterEach(() => {
+        clearOriginalMessageCache();
+    });
+
+    it("brings a cid: image's picture into the quote as a data: URI, fetched with the session, from the message's own attachment", async () => {
+        const fetchMock = server('<p>Look</p><img src="cid:logo@x" alt="logo">', [shot, logo]);
+
+        expect(await loadOriginalMessage(original, null)).toEqual({ body: { html: `<p>Look</p><img src="${PNG_URI}" alt="logo">` } });
+
+        const calls = fetchMock.mock.calls.map(([url, init]) => [url, init?.credentials]);
+        expect(calls).toContainEqual(["/api/mail/attachments/a2/content", "include"]);
+        expect(String(fetchMock.mock.calls.find(([url]) => String(url).startsWith("/api/mail/attachments?"))![0])).toContain("messageUid=img1");
+    });
+
+    it("quotes a message that is nothing but a picture the server left with only its alt text, from the attachment of that name", async () => {
+        server('<img alt="Screenshot 2025-12-02 223133.png">', [shot]);
+        expect(await loadOriginalMessage(original, null)).toEqual({ body: { html: `<img alt="Screenshot 2025-12-02 223133.png" src="${PNG_URI}">` } });
+        // ... and the reply's quote shows it, instead of the empty blockquote an image-only message used to leave.
+        const quote = buildReplyQuote({ ...(original as object), from: { address: "a@x.test" }, receivedDate: "2026-09-30T19:02:40Z", recipients: [] } as never, (await loadOriginalMessage(original, null)).body);
+        expect(quote).toContain(`<img alt="Screenshot 2025-12-02 223133.png" src="${PNG_URI}">`);
+    });
+
+    it("asks for the attachments once for all of a message's images", async () => {
+        const fetchMock = server('<img src="cid:logo@x"><img src="cid:logo@x">', [logo]);
+        await loadOriginalMessage(original, null);
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/mail/attachments?"))).toHaveLength(1);
+    });
+
+    it("leaves an image alone when its picture can't be had: no such attachment, not a raster image, too large, or not served", async () => {
+        const body = '<img src="cid:logo@x">';
+        server(body, [{ ...logo, mimeType: "image/svg+xml" }]);
+        expect(await loadOriginalMessage(original, null)).toEqual({ body: { html: body } });
+        clearOriginalMessageCache();
+        server(body, [{ ...logo, sizeBytes: 3_000_000 }]);
+        expect(await loadOriginalMessage(original, null)).toEqual({ body: { html: body } });
+        clearOriginalMessageCache();
+        server(body, [shot]);
+        expect(await loadOriginalMessage(original, null)).toEqual({ body: { html: body } });
+        clearOriginalMessageCache();
+        server(body, [logo], () => new Response("no", { status: 404 }));
+        expect(await loadOriginalMessage(original, null)).toEqual({ body: { html: body } });
+        clearOriginalMessageCache();
+        // The server says it is small and sends more.
+        server(body, [logo], () => new Response(new Uint8Array(2_000_001)));
+        expect(await loadOriginalMessage(original, null)).toEqual({ body: { html: body } });
+    });
+
+    it("leaves the quote as it was when the attachments can't be listed", async () => {
+        const body = '<img src="cid:logo@x">';
+        server(body, new Response("no", { status: 500, headers: { "content-type": "application/json" } }));
+        expect(await loadOriginalMessage(original, null)).toEqual({ body: { html: body } });
+    });
+
+    it("stops waiting for a picture after QUOTE_FETCH_TIMEOUT_MS, and quotes the text without it", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            const body = '<p>Text</p><img src="cid:logo@x">';
+            mockFetch((url) => {
+                if (url.endsWith("/img1/content")) return html(body);
+                if (url.startsWith("/api/mail/attachments?")) return json([logo]);
+                return new Promise<Response>(() => undefined);
+            });
+            const result = loadOriginalMessage(original, null);
+            await vi.advanceTimersByTimeAsync(QUOTE_FETCH_TIMEOUT_MS + 1);
+            expect(await result).toEqual({ body: { html: body } });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("takes a decrypted or verified message's pictures from the parts inside it, without a request", async () => {
+        const fetchMock = mockFetch(() => new Response("never", { status: 500 }));
+        const part = (over: object) => ({ contentType: "image/png", disposition: "inline", decode: () => PNG_BYTES, ...over });
+        const security = {
+            state: "signed_verified",
+            html: '<img src="cid:Logo@x"><img alt="pic.png"><img src="cid:svg@x"><img src="cid:none@x">',
+            attachments: [
+                part({ contentId: "logo@x" }),
+                part({ filename: "pic.png" }),
+                part({ contentId: "svg@x", contentType: "image/svg+xml" }),
+                part({ filename: "huge.png", decode: () => new Uint8Array(2_000_001) }),
+            ],
+        } as never;
+
+        const result = await loadOriginalMessage(original, security);
+
+        expect(result.body.html).toBe(`<img src="${PNG_URI}"><img alt="pic.png" src="${PNG_URI}"><img src="cid:svg@x"><img src="cid:none@x">`);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("quotes a decrypted body's image only when the entity has the part (a message with no parts quotes it unchanged)", async () => {
+        const security = { state: "encrypted", html: '<img src="cid:logo@x">' } as never;
+        expect(await loadOriginalMessage({ ...(original as object), encrypted: true } as never, security)).toEqual({ body: { html: '<img src="cid:logo@x">' } });
+    });
+
+    it("brings the pictures of a message read from its raw source too", async () => {
+        const raw = ["Content-Type: text/html; charset=utf-8", "", '<img src="cid:logo@x">', ""].join("\r\n");
+        mockFetch((url) => {
+            if (url.endsWith("/img1/content")) return new Response(null, { status: 200 });
+            if (url.endsWith("/img1/raw")) return new Response(raw);
+            if (url.startsWith("/api/mail/attachments?")) return json([logo]);
+            return new Response(PNG_BYTES);
+        });
+        const result = await loadOriginalMessage(original, null);
+        expect(result.body.html).toContain(`src="${PNG_URI}"`);
     });
 });
