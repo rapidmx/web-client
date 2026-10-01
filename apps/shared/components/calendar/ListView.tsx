@@ -2,14 +2,18 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { addDays, format, isToday, parseISO, startOfDay } from "date-fns";
 import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { allDayDateKey, localDateKey, startsOnDay } from "./allDay.js";
 import { occurrenceMarker, useActiveOccurrenceKey } from "./activeOccurrence.js";
+import { useDayKey } from "../../../../lib/calendar/useDayKey.js";
 
-/** The most days one event is listed on, so an event that runs for years does not become thousands of rows. */
+/** The most days one event is listed on (counted from today), so an event that runs for years does not become thousands of rows. */
 export const LIST_MAX_DAYS_PER_EVENT = 366;
+/** The days (that have events) rendered at first, and how many more each time the end of the list is reached. */
+export const LIST_INITIAL_DAYS = 60;
+export const LIST_DAYS_PER_PAGE = 60;
 
 /** A step through the list's months: `nonce` makes a second press in the same direction a new step. */
 export interface ListStep {
@@ -43,8 +47,8 @@ function timeLabel(occurrence: CalendarOccurrence, day: Date): string {
     return start.getTime() === end.getTime() ? format(start, "h:mma") : `${format(start, "h:mma")} – ${format(end, "h:mma")}`;
 }
 
-/** The days (local midnights) `occurrence` is on show on: from its first to its last, at most `LIST_MAX_DAYS_PER_EVENT`. */
-function daysOf(occurrence: CalendarOccurrence): Date[] {
+/** The days (local midnights) `occurrence` is on show on from `today` (a local midnight) on: its first to its last, at most `LIST_MAX_DAYS_PER_EVENT` of them. */
+function daysOf(occurrence: CalendarOccurrence, today: Date): Date[] {
     let first: Date;
     let last: Date;
     if (occurrence.allDay) {
@@ -58,8 +62,12 @@ function daysOf(occurrence: CalendarOccurrence): Date[] {
         // An event that ends at midnight does not reach into that day.
         last = startOfDay(end > start ? new Date(end.getTime() - 1) : start);
     }
-    const days = [first];
-    for (let day = addDays(first, 1); day <= last && days.length < LIST_MAX_DAYS_PER_EVENT; day = addDays(day, 1)) {
+    // An event is on its first day at least. The days before today are not listed, so the cap counts from today: an event that began years ago and
+    // still runs would otherwise be spent before it reached it.
+    const lastDay = last < first ? first : last;
+    const from = first < today ? today : first;
+    const days: Date[] = [];
+    for (let day = from; day <= lastDay && days.length < LIST_MAX_DAYS_PER_EVENT; day = addDays(day, 1)) {
         days.push(day);
     }
     return days;
@@ -76,22 +84,22 @@ function sortedForDay(occurrences: CalendarOccurrence[], day: Date): CalendarOcc
  * nothing at all says so). A multi-day event is listed on every day it covers, as the month grid shows it. Each row is a full-width button that
  * opens the event's card, with the time, title, place (or organizer) and its calendar's colour.
  *
- * Every day is rendered (an event is a cheap row, and a series is bounded to 500 occurrences - see `eventSearch.ts`); the days are grouped once per
- * change of `occurrences`, not per render. The list scrolls itself to `focusDate` and, on a `step`, to the neighbouring month.
+ * The days are grouped once per change of `occurrences` (or of the day), not per render, but only the first `LIST_INITIAL_DAYS` of them are rendered:
+ * more follow as the end of the list is scrolled to (a daily series alone is thousands of rows). A jump, a step or a search match that lies beyond
+ * the rendered days renders up to it first. The list scrolls itself to `focusDate` and, on a `step`, to the neighbouring month.
  */
-export default function ListView({ occurrences, folderColors, onSelectEvent, focusDate, jumpNonce, step }: ListViewProps) {
+function ListView({ occurrences, folderColors, onSelectEvent, focusDate, jumpNonce, step }: ListViewProps) {
     const activeKey = useActiveOccurrenceKey();
+    // Today moves on at midnight, with the list open or not.
+    const dayKey = useDayKey();
     const scrollerRef = useRef<HTMLDivElement>(null);
+    const sentinelRef = useRef<HTMLDivElement>(null);
     const groups = useMemo(() => {
         const byDay = new Map<string, { day: Date; items: CalendarOccurrence[] }>();
-        const todayKey = localDateKey(new Date());
+        const today = parseISO(dayKey);
         for (const occurrence of occurrences) {
-            for (const day of daysOf(occurrence)) {
+            for (const day of daysOf(occurrence, today)) {
                 const key = localDateKey(day);
-                // The days an event spent before today are not listed.
-                if (key < todayKey) {
-                    continue;
-                }
                 const group = byDay.get(key) ?? { day, items: [] };
                 group.items.push(occurrence);
                 byDay.set(key, group);
@@ -100,16 +108,72 @@ export default function ListView({ occurrences, folderColors, onSelectEvent, foc
         return Array.from(byDay.entries())
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([key, { day, items }]) => ({ key, day, items: sortedForDay(items, day) }));
-    }, [occurrences]);
+    }, [occurrences, dayKey]);
+
+    // How many days are rendered. Where there is no IntersectionObserver to say the end was reached, all of them are.
+    const [shown, setShown] = useState(LIST_INITIAL_DAYS);
+    const rendered = typeof IntersectionObserver === "undefined" ? groups.length : Math.min(shown, groups.length);
+    const more = rendered < groups.length;
+    useEffect(() => {
+        const sentinel = sentinelRef.current;
+        if (!sentinel) {
+            return;
+        }
+        // Watched again after each page, so a sentinel still in view (a tall window) brings the next one.
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries.some((entry) => entry.isIntersecting)) {
+                    setShown((count) => count + LIST_DAYS_PER_PAGE);
+                }
+            },
+            { root: scrollerRef.current, rootMargin: "600px" },
+        );
+        observer.observe(sentinel);
+        return () => observer.disconnect();
+    }, [more, shown]);
+
+    // What waits for the days it scrolls to be rendered.
+    const afterReveal = useRef<(() => void) | null>(null);
+    useEffect(() => {
+        const pending = afterReveal.current;
+        afterReveal.current = null;
+        pending?.();
+    }, [shown]);
+    /** Runs `scroll` once the day at `index` of `groups` is rendered: now, or after the rendered days have grown to reach it. */
+    function reveal(index: number, scroll: () => void) {
+        if (index < rendered) {
+            scroll();
+            return;
+        }
+        afterReveal.current = scroll;
+        setShown(index + LIST_DAYS_PER_PAGE);
+    }
+    const scrollToDay = (key: string) => scrollerRef.current!.querySelector<HTMLElement>(`[data-day="${key}"]`)!.scrollIntoView({ block: "start" });
 
     const dayElements = () => Array.from(scrollerRef.current!.querySelectorAll<HTMLElement>("[data-day]"));
 
     // On opening and on a jump (Today, a date picked in the mini calendar): the first day from `focusDate` that has events, else the last one.
     useEffect(() => {
+        if (groups.length === 0) {
+            return;
+        }
         const wanted = localDateKey(focusDate);
-        const days = dayElements();
-        (days.find((el) => el.dataset.day! >= wanted) ?? days[days.length - 1])?.scrollIntoView({ block: "start" });
+        const found = groups.findIndex((group) => group.key >= wanted);
+        const index = found >= 0 ? found : groups.length - 1;
+        reveal(index, () => scrollToDay(groups[index].key));
     }, [jumpNonce]);
+
+    // A search match beyond the rendered days: they grow to it, and it is scrolled to (the page's own scroll to the match found nothing there).
+    useEffect(() => {
+        const index = groups.findIndex((group) => group.items.some((occurrence) => occurrence.occurrenceKey === activeKey));
+        if (index >= rendered) {
+            reveal(index, () =>
+                Array.from(scrollerRef.current!.querySelectorAll<HTMLElement>("[data-occurrence-key]"))
+                    .find((el) => el.dataset.occurrenceKey === activeKey)!
+                    .scrollIntoView({ block: "nearest", inline: "nearest" }),
+            );
+        }
+    }, [activeKey]);
 
     // A step: from the month of the day at the top of the list to the first day of the previous or next month that has any.
     useEffect(() => {
@@ -119,19 +183,22 @@ export default function ListView({ occurrences, folderColors, onSelectEvent, foc
         }
         const top = scrollerRef.current!.getBoundingClientRect().top;
         const current = days.find((el) => el.getBoundingClientRect().bottom > top) ?? days[days.length - 1];
-        const months = Array.from(new Set(days.map((el) => el.dataset.day!.slice(0, 7))));
+        const months = Array.from(new Set(groups.map((group) => group.key.slice(0, 7))));
         const month = months[months.indexOf(current.dataset.day!.slice(0, 7)) + step.direction];
         // Past the first or last month with events there is nowhere to go.
-        days.find((el) => el.dataset.day!.startsWith(month))?.scrollIntoView({ block: "start" });
+        const index = groups.findIndex((group) => group.key.startsWith(month));
+        if (index >= 0) {
+            reveal(index, () => scrollToDay(groups[index].key));
+        }
     }, [step]);
 
-    const thisYear = new Date().getFullYear();
+    const thisYear = parseISO(dayKey).getFullYear();
     return (
         <div ref={scrollerRef} role="region" aria-label="List" data-calendar-scroller className="flex-1 min-h-0 overflow-y-auto">
             {groups.length === 0 ? (
                 <p className="p-4 text-sm text-text-muted">No upcoming events</p>
             ) : (
-                groups.map(({ key, day, items }) => (
+                groups.slice(0, rendered).map(({ key, day, items }) => (
                     <section key={key} data-day={key} aria-labelledby={`list-day-${key}`}>
                         <h3
                             id={`list-day-${key}`}
@@ -157,18 +224,22 @@ export default function ListView({ occurrences, folderColors, onSelectEvent, foc
                                     day={day}
                                     color={folderColors[occurrence.folderUid]}
                                     onSelect={onSelectEvent}
-                                    activeKey={activeKey}
+                                    // Only the row that is the match is told: a new match renders two rows, not all of them.
+                                    activeKey={activeKey === occurrence.occurrenceKey ? activeKey : null}
                                 />
                             ))}
                         </ul>
                     </section>
                 ))
             )}
+            {more && <div ref={sentinelRef} data-list-end aria-hidden="true" className="h-px" />}
         </div>
     );
 }
 
-function ListRow({
+export default memo(ListView);
+
+const ListRow = memo(function ListRow({
     occurrence,
     day,
     color,
@@ -204,4 +275,4 @@ function ListRow({
             </button>
         </li>
     );
-}
+});

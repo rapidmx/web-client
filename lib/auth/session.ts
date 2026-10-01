@@ -37,7 +37,19 @@ const REFRESHED_AT_KEY = "rapidmx.session.refreshedAt";
 const RELOADED_AT_KEY = "rapidmx.session.reloadedAt";
 const LOG_KEY = "rapidmx.session.log";
 
+/**
+ * How long a refresh request may go unanswered before it is aborted. A refresh runs inside a cross-tab Web Lock, so one that hangs would hold the lock - and
+ * with it every tab's refresh, and every request waiting on a recovery - for good.
+ */
+export const SESSION_REFRESH_TIMEOUT_MS = 15 * 1000;
+
 let retryDelayMs = SESSION_REFRESH_RETRY_MS;
+let refreshTimeoutMs = SESSION_REFRESH_TIMEOUT_MS;
+
+/** Sets how long a refresh request may go unanswered (for tests); `resetSessionRecovery()` restores the default. */
+export function setSessionRefreshTimeout(ms: number): void {
+    refreshTimeoutMs = ms;
+}
 
 /** Sets how long a refused refresh waits before its one retry (for tests); `resetSessionRecovery()` restores the default. */
 export function setSessionRefreshRetryDelay(ms: number): void {
@@ -132,9 +144,20 @@ function describeFailure(err: unknown): string {
     return `${err instanceof Error ? err.message : "unknown"}`.slice(0, 80);
 }
 
-/** One `POST /auth/refresh`, recording when it succeeded. */
+/** One `POST /auth/refresh`, recording when it succeeded. Given up on after `SESSION_REFRESH_TIMEOUT_MS`, which is a failure worth retrying, not a rejection. */
 async function postRefresh(authServerUrl: string): Promise<void> {
-    await authApiFetch(authServerUrl, "/auth/refresh", { method: "POST" });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), refreshTimeoutMs);
+    try {
+        await authApiFetch(authServerUrl, "/auth/refresh", { method: "POST", signal: controller.signal });
+    } catch (err) {
+        if (controller.signal.aborted) {
+            throw new Error(`refresh timed out after ${refreshTimeoutMs}ms`);
+        }
+        throw err;
+    } finally {
+        clearTimeout(timer);
+    }
     writeTimestamp(() => localStorage, REFRESHED_AT_KEY, Date.now());
 }
 
@@ -236,12 +259,13 @@ export function recoverSession(authServerUrl: string): Promise<boolean> {
     return recovery;
 }
 
-/** Forgets what recoveries and refreshes have done, and restores the retry delay (for tests). */
+/** Forgets what recoveries and refreshes have done, and restores the retry delay and timeout (for tests). */
 export function resetSessionRecovery(): void {
     recovery = undefined;
     lastRecovery = undefined;
     refreshing = undefined;
     retryDelayMs = SESSION_REFRESH_RETRY_MS;
+    refreshTimeoutMs = SESSION_REFRESH_TIMEOUT_MS;
 }
 
 /**

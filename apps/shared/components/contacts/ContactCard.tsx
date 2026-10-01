@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useContext, useEffect, useRef, useState } from "react";
-import { type Contact, type ContactAddressKind, contactPhotoUrl, setContactFavorite } from "../../../../lib/contacts/contactsApi.js";
+import { type Contact, type ContactAddressKind, setContactFavorite } from "../../../../lib/contacts/contactsApi.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
-import ContactAvatar from "../../../../lib/components/avatar/ContactAvatar.js";
+import ContactPhotoAvatar from "../../../../lib/components/avatar/ContactPhotoAvatar.js";
+import ContactPhotoEditor from "./ContactPhotoEditor.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import CopyIconButton from "../../../../lib/components/buttons/CopyIconButton.js";
 import { HiOutlineEnvelope, HiOutlineUserPlus } from "react-icons/hi2";
@@ -17,6 +18,7 @@ import type { ParsedVCardContact } from "../../../../lib/contacts/vcard.js";
 import { type Folder, type Mailbox, listMailboxes } from "../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { MAILBOX_LIST_LIMIT, MailConnectionContext } from "../../mail/useMailConnection.js";
+import { useMailboxUpdateAccess } from "../../mail/useMailboxUpdateAccess.js";
 import { notify } from "../../notifications/store.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import { APP_HREFS } from "../../navigation/appHrefs.js";
@@ -187,6 +189,8 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
 
     const name = participantName(participant);
     const stored = changed ?? created ?? (contact.status === "ready" ? contact.data : undefined);
+    // A contact in a mailbox shared view-only cannot get a new picture here (the server would refuse it).
+    const canEditPhoto = useMailboxUpdateAccess(mailboxes.status === "ready" ? mailboxes.data.find((mailbox) => mailbox.uid === stored?.mailboxUid) : undefined);
     const external = mailboxes.status === "ready" && isExternalAddress(participant.address, ownDomains(mailboxes.data));
     // What is known when there is no contact: the name, the address and the message's vCard.
     const known = stored ?? contactInputFor(participant, card.status === "ready" ? card.data : undefined, { mailboxUid: "", folderUid: "" });
@@ -234,7 +238,11 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
     return (
         <Modal open onClose={onClose} title={name}>
             <div className="flex items-center gap-4">
-                <ContactAvatar displayName={name} size={72} photoUrl={stored && contactPhotoUrl(stored)} email={participant.address} />
+                {stored && canEditPhoto ? (
+                    <ContactPhotoEditor contact={stored} displayName={name} size={72} email={participant.address} onChanged={setChanged} />
+                ) : (
+                    <ContactPhotoAvatar displayName={name} size={72} contact={stored} email={participant.address} />
+                )}
                 <div className="min-w-0 flex-1">
                     <p className="text-sm text-text-muted break-words">
                         {participant.address}

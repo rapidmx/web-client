@@ -53,6 +53,7 @@ import {
 import type { Coverage } from "../shared/search/localIndexWorker.js";
 import { getUnlockedKeys, subscribeKeySession, UnlockedKeys } from "../../lib/crypto/keySession.js";
 import { useMessageAttachments } from "../../lib/mail/mailDetailHooks.js";
+import { settleWithLimit } from "../../lib/util/settleWithLimit.js";
 import useIsMobile from "../../lib/util/useIsMobile.js";
 import MailShell, {
     AggregateFolderType,
@@ -470,6 +471,13 @@ function appendUnseenRows<T>(shown: T[], more: T[], idOf: (row: T) => string, ca
 const messageUid = (message: Message) => message.uid;
 const conversationKey = conversationRowKey;
 
+/** How many conversations' messages are requested at once when many are ticked together (Select all on a long list). */
+const RESOLVE_CONVERSATIONS_AT_ONCE = 5;
+
+/** What of a conversation's summary changes when one of its messages does: a different one means the messages fetched for it are out of date. */
+const conversationSignature = (row: ListedConversation) =>
+    [row.messageUids.join(","), row.unreadCount, row.flagged, row.folderUids.join(","), row.latestFolderUid].join("|");
+
 /** Flattens and sorts a per-mailbox fetch into one merged, newest-first list - the aggregate ("All
  * Inboxes" etc.) equivalent of `mergeSearchResults()` above, but simpler: an aggregated message has no
  * natural relevance score to normalize, so this only ever sorts by `receivedDate`. */
@@ -482,7 +490,9 @@ function mergeInboxMessages(perMailbox: { mailbox: Mailbox; messages: Message[] 
 /**
  * Fans out one `listMessages()` call per accessible mailbox that has a folder of `type`, merges the
  * results newest-first. A mailbox with no matching folder, or whose fetch fails, simply contributes
- * nothing - one mailbox's absence/failure must not blank out every other mailbox's messages.
+ * nothing - one mailbox's absence/failure must not blank out every other mailbox's messages. `listed`, the
+ * rows on screen when this is a refresh of them, makes a mailbox whose fetch fails keep the rows it has there
+ * instead of contributing none (a timeout must not make its mail vanish until the next success).
  *
  * **Pagination scope trim (deliberate, matching this file's own documented Tier 2/3 tradeoffs)**: there is
  * no composite cursor across an arbitrary number of independently-paginated mailboxes in this pass - this
@@ -496,6 +506,7 @@ async function fetchAggregateMessages(
     type: AggregateFolderType,
     filter: MessageListFilter,
     client?: ApiClient,
+    listed?: Message[],
 ): Promise<Message[]> {
     const perMailbox = await Promise.all(
         mailboxFolders.map(async ({ mailbox, folders }) => {
@@ -507,7 +518,7 @@ async function fetchAggregateMessages(
             // this function's own pagination scope trim) - each mailbox contributes its own newest page and
             // they're merged newest-first, which a different sort key couldn't be made honest across an
             // arbitrary number of independently-paged folders.
-            const messages = await listMessages(folder.uid, { limit: MESSAGE_PAGE_SIZE, filter }, client).catch(() => [] as Message[]);
+            const messages = await listMessages(folder.uid, { limit: MESSAGE_PAGE_SIZE, filter }, client).catch(() => (listed ?? []).filter((m) => m.mailboxUid === mailbox.uid));
             return { mailbox, messages };
         }),
     );
@@ -518,13 +529,15 @@ async function fetchAggregateMessages(
  * The conversation-list counterpart of `fetchAggregateMessages()`: one `listConversations()` per accessible mailbox that has a folder of
  * `type`, each scoped to *that folder* (so "All Inboxes" groups only Inbox mail - not the Sent Items copy of a reply, which a mailbox-wide
  * grouping pulls in) and each row tagged with its mailbox, then merged newest activity first. Same first-page-only scope, and the same
- * rule that a mailbox that has no such folder or fails to answer contributes nothing rather than blanking the rest.
+ * rule that a mailbox that has no such folder or fails to answer contributes nothing rather than blanking the rest - or, with `listed` (the rows on
+ * screen, for a refresh of them), keeps the rows it has there.
  */
 async function fetchAggregateConversations(
     mailboxFolders: MailboxFolders[],
     type: AggregateFolderType,
     params: ConversationListParams,
     client?: ApiClient,
+    listed?: ListedConversation[],
 ): Promise<ListedConversation[]> {
     const perMailbox = await Promise.all(
         mailboxFolders.map(async ({ mailbox, folders }): Promise<ListedConversation[]> => {
@@ -532,8 +545,8 @@ async function fetchAggregateConversations(
             if (!folder) {
                 return [];
             }
-            const rows = await listConversations(mailbox.uid, { ...params, folderUid: folder.uid, page: 0 }, client).catch(() => [] as ConversationSummary[]);
-            return rows.map((row) => ({ ...row, mailboxUid: mailbox.uid }));
+            const rows = await listConversations(mailbox.uid, { ...params, folderUid: folder.uid, page: 0 }, client).catch(() => null);
+            return rows ? rows.map((row) => ({ ...row, mailboxUid: mailbox.uid })) : (listed ?? []).filter((row) => row.mailboxUid === mailbox.uid);
         }),
     );
     return perMailbox.flat().sort((a, b) => Date.parse(b.latestDate) - Date.parse(a.latestDate));
@@ -805,6 +818,8 @@ function InboxContent({ userUid }: { userUid?: string }) {
     messagesRef.current = messages;
     const conversationsRef = useRef(conversations);
     conversationsRef.current = conversations;
+    const selectedConversationIdsRef = useRef(selectedConversationIds);
+    selectedConversationIdsRef.current = selectedConversationIds;
     // Reset to a fresh Map at the start of every new search pass (see the search effect below) - see
     // resolveHitsToMessages()'s own doc comment on why this needs to persist *within* one pass but not
     // across passes (a stale `null` for a uid that's since become resolvable elsewhere must not stick).
@@ -1485,8 +1500,9 @@ function InboxContent({ userUid }: { userUid?: string }) {
             try {
                 if (asConversations && aggregateFolderType) {
                     // No paging here either: the fresh merged first pages are the list.
-                    const fresh = await fetchAggregateConversations(mailboxFolders, aggregateFolderType, conversationParams(0), client);
+                    const fresh = await fetchAggregateConversations(mailboxFolders, aggregateFolderType, conversationParams(0), client, conversationsRef.current);
                     if (isCurrent()) {
+                        refreshConversationMessages(conversationsRef.current, fresh);
                         setConversations(fresh);
                     }
                 } else if (asConversations) {
@@ -1495,12 +1511,13 @@ function InboxContent({ userUid }: { userUid?: string }) {
                         return;
                     }
                     const merged = mergeFirstPage(conversationsRef.current, fresh, conversationKey, MESSAGE_PAGE_SIZE);
+                    refreshConversationMessages(conversationsRef.current, merged.rows);
                     setConversations(merged.rows);
                     listedOffsetRef.current = merged.complete ? fresh.length : listedOffsetRef.current + merged.added;
                     setHasMore(!merged.complete);
                 } else if (aggregateFolderType) {
                     // No paging here (see `fetchAggregateMessages()`): the fresh merged first pages are the list.
-                    const fresh = await fetchAggregateMessages(mailboxFolders, aggregateFolderType, effectiveFilter, client);
+                    const fresh = await fetchAggregateMessages(mailboxFolders, aggregateFolderType, effectiveFilter, client, messagesRef.current);
                     if (isCurrent()) {
                         setMessages(fresh);
                     }
@@ -1954,33 +1971,65 @@ function InboxContent({ userUid }: { userUid?: string }) {
         });
     }
 
-    /** Loads (once) the messages behind each of `ids`, so a ticked conversation resolves to the messages
-     * every bulk action below acts on. If any of them fails to load, none of that batch stays ticked and
-     * a pop-up says why - better than acting on the part of a selection that happened to arrive. */
-    async function resolveConversations(rows: ListedConversation[]) {
-        const missing = rows.filter((row) => !conversationMessagesById[conversationKey(row)]);
+    /** Loads (once, or again with `refetch`) the messages behind each of `rows`, so a ticked conversation resolves to the messages
+     * every bulk action below acts on - a few requests at a time (Select all on a long list is hundreds of rows). A conversation
+     * that fails to load is unticked, with one pop-up saying why - better than acting on a part of it - and the rest stay ticked.
+     * What arrives after the list was loaded again is dropped: those rows are gone. */
+    async function resolveConversations(rows: ListedConversation[], refetch = false) {
+        const missing = rows.filter((row) => refetch || !conversationMessagesById[conversationKey(row)]);
         if (missing.length === 0) {
             return;
         }
+        const listRun = searchRunIdRef.current;
         setResolvingSelection((n) => n + 1);
         try {
-            const loaded = await Promise.all(
+            const outcomes = await settleWithLimit(missing, RESOLVE_CONVERSATIONS_AT_ONCE, (row) =>
                 // A row of the "All mailboxes" view names its own mailbox; any other list is the open mailbox's.
-                missing.map(async (row) => [conversationKey(row), await listConversationMessages(row.mailboxUid ?? activeMailboxUid, row.conversationId, {}, client)] as const),
+                searchRunIdRef.current === listRun
+                    ? listConversationMessages(row.mailboxUid ?? activeMailboxUid, row.conversationId, {}, client)
+                    : Promise.reject(new Error("The list was loaded again")),
             );
-            setConversationMessagesById((prev) => ({ ...prev, ...Object.fromEntries(loaded) }));
-        } catch (err) {
-            notifyApiError(err, "Couldn't load the messages in one of those conversations");
-            setSelectedConversationIds((prev) => {
-                const next = new Set(prev);
-                for (const row of missing) {
-                    next.delete(conversationKey(row));
+            if (searchRunIdRef.current !== listRun) {
+                return;
+            }
+            const loaded: Record<string, Message[]> = {};
+            const failed = new Set<string>();
+            let firstFailure: unknown;
+            outcomes.forEach((outcome, index) => {
+                const key = conversationKey(missing[index]);
+                if (outcome.status === "fulfilled") {
+                    loaded[key] = outcome.value;
+                } else {
+                    failed.add(key);
+                    firstFailure ??= outcome.reason;
                 }
-                return next;
             });
+            setConversationMessagesById((prev) => ({ ...prev, ...loaded }));
+            if (failed.size > 0) {
+                notifyApiError(firstFailure, "Couldn't load the messages in one of those conversations");
+                setSelectedConversationIds((prev) => new Set([...prev].filter((key) => !failed.has(key))));
+            }
         } finally {
             setResolvingSelection((n) => n - 1);
         }
+    }
+
+    /**
+     * Called as a refresh of the list swaps in `after` for `before`: the messages kept for a conversation whose summary changed (a reply arrived, a
+     * message was read or moved) are out of date - the next action on it would act on a list missing the new message, or send an old `version`. The
+     * cached messages of one that is not ticked are dropped, to be fetched when next wanted; a ticked one's are fetched again now, the old ones standing
+     * until they arrive.
+     */
+    function refreshConversationMessages(before: ListedConversation[], after: ListedConversation[]) {
+        const was = new Map(before.map((row) => [conversationKey(row), conversationSignature(row)]));
+        const changed = after.filter((row) => was.has(conversationKey(row)) && was.get(conversationKey(row)) !== conversationSignature(row));
+        if (changed.length === 0) {
+            return;
+        }
+        const ticked = changed.filter((row) => selectedConversationIdsRef.current.has(conversationKey(row)));
+        const stale = new Set(changed.filter((row) => !ticked.includes(row)).flatMap((row) => [conversationKey(row), row.conversationId]));
+        setConversationMessagesById((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !stale.has(key))));
+        void resolveConversations(ticked, true);
     }
 
     function toggleConversationSelected(conversation: ListedConversation) {
@@ -2251,7 +2300,7 @@ function InboxContent({ userUid }: { userUid?: string }) {
 
     /** Empty folder: permanently deletes everything in the folder being listed (Deleted Items or Junk Email) after the reader has confirmed. */
     async function emptyListedFolder(folder: EmptiableFolder, count: number | undefined) {
-        const outcome = await permanent.requestEmptyFolder({ uid: folder.uid, name: folder.name }, count);
+        const outcome = await permanent.requestEmptyFolder(folder, count);
         if (!outcome) {
             return;
         }
@@ -2799,6 +2848,12 @@ function InboxContent({ userUid }: { userUid?: string }) {
                   uid: emptiableFolders[0].uid,
                   name: aggregateFolderType ? (emptiableFolders[0].type === "junk" ? "Junk Email" : "Deleted Items") : emptiableFolders[0].name,
                   uids: aggregateFolderType ? emptiableFolders.map((f) => f.uid) : undefined,
+                  // The mailboxes whose folders these are, for the confirmation to name (it empties each of them, a share included).
+                  scope: aggregateFolderType
+                      ? mailboxFolders
+                            .filter((entry) => entry.folders.some((f) => f.type === aggregateFolderType))
+                            .map(({ mailbox }) => `${mailbox.displayName}${mailbox.ownerUserUid ? "" : " (shared)"}`)
+                      : undefined,
               };
     // How many it holds as the sidebar's counts have it (kept right as messages leave), unless that says none while the list shows some.
     const emptiableTotal = emptiableFolders.reduce((sum, f) => sum + folderCountOf(f).total, 0);

@@ -104,6 +104,11 @@ afterEach(() => {
 });
 
 describe("SettingsPrivacyPage", () => {
+    it("offers the Gravatar opt-in, whichever mailbox is selected", async () => {
+        mockShell();
+        render(<SettingsPrivacyPage userUid="someone-else" />);
+        expect(await screen.findByRole("checkbox", { name: "Show profile pictures from Gravatar" })).not.toBeChecked();
+    });
     it("shows an empty state when there are no export requests", async () => {
         mockShell((url) => (url === "/api/mail/data-export-requests" ? jsonResponse(200, []) : undefined));
         render(<SettingsPrivacyPage userUid="u1" />);

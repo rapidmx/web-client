@@ -2,16 +2,16 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import ContactAvatar from "../../../../lib/components/avatar/ContactAvatar.js";
-import Button from "../../../../lib/components/buttons/Button.js";
-import { CONTACT_PHOTO_MAX_BYTES, CONTACT_PHOTO_TYPES } from "../../../../lib/contacts/contactsApi.js";
+import { ContactPhotoError, prepareContactPhoto } from "../../../../lib/contacts/preparePhoto.js";
+import ImageEditBadge from "../../../../lib/components/forms/ImageEditBadge.js";
 
 export interface ContactPhotoFieldProps {
     displayName: string;
     /** The contact's first address, for the Gravatar shown while they have no picture of their own. */
     email?: string;
-    /** The picture the contact has now (`contactPhotoUrl()`), if any. */
+    /** The picture the contact has now (`useContactPhotoSrc()`), if any. */
     currentUrl?: string;
     /** The picture chosen to replace it, not uploaded until the contact is saved; `null` for none. */
     picked: File | null;
@@ -21,15 +21,18 @@ export interface ContactPhotoFieldProps {
     onRemove: () => void;
     /** Called with the reason a chosen file was turned down. */
     onReject: (message: string) => void;
+    /** Called with `true` while a chosen file is being made ready, so the form is not saved before it is, and with `false` after. */
+    onBusyChange: (busy: boolean) => void;
 }
 
 /**
- * The picture of a contact in the edit form: the avatar as it is (their picture, else Gravatar, else initials) with "Change photo" and, when
- * there is a picture of their own, "Remove photo". A file is checked here (type and size) and only uploaded when the form is saved.
+ * The picture of a contact in the edit form: the avatar as it is (their picture, else Gravatar, else initials) with a camera badge at its lower right that opens a
+ * menu (`ImageEditBadge`) - "Upload file", "Take photo" and, when there is a picture of their own, "Remove photo". Any picture is taken (a phone's camera photo of several megabytes,
+ * in any orientation, included): it is made small enough here by `prepareContactPhoto()` and only uploaded when the form is saved.
  */
-export default function ContactPhotoField({ displayName, email, currentUrl, picked, removed, onPick, onRemove, onReject }: ContactPhotoFieldProps) {
-    const input = useRef<HTMLInputElement>(null);
+export default function ContactPhotoField({ displayName, email, currentUrl, picked, removed, onPick, onRemove, onReject, onBusyChange }: ContactPhotoFieldProps) {
     const [preview, setPreview] = useState<string | undefined>();
+    const [preparing, setPreparing] = useState(false);
 
     useEffect(() => {
         if (!picked) {
@@ -41,16 +44,16 @@ export default function ContactPhotoField({ displayName, email, currentUrl, pick
         return () => URL.revokeObjectURL(url);
     }, [picked]);
 
-    function handleChange(file: File | undefined) {
-        if (!file) {
-            return;
-        }
-        if (!CONTACT_PHOTO_TYPES.includes(file.type)) {
-            onReject("Choose a JPEG, PNG, GIF or WebP image.");
-        } else if (file.size > CONTACT_PHOTO_MAX_BYTES) {
-            onReject("Choose an image no larger than 1 MB.");
-        } else {
-            onPick(file);
+    async function handleChange(file: File) {
+        setPreparing(true);
+        onBusyChange(true);
+        try {
+            onPick(await prepareContactPhoto(file));
+        } catch (err) {
+            onReject(err instanceof ContactPhotoError ? err.message : "This picture could not be read - choose another one.");
+        } finally {
+            setPreparing(false);
+            onBusyChange(false);
         }
     }
 
@@ -58,29 +61,23 @@ export default function ContactPhotoField({ displayName, email, currentUrl, pick
     const hasOwn = !!picked || (!!currentUrl && !removed);
     return (
         <div className="flex items-center gap-4 mb-3">
-            <ContactAvatar displayName={displayName || "?"} size={72} photoUrl={shown} email={picked || (currentUrl && !removed) ? undefined : email} />
-            <div className="flex flex-wrap gap-2">
-                <input
-                    ref={input}
-                    type="file"
-                    accept={CONTACT_PHOTO_TYPES.join(",")}
-                    aria-label="Contact photo file"
-                    className="sr-only"
-                    tabIndex={-1}
-                    onChange={(e) => {
-                        handleChange(e.target.files?.[0]);
-                        e.target.value = "";
-                    }}
+            <div className="relative inline-block shrink-0">
+                <ContactAvatar displayName={displayName || "?"} size={72} photoUrl={shown} email={picked || (currentUrl && !removed) ? undefined : email} />
+                <ImageEditBadge
+                    position="bottom-right"
+                    label="Change contact photo"
+                    fileInputLabel="Contact photo file"
+                    hasImage={hasOwn}
+                    busy={preparing}
+                    onFile={(file) => void handleChange(file)}
+                    onRemove={onRemove}
                 />
-                <Button type="button" variant="secondary" className="!w-auto !py-1 !px-3 text-xs" onClick={() => input.current?.click()}>
-                    {hasOwn ? "Change photo" : "Add photo"}
-                </Button>
-                {hasOwn && (
-                    <Button type="button" variant="secondary" className="!w-auto !py-1 !px-3 text-xs" onClick={onRemove}>
-                        Remove photo
-                    </Button>
-                )}
             </div>
+            {preparing && (
+                <span role="status" className="text-xs text-text-muted">
+                    Preparing picture…
+                </span>
+            )}
         </div>
     );
 }

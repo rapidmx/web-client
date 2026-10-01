@@ -231,3 +231,65 @@ describe("EventMatchNav", () => {
         expect(onPrevious).toHaveBeenCalledTimes(2);
     });
 });
+
+describe("EventMatchNav arrow keys inside widgets", () => {
+    it("leave the arrows to selects, radios, ranges, menus, listboxes, tabs, sliders and editable text, without cancelling them", () => {
+        const onPrevious = vi.fn();
+        const onNext = vi.fn();
+        render(
+            <>
+                <select aria-label="zone">
+                    <option>UTC</option>
+                </select>
+                <input type="radio" aria-label="radio" />
+                <input type="range" aria-label="range" />
+                <input type="number" aria-label="number" />
+                <div role="menu">
+                    <button type="button">Item</button>
+                </div>
+                <div role="radiogroup">
+                    <button type="button">Choice</button>
+                </div>
+                <div role="listbox">
+                    <button type="button">Option</button>
+                </div>
+                <div role="tablist">
+                    <button type="button">Tab</button>
+                </div>
+                <div role="slider" tabIndex={0} aria-label="slider" />
+                <div contentEditable suppressContentEditableWarning aria-label="editable">
+                    <span>text</span>
+                </div>
+                <button type="button" aria-haspopup="listbox" aria-expanded="true">
+                    Open popup
+                </button>
+                <button type="button">Plain</button>
+                <EventMatchNav onPrevious={onPrevious} onNext={onNext} />
+            </>,
+        );
+        const targets = [
+            screen.getByLabelText("zone"),
+            screen.getByLabelText("radio"),
+            screen.getByLabelText("range"),
+            screen.getByLabelText("number"),
+            screen.getByRole("button", { name: "Item" }),
+            screen.getByRole("button", { name: "Choice" }),
+            screen.getByRole("button", { name: "Option" }),
+            screen.getByRole("button", { name: "Tab" }),
+            screen.getByLabelText("slider"),
+            screen.getByText("text"),
+            screen.getByRole("button", { name: "Open popup" }),
+        ];
+        for (const target of targets) {
+            // `fireEvent` returns false when the event was cancelled.
+            expect(fireEvent.keyDown(target, { key: "ArrowLeft" })).toBe(true);
+            expect(fireEvent.keyDown(target, { key: "ArrowRight" })).toBe(true);
+        }
+        expect(onPrevious).not.toHaveBeenCalled();
+        expect(onNext).not.toHaveBeenCalled();
+
+        // A plain button in the card still steps.
+        expect(fireEvent.keyDown(screen.getByRole("button", { name: "Plain" }), { key: "ArrowRight" })).toBe(false);
+        expect(onNext).toHaveBeenCalledTimes(1);
+    });
+});

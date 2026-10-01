@@ -5,7 +5,7 @@
 /** Typed wrappers over `@rapidmx/restapi`'s `/mail/contacts` REST surface — see `mailApi.ts`'s own header
  * comment for the shared ACL/authorization model every wrapper file here follows. */
 
-import { ApiClient, ApiRequestError, apiUrl, withClient, withCsrfHeader } from "../util/api.js";
+import { ApiClient, apiUrl, withClient, withClientRaw } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import {
     type EncryptionPreference,
@@ -254,7 +254,8 @@ export function setContactFavorite(contact: Contact, favorite: boolean, client?:
 
 /**
  * The URL of a contact's own picture, or `undefined` when they have none. The version is part of it so a replaced picture is fetched again rather than
- * served from the browser's cache.
+ * served from the browser's cache. Only an `<img src>` of the cookie-authenticated web app can load it: under an explicit `ApiClient` use
+ * `useContactPhotoSrc()` instead.
  */
 export function contactPhotoUrl(contact: Pick<Contact, "uid" | "version" | "photoBlobKey">): string | undefined {
     return contact.photoBlobKey ? apiUrl(`/mail/contacts/${encodeURIComponent(contact.uid)}/photo?v=${contact.version}`) : undefined;
@@ -265,19 +266,13 @@ export const CONTACT_PHOTO_TYPES = ["image/jpeg", "image/png", "image/gif", "ima
 export const CONTACT_PHOTO_MAX_BYTES = 1024 * 1024;
 
 /** Sets a contact's own picture from an image file (the file's own bytes go up, not JSON) and returns the updated contact. */
-export async function uploadContactPhoto(uid: string, version: number, file: Blob): Promise<Contact> {
-    const res = await fetch(apiUrl(`/mail/contacts/${encodeURIComponent(uid)}/photo?version=${version}`), {
-        method: "PUT",
-        credentials: "include",
-        headers: withCsrfHeader({ "Content-Type": file.type }, "PUT"),
-        body: file,
-    });
-    const contentType = res.headers.get("content-type") ?? "";
-    const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
-    if (!res.ok) {
-        throw new ApiRequestError((body && (body.message || body.error)) || res.statusText || "Upload failed.", res.status, body?.code);
-    }
-    return body as Contact;
+export function uploadContactPhoto(uid: string, version: number, file: Blob, client?: ApiClient): Promise<Contact> {
+    return withClientRaw(client, `/mail/contacts/${encodeURIComponent(uid)}/photo?version=${version}`, "PUT", file);
+}
+
+/** The bytes of a contact's own picture through an explicit `client` - for one that authenticates with a token, whose `<img>` cannot (see `contactPhotoUrl()`). */
+export function fetchContactPhoto(uid: string, version: number, client: ApiClient): Promise<Blob> {
+    return client.fetchBlob(`/mail/contacts/${encodeURIComponent(uid)}/photo?v=${version}`);
 }
 
 /** Removes a contact's own picture and returns the updated contact. */

@@ -6612,7 +6612,7 @@ describe("InboxPage", () => {
             const sharedInbox = { ...inboxFolder, uid: "f-shared-inbox", mailboxUid: "mb2" };
             const shared: any[] = [];
             let failShared = false;
-            mockFetch((url, init) => {
+            const fetchMock = mockFetch((url, init) => {
                 if (url.startsWith("/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
                 if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox, sharedMailbox, sentOnlyMailbox]);
                 if (url.startsWith("/api/mail/folders")) {
@@ -6638,8 +6638,19 @@ describe("InboxPage", () => {
             pushMessage("f-shared-inbox");
             expect(await screen.findByText("Support thread", {}, { timeout: 3000 })).toBeInTheDocument();
 
-            // A mailbox that fails to answer contributes nothing - the rest still list.
+            // A mailbox that fails to answer a refresh keeps the rows it has (its mail does not vanish until the next success) - the rest still list.
             failShared = true;
+            shared.length = 0;
+            const listings = () => fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/mail/messages/conversations?") && String(url).includes("mailboxUid=mb2")).length;
+            const before = listings();
+            pushMessage("f-shared-inbox");
+            await waitFor(() => expect(listings()).toBeGreaterThan(before), { timeout: 3000 });
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            expect(screen.getByText("Support thread")).toBeInTheDocument();
+            expect(screen.getByText("Own thread")).toBeInTheDocument();
+
+            // Once it answers again, what it says is believed.
+            failShared = false;
             pushMessage("f-shared-inbox");
             await waitFor(() => expect(screen.queryByText("Support thread")).not.toBeInTheDocument(), { timeout: 3000 });
             expect(screen.getByText("Own thread")).toBeInTheDocument();

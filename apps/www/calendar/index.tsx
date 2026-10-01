@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../shared/navigation/pageTitle.js";
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { HiOutlineBars3, HiOutlinePlus } from "react-icons/hi2";
 import {
@@ -29,6 +29,7 @@ import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calen
 import { resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
 import { createFolder } from "../../../lib/mail/mailApi.js";
 import { CalendarOccurrence, expandAllOccurrences } from "../../../lib/calendar/recurrence.js";
+import { useDayKey } from "../../../lib/calendar/useDayKey.js";
 import { allOccurrences, initialMatchIndex, occurrencesInRange, searchOccurrences, searchTerms, stepSequenceIndex } from "../../../lib/calendar/eventSearch.js";
 import Drawer from "../../../lib/components/overlays/Drawer.js";
 import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../shared/components/calendar/layout/CalendarShell.js";
@@ -340,11 +341,14 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         return () => clearTimeout(timer);
     }, [searchText]);
     // The List shows only what is from today on, so that is all a search steps through there; the other views reach the past ones.
+    // Today moves on at midnight: the List's "from today on" is worked out again then (`listDay` is only a dependency).
+    const listDay = useDayKey();
+    const dayOfList = view === "list" ? listDay : "";
     const matches = useMemo(() => {
         const found = searching ? searchOccurrences(events, query) : [];
         const today = new Date();
         return view === "list" ? found.filter((occurrence) => isUpcoming(occurrence, today)) : found;
-    }, [events, query, searching, view]);
+    }, [events, query, searching, view, dayOfList]);
     const activeIndex = matches.findIndex((m) => m.occurrenceKey === activeKey);
 
     // What an open event card steps through, in order: the matches while a search runs, else every event of the checked calendars (bounded as a
@@ -359,7 +363,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
             return everything.filter((occurrence) => isUpcoming(occurrence, today));
         }
         return everything;
-    }, [searching, matches, view, everything]);
+    }, [searching, matches, view, everything, dayOfList]);
 
     const occurrences = useMemo(() => {
         if (view === "list") {
@@ -518,11 +522,12 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         });
     }
 
-    function openEvent(occurrence: CalendarOccurrence) {
+    // Stable (it only sets state), so the List's rows are not rendered again by every keystroke in the search box.
+    const openEvent = useCallback((occurrence: CalendarOccurrence) => {
         setSlide(undefined);
         setActiveKey(occurrence.occurrenceKey);
         setModal({ occurrence });
-    }
+    }, []);
 
     function closeModal() {
         setModal(null);

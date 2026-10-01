@@ -3,19 +3,61 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 
-/** The `localStorage` key of the privacy preference: `"off"` stops contact avatars from asking Gravatar for a picture. */
+/** The `localStorage` key of the privacy preference: `"on"` lets contact avatars ask Gravatar for a picture; anything else (including unset or an old `"off"`) does not. */
 export const GRAVATAR_PREFERENCE_KEY = "rapidmx:gravatar";
 
+/** Fired on `window` when this tab changes the preference (the `storage` event covers other tabs). */
+export const GRAVATAR_PREFERENCE_EVENT = "rapidmx:gravatar-changed";
+
 /**
- * Whether avatars may look a person up at Gravatar by the SHA-256 hash of their address (never the address itself). On unless the reader turned
- * it off (`localStorage["rapidmx:gravatar"] = "off"`); a browser without storage keeps the default.
+ * Whether avatars may look a person up at Gravatar by the SHA-256 hash of their address (never the address itself). Off unless the reader turned it on
+ * in Settings > Privacy (`localStorage["rapidmx:gravatar"] = "on"`): it tells gravatar.com the hash and the reader's IP address. A browser without
+ * storage stays off.
  */
 export function gravatarEnabled(): boolean {
     try {
-        return globalThis.localStorage?.getItem(GRAVATAR_PREFERENCE_KEY) !== "off";
+        return globalThis.localStorage.getItem(GRAVATAR_PREFERENCE_KEY) === "on";
     } catch {
-        return true;
+        return false;
     }
+}
+
+/** Turns the Gravatar lookup on or off and tells every subscriber (`subscribeGravatarPreference()`) in this tab. */
+export function setGravatarEnabled(enabled: boolean): void {
+    try {
+        globalThis.localStorage.setItem(GRAVATAR_PREFERENCE_KEY, enabled ? "on" : "off");
+    } catch {
+        // Storage is unavailable: the preference cannot be kept, so it stays off.
+    }
+    globalThis.dispatchEvent(new Event(GRAVATAR_PREFERENCE_EVENT));
+}
+
+/** Calls `listener` whenever the preference changes in this tab or another; returns the unsubscribe function. Shaped for `useSyncExternalStore`. */
+export function subscribeGravatarPreference(listener: () => void): () => void {
+    const onStorage = (event: StorageEvent) => {
+        if (event.key === null || event.key === GRAVATAR_PREFERENCE_KEY) {
+            listener();
+        }
+    };
+    globalThis.addEventListener(GRAVATAR_PREFERENCE_EVENT, listener);
+    globalThis.addEventListener("storage", onStorage);
+    return () => {
+        globalThis.removeEventListener(GRAVATAR_PREFERENCE_EVENT, listener);
+        globalThis.removeEventListener("storage", onStorage);
+    };
+}
+
+/** Gravatar URLs that answered with nothing, so a list that shows the same person again does not ask again for the page's lifetime. */
+const missing = new Set<string>();
+
+/** Remembers that Gravatar has no picture at `url`. */
+export function markGravatarMissing(url: string): void {
+    missing.add(url);
+}
+
+/** Whether Gravatar already answered with no picture at `url`. */
+export function isGravatarMissing(url: string): boolean {
+    return missing.has(url);
 }
 
 const hashes = new Map<string, Promise<string | undefined>>();

@@ -3,12 +3,19 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jsonResponse, mockFetch } from "../testUtils.js";
+import { jsonResponse, mockFetch, mockIntersectionObserver } from "../testUtils.js";
 import CalendarPageBase from "../../../apps/www/calendar/index.js";
 import { withTestRouter } from "../routerTestUtils.js";
+import { occurrenceMarker } from "../../../apps/shared/components/calendar/activeOccurrence.js";
+
+// Every list row renders through `occurrenceMarker`, so its calls count the rows rendered.
+vi.mock("../../../apps/shared/components/calendar/activeOccurrence.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../apps/shared/components/calendar/activeOccurrence.js")>();
+    return { ...actual, occurrenceMarker: vi.fn(actual.occurrenceMarker) };
+});
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const CalendarPage = withTestRouter(CalendarPageBase);
@@ -257,15 +264,22 @@ describe("CalendarPage list view", () => {
         expect(within(region).getByRole("heading", { name: "Wednesday, September 30" })).toHaveAttribute("aria-current", "date");
     });
 
-    it("lists a very long event on its first year of days only", async () => {
+    it("lists a very long event on its first year of days only, as the end of the list is scrolled to", async () => {
         setToday("2026-01-01T09:00:00");
+        const io = mockIntersectionObserver();
         mockShellAndEvents([sabbatical]);
         const user = userEvent.setup();
         render(<CalendarPage userUid="u1" />);
         await screen.findByRole("grid", { name: "Month" });
         await user.click(screen.getByRole("button", { name: "List" }));
 
-        expect(within(await listRegion()).getAllByText("Sabbatical")).toHaveLength(366);
+        const region = await listRegion();
+        // The days are rendered a page at a time (the page opens on the 15th of June, so up to there and a page past it are).
+        expect(within(region).getAllByText("Sabbatical").length).toBeLessThan(366);
+        for (let page = 0; page < 5; page++) {
+            act(() => io.trigger());
+        }
+        expect(within(region).getAllByText("Sabbatical")).toHaveLength(366);
     });
 
     it("marks each row with its calendar's colour, an outline for time shown as free", async () => {
@@ -284,6 +298,7 @@ describe("CalendarPage list view", () => {
 
     it("expands a recurring event within the same window a search uses (five years either side of today, the 500 nearest it), from today on", async () => {
         setToday("2026-06-15T12:00:00");
+        const io = mockIntersectionObserver();
         mockShellAndEvents([daily]);
         const user = userEvent.setup();
         render(<CalendarPage userUid="u1" />);
@@ -291,6 +306,11 @@ describe("CalendarPage list view", () => {
         await user.click(screen.getByRole("button", { name: "List" }));
         const region = await listRegion();
 
+        // Rendered a page of days at a time: the first 60 days, then more as the end of the list comes into view.
+        expect(within(region).getAllByText("Daily sync")).toHaveLength(60);
+        for (let page = 0; page < 10; page++) {
+            act(() => io.trigger());
+        }
         expect(within(region).getAllByText("Daily sync")).toHaveLength(487);
     });
 
@@ -722,5 +742,39 @@ describe("CalendarPage list view", () => {
             await user.keyboard("{Control>}{Alt>}5{/Alt}{/Control}");
             expect(await listRegion()).toBeInTheDocument();
         });
+    });
+
+    it("does not render the rows again for a keystroke in the search box, only for the search it becomes", async () => {
+        mockShellAndEvents([standup, review, holiday]);
+        const user = userEvent.setup();
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("grid", { name: "Month" });
+        await user.click(screen.getByRole("button", { name: "List" }));
+        await listRegion();
+        vi.mocked(occurrenceMarker).mockClear();
+
+        // Typing alone (the search itself waits for a pause) changes nothing in the list.
+        fireEvent.change(screen.getByRole("textbox", { name: "Search events" }), { target: { value: "stand" } });
+        expect(screen.getByRole("textbox", { name: "Search events" })).toHaveValue("stand");
+        expect(occurrenceMarker).not.toHaveBeenCalled();
+        await waitFor(() => expect(screen.queryByText("Holiday")).not.toBeInTheDocument());
+    });
+
+    it("moves on at midnight: a card open on an event no longer has the events of yesterday to step back to", async () => {
+        setToday("2026-06-15T23:59:00");
+        mockShellAndEvents([standup, july]);
+        const user = userEvent.setup();
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("grid", { name: "Month" });
+        await user.click(screen.getByRole("button", { name: "List" }));
+        await user.click(within(await listRegion()).getByRole("button", { name: /Summer party/ }));
+        const dialog = await screen.findByRole("dialog", { name: "Event details" });
+        // The standup of the 15th is still listed, so there is an event before the party.
+        expect(within(dialog).getByRole("button", { name: "Previous event" })).not.toHaveAttribute("aria-disabled");
+
+        // The machine slept through midnight (or the tab was hidden): back in view, it is the 16th.
+        vi.setSystemTime(new Date("2026-06-16T00:00:05"));
+        act(() => void document.dispatchEvent(new Event("visibilitychange")));
+        await waitFor(() => expect(within(dialog).getByRole("button", { name: "Previous event" })).toHaveAttribute("aria-disabled", "true"));
     });
 });

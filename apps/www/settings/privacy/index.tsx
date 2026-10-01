@@ -30,6 +30,7 @@ import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
+import GravatarSetting from "../../../shared/components/settings/GravatarSetting.js";
 
 const NON_MAIL_FOLDER_TYPES = new Set(["calendar", "contacts", "tasks", "notes"]);
 
@@ -82,6 +83,8 @@ function PrivacyContent({ userUid }: { userUid?: string }) {
                     <h1 className="text-lg font-bold tracking-tight mb-1">Privacy &amp; Data</h1>
                     <p className="text-sm text-text-muted">Export or manage the data associated with this mailbox.</p>
                 </div>
+
+                <GravatarSetting />
 
                 {selectedIsOwn ? (
                     <>

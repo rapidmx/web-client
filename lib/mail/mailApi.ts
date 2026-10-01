@@ -13,12 +13,13 @@
  * `@rapidmx/restapi` and this repo's `.claude/NOTES.md`.
  */
 
-import { ApiClient, ApiRequestError, apiFetch, apiUrl, authApiFetch, withClient, withCsrfHeader } from "../util/api.js";
+import { ApiClient, ApiRequestError, apiFetch, apiUrl, authApiFetch, withClient, withClientRaw, withCsrfHeader } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import { deviceTimeZone } from "../util/timeZone.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
 import { bytesToBinaryString } from "../crypto/mime.js";
-import { newContentId, parseDataImage } from "./inlineImages.js";
+import { EMBEDDED_IMAGE_TYPES, newContentId, parseDataImage } from "./inlineImages.js";
+import { MAX_QUOTED_IMAGE_BYTES } from "./compose/quotedImages.js";
 import type { ResolvedPrincipal } from "./mailboxAccessApi.js";
 
 export type { ListParams };
@@ -1029,9 +1030,14 @@ export function attachmentContentUrl(uid: string): string {
 /**
  * Uploads a file's raw bytes as a new attachment on a not-yet-sent draft. Bypasses `apiFetch` — that helper
  * always forces `Content-Type: application/json`, which would corrupt binary content; this sends the file's
- * own bytes/type directly instead, matching `BaseAttachmentRoute.upload`'s expectation of a raw request body.
+ * own bytes/type directly instead (through `client` when one is given), matching `BaseAttachmentRoute.upload`'s expectation of a raw request body.
  */
-export async function uploadAttachment(messageUid: string, file: File, options: { inline?: boolean; contentId?: string } = {}): Promise<Attachment> {
+export function uploadAttachment(
+    messageUid: string,
+    file: File,
+    options: { inline?: boolean; contentId?: string } = {},
+    client?: ApiClient,
+): Promise<Attachment> {
     // Percent-encoded, not form-encoded (`URLSearchParams` writes a space as `+`, which the server reads as a plus sign: "My+photo.png").
     const query: Record<string, string> = { messageUid, filename: file.name, mimeType: file.type || "application/octet-stream" };
     if (options.inline) {
@@ -1043,19 +1049,7 @@ export async function uploadAttachment(messageUid: string, file: File, options: 
     const params = Object.entries(query)
         .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
         .join("&");
-    const res = await fetch(apiUrl(`/mail/attachments/upload?${params}`), {
-        method: "POST",
-        credentials: "include",
-        headers: withCsrfHeader({ "Content-Type": file.type || "application/octet-stream" }),
-        body: file,
-    });
-    const contentType = res.headers.get("content-type") ?? "";
-    const responseBody = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
-    if (!res.ok) {
-        const message = (responseBody && (responseBody.message || responseBody.error)) || res.statusText || "Upload failed.";
-        throw new ApiRequestError(message, res.status, responseBody?.code);
-    }
-    return responseBody as Attachment;
+    return withClientRaw(client, `/mail/attachments/upload?${params}`, "POST", file, file.type || "application/octet-stream");
 }
 
 export interface ComposeRecipientInput {
@@ -1156,8 +1150,33 @@ export async function assembleDraft(messageUid: string, input: AssembleDraftInpu
     });
 }
 
-/** `data:` images already attached to a draft: its uid and the image, to the URL of the attachment it became. */
+/** `data:` images already attached to a draft: its uid and a fingerprint of the image, to the URL of the attachment it became. */
 const attachedDataImages = new Map<string, string>();
+/** The most pictures remembered; the oldest go first (a draft that was never sent or discarded here would otherwise keep its pictures forever). */
+const MAX_ATTACHED_DATA_IMAGES = 256;
+
+/** A 53-bit hash (cyrb53) of the whole of `text`, with its length - a fingerprint that stands for a `data:` URI of up to megabytes without holding it. */
+function fingerprint(text: string): string {
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ code, 2654435761);
+        h2 = Math.imul(h2 ^ code, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return `${text.length}:${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}`;
+}
+
+/** Forgets the pictures attached to draft `messageUid`, for when it has been sent or deleted (they are only remembered to avoid attaching one twice). */
+export function forgetDraftImages(messageUid: string): void {
+    for (const key of Array.from(attachedDataImages.keys())) {
+        if (key.startsWith(`${messageUid}\n`)) {
+            attachedDataImages.delete(key);
+        }
+    }
+}
 
 const DATA_IMAGE_TAG = /(<img\b[^>]*?\bsrc\s*=\s*)(["'])(data:image\/[^"']*)\2/gi;
 
@@ -1169,7 +1188,8 @@ function pictureName(contentType: string): string {
 /**
  * `html` with each `<img>` that embeds its picture as a `data:` URI (a quoted original's image, one pasted into the editor) pointed at an
  * attachment of the draft instead: the server drops `data:` images from the message it composes, and an attachment is what it makes an
- * inline part of. A picture is attached once per draft however often the draft is saved.
+ * inline part of. A picture is attached once per draft however often the draft is saved. Only what a quote itself embeds is attached - a raster
+ * image (`EMBEDDED_IMAGE_TYPES`, never SVG) of at most `MAX_QUOTED_IMAGE_BYTES`; any other is left as it is, and the server drops it.
  */
 async function attachDataImages(messageUid: string, html: string): Promise<string> {
     const found = Array.from(html.matchAll(DATA_IMAGE_TAG));
@@ -1178,19 +1198,22 @@ async function attachDataImages(messageUid: string, html: string): Promise<strin
     }
     const urls = new Map<string, string>();
     for (const [, , , uri] of found) {
-        const key = `${messageUid}\n${uri}`;
+        const key = `${messageUid}\n${fingerprint(uri)}`;
         const known = attachedDataImages.get(key);
         if (known) {
             urls.set(uri, known);
             continue;
         }
         const image = parseDataImage(uri);
-        if (!image) {
+        if (!image || !EMBEDDED_IMAGE_TYPES.test(image.contentType) || image.bytes.length > MAX_QUOTED_IMAGE_BYTES) {
             continue;
         }
         const attachment = await uploadAttachment(messageUid, new File([image.bytes as BlobPart], pictureName(image.contentType), { type: image.contentType }), { inline: true });
         const url = attachmentContentUrl(attachment.uid);
         attachedDataImages.set(key, url);
+        if (attachedDataImages.size > MAX_ATTACHED_DATA_IMAGES) {
+            attachedDataImages.delete(attachedDataImages.keys().next().value!);
+        }
         urls.set(uri, url);
     }
     return html.replace(DATA_IMAGE_TAG, (match, start: string, quote: string, uri: string) => (urls.has(uri) ? `${start}${quote}${urls.get(uri)}${quote}` : match));

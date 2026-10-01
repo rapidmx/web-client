@@ -11,6 +11,7 @@ import {
     SESSION_REFRESH_AFTER_MS,
     SESSION_REFRESH_MIN_GAP_MS,
     SESSION_REFRESH_RETRY_MS,
+    SESSION_REFRESH_TIMEOUT_MS,
     SESSION_RECOVERY_COOLDOWN_MS,
     SESSION_REFRESH_CHECK_MS,
     type SessionRefreshOptions,
@@ -21,6 +22,7 @@ import {
     refreshedRecently,
     resetSessionRecovery,
     setSessionRefreshRetryDelay,
+    setSessionRefreshTimeout,
     useRedirectIfUnauthenticated,
     useSessionRefresh,
 } from "../../../lib/auth/session.js";
@@ -826,5 +828,76 @@ describe("useRedirectIfUnauthenticated and useSessionRefresh under an ApiClientC
         await act(async () => undefined);
         expect(fetchMock).not.toHaveBeenCalled();
         expect(location.href).toBe("https://mail.example.com/mail");
+    });
+});
+
+describe("a refresh that never answers", () => {
+    /** A fetch that never answers on its own, and rejects as a real one does when its request is aborted. */
+    function hangingFetch() {
+        return mockFetch(
+            (_url, init) =>
+                new Promise<Response>((_resolve, reject) => {
+                    init.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+                }),
+        );
+    }
+
+    it("is given up on after the timeout as a transient failure (not a rejection, so no second attempt), releasing the Web Lock and the shared promise", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        let released = false;
+        vi.stubGlobal("navigator", {
+            locks: {
+                request: async (_name: string, cb: () => Promise<boolean>) => {
+                    try {
+                        return await cb();
+                    } finally {
+                        released = true;
+                    }
+                },
+            },
+        });
+        const fetchMock = hangingFetch();
+        let settled = false;
+        const result = refreshSession(AUTH);
+        const assertion = expect(result).rejects.toThrow(/timed out/);
+        void result.catch(() => undefined).finally(() => (settled = true));
+
+        await vi.advanceTimersByTimeAsync(SESSION_REFRESH_TIMEOUT_MS - 1);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await assertion;
+        expect(released).toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(getSessionLog().map((entry) => entry.e)).toEqual(["refresh:start", "refresh:error"]);
+
+        // Nothing is left in flight: the next refresh is a new request.
+        mockFetch(() => jsonResponse(200, {}));
+        await expect(refreshSession(AUTH)).resolves.toBe(true);
+    });
+
+    it("lets a recovery finish (as not renewed) instead of hanging every request that was refused", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        hangingFetch();
+        const result = recoverSession(AUTH);
+        await vi.advanceTimersByTimeAsync(SESSION_REFRESH_TIMEOUT_MS);
+        await expect(result).resolves.toBe(false);
+    });
+
+    it("waits no longer than a timeout set for it, and a refresh that answers in time is not cut off", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        setSessionRefreshTimeout(50);
+        hangingFetch();
+        const result = refreshSession(AUTH);
+        const assertion = expect(result).rejects.toThrow(/timed out/);
+        await vi.advanceTimersByTimeAsync(50);
+        await assertion;
+
+        resetSessionRecovery();
+        setSessionRefreshTimeout(50);
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await expect(refreshSession(AUTH, true)).resolves.toBe(true);
+        // The timeout of a request that was answered is cleared: it never aborts it afterwards.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false);
     });
 });

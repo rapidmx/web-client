@@ -4,7 +4,16 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GRAVATAR_PREFERENCE_KEY, gravatarEnabled, gravatarUrl } from "../../../lib/contacts/gravatar.js";
+import {
+    GRAVATAR_PREFERENCE_EVENT,
+    GRAVATAR_PREFERENCE_KEY,
+    gravatarEnabled,
+    gravatarUrl,
+    isGravatarMissing,
+    markGravatarMissing,
+    setGravatarEnabled,
+    subscribeGravatarPreference,
+} from "../../../lib/contacts/gravatar.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -33,16 +42,68 @@ describe("gravatarUrl", () => {
 });
 
 describe("gravatarEnabled", () => {
-    it("is on unless the reader turned it off", () => {
-        expect(gravatarEnabled()).toBe(true);
+    it("is off until the reader turns it on, and an old explicit off stays off", () => {
+        expect(gravatarEnabled()).toBe(false);
         localStorage.setItem(GRAVATAR_PREFERENCE_KEY, "off");
         expect(gravatarEnabled()).toBe(false);
+        localStorage.setItem(GRAVATAR_PREFERENCE_KEY, "on");
+        expect(gravatarEnabled()).toBe(true);
     });
 
-    it("stays on when the browser will not hand out its storage", () => {
+    it("stays off when the browser will not hand out its storage", () => {
         vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
             throw new Error("denied");
         });
-        expect(gravatarEnabled()).toBe(true);
+        expect(gravatarEnabled()).toBe(false);
+    });
+});
+
+describe("setGravatarEnabled and subscribeGravatarPreference", () => {
+    it("stores the choice as on/off and tells subscribers in this tab", () => {
+        const listener = vi.fn();
+        const unsubscribe = subscribeGravatarPreference(listener);
+        setGravatarEnabled(true);
+        expect(localStorage.getItem(GRAVATAR_PREFERENCE_KEY)).toBe("on");
+        expect(listener).toHaveBeenCalledTimes(1);
+        setGravatarEnabled(false);
+        expect(localStorage.getItem(GRAVATAR_PREFERENCE_KEY)).toBe("off");
+        expect(listener).toHaveBeenCalledTimes(2);
+        unsubscribe();
+        globalThis.dispatchEvent(new Event(GRAVATAR_PREFERENCE_EVENT));
+        expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    it("hears the preference change in another tab, but not another key", () => {
+        const listener = vi.fn();
+        const unsubscribe = subscribeGravatarPreference(listener);
+        globalThis.dispatchEvent(new StorageEvent("storage", { key: "something-else" }));
+        expect(listener).not.toHaveBeenCalled();
+        globalThis.dispatchEvent(new StorageEvent("storage", { key: GRAVATAR_PREFERENCE_KEY }));
+        globalThis.dispatchEvent(new StorageEvent("storage", { key: null }));
+        expect(listener).toHaveBeenCalledTimes(2);
+        unsubscribe();
+        globalThis.dispatchEvent(new StorageEvent("storage", { key: GRAVATAR_PREFERENCE_KEY }));
+        expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    it("still notifies, and stays off, where storage refuses the write", () => {
+        vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+            throw new Error("denied");
+        });
+        const listener = vi.fn();
+        const unsubscribe = subscribeGravatarPreference(listener);
+        setGravatarEnabled(true);
+        expect(gravatarEnabled()).toBe(false);
+        expect(listener).toHaveBeenCalledTimes(1);
+        unsubscribe();
+    });
+});
+
+describe("missing pictures", () => {
+    it("remembers a URL Gravatar had no picture at", () => {
+        const url = "https://gravatar.com/avatar/abc?s=64&d=404";
+        expect(isGravatarMissing(url)).toBe(false);
+        markGravatarMissing(url);
+        expect(isGravatarMissing(url)).toBe(true);
     });
 });

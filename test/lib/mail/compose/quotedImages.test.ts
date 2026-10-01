@@ -47,6 +47,63 @@ describe("embedQuotedImages", () => {
         expect(html).toContain('<img src="cid:b">');
     });
 
+    it("resolves several images at once, but never more than four", async () => {
+        let running = 0;
+        let peak = 0;
+        const resolve = vi.fn(async () => {
+            running++;
+            peak = Math.max(peak, running);
+            await new Promise((done) => setTimeout(done, 5));
+            running--;
+            return PNG;
+        });
+        const html = await embedQuotedImages(Array.from({ length: 9 }, (_, n) => `<img src="cid:i${n}">`).join(""), resolve);
+        expect(resolve).toHaveBeenCalledTimes(9);
+        expect(peak).toBe(4);
+        expect(html.match(/data:image\/png/g)).toHaveLength(9);
+    });
+
+    it("keeps the pictures that arrived before the deadline, and does not wait for the rest", async () => {
+        const controller = new AbortController();
+        const seen: (AbortSignal | undefined)[] = [];
+        const resolve = vi.fn((reference: { cid?: string }, signal?: AbortSignal) => {
+            seen.push(signal);
+            return reference.cid === "fast" ? Promise.resolve(PNG) : new Promise<string | undefined>(() => undefined);
+        });
+        const result = embedQuotedImages('<img src="cid:fast"><img src="cid:slow1"><img src="cid:slow2">', resolve, controller.signal);
+        await new Promise((done) => setTimeout(done, 10));
+        controller.abort();
+        expect(await result).toBe(`<img src="${PNG}"><img src="cid:slow1"><img src="cid:slow2">`);
+        expect(seen.every((signal) => signal === controller.signal)).toBe(true);
+    });
+
+    it("starts nothing once the deadline has passed", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        const resolve = vi.fn(async () => PNG);
+        expect(await embedQuotedImages('<img src="cid:a"><img src="cid:b">', resolve, controller.signal)).toBe('<img src="cid:a"><img src="cid:b">');
+        expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it("leaves an image as it is when its resolver fails, and carries the others", async () => {
+        const resolve = vi.fn(async (reference: { cid?: string }) => {
+            if (reference.cid === "bad") throw new Error("boom");
+            return PNG;
+        });
+        expect(await embedQuotedImages('<img src="cid:bad"><img src="cid:ok">', resolve)).toBe(`<img src="cid:bad"><img src="${PNG}">`);
+    });
+
+    it("spends the size budget in document order however the pictures arrive", async () => {
+        const huge = `data:image/png;base64,${"A".repeat(MAX_QUOTED_IMAGES_CHARS - 40)}`;
+        const resolve = vi.fn(async (reference: { cid?: string }) => {
+            if (reference.cid === "a") await new Promise((done) => setTimeout(done, 10));
+            return reference.cid === "a" ? huge : PNG;
+        });
+        const html = await embedQuotedImages('<img src="cid:a"><img src="cid:b">', resolve);
+        expect(html).toContain(huge);
+        expect(html).toContain('<img src="cid:b">');
+    });
+
     it("returns the markup as given where there is no DOM to parse it with", async () => {
         vi.stubGlobal("DOMParser", undefined);
         expect(await embedQuotedImages('<img src="cid:a@x">', async () => PNG)).toBe('<img src="cid:a@x">');

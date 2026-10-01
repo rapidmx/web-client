@@ -11,6 +11,7 @@ import {
     archiveMessage,
     assembleDraft,
     assembleDraftRaw,
+    forgetDraftImages,
     attachmentContentUrl,
     autoProvisionMailbox,
     cancelScheduledSend,
@@ -1056,6 +1057,54 @@ describe("assembleDraft", () => {
             expect(sent(fetchMock).map((body) => body.html)).toEqual([broken, '<img src="https://example.com/a.png"><p>text</p>']);
         });
 
+        it("does not attach an SVG or any other type the quote itself would not embed, nor a picture over the size cap", async () => {
+            const fetchMock = mockFetch(respond);
+            const svg = `<img src="data:image/svg+xml;base64,${btoa("<svg xmlns='http://www.w3.org/2000/svg'/>")}">`;
+            const tiff = `<img src="data:image/tiff;base64,${btoa("II*")}">`;
+            const big = `<img src="data:image/png;base64,${btoa("A".repeat(2_000_001))}">`;
+            await assembleDraft("d-types", input(`${svg}${tiff}${big}`));
+            expect(uploads(fetchMock)).toHaveLength(0);
+            expect(sent(fetchMock).map((body) => body.html)).toEqual([`${svg}${tiff}${big}`]);
+
+            const atCap = `data:image/png;base64,${btoa("A".repeat(2_000_000))}`;
+            await assembleDraft("d-types", input(`<img src="${atCap}">`));
+            expect(uploads(fetchMock)).toHaveLength(1);
+        });
+
+        it("tells two pictures of the same size apart, and attaches each once", async () => {
+            const fetchMock = mockFetch(respond);
+            const one = `data:image/png;base64,${btoa("A".repeat(500) + "x" + "A".repeat(500))}`;
+            const two = `data:image/png;base64,${btoa("A".repeat(500) + "y" + "A".repeat(500))}`;
+            await assembleDraft("d-same", input(`<img src="${one}"><img src="${two}">`));
+            await assembleDraft("d-same", input(`<img src="${two}"><img src="${one}">`));
+            expect(uploads(fetchMock)).toHaveLength(2);
+        });
+
+        it("forgets a draft's pictures when asked, and no other's", async () => {
+            const fetchMock = mockFetch(respond);
+            const html = `<img src="${PNG}">`;
+            await assembleDraft("d-forget", input(html));
+            await assembleDraft("d-keep", input(html));
+            expect(uploads(fetchMock)).toHaveLength(2);
+            forgetDraftImages("d-forget");
+            await assembleDraft("d-forget", input(html));
+            await assembleDraft("d-keep", input(html));
+            expect(uploads(fetchMock)).toHaveLength(3);
+        });
+
+        it("holds a bounded number of pictures, the oldest going first", async () => {
+            const fetchMock = mockFetch(respond);
+            const picture = (n: number) => `<img src="data:image/png;base64,${btoa(`picture ${n}`)}">`;
+            for (let n = 0; n < 300; n++) {
+                await assembleDraft("d-many", input(picture(n)));
+            }
+            const before = uploads(fetchMock).length;
+            await assembleDraft("d-many", input(picture(299)));
+            expect(uploads(fetchMock)).toHaveLength(before);
+            await assembleDraft("d-many", input(picture(0)));
+            expect(uploads(fetchMock)).toHaveLength(before + 1);
+        });
+
         it("fails the save, rather than quietly dropping the picture, when it cannot be attached", async () => {
             mockFetch((url) => (url.includes("/attachments/upload") ? jsonResponse(413, { message: "too large" }) : jsonResponse(200, message)));
             await expect(assembleDraft("d-big", input(`<img src="${PNG}">`))).rejects.toMatchObject({ status: 413 });
@@ -1283,5 +1332,21 @@ describe("with an explicit ApiClient", () => {
         await getMailbox("mb1");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1", expect.anything());
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
+    });
+});
+
+describe("uploadAttachment through an explicit client", () => {
+    it("goes to the client's origin with its token and the file's own type", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, attachment));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        const file = new File(["hello"], "note.txt", { type: "text/plain" });
+        await expect(uploadAttachment("m1", file, { inline: true, contentId: "c@x" }, client)).resolves.toEqual(attachment);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe("https://a.example.com/api/mail/attachments/upload?messageUid=m1&filename=note.txt&mimeType=text%2Fplain&isInline=true&contentId=c%40x");
+        expect(init).toMatchObject({ method: "POST", body: file });
+        expect((init as RequestInit).credentials).toBeUndefined();
+        const headers = (init as RequestInit).headers as Headers;
+        expect(headers.get("Content-Type")).toBe("text/plain");
+        expect(headers.get("Authorization")).toBe("jwt tok");
     });
 });

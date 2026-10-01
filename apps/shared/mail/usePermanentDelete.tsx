@@ -25,6 +25,8 @@ export interface EmptiableFolder {
     name: string;
     /** Every folder to empty, when "the folder" is the "All mailboxes" view of one type (each mailbox's own Deleted Items): `uid` is then the first of them. */
     uids?: string[];
+    /** The names of the mailboxes those folders are in, for the confirmation to say whose are emptied (in the "All mailboxes" view). */
+    scope?: string[];
 }
 
 export interface PermanentDelete {
@@ -155,7 +157,7 @@ export function usePermanentDelete(): PermanentDelete {
                               : folderRequest.count === 1
                                 ? "the only item"
                                 : `all ${folderRequest.count} items`
-                      } in ${folderRequest.folder.name}? This can't be undone.`
+                      } in ${folderRequest.folder.name}${folderRequest.folder.scope ? ` of: ${folderRequest.folder.scope.join(", ")}` : ""}? This can't be undone.`
                     : `Permanently delete ${messageCount(request?.kind === "messages" ? request.messages.length : 0)}? This can't be undone.`
             }
             confirmLabel={folderRequest ? "Delete all permanently" : "Delete permanently"}

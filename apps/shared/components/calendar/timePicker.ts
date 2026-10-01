@@ -13,8 +13,11 @@ const MS_PER_MINUTE = 60_000;
  * event lasting an hour from there.
  */
 export function nextHalfHour(now: Date): Date {
-    const slot = 30 * MS_PER_MINUTE;
-    return new Date(Math.ceil(now.getTime() / slot) * slot);
+    // Rounded on the local clock: a zone at :30 or :45 from UTC (India, Nepal, Chatham) has its half hours mid-way between the epoch's.
+    const next = new Date(now);
+    const minutes = next.getMinutes() + (next.getSeconds() * 1000 + next.getMilliseconds()) / MS_PER_MINUTE;
+    next.setMinutes(Math.ceil(minutes / 30) * 30, 0, 0);
+    return next;
 }
 
 /** `HH:mm` (24 hour) as a 12 hour clock reading: "13:05" is "1:05 PM". */

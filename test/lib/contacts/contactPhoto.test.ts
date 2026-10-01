@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { createApiClient } from "../../../lib/util/api.js";
-import { contactPhotoUrl, deleteContactPhoto, uploadContactPhoto } from "../../../lib/contacts/contactsApi.js";
+import { contactPhotoUrl, deleteContactPhoto, fetchContactPhoto, uploadContactPhoto } from "../../../lib/contacts/contactsApi.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -47,5 +47,31 @@ describe("deleteContactPhoto", () => {
         await expect(deleteContactPhoto("c1", 5, client)).resolves.toEqual({ uid: "c1", version: 6 });
         expect(fetchMock.mock.calls[0][0]).toBe("https://a.example.com/api/mail/contacts/c1/photo?version=5");
         expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("DELETE");
+    });
+});
+
+describe("uploadContactPhoto through an explicit client", () => {
+    it("goes to the client's origin with its token and the file's type, no cookie and no CSRF header", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { uid: "c1", version: 5 }));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        const file = new File([new Uint8Array(4)], "me.jpg", { type: "image/jpeg" });
+        await expect(uploadContactPhoto("c1", 4, file, client)).resolves.toEqual({ uid: "c1", version: 5 });
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe("https://a.example.com/api/mail/contacts/c1/photo?version=4");
+        expect(init).toMatchObject({ method: "PUT", body: file });
+        expect((init as RequestInit).credentials).toBeUndefined();
+        const headers = (init as RequestInit).headers as Headers;
+        expect(headers.get("Content-Type")).toBe("image/jpeg");
+        expect(headers.get("Authorization")).toBe("jwt tok");
+    });
+});
+
+describe("fetchContactPhoto", () => {
+    it("fetches the picture's bytes through the client at the version", async () => {
+        const fetchMock = mockFetch(() => new Response(new Uint8Array(2), { status: 200, headers: { "content-type": "image/png" } }));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        const blob = await fetchContactPhoto("a/b", 7, client);
+        expect(fetchMock.mock.calls[0][0]).toBe("https://a.example.com/api/mail/contacts/a%2Fb/photo?v=7");
+        expect(blob.size).toBe(2);
     });
 });

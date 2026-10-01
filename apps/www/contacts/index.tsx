@@ -13,7 +13,6 @@ import {
     listContacts,
     listDeletedContacts,
     setContactFavorite,
-    contactPhotoUrl,
     updateContact,
 } from "../../../lib/contacts/contactsApi.js";
 import { contactsToVCardFile, contactToVCard, parseVCards } from "../../../lib/contacts/vcard.js";
@@ -25,7 +24,7 @@ import ContactsSidebar, { ContactsView } from "../../shared/components/contacts/
 import ContactsToolbar from "../../shared/components/contacts/ContactsToolbar.js";
 import FloatingActionButton from "../../shared/components/layout/FloatingActionButton.js";
 import { HiOutlineUserPlus } from "react-icons/hi2";
-import ContactAvatar from "../../../lib/components/avatar/ContactAvatar.js";
+import ContactPhotoAvatar from "../../../lib/components/avatar/ContactPhotoAvatar.js";
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
@@ -514,7 +513,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                                         )}
                                         <td className="px-3 py-2">
                                             <button type="button" onClick={() => handleSelectRow(contact)} className="flex w-full min-w-0 items-center gap-2 text-left">
-                                                <ContactAvatar displayName={contact.displayName} size={28} photoUrl={contactPhotoUrl(contact)} email={contact.emails[0]?.address} />
+                                                <ContactPhotoAvatar displayName={contact.displayName} size={28} contact={contact} email={contact.emails[0]?.address} />
                                                 <span className="min-w-0 truncate font-medium">
                                                     {contact.displayName}
                                                     {contact.favorite && <span aria-label="Favorite"> ★</span>}

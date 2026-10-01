@@ -15,6 +15,7 @@ import {
     setApiSessionRecovery,
     setApiUnauthorizedObserver,
     withClient,
+    withClientRaw,
     withCsrfHeader,
 } from "../../../lib/util/api.js";
 
@@ -511,5 +512,91 @@ describe("authApiFetch", () => {
             const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Headers;
             expect(headers.has("x-csrf-token")).toBe(false);
         });
+    });
+});
+
+describe("createApiClient with a body of its own kind", () => {
+    const make = () => createApiClient({ baseUrl: "https://account-a.example.com/", getAccessToken: async () => "tok-raw" });
+
+    it("keeps the Content-Type the caller gave (an upload's file type), still adding the token, and defaults to JSON only when there is none", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { ok: true }));
+        const client = make();
+        const file = new Blob([new Uint8Array(3)], { type: "image/png" });
+        await client.fetch("/up", { method: "PUT", headers: { "Content-Type": "image/png" }, body: file });
+        const upload = fetchMock.mock.calls[0][1] as RequestInit;
+        expect((upload.headers as Headers).get("Content-Type")).toBe("image/png");
+        expect((upload.headers as Headers).get("Authorization")).toBe("jwt tok-raw");
+        expect(upload.body).toBe(file);
+
+        await client.fetch("/json", { method: "POST", body: "{}" });
+        expect(((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers).get("Content-Type")).toBe("application/json");
+    });
+
+    it("fetchBlob() resolves the response's bytes from the client's origin with the token and no Content-Type", async () => {
+        const fetchMock = mockFetch(() => new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "image/jpeg" } }));
+        const blob = await make().fetchBlob("/mail/contacts/c1/photo?v=1");
+        expect(fetchMock.mock.calls[0][0]).toBe("https://account-a.example.com/api/mail/contacts/c1/photo?v=1");
+        const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Headers;
+        expect(headers.get("Authorization")).toBe("jwt tok-raw");
+        expect(headers.has("Content-Type")).toBe(false);
+        expect(blob.size).toBe(3);
+        expect(blob.type).toBe("image/jpeg");
+    });
+
+    it("fetchBlob() rejects with the decoded ApiRequestError and tells the client's own observer of a 401", async () => {
+        mockFetch(() => jsonResponse(401, { message: "Expired", code: "api-1" }));
+        const client = make();
+        const observer = vi.fn();
+        client.setUnauthorizedObserver(observer);
+        await expect(client.fetchBlob("/x")).rejects.toMatchObject({ name: "ApiRequestError", message: "Expired", status: 401, code: "api-1" });
+        expect(observer).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("withClientRaw", () => {
+    afterEach(() => {
+        document.cookie = "csrf=; Max-Age=0; path=/";
+    });
+
+    const file = new File([new Uint8Array(4)], "me.png", { type: "image/png" });
+
+    it("goes through the explicit client with the file's type, to that client's origin, and decodes the JSON", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { done: true }));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        await expect(withClientRaw(client, "/up", "PUT", file)).resolves.toEqual({ done: true });
+        expect(fetchMock.mock.calls[0][0]).toBe("https://a.example.com/api/up");
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(init).toMatchObject({ method: "PUT", body: file });
+        expect(init.credentials).toBeUndefined();
+        expect((init.headers as Headers).get("Content-Type")).toBe("image/png");
+        expect((init.headers as Headers).get("Authorization")).toBe("jwt tok");
+    });
+
+    it("rejects with the client's ApiRequestError for a refused upload", async () => {
+        mockFetch(() => jsonResponse(413, { message: "Too big." }));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        await expect(withClientRaw(client, "/up", "PUT", file)).rejects.toMatchObject({ message: "Too big.", status: 413 });
+    });
+
+    it("without a client is a cookie request to the global origin with the CSRF header and the given content type", async () => {
+        configureApiBaseUrl("https://global.example.com");
+        document.cookie = "csrf=tok-csrf";
+        const fetchMock = mockFetch(() => jsonResponse(200, { done: true }));
+        await expect(withClientRaw(undefined, "/up", "POST", file, "application/x-custom")).resolves.toEqual({ done: true });
+        expect(fetchMock.mock.calls[0][0]).toBe("https://global.example.com/api/up");
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(init).toMatchObject({ method: "POST", credentials: "include", body: file });
+        expect((init.headers as Headers).get("Content-Type")).toBe("application/x-custom");
+        expect((init.headers as Headers).get("x-csrf-token")).toBe("tok-csrf");
+    });
+
+    it.each([
+        [() => jsonResponse(400, { error: "Bad image.", code: "c-1" }), "Bad image.", 400],
+        [() => new Response("nope", { status: 500, statusText: "Server Error" }), "Server Error", 500],
+        [() => new Response("nope", { status: 500, statusText: "" }), "Upload failed.", 500],
+        [() => new Response("not json", { status: 502, statusText: "Bad Gateway", headers: { "content-type": "application/json" } }), "Bad Gateway", 502],
+    ])("without a client says why it was refused (%#)", async (response, message, status) => {
+        mockFetch(() => response());
+        await expect(withClientRaw(undefined, "/up", "PUT", file)).rejects.toMatchObject({ message, status });
     });
 });

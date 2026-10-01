@@ -16,6 +16,13 @@ import { ApiRequestError } from "../../../lib/util/api.js";
 import ContactDetailPane from "../../../apps/shared/components/contacts/ContactDetailPane.js";
 import { KEY_CHANGE_FORBIDDEN_MESSAGE, KEY_CHANGE_STALE_MESSAGE } from "../../../apps/shared/components/contacts/contactKeys.js";
 import type { Contact } from "../../../lib/contacts/contactsApi.js";
+import { jsonResponse, mockFetch } from "../testUtils.js";
+
+// Making a picture small enough is `preparePhoto.test.ts`'s business (jsdom cannot decode or draw one): here the pane is handed the file as it was chosen.
+vi.mock("../../../lib/contacts/preparePhoto.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/contacts/preparePhoto.js")>()),
+    prepareContactPhoto: vi.fn(async (file: File) => file),
+}));
 
 const { resolveKeyConflict, clearPinnedSignerCache } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn(), clearPinnedSignerCache: vi.fn() }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
@@ -280,5 +287,34 @@ describe("ContactDetailPane: key rotation continuity", () => {
         expect(screen.getByText(/Signing key: 3333/)).toHaveTextContent("(revoked)");
         expect(screen.getAllByText("(revoked)").every((el) => el.classList.contains("text-danger"))).toBe(true);
         expect(screen.getByText(/Signing key: 4444/)).not.toHaveTextContent("(");
+    });
+});
+
+describe("ContactDetailPane photo badge", () => {
+    it("changes the picture at once from a small camera badge on the avatar, and hands the changed contact back", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, contactFixture({ version: 6, photoBlobKey: "contact-photos/c1/x" })));
+        const onChanged = vi.fn();
+        const user = userEvent.setup();
+        render(<ContactDetailPane contact={contactFixture({ version: 5 })} onEdit={vi.fn()} onDelete={vi.fn()} onChanged={onChanged} />);
+        const badge = screen.getByRole("button", { name: "Change contact photo" });
+        expect(badge).toHaveClass("h-5", "w-5");
+        await user.upload(screen.getByLabelText("Contact photo file"), new File([new Uint8Array(4)], "me.png", { type: "image/png" }));
+        await waitFor(() => expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ version: 6 })));
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/contacts/c1/photo?version=5");
+    });
+
+    it("is happy to have nobody listening for the changed contact", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, contactFixture({ version: 6 })));
+        const user = userEvent.setup();
+        render(<ContactDetailPane contact={contactFixture({ version: 5 })} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        await user.upload(screen.getByLabelText("Contact photo file"), new File([new Uint8Array(4)], "me.png", { type: "image/png" }));
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        await waitFor(() => expect(screen.getByRole("button", { name: "Change contact photo" })).toBeEnabled());
+    });
+
+    it("is hidden from a reader who may not change the contact", () => {
+        render(<ContactDetailPane contact={contactFixture()} onEdit={vi.fn()} onDelete={vi.fn()} canResolveKeys={false} />);
+        expect(screen.queryByRole("button", { name: "Change contact photo" })).not.toBeInTheDocument();
+        expect(screen.getByRole("region", { name: "Contact details" })).toBeInTheDocument();
     });
 });

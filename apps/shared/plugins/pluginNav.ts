@@ -43,9 +43,11 @@ export interface PluginNavProps {
 }
 
 /** A same-origin absolute path: starts with `/`, but not `//` or `/\` (both of which browsers treat as
- * protocol-relative URLs to another host). */
+ * protocol-relative URLs to another host), and holds no control character, space or backslash anywhere -
+ * URL parsers strip tab/CR/LF from anywhere, so `/<tab>/evil.com` would otherwise read as `//evil.com`. */
 export function isSafePluginHref(href: string): boolean {
-    return /^\/(?![/\\])/.test(href);
+    // eslint-disable-next-line no-control-regex -- the control characters are exactly what is being rejected
+    return /^\/(?![/\\])[^\u0000-\u0020\u007f\\]*$/.test(href);
 }
 
 /**

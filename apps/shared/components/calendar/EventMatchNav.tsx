@@ -16,16 +16,28 @@ export interface EventMatchNavProps {
     noun?: "match" | "event";
 }
 
+/** Widgets that take the arrow keys themselves (a menu's items, a radio group, a slider, a list's options, a tab list, ...) and an open popup's trigger. */
+const ARROW_WIDGET_SELECTOR = [
+    ...["menu", "menubar", "menuitem", "menuitemcheckbox", "menuitemradio", "radiogroup", "radio", "listbox", "option"].map((role) => `[role="${role}"]`),
+    ...["slider", "spinbutton", "tablist", "tab", "tree", "grid", "combobox"].map((role) => `[role="${role}"]`),
+    '[aria-haspopup][aria-expanded="true"]',
+].join(",");
+
+/** Whether the arrow keys pressed at `target` belong to what is there: a field or select, or a widget with arrows of its own. */
+function takesArrowKeys(target: EventTarget | null): boolean {
+    return isTextEntry(target) || (target instanceof Element && target.closest(ARROW_WIDGET_SELECTOR) !== null);
+}
+
 /**
  * The Previous / Next match buttons beside an event's card while a search is running: the card moves on to the neighbouring result. They sit
  * inside the dialog (so Tab reaches them and the dialog's focus trap holds) but are positioned against the window - either side of the
  * centered card on a desktop, the bottom corners on a phone, where the card fills the width. The left and right arrow keys do the same unless
- * a field is taking them.
+ * a field or a widget (a select, a menu, a slider, ...) is taking them.
  */
 export default function EventMatchNav({ onPrevious, onNext, canPrevious = true, canNext = true, noun = "match" }: EventMatchNavProps) {
     useEffect(() => {
         function handleKeyDown(event: KeyboardEvent) {
-            if ((event.key !== "ArrowLeft" && event.key !== "ArrowRight") || event.defaultPrevented || isTextEntry(event.target)) {
+            if ((event.key !== "ArrowLeft" && event.key !== "ArrowRight") || event.defaultPrevented || takesArrowKeys(event.target)) {
                 return;
             }
             if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {

@@ -3,14 +3,15 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { Contact, contactPhotoUrl, setContactFavorite } from "../../../../lib/contacts/contactsApi.js";
+import { Contact, setContactFavorite } from "../../../../lib/contacts/contactsApi.js";
 import CopyIconButton from "../../../../lib/components/buttons/CopyIconButton.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import FavoriteStarButton from "./FavoriteStarButton.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
-import ContactAvatar from "../../../../lib/components/avatar/ContactAvatar.js";
+import ContactPhotoAvatar from "../../../../lib/components/avatar/ContactPhotoAvatar.js";
+import ContactPhotoEditor from "./ContactPhotoEditor.js";
 import KeyChangeReview from "./KeyChangeReview.js";
 import { KEY_CHANGE_STALE_MESSAGE, formatDate, keyPinnedSince, revocationLabel } from "./contactKeys.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
@@ -43,8 +44,8 @@ export interface ContactDetailPaneProps {
     onKeysChanged?: () => void;
     /** Called with the contact after the star was toggled, so the caller shows the changed contact. */
     onChanged?: (contact: Contact) => void;
-    /** `false` when the reader is known not to be able to change this contact's keys (the actions are hidden); `undefined`
-     * when unknown (they're hidden after a 403). */
+    /** `false` when the reader is known not to be able to change this contact (its key actions and the photo badge are hidden); `undefined`
+     * when unknown (the key actions are hidden after a 403; a refused photo change is a pop-up). */
     canResolveKeys?: boolean;
 }
 
@@ -86,7 +87,18 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, backHref,
             )}
             <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-3">
-                    <ContactAvatar displayName={contact.displayName} size={48} photoUrl={contactPhotoUrl(contact)} email={contact.emails[0]?.address} />
+                    {canResolveKeys === false ? (
+                        <ContactPhotoAvatar displayName={contact.displayName} size={48} contact={contact} email={contact.emails[0]?.address} />
+                    ) : (
+                        <ContactPhotoEditor
+                            contact={contact}
+                            displayName={contact.displayName}
+                            size={48}
+                            badgeSize="sm"
+                            email={contact.emails[0]?.address}
+                            onChanged={(changed) => onChanged?.(changed)}
+                        />
+                    )}
                     <div>
                         <h1 className="text-xl font-bold tracking-tight">
                             {contact.displayName}

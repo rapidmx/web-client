@@ -5,7 +5,7 @@
 import React from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
 import type { Attachment, Mailbox, Message } from "../../../lib/mail/mailApi.js";
 import ContactCardProvider, { useContactCard } from "../../../apps/shared/components/contacts/ContactCardProvider.js";
@@ -14,12 +14,20 @@ import type { ContactCardContext } from "../../../apps/shared/components/contact
 import { MailConnectionContext, type MailConnection } from "../../../apps/shared/mail/useMailConnection.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
+import { ContactPhotoError, prepareContactPhoto } from "../../../lib/contacts/preparePhoto.js";
+
+// Making a picture small enough is `preparePhoto.test.ts`'s business (jsdom cannot decode or draw one): here the card is handed the file as it was chosen.
+vi.mock("../../../lib/contacts/preparePhoto.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/contacts/preparePhoto.js")>()),
+    prepareContactPhoto: vi.fn(async (file: File) => file),
+}));
 
 const { openCompose } = vi.hoisted(() => ({ openCompose: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/compose/ComposeContext.js", () => ({ useCompose: () => ({ openCompose }) }));
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    localStorage.clear();
 });
 
 const ME = { uid: "mb1", ownerUserUid: "u1", primarySmtpAddress: "me@example.com", aliasAddresses: ["me@alias.org"], displayName: "Me", dateCreated: "2026-01-01T00:00:00.000Z", accessRole: "owner" } as Mailbox;
@@ -37,6 +45,8 @@ interface Server {
     create?: (body: Record<string, unknown>) => Response;
     update?: (body: Record<string, unknown>) => Response;
     mailboxes?: Response;
+    /** What a change of the contact's picture (PUT or DELETE `/photo`) answers. */
+    photo?: (init: RequestInit) => Response;
 }
 
 const JANE_EVENT = {
@@ -56,6 +66,9 @@ function serve(server: Server = {}) {
     const posted: Record<string, unknown>[] = [];
     const fetchMock = mockFetch((url, init) => {
         const path = url.split("?")[0];
+        if (path === "/api/mail/contacts/k1/photo" && init?.method) {
+            return server.photo ? server.photo(init) : jsonResponse(200, { ...JANE, version: 5, photoBlobKey: "contact-photos/k1/new" });
+        }
         if (init?.method === "PUT") {
             const body = JSON.parse(init.body as string);
             return server.update ? server.update(body) : jsonResponse(200, { ...JANE, ...body });
@@ -563,6 +576,8 @@ describe("ContactCard actions and picture", () => {
     });
 
     it("shows the contact's own picture, then their Gravatar, then initials as each fails to load", async () => {
+        localStorage.setItem("rapidmx:gravatar", "on");
+        vi.stubGlobal("IntersectionObserver", undefined); // the setup's stub never fires
         serve({ contacts: [{ ...JANE, version: 4, photoBlobKey: "contact-photos/k1/abc" }] });
         const user = userEvent.setup();
         renderCard();
@@ -574,5 +589,119 @@ describe("ContactCard actions and picture", () => {
         fireEvent.error(dialog.querySelector("img")!);
         await waitFor(() => expect(dialog.querySelector("img")).toBeNull());
         expect(within(dialog).getByText("JD")).toBeInTheDocument();
+    });
+});
+
+describe("ContactCard photo badge", () => {
+    const pick = (name = "me.jpg") => new File([new Uint8Array(4)], name, { type: "image/jpeg" });
+
+    beforeEach(() => {
+        vi.mocked(prepareContactPhoto).mockImplementation(async (file: File) => file);
+    });
+
+    async function openStoredCard(user: ReturnType<typeof userEvent.setup>) {
+        renderCard();
+        const dialog = await openCard(user);
+        await within(dialog).findByRole("button", { name: "Favorite" });
+        return dialog;
+    }
+
+    it("saves a picked picture at once, through the prepared file, and shows it", async () => {
+        const { fetchMock } = serve({ contacts: [{ ...JANE, version: 3 }] });
+        const user = userEvent.setup();
+        const dialog = await openStoredCard(user);
+        expect(dialog.querySelector("img")).toBeNull();
+        await user.click(within(dialog).getByRole("button", { name: "Change contact photo" }));
+        expect(screen.queryByRole("menuitem", { name: "Remove photo" })).not.toBeInTheDocument();
+        await user.click(screen.getByRole("menuitem", { name: "Upload file" }));
+
+        const ready = pick("ready.jpg");
+        vi.mocked(prepareContactPhoto).mockResolvedValueOnce(ready);
+        await user.upload(within(dialog).getByLabelText("Contact photo file"), pick());
+        await waitFor(() => expect(dialog.querySelector("img")?.getAttribute("src")).toBe("/api/mail/contacts/k1/photo?v=5"));
+        const put = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === "PUT")!;
+        expect(put[0]).toBe("/api/mail/contacts/k1/photo?version=3");
+        expect((put[1] as RequestInit).body).toBe(ready);
+    });
+
+    it("removes the picture at once from a Remove photo row that is there only when there is one", async () => {
+        const { fetchMock } = serve({
+            contacts: [{ ...JANE, version: 5, photoBlobKey: "contact-photos/k1/new" }],
+            photo: () => jsonResponse(200, { ...JANE, version: 6 }),
+        });
+        const user = userEvent.setup();
+        const dialog = await openStoredCard(user);
+        await waitFor(() => expect(dialog.querySelector("img")).not.toBeNull());
+        await user.click(within(dialog).getByRole("button", { name: "Change contact photo" }));
+        await user.click(screen.getByRole("menuitem", { name: "Remove photo" }));
+        await waitFor(() => expect(dialog.querySelector("img")).toBeNull());
+        const del = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === "DELETE")!;
+        expect(del[0]).toBe("/api/mail/contacts/k1/photo?version=5");
+        expect(within(dialog).getByText("JD")).toBeInTheDocument();
+    });
+
+    it("says so, with the server's reason, when the picture could not be saved, and keeps the card as it was", async () => {
+        serve({ contacts: [{ ...JANE }], photo: () => jsonResponse(403, { message: "No." }) });
+        const user = userEvent.setup();
+        const dialog = await openStoredCard(user);
+        await user.upload(within(dialog).getByLabelText("Contact photo file"), pick());
+        await waitFor(() => expect(getNotificationsSnapshot().visible.some((n) => n.title === "Couldn't change this contact's photo")).toBe(true));
+        expect(dialog.querySelector("img")).toBeNull();
+        expect(within(dialog).getByRole("button", { name: "Change contact photo" })).toBeEnabled();
+    });
+
+    it("says why a picture could not be used, without asking the server", async () => {
+        const { fetchMock } = serve({ contacts: [{ ...JANE }] });
+        vi.mocked(prepareContactPhoto).mockRejectedValueOnce(new ContactPhotoError());
+        const user = userEvent.setup();
+        const dialog = await openStoredCard(user);
+        await user.upload(within(dialog).getByLabelText("Contact photo file"), pick("IMG.HEIC"));
+        await waitFor(() =>
+            expect(
+                getNotificationsSnapshot().visible.some((n) => n.title === "Couldn't change this contact's photo" && /isn't supported by your browser/.test(n.message ?? "")),
+            ).toBe(true),
+        );
+        expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === "PUT")).toBe(false);
+    });
+
+    it("is not there for someone who is not a contact yet", async () => {
+        serve();
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+        await within(dialog).findByRole("button", { name: "Add to contacts" });
+        expect(within(dialog).queryByRole("button", { name: "Change contact photo" })).not.toBeInTheDocument();
+    });
+
+    it("is not there for a contact in a mailbox shared view-only", async () => {
+        const shared = { ...ME, uid: "mb2", ownerUserUid: "u2", accessRole: "delegate" } as Mailbox;
+        mockFetch((url) => {
+            const path = url.split("?")[0];
+            if (path === "/api/mail/mailboxes/mb2/access/me") return jsonResponse(200, { canUpdate: false });
+            if (path === "/api/mail/contacts") return jsonResponse(200, [{ ...JANE, mailboxUid: "mb2" }]);
+            if (path === "/api/mail/folders") return jsonResponse(200, [{ uid: "c1", mailboxUid: "mb2", type: "contacts", name: "Contacts" }]);
+            return jsonResponse(200, []);
+        });
+        const user = userEvent.setup();
+        renderCard(undefined, connection("ready", [shared]));
+        const dialog = await openCard(user);
+        await within(dialog).findByRole("button", { name: "Favorite" });
+        await waitFor(() => expect(within(dialog).queryByRole("button", { name: "Change contact photo" })).not.toBeInTheDocument());
+    });
+
+    it("closes its menu on Escape without closing the card", async () => {
+        serve({ contacts: [{ ...JANE }] });
+        const user = userEvent.setup();
+        const dialog = await openStoredCard(user);
+        await user.click(within(dialog).getByRole("button", { name: "Change contact photo" }));
+        const menu = screen.getByRole("menu", { name: "Change contact photo" });
+        // The card is a dialog above which the menu has to show.
+        expect(menu.closest("[role=dialog]")).toHaveClass("z-[1010]");
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+        expect(screen.getByRole("dialog", { name: "Jane Doe" })).toBeInTheDocument();
+        expect(within(dialog).getByRole("button", { name: "Change contact photo" })).toHaveFocus();
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("dialog", { name: "Jane Doe" })).not.toBeInTheDocument();
     });
 });

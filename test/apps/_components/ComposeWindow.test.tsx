@@ -25,9 +25,15 @@ const toasts = () => getNotificationsSnapshot().visible;
 // for is a spy. `composeClientRef` stands in for `ComposeContextValue.client` (see `ComposeContext.tsx`'s own doc
 // comment) - `undefined` by default, matching every real caller with no `ApiClientContext.Provider` above it; the
 // "explicit client" tests below point it at a fake `ApiClient` before rendering.
-const { openCompose, composeClientRef } = vi.hoisted(() => ({
+const { openCompose, composeClientRef, forgetDraftImages } = vi.hoisted(() => ({
     openCompose: vi.fn(),
+    forgetDraftImages: vi.fn(),
     composeClientRef: { current: undefined as ApiClient | undefined },
+}));
+// Spied on to see that a draft that is deleted has its remembered inline pictures forgotten (see `assembleDraft()`).
+vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
+    forgetDraftImages,
 }));
 vi.mock("../../../apps/shared/components/mail/compose/ComposeContext.js", () => ({
     useCompose: () => ({ openCompose, client: composeClientRef.current }),
@@ -243,6 +249,7 @@ function recipientChips(label: string): (string | null)[] {
 }
 
 afterEach(() => {
+    forgetDraftImages.mockClear();
     insertedImages.length = 0;
     fakeEditor.mounted = true;
     clearMailboxWritabilityCache();
@@ -354,6 +361,7 @@ describe("ComposeWindow", () => {
             expect(calls.indexOf("DELETE /api/mail/messages/m-1?version=0")).toBeGreaterThan(secondCreate);
             // Leaving the field for From turned what was typed into a recipient.
             expect(recipientChips("To")).toEqual(["jane@example.com"]);
+            expect(forgetDraftImages).toHaveBeenCalledWith("m-1");
         });
 
         it("keeps the old draft when the replacement draft can't be created", async () => {
@@ -1809,6 +1817,7 @@ describe("ComposeWindow", () => {
             save.resolve(jsonResponse(200, { ...draft, version: 3 }));
             await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1?version=3", expect.objectContaining({ method: "DELETE" })));
             await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+            expect(forgetDraftImages).toHaveBeenCalledWith("m1");
         });
 
         it("the minimized bar's Discard also confirms when there's content", async () => {
@@ -3824,6 +3833,7 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 await user.click(await screen.findByRole("button", { name: "Discard" }));
                 await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
                 expect(callsTo(fetchMock, (_url, method) => method === "DELETE").map(([url]) => url)).toEqual(["/api/mail/messages/m1?version=4"]);
+                expect(forgetDraftImages).toHaveBeenCalledWith("m1");
             });
 
             it("keeps the version when an inserted image's refresh reports nothing newer", async () => {
@@ -3874,6 +3884,7 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 await user.click(screen.getByRole("button", { name: "Discard draft" }));
                 await user.click(await screen.findByRole("button", { name: "Discard" }));
                 expect(await screen.findByText("Couldn't discard this draft: Lookup failed.")).toBeInTheDocument();
+                expect(forgetDraftImages).not.toHaveBeenCalled();
                 expect(onClose).not.toHaveBeenCalled();
                 expect(screen.getByRole("button", { name: "Discard draft" })).not.toBeDisabled();
 
@@ -3886,6 +3897,7 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 await user.click(await screen.findByRole("button", { name: "Discard" }));
                 await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
                 expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1?version=6", expect.objectContaining({ method: "DELETE" }));
+                expect(forgetDraftImages).toHaveBeenCalledWith("m1");
             });
 
             it("treats a draft that's already gone as discarded", async () => {
@@ -3903,6 +3915,7 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
                 await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
                 expect(screen.queryByText(/Couldn't discard this draft/)).not.toBeInTheDocument();
+                expect(forgetDraftImages).toHaveBeenCalledWith("m1");
             });
 
             it("closes a blank window straight away even when deleting its draft fails", async () => {

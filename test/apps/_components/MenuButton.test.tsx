@@ -358,3 +358,19 @@ describe("MenuButton", () => {
         });
     });
 });
+
+describe("MenuButton in a dialog", () => {
+    it("keeps Escape to itself, so a dialog listening on the document does not close with it", async () => {
+        const onKeyDown = vi.fn();
+        document.addEventListener("keydown", onKeyDown);
+        const user = userEvent.setup();
+        renderMenu();
+        await user.click(screen.getByRole("button", { name: "Sort: Date" }));
+        await user.keyboard("{ArrowDown}");
+        expect(onKeyDown).toHaveBeenCalledTimes(1);
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+        expect(onKeyDown).toHaveBeenCalledTimes(1);
+        document.removeEventListener("keydown", onKeyDown);
+    });
+});

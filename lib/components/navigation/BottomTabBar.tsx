@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import type { IconType } from "react-icons";
 import { HiOutlineEllipsisHorizontal } from "react-icons/hi2";
 import NavBadge, { navItemLabel } from "./NavBadge.js";
@@ -53,13 +53,24 @@ const TAB_CLASS = "flex-1 min-w-0 overflow-hidden px-1 flex flex-col items-cente
  * `hidden md:flex` there) — never both hidden or both visible at once.
  *
  * The entries share the width equally and never run off the screen: with more than `MAX_TABS`, the last slot is a "More" (…) button that opens a menu
- * of the others (see `splitTabs()`). The menu closes on Escape, on a click elsewhere and on choosing an entry.
+ * of the others (see `splitTabs()`). That is a plain disclosure - a button (`aria-expanded`, `aria-controls`) and a list of links, all reached by Tab - not an ARIA menu,
+ * which would owe its arrow-key navigation. It closes on Escape, on a click elsewhere, when focus tabs out of it and on choosing an entry; opened from the keyboard,
+ * it moves focus to its first link.
  */
 export default function BottomTabBar({ apps, active }: BottomTabBarProps) {
     const { shown, more } = splitTabs(apps, active);
     const [open, setOpen] = useState(false);
     const rootRef = useRef<HTMLDivElement>(null);
     const buttonRef = useRef<HTMLButtonElement>(null);
+    const popupId = useId();
+    // Whether the press that opened it was the keyboard's (a click with no pointer has a `detail` of 0).
+    const openedByKeyboard = useRef(false);
+
+    useEffect(() => {
+        if (open && openedByKeyboard.current) {
+            rootRef.current!.querySelector("a")!.focus();
+        }
+    }, [open]);
 
     useEffect(() => {
         if (!open) {
@@ -107,14 +118,26 @@ export default function BottomTabBar({ apps, active }: BottomTabBarProps) {
                 </a>
             ))}
             {more.length > 0 && (
-                <div ref={rootRef} className="flex-1 min-w-0 flex items-stretch relative">
+                <div
+                    ref={rootRef}
+                    className="flex-1 min-w-0 flex items-stretch relative"
+                    // Focus moved on to something outside (not merely lost, as a tap on a link does in a browser that does not focus links).
+                    onBlur={(event) => {
+                        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
+                            setOpen(false);
+                        }
+                    }}
+                >
                     <button
                         ref={buttonRef}
                         type="button"
                         aria-label={hiddenBadge ? "More, with unread items" : "More"}
-                        aria-haspopup="menu"
                         aria-expanded={open}
-                        onClick={() => setOpen((value) => !value)}
+                        aria-controls={open ? popupId : undefined}
+                        onClick={(event) => {
+                            openedByKeyboard.current = event.detail === 0;
+                            setOpen((value) => !value);
+                        }}
                         className={[TAB_CLASS, "w-full", open ? "text-primary-dark" : "text-text-muted"].join(" ")}
                     >
                         <span className="relative inline-flex">
@@ -124,11 +147,10 @@ export default function BottomTabBar({ apps, active }: BottomTabBarProps) {
                         <span>More</span>
                     </button>
                     {open && (
-                        <ul role="menu" aria-label="More" className="absolute bottom-full right-1 mb-2 min-w-48 max-w-[calc(100vw-1rem)] rounded-md border border-border bg-surface py-1 shadow-modal">
+                        <ul id={popupId} aria-label="More" className="absolute bottom-full right-1 mb-2 min-w-48 max-w-[calc(100vw-1rem)] rounded-md border border-border bg-surface py-1 shadow-modal">
                             {more.map(({ id, href, label, icon: Icon, badge }) => (
-                                <li key={id} role="none">
+                                <li key={id}>
                                     <a
-                                        role="menuitem"
                                         href={href}
                                         aria-label={badge ? navItemLabel(label, badge) : undefined}
                                         onClick={() => setOpen(false)}

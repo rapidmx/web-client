@@ -7,6 +7,7 @@ import { toBase64 } from "../../../lib/crypto/encoding.js";
 import type { Mailbox, Message } from "../../../lib/mail/mailApi.js";
 
 const mocks = vi.hoisted(() => ({
+    forgetDraftImages: vi.fn(),
     assembleDraft: vi.fn(),
     assembleDraftRaw: vi.fn(),
     getMailbox: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     assembleDraft: mocks.assembleDraft,
     assembleDraftRaw: mocks.assembleDraftRaw,
+    forgetDraftImages: mocks.forgetDraftImages,
     getMailbox: mocks.getMailbox,
     getMessage: mocks.getMessage,
     queueMessageSend: mocks.queueMessageSend,
@@ -136,6 +138,11 @@ describe("startSend - the happy path", () => {
         expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", undefined);
         expect(toasts()).toEqual([]);
         expect(retainedRequest("m1")).toBeDefined();
+        // Queued, it may yet fail on the server and be retried from the same draft, so its pictures are still remembered as attached ...
+        expect(mocks.forgetDraftImages).not.toHaveBeenCalled();
+        // ... until the message is known to have gone.
+        forgetRetainedRequest("m1");
+        expect(mocks.forgetDraftImages).toHaveBeenCalledWith("m1");
     });
 
     it("refuses a second send of the same draft while one is under way, and sets the receipt first when asked", async () => {
@@ -166,6 +173,7 @@ describe("startSend - the happy path", () => {
         startSend(request());
         await settle();
         expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
+        expect(mocks.forgetDraftImages).toHaveBeenCalledWith("m1");
         notifySent();
         notifySent();
         expect(toasts().map((toast) => toast.title)).toEqual(["3 messages sent"]);
@@ -180,6 +188,7 @@ describe("startSend - the happy path", () => {
         expect(mocks.queueMessageSend).not.toHaveBeenCalled();
         expect(toasts()[0]).toMatchObject({ kind: "success", title: "Message scheduled" });
         expect(retainedRequest("m1")).toBeUndefined();
+        expect(mocks.forgetDraftImages).toHaveBeenCalledWith("m1");
     });
 
     it("counts the message in the Outbox at once and settles it when the server has it, reading the folders back", async () => {

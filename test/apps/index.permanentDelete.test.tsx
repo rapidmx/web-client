@@ -541,7 +541,7 @@ describe("Empty folder", () => {
 
         await user.click(emptyButton());
         const dialog = await screen.findByRole("dialog", { name: "Empty Deleted Items" });
-        expect(within(dialog).getByText("Permanently delete all 3 items in Deleted Items? This can't be undone.")).toBeInTheDocument();
+        expect(within(dialog).getByText("Permanently delete all 3 items in Deleted Items of: My Mail? This can't be undone.")).toBeInTheDocument();
         await user.click(confirmButton(dialog, "Delete all permanently"));
 
         await waitFor(() => expect(emptyRequests(fetchMock)).toEqual(["/api/mail/messages?folderUid=f6"]));

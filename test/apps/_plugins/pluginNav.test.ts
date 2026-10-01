@@ -23,6 +23,48 @@ describe("isSafePluginHref", () => {
     });
 });
 
+describe("isSafePluginHref against URL parsing", () => {
+    const ORIGIN = "https://mail.example.com";
+    const NASTY = [
+        "/\t/evil.com",
+        "/\n/evil.com",
+        "/\r/evil.com",
+        "/\r\n/evil.com",
+        "/ /evil.com",
+        "/\u0000/evil.com",
+        "/\u007f/evil.com",
+        "/\u00a0/evil.com",
+        "/a/\t/evil.com",
+        "/a\t",
+        "//evil.com",
+        "/\\evil.com",
+        "/a\\b",
+        "/%2f%2fevil.com",
+        "/%5cevil.com",
+        "/settings/booking-types?next=//evil.com",
+        "/a#//evil.com",
+        "/",
+        "",
+        "evil.com",
+    ];
+
+    it("only accepts what a URL parser keeps on the same origin", () => {
+        for (const href of NASTY) {
+            if (isSafePluginHref(href)) {
+                expect(new URL(href, ORIGIN).origin, JSON.stringify(href)).toBe(ORIGIN);
+            }
+        }
+    });
+
+    it("rejects control characters and whitespace anywhere, which parsers strip or trim", () => {
+        for (const href of ["/\t/evil.com", "/\n/evil.com", "/\r/evil.com", "/ /evil.com", "/\u0000/evil.com", "/a/\t/evil.com", "/a b", "/a\\b"]) {
+            expect(isSafePluginHref(href), JSON.stringify(href)).toBe(false);
+        }
+        expect(isSafePluginHref("/%2f%2fevil.com")).toBe(true);
+        expect(isSafePluginHref("/settings/booking-types?next=//x")).toBe(true);
+    });
+});
+
 describe("mergePluginNavItems", () => {
     it("returns the core items unchanged when there are no plugin items", () => {
         expect(mergePluginNavItems(CORE, undefined, identity)).toBe(CORE);

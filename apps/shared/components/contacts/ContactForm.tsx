@@ -11,7 +11,6 @@ import {
     ContactPatch,
     ContactPhone,
     ContactPostalAddress,
-    contactPhotoUrl,
     createContact,
     deleteContactPhoto,
     updateContact,
@@ -24,6 +23,7 @@ import FormField from "../../../../lib/components/forms/FormField.js";
 import ContactPhotoField from "./ContactPhotoField.js";
 import FavoriteStarButton from "./FavoriteStarButton.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import { useContactPhotoSrc } from "../../../../lib/contacts/useContactPhotoSrc.js";
 import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 
@@ -53,6 +53,7 @@ const ADDRESS_KINDS: ContactAddressKind[] = ["home", "work", "other"];
  */
 export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes, onSaved, onCancel }: ContactFormProps) {
     const client = useApiClient();
+    const currentPhotoUrl = useContactPhotoSrc(contact, client);
     const [targetMailboxUid, setTargetMailboxUid] = useState(mailboxUid);
     const [displayName, setDisplayName] = useState(contact?.displayName ?? "");
     const [givenName, setGivenName] = useState(contact?.givenName ?? "");
@@ -70,8 +71,13 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
     // A picture chosen (or the current one dropped) is applied once the contact itself is saved.
     const [pickedPhoto, setPickedPhoto] = useState<File | null>(null);
     const [removePhoto, setRemovePhoto] = useState(false);
+    // A chosen picture is being made small enough (see `ContactPhotoField`): the contact is not saved before it is ready.
+    const [preparingPhoto, setPreparingPhoto] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    // The contact as stored, once it has been saved and only the picture is left to do (that is a second request, which can fail on its own):
+    // a retry must not create the contact again or send the version it started from. `key` is the form's content that was saved.
+    const [stored, setStored] = useState<{ contact: Contact; key: string } | null>(null);
 
     function updateEmail(index: number, patch: Partial<ContactEmail>) {
         setEmails((prev) => prev.map((e, i) => (i === index ? { ...e, ...patch } : e)));
@@ -109,7 +115,8 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 .filter(Boolean);
             // An update merges only the fields in its body, so a field the user cleared is sent as an
             // explicit `null` (an omitted/undefined one would keep its stored value); a create just omits it.
-            const cleared = contact ? null : undefined;
+            const existing = stored?.contact ?? contact;
+            const cleared = existing ? null : undefined;
             const input = {
                 displayName: displayName.trim(),
                 givenName: givenName.trim() || cleared,
@@ -123,12 +130,16 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 phones,
                 addresses,
             };
+            const key = JSON.stringify([targetMailboxUid, input]);
             let saved: Contact;
-            if (contact) {
+            if (stored && stored.key === key) {
+                // Stored exactly as it is now: only the picture is left.
+                saved = stored.contact;
+            } else if (existing) {
                 saved = await updateContact(
                     {
-                        uid: contact.uid,
-                        version: contact.version,
+                        uid: existing.uid,
+                        version: existing.version,
                         ...(input as Omit<ContactPatch, "uid" | "version">),
                     },
                     client,
@@ -151,19 +162,31 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                     client,
                 );
             }
-            if (pickedPhoto) {
-                saved = await uploadContactPhoto(saved.uid, saved.version, pickedPhoto);
-            } else if (removePhoto && saved.photoBlobKey) {
-                saved = await deleteContactPhoto(saved.uid, saved.version, client);
+            setStored({ contact: saved, key });
+            try {
+                if (pickedPhoto) {
+                    saved = await uploadContactPhoto(saved.uid, saved.version, pickedPhoto, client);
+                } else if (removePhoto && saved.photoBlobKey) {
+                    saved = await deleteContactPhoto(saved.uid, saved.version, client);
+                }
+            } catch (err) {
+                // The contact is saved: stay open so the picture can be tried again, or let go of.
+                const reason = err instanceof ApiRequestError ? err.message.replace(/\.$/, "") : "the server could not be reached";
+                setError(`Saved, but the picture could not be ${pickedPhoto ? "uploaded" : "removed"}: ${reason}.`);
+                return;
             }
-            // A message opened later in this page load must see the changed contact's signing keys.
-            clearPinnedSignerCache();
-            onSaved(saved);
+            finish(saved);
         } catch (err) {
             setError(err instanceof ApiRequestError ? err.message : "Could not save this contact.");
         } finally {
             setSaving(false);
         }
+    }
+
+    function finish(saved: Contact) {
+        // A message opened later in this page load must see the changed contact's signing keys.
+        clearPinnedSignerCache();
+        onSaved(saved);
     }
 
     return (
@@ -209,7 +232,7 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                     <ContactPhotoField
                         displayName={displayName}
                         email={emails[0]?.address}
-                        currentUrl={contact && contactPhotoUrl(contact)}
+                        currentUrl={currentPhotoUrl}
                         picked={pickedPhoto}
                         removed={removePhoto}
                         onPick={(file) => {
@@ -222,6 +245,7 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                             setRemovePhoto(true);
                         }}
                         onReject={setError}
+                        onBusyChange={setPreparingPhoto}
                     />
                 </div>
                 <FavoriteStarButton favorite={favorite} onToggle={() => setFavorite((value) => !value)} />
@@ -412,10 +436,16 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
             </div>
             </div>
             <div className="rr-solid sticky bottom-14 z-10 flex shrink-0 gap-3 border-t border-border bg-surface px-6 py-3 md:bottom-0">
-                <Button type="submit" loading={saving} disabled={saving} className="!w-auto">
+                <Button type="submit" loading={saving} disabled={saving || preparingPhoto} className="!w-auto">
                     Save
                 </Button>
-                <Button type="button" variant="secondary" className="!w-auto" onClick={onCancel}>
+                {stored && (
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={saving} onClick={() => finish(stored.contact)}>
+                        Continue without the picture
+                    </Button>
+                )}
+                {/* A contact that is saved already is no longer cancelled: whoever is showing the form needs to hear of it. */}
+                <Button type="button" variant="secondary" className="!w-auto" onClick={stored ? () => finish(stored.contact) : onCancel}>
                     Cancel
                 </Button>
             </div>

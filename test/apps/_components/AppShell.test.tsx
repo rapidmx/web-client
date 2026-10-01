@@ -180,10 +180,10 @@ describe("AppShell", () => {
             const bar = within(screen.getByRole("navigation", { name: "Mobile navigation" }));
             expect(bar.getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(["Mail", "Calendar", "Contacts", "Tasks"]);
             await user.click(bar.getByRole("button", { name: "More" }));
-            const menu = within(screen.getByRole("menu", { name: "More" }));
-            expect(menu.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Notes", "Board"]);
-            expect(menu.getByRole("menuitem", { name: "Notes" })).toHaveAttribute("href", "/notes");
-            expect(menu.getByRole("menuitem", { name: "Notes" }).querySelector("svg")).not.toBeNull();
+            const menu = within(screen.getByRole("list", { name: "More" }));
+            expect(menu.getAllByRole("link").map((item) => item.textContent)).toEqual(["Notes", "Board"]);
+            expect(menu.getByRole("link", { name: "Notes" })).toHaveAttribute("href", "/notes");
+            expect(menu.getByRole("link", { name: "Notes" }).querySelector("svg")).not.toBeNull();
             expect(screen.queryByRole("link", { name: "Plugin Mail" })).not.toBeInTheDocument();
             expect(screen.queryByRole("link", { name: "Plugin Settings" })).not.toBeInTheDocument();
             expect(screen.queryByRole("link", { name: "Other Section" })).not.toBeInTheDocument();

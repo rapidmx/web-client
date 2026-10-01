@@ -288,6 +288,28 @@ describe("a quoted original's embedded images", () => {
         }
     });
 
+    it("keeps the pictures that arrived before QUOTE_FETCH_TIMEOUT_MS, and cancels the one that has not", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            const body = '<p>Text</p><img src="cid:logo@x"><img src="cid:slow@x">';
+            const slow = { ...logo, uid: "a3", contentId: "Slow@x", filename: "slow.png" };
+            let slowSignal: AbortSignal | undefined;
+            mockFetch((url, init) => {
+                if (url.endsWith("/img1/content")) return html(body);
+                if (url.startsWith("/api/mail/attachments?")) return json([logo, slow]);
+                if (url.endsWith("/a2/content")) return new Response(PNG_BYTES);
+                slowSignal = init?.signal ?? undefined;
+                return new Promise<Response>(() => undefined);
+            });
+            const result = loadOriginalMessage(original, null);
+            await vi.advanceTimersByTimeAsync(QUOTE_FETCH_TIMEOUT_MS + 1);
+            expect(await result).toEqual({ body: { html: `<p>Text</p><img src="${PNG_URI}"><img src="cid:slow@x">` } });
+            expect(slowSignal?.aborted).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("takes a decrypted or verified message's pictures from the parts inside it, without a request", async () => {
         const fetchMock = mockFetch(() => new Response("never", { status: 500 }));
         const part = (over: object) => ({ contentType: "image/png", disposition: "inline", decode: () => PNG_BYTES, ...over });

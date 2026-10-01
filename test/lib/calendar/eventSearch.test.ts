@@ -2,7 +2,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-import { describe, expect, it } from "vitest";
+import { addYears } from "date-fns";
+import { describe, expect, it, vi } from "vitest";
 import { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
 import {
     SEARCH_MAX_OCCURRENCES_PER_SERIES,
@@ -15,7 +16,7 @@ import {
     stepMatchIndex,
     stepSequenceIndex,
 } from "../../../lib/calendar/eventSearch.js";
-import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
+import { CalendarOccurrence, expandOccurrences } from "../../../lib/calendar/recurrence.js";
 
 function event(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
     return {
@@ -232,5 +233,52 @@ describe("stepSequenceIndex", () => {
         expect(stepSequenceIndex(seq, "gone", new Date("2026-07-01T00:00:00.000Z"), 1, true)).toBe(0);
         expect(stepSequenceIndex(seq, "gone", new Date("2026-05-01T00:00:00.000Z"), -1, false)).toBe(-1);
         expect(stepSequenceIndex(seq, "gone", new Date("2026-05-01T00:00:00.000Z"), -1, true)).toBe(2);
+    });
+});
+
+describe("a long series' nearest occurrences", () => {
+    const series = (overrides: Partial<CalendarEvent> = {}) =>
+        event({
+            uid: "d",
+            startDate: "2026-06-01T15:00:00.000Z",
+            endDate: "2026-06-01T15:30:00.000Z",
+            recurrenceRule: { freq: "daily", interval: 1, exceptions: [] },
+            ...overrides,
+        });
+    /** The 500 nearest `now` the plain way: every occurrence of the window sorted by distance. */
+    function bruteForce(event: CalendarEvent, now: Date): string[] {
+        const found = expandOccurrences(event, addYears(now, -5), addYears(now, 5));
+        const distance = (o: CalendarOccurrence) => Math.abs(new Date(o.startDate).getTime() - now.getTime());
+        return found
+            .sort((a, b) => distance(a) - distance(b))
+            .slice(0, SEARCH_MAX_OCCURRENCES_PER_SERIES)
+            .map((o) => o.occurrenceKey)
+            .sort();
+    }
+
+    it.each([
+        ["in the middle of an endless series", series(), NOW],
+        ["before a series that has not started", series({ recurrenceRule: { freq: "daily", interval: 1, exceptions: [], count: 1000 } }), new Date("2026-01-01T00:00:00.000Z")],
+        ["after a series that is over", series({ recurrenceRule: { freq: "daily", interval: 1, exceptions: [], count: 1000 } }), new Date("2031-01-01T00:00:00.000Z")],
+        ["exactly between two occurrences", series(), new Date("2026-06-15T03:45:00.000Z")],
+    ])("are the same as sorting them all by distance: %s", (_name, recurring, now) => {
+        const found = allOccurrences([recurring], now).map((o) => o.occurrenceKey);
+        expect(found).toHaveLength(SEARCH_MAX_OCCURRENCES_PER_SERIES);
+        expect([...found].sort()).toEqual(bruteForce(recurring, now));
+    });
+
+    it("never sorts a series' whole window (thousands of occurrences) to find them", () => {
+        const sorted: number[] = [];
+        const sort = Array.prototype.sort;
+        const spy = vi.spyOn(Array.prototype, "sort").mockImplementation(function (this: unknown[], compare?: (a: unknown, b: unknown) => number) {
+            sorted.push(this.length);
+            return sort.call(this, compare);
+        });
+        try {
+            allOccurrences([series()], NOW);
+        } finally {
+            spy.mockRestore();
+        }
+        expect(Math.max(...sorted)).toBeLessThanOrEqual(SEARCH_MAX_OCCURRENCES_PER_SERIES);
     });
 });

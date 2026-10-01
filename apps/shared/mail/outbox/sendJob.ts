@@ -11,6 +11,7 @@ import {
     Message,
     assembleDraft,
     assembleDraftRaw,
+    forgetDraftImages,
     getMailbox,
     getMessage,
     queueMessageSend,
@@ -89,8 +90,10 @@ export function retainedRequest(draftUid: string): SendRequest | undefined {
     return sendState.retained.get(draftUid);
 }
 
+/** Drops the request a message was queued from, and the pictures remembered as attached to its draft: it has gone, so neither is wanted again. */
 export function forgetRetainedRequest(draftUid: string): void {
     sendState.retained.delete(draftUid);
+    forgetDraftImages(draftUid);
 }
 
 function retain(request: SendRequest): void {
@@ -424,8 +427,10 @@ export function startSend(request: SendRequest, client?: ApiClient): boolean {
         } else if (outcome.kind === "sent") {
             // A server with no queue relayed it before answering: the Sent Items copy exists already.
             markOutgoingSent(uid);
+            forgetDraftImages(uid);
             notifySent();
         } else {
+            forgetDraftImages(uid);
             notify({
                 id: `scheduled:${uid}`,
                 kind: "success",

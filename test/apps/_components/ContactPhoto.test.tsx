@@ -14,8 +14,18 @@ import ContactPhotoField from "../../../apps/shared/components/contacts/ContactP
 import FavoriteStarButton from "../../../apps/shared/components/contacts/FavoriteStarButton.js";
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import type { Contact } from "../../../lib/contacts/contactsApi.js";
+import { ContactPhotoError, prepareContactPhoto } from "../../../lib/contacts/preparePhoto.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
+import type { ApiClient } from "../../../lib/util/api.js";
+
+// Making a picture small enough is `preparePhoto.test.ts`'s business (jsdom cannot decode or draw one): here it hands the file back, or fails, on demand.
+vi.mock("../../../lib/contacts/preparePhoto.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/contacts/preparePhoto.js")>()),
+    prepareContactPhoto: vi.fn(async (file: File) => file),
+}));
 
 beforeEach(() => {
+    vi.mocked(prepareContactPhoto).mockImplementation(async (file: File) => file);
     URL.createObjectURL = vi.fn(() => "blob:preview");
     URL.revokeObjectURL = vi.fn();
 });
@@ -63,50 +73,101 @@ describe("FavoriteStarButton", () => {
     });
 });
 
-describe("ContactPhotoField", () => {
-    const base = { displayName: "Jane Doe", picked: null, removed: false, onPick: vi.fn(), onRemove: vi.fn(), onReject: vi.fn() };
+/** Opens the camera badge's menu. */
+async function openMenu(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Change contact photo" }));
+}
 
-    it("offers to add a picture when there is none, and takes a good file", async () => {
+describe("ContactPhotoField", () => {
+    const base = { displayName: "Jane Doe", picked: null, removed: false, onPick: vi.fn(), onRemove: vi.fn(), onReject: vi.fn(), onBusyChange: vi.fn() };
+
+    it("offers Upload file (and no Remove photo) when there is no picture, and takes a good file", async () => {
         const onPick = vi.fn();
         const user = userEvent.setup();
         render(<ContactPhotoField {...base} onPick={onPick} />);
-        expect(screen.queryByRole("button", { name: "Remove photo" })).not.toBeInTheDocument();
-        await user.click(screen.getByRole("button", { name: "Add photo" }));
+        await openMenu(user);
+        expect(screen.queryByRole("menuitem", { name: "Remove photo" })).not.toBeInTheDocument();
+        const click = vi.spyOn(HTMLInputElement.prototype, "click");
+        await user.click(screen.getByRole("menuitem", { name: "Upload file" }));
+        expect(click).toHaveBeenCalledTimes(1);
         const file = png();
-        await user.upload(screen.getByLabelText("Contact photo file"), file);
-        expect(onPick).toHaveBeenCalledWith(file);
+        const input = screen.getByLabelText("Contact photo file");
+        // Any picture is offered (so a phone's picker gives the camera and the library); making it fit is `prepareContactPhoto()`'s job.
+        expect(input).toHaveAttribute("accept", "image/*");
+        await user.upload(input, file);
+        await waitFor(() => expect(onPick).toHaveBeenCalledWith(file));
+        expect(prepareContactPhoto).toHaveBeenCalledWith(file);
     });
 
-    it("turns down a file of another type or over a megabyte, and ignores a cancelled choice", () => {
+    it("passes on the picture that was made ready, not the one chosen", async () => {
+        const ready = png(5);
+        vi.mocked(prepareContactPhoto).mockResolvedValue(ready);
+        const onPick = vi.fn();
+        render(<ContactPhotoField {...base} onPick={onPick} />);
+        fireEvent.change(screen.getByLabelText("Contact photo file"), { target: { files: [png(6 * 1024 * 1024, "image/heic")] } });
+        await waitFor(() => expect(onPick).toHaveBeenCalledWith(ready));
+    });
+
+    it("says it is preparing the picture, with the buttons off, until it is ready", async () => {
+        let ready!: (file: File) => void;
+        vi.mocked(prepareContactPhoto).mockImplementation(() => new Promise<File>((resolve) => (ready = resolve)));
+        const onPick = vi.fn();
+        const onBusyChange = vi.fn();
+        render(<ContactPhotoField {...base} currentUrl="/p?v=1" onPick={onPick} onBusyChange={onBusyChange} />);
+        fireEvent.change(screen.getByLabelText("Contact photo file"), { target: { files: [png()] } });
+        expect(await screen.findByRole("status")).toHaveTextContent("Preparing picture…");
+        expect(screen.getByRole("button", { name: "Change contact photo" })).toBeDisabled();
+        expect(onBusyChange).toHaveBeenLastCalledWith(true);
+        expect(onPick).not.toHaveBeenCalled();
+
+        const file = png(3);
+        ready(file);
+        await waitFor(() => expect(onPick).toHaveBeenCalledWith(file));
+        expect(screen.queryByRole("status")).not.toBeInTheDocument();
+        expect(onBusyChange).toHaveBeenLastCalledWith(false);
+        expect(screen.getByRole("button", { name: "Change contact photo" })).toBeEnabled();
+    });
+
+    it("shows why a picture could not be made ready, and ignores a cancelled choice", async () => {
         const onPick = vi.fn();
         const onReject = vi.fn();
-        render(<ContactPhotoField {...base} onPick={onPick} onReject={onReject} />);
+        const onBusyChange = vi.fn();
+        render(<ContactPhotoField {...base} onPick={onPick} onReject={onReject} onBusyChange={onBusyChange} />);
         const input = screen.getByLabelText("Contact photo file");
-        fireEvent.change(input, { target: { files: [png(10, "image/svg+xml")] } });
-        expect(onReject).toHaveBeenLastCalledWith("Choose a JPEG, PNG, GIF or WebP image.");
-        fireEvent.change(input, { target: { files: [png(1024 * 1024 + 1)] } });
-        expect(onReject).toHaveBeenLastCalledWith("Choose an image no larger than 1 MB.");
+        vi.mocked(prepareContactPhoto).mockRejectedValueOnce(new ContactPhotoError());
+        fireEvent.change(input, { target: { files: [png(10, "image/heic")] } });
+        await waitFor(() =>
+            expect(onReject).toHaveBeenLastCalledWith("This picture's format isn't supported by your browser — choose a JPEG or PNG instead."),
+        );
+        vi.mocked(prepareContactPhoto).mockRejectedValueOnce(new Error("boom"));
+        fireEvent.change(input, { target: { files: [png()] } });
+        await waitFor(() => expect(onReject).toHaveBeenLastCalledWith("This picture could not be read - choose another one."));
         fireEvent.change(input, { target: { files: [] } });
         expect(onReject).toHaveBeenCalledTimes(2);
         expect(onPick).not.toHaveBeenCalled();
+        expect(onBusyChange).toHaveBeenLastCalledWith(false);
+        expect(onBusyChange).toHaveBeenCalledTimes(4);
     });
 
-    it("previews the chosen file, then lets it go again, and shows the current picture with Change and Remove", async () => {
+    it("previews the chosen file, then lets it go again, and shows the current picture with a menu that can remove it", async () => {
         const onRemove = vi.fn();
         const user = userEvent.setup();
         const file = png();
         const { container, rerender, unmount } = render(<ContactPhotoField {...base} currentUrl="/p?v=1" picked={file} onRemove={onRemove} />);
         expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:preview");
-        expect(screen.getByRole("button", { name: "Change photo" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Change contact photo" })).toBeInTheDocument();
 
         rerender(<ContactPhotoField {...base} currentUrl="/p?v=1" picked={null} onRemove={onRemove} />);
         expect(container.querySelector("img")?.getAttribute("src")).toBe("/p?v=1");
-        await user.click(screen.getByRole("button", { name: "Remove photo" }));
+        await openMenu(user);
+        await user.click(screen.getByRole("menuitem", { name: "Remove photo" }));
         expect(onRemove).toHaveBeenCalled();
 
         rerender(<ContactPhotoField {...base} currentUrl="/p?v=1" picked={null} removed />);
         expect(container.querySelector("img")?.getAttribute("src") ?? "").not.toBe("/p?v=1");
-        expect(screen.getByRole("button", { name: "Add photo" })).toBeInTheDocument();
+        await openMenu(user);
+        expect(screen.queryByRole("menuitem", { name: "Remove photo" })).not.toBeInTheDocument();
+        await user.keyboard("{Escape}");
         rerender(<ContactPhotoField {...base} picked={file} />);
         unmount();
         expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview");
@@ -147,7 +208,8 @@ describe("ContactForm picture and star", () => {
         const user = userEvent.setup();
         render(<ContactForm contact={contact({ photoBlobKey: "contact-photos/c1/x" })} onSaved={onSaved} onCancel={vi.fn()} />);
         await user.upload(screen.getByLabelText("Contact photo file"), png());
-        await user.click(screen.getByRole("button", { name: "Remove photo" }));
+        await openMenu(user);
+        await user.click(screen.getByRole("menuitem", { name: "Remove photo" }));
         await user.click(screen.getByRole("button", { name: "Save" }));
 
         await waitFor(() => expect(onSaved).toHaveBeenCalled());
@@ -157,17 +219,39 @@ describe("ContactForm picture and star", () => {
         expect(onSaved.mock.calls[0][0].version).toBe(5);
     });
 
-    it("does not ask to remove a picture the saved contact does not have, and shows a rejected file", async () => {
+    it("does not ask to remove a picture the saved contact does not have, and shows a picture that could not be used", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, contact({ version: 4 })));
         const onSaved = vi.fn();
         const user = userEvent.setup();
         render(<ContactForm contact={contact({ photoBlobKey: "contact-photos/c1/x" })} onSaved={onSaved} onCancel={vi.fn()} />);
-        fireEvent.change(screen.getByLabelText("Contact photo file"), { target: { files: [png(10, "image/svg+xml")] } });
-        expect(await screen.findByText("Choose a JPEG, PNG, GIF or WebP image.")).toBeInTheDocument();
-        await user.click(screen.getByRole("button", { name: "Remove photo" }));
+        vi.mocked(prepareContactPhoto).mockRejectedValueOnce(new ContactPhotoError());
+        fireEvent.change(screen.getByLabelText("Contact photo file"), { target: { files: [png(10, "image/heic")] } });
+        expect(await screen.findByText("This picture's format isn't supported by your browser — choose a JPEG or PNG instead.")).toBeInTheDocument();
+        await openMenu(user);
+        await user.click(screen.getByRole("menuitem", { name: "Remove photo" }));
         await user.click(screen.getByRole("button", { name: "Save" }));
         await waitFor(() => expect(onSaved).toHaveBeenCalled());
         expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("cannot be saved until a chosen picture is ready, and then saves the prepared one", async () => {
+        let ready!: (file: File) => void;
+        vi.mocked(prepareContactPhoto).mockImplementation(() => new Promise<File>((resolve) => (ready = resolve)));
+        const fetchMock = mockFetch((url, init) =>
+            url.includes("/photo") ? jsonResponse(200, contact({ version: 5, photoBlobKey: "k" })) : jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string), version: 4 }),
+        );
+        const onSaved = vi.fn();
+        const user = userEvent.setup();
+        render(<ContactForm contact={contact()} onSaved={onSaved} onCancel={vi.fn()} />);
+        fireEvent.change(screen.getByLabelText("Contact photo file"), { target: { files: [png(6 * 1024 * 1024)] } });
+        await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+
+        const prepared = new File([new Uint8Array(7)], "me.jpg", { type: "image/jpeg" });
+        ready(prepared);
+        await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect((fetchMock.mock.calls[1][1] as RequestInit).body).toBe(prepared);
     });
 
     it("says why a picture could not be saved", async () => {
@@ -177,8 +261,47 @@ describe("ContactForm picture and star", () => {
         const user = userEvent.setup();
         render(<ContactForm contact={contact()} onSaved={vi.fn()} onCancel={vi.fn()} />);
         await user.upload(screen.getByLabelText("Contact photo file"), png());
+        await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
         await user.click(screen.getByRole("button", { name: "Save" }));
-        expect(await screen.findByText("Too big.")).toBeInTheDocument();
+        // The contact itself is saved by then: the form says so, and why the picture was not.
+        expect(await screen.findByText("Saved, but the picture could not be uploaded: Too big.")).toBeInTheDocument();
+    });
+});
+
+describe("ContactForm under an explicit client", () => {
+    function tokenClient() {
+        const photo = new Blob([new Uint8Array(3)], { type: "image/jpeg" });
+        return {
+            fetch: vi.fn(async (path: string, init?: RequestInit) =>
+                path.includes("/photo") ? contact({ version: 5, photoBlobKey: "k" }) : { ...contact(), ...JSON.parse(init!.body as string), version: 4 },
+            ),
+            fetchBlob: vi.fn(async () => photo),
+            setUnauthorizedObserver: vi.fn(),
+        };
+    }
+
+    it("sends the picture through the client (its origin and token) and shows the current one fetched through it", async () => {
+        const client = tokenClient();
+        const fetchMock = mockFetch(() => jsonResponse(500, {}));
+        const onSaved = vi.fn();
+        const user = userEvent.setup();
+        const { container } = render(
+            <ApiClientContext.Provider value={client as unknown as ApiClient}>
+                <ContactForm contact={contact({ photoBlobKey: "k" })} onSaved={onSaved} onCancel={vi.fn()} />
+            </ApiClientContext.Provider>,
+        );
+        await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:preview"));
+        expect(client.fetchBlob).toHaveBeenCalledWith("/mail/contacts/c1/photo?v=3");
+
+        const file = png(10, "image/jpeg");
+        await user.upload(screen.getByLabelText("Contact photo file"), file);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(client.fetch).toHaveBeenLastCalledWith(
+            "/mail/contacts/c1/photo?version=4",
+            expect.objectContaining({ method: "PUT", body: file, headers: { "Content-Type": "image/jpeg" } }),
+        );
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 });
 

@@ -25,7 +25,8 @@ export interface PopoverPortalProps {
  * isn't a stacking-order problem `z-index` can override). Prefers opening *below* the anchor (there's
  * more room in the editor area below the toolbar than above it, where the To/Cc/Subject rows are —
  * confirmed directly: an earlier `absolute`+`overflow-hidden` version of this rendered the popup
- * behind those rows), flipping to *above* only if there isn't enough room below.
+ * behind those rows), flipping to *above* only if there isn't enough room below. Its `z-index` is above a `Modal`/`Drawer` backdrop (`z-[1000]`), so a popover opened from inside
+ * a dialog (the contact card's photo menu) is not hidden behind it.
  */
 export default function PopoverPortal({ anchorRef, onClose, width, height, children, ...rest }: PropsWithChildren<PopoverPortalProps>) {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -66,7 +67,7 @@ export default function PopoverPortal({ anchorRef, onClose, width, height, child
     }
 
     return createPortal(
-        <div ref={containerRef} role="dialog" style={style} className="z-50 flex flex-col bg-surface border border-border rounded-md shadow-modal overflow-hidden" {...rest}>
+        <div ref={containerRef} role="dialog" style={style} className="z-[1010] flex flex-col bg-surface border border-border rounded-md shadow-modal overflow-hidden" {...rest}>
             {children}
         </div>,
         document.body,

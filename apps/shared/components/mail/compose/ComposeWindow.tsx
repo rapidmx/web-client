@@ -26,6 +26,7 @@ import {
     attachmentContentUrl,
     createDraft,
     deleteMessage,
+    forgetDraftImages,
     getMailbox,
     getMessage,
     listFolders,
@@ -624,6 +625,7 @@ export default function ComposeWindow({
         const saved = await saveInFlightRef.current;
         // Once it's out of `supersededDraftsRef` a landing save can't update `superseded.version` any more.
         const version = saved?.uid === superseded.uid ? saved.version : superseded.version;
+        forgetDraftImages(superseded.uid);
         try {
             await deleteMessage(superseded.uid, version, client);
         } catch {
@@ -740,7 +742,7 @@ export default function ComposeWindow({
         uploadStarted();
         try {
             // An inline part with a Content-ID of its own: without one the server has nothing to point the message's `cid:` reference at.
-            const attachment = await uploadAttachment(draft.uid, file, { inline: true });
+            const attachment = await uploadAttachment(draft.uid, file, { inline: true }, client);
             setHasUploads(true);
             void refreshDraftVersion(draft.uid);
             return attachmentContentUrl(attachment.uid);
@@ -796,7 +798,7 @@ export default function ComposeWindow({
         try {
             for (const file of files) {
                 try {
-                    const attachment = await uploadAttachment(draft!.uid, file);
+                    const attachment = await uploadAttachment(draft!.uid, file, {}, client);
                     setHasUploads(true);
                     setAttachments((prev) => [...prev, attachment]);
                     void refreshDraftVersion(draft!.uid);
@@ -1081,6 +1083,7 @@ export default function ComposeWindow({
         const version = Math.max(current.version, saved?.uid === current.uid ? saved.version : 0);
         try {
             await deleteMessage(current.uid, version, client);
+            forgetDraftImages(current.uid);
         } catch (err) {
             if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status !== 409)) {
                 throw err;
@@ -1092,6 +1095,7 @@ export default function ComposeWindow({
                 throw getErr;
             });
             if (!fresh) {
+                forgetDraftImages(current.uid);
                 return;
             }
             // The version changed because another window sent or scheduled it - that message isn't ours to delete.
@@ -1099,6 +1103,7 @@ export default function ComposeWindow({
                 throw new ApiRequestError(NO_LONGER_A_DRAFT_MESSAGE, 409);
             }
             await deleteMessage(fresh.uid, fresh.version, client);
+            forgetDraftImages(current.uid);
         }
     }
 

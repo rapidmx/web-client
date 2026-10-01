@@ -75,6 +75,37 @@ export function allOccurrences(events: CalendarEvent[], now: Date = new Date()):
     return occurrencesOf(events, () => true, now);
 }
 
+/**
+ * The `count` occurrences of `chronological` (a series, in order of start, as `expandOccurrences()` returns it) that start nearest `now`, still in order. They
+ * are the run around `now`, so that is grown from it a side at a time (the nearer side first, the earlier one on a tie) rather than sorting the whole series.
+ */
+function nearest(chronological: CalendarOccurrence[], now: number, count: number): CalendarOccurrence[] {
+    const startOf = (o: CalendarOccurrence) => new Date(o.startDate).getTime();
+    // The first that starts at or after now.
+    let low = 0;
+    let high = chronological.length;
+    while (low < high) {
+        const middle = (low + high) >> 1;
+        if (startOf(chronological[middle]) < now) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    let from = low;
+    let to = low;
+    while (to - from < count) {
+        const before = from > 0 ? now - startOf(chronological[from - 1]) : Infinity;
+        const after = to < chronological.length ? startOf(chronological[to]) - now : Infinity;
+        if (before <= after) {
+            from--;
+        } else {
+            to++;
+        }
+    }
+    return chronological.slice(from, to);
+}
+
 /** The chronological occurrences of the `events` that `include` accepts (see `searchOccurrences()` for how a series is bounded). */
 function occurrencesOf(events: CalendarEvent[], include: (event: CalendarEvent) => boolean, now: Date): CalendarOccurrence[] {
     const from = addYears(now, -SEARCH_WINDOW_YEARS);
@@ -89,11 +120,7 @@ function occurrencesOf(events: CalendarEvent[], include: (event: CalendarEvent) 
             continue;
         }
         const occurrences = expandOccurrences(event, from, to);
-        if (occurrences.length > SEARCH_MAX_OCCURRENCES_PER_SERIES) {
-            const distance = (o: CalendarOccurrence) => Math.abs(new Date(o.startDate).getTime() - now.getTime());
-            occurrences.sort((a, b) => distance(a) - distance(b)).length = SEARCH_MAX_OCCURRENCES_PER_SERIES;
-        }
-        found.push(...occurrences);
+        found.push(...(occurrences.length > SEARCH_MAX_OCCURRENCES_PER_SERIES ? nearest(occurrences, now.getTime(), SEARCH_MAX_OCCURRENCES_PER_SERIES) : occurrences));
     }
     return found.sort(byStart);
 }

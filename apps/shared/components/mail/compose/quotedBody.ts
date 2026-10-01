@@ -96,9 +96,9 @@ function headerRecipients(value: string | undefined, type: "to" | "cc"): Recipie
 
 /** The `data:` URI of the picture a quoted image of `message` stands for - one of the message's own attachments, fetched with the session -
  * or `undefined` when there is none, it is not a raster image, it is too large or it could not be had. Never rejects. */
-function serverImageResolver(message: Message): (reference: QuotedImageReference) => Promise<string | undefined> {
+function serverImageResolver(message: Message): (reference: QuotedImageReference, signal?: AbortSignal) => Promise<string | undefined> {
     let attachments: Promise<Awaited<ReturnType<typeof listAttachments>>> | undefined;
-    return async (reference) => {
+    return async (reference, signal) => {
         try {
             attachments ??= listAttachments(message.folderUid, message.uid);
             const attachment = findInlineAttachment(await attachments, reference);
@@ -106,7 +106,7 @@ function serverImageResolver(message: Message): (reference: QuotedImageReference
             if (!attachment || !type || !EMBEDDED_IMAGE_TYPES.test(type) || attachment.sizeBytes > MAX_QUOTED_IMAGE_BYTES) {
                 return undefined;
             }
-            const res = await fetch(attachmentContentUrl(attachment.uid), { credentials: "include" });
+            const res = await fetch(attachmentContentUrl(attachment.uid), { credentials: "include", signal });
             const bytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : undefined;
             return bytes && bytes.length <= MAX_QUOTED_IMAGE_BYTES ? toDataUri(type, bytes) : undefined;
         } catch {
@@ -197,8 +197,11 @@ export async function loadOriginalMessage(
     if (result.body.html !== undefined) {
         const resolver = recovered ? partImageResolver(security?.attachments ?? []) : serverImageResolver(message);
         const html = result.body.html;
-        // Bounded like the body's own request: a picture that will not arrive is left out of the quote, not waited for.
-        result.body = { html: await withTimeout(embedQuotedImages(html, resolver), QUOTE_FETCH_TIMEOUT_MS).catch(() => html) };
+        // Bounded like the body's own request: a picture that has not arrived by then is cancelled and left out of the quote, not waited for -
+        // the ones that have arrived stay.
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), QUOTE_FETCH_TIMEOUT_MS);
+        result.body = { html: await embedQuotedImages(html, resolver, controller.signal).finally(() => clearTimeout(timer)) };
     }
     return result;
 }

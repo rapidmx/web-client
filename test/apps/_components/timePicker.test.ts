@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { dayTimes, endTimeOptions, formatDuration, formatTimeOfDay, nextHalfHour, parseTimeInput } from "../../../apps/shared/components/calendar/timePicker.js";
 
 // The suite runs with TZ=UTC (see vitest.config.ts).
@@ -98,5 +98,28 @@ describe("endTimeOptions", () => {
 
     it("offers nothing without a start", () => {
         expect(endTimeOptions("")).toEqual([]);
+    });
+});
+
+describe("nextHalfHour in a zone with a :45 or :30 offset", () => {
+    const original = process.env.TZ;
+    afterEach(() => {
+        process.env.TZ = original;
+    });
+
+    // The suite runs in UTC: a zone is set per test, and the result is read in local time, where it must always be on the hour or the half hour.
+    it.each(["Asia/Kathmandu", "Pacific/Chatham", "Asia/Kolkata"])("rounds the local time, not the epoch, in %s", (zone) => {
+        process.env.TZ = zone;
+        for (const minutes of [0, 1, 14, 29, 30, 31, 44, 59]) {
+            const now = new Date(2026, 8, 29, 11, minutes, 20);
+            const next = nextHalfHour(now);
+            expect([0, 30]).toContain(next.getMinutes());
+            expect(next.getSeconds()).toBe(0);
+            expect(next.getTime()).toBeGreaterThanOrEqual(now.getTime());
+            expect(next.getTime() - now.getTime()).toBeLessThanOrEqual(30 * 60_000);
+        }
+        // Already on the half hour (to the millisecond) stays; a millisecond past it goes to the next.
+        expect(nextHalfHour(new Date(2026, 8, 29, 11, 30)).getTime()).toBe(new Date(2026, 8, 29, 11, 30).getTime());
+        expect(nextHalfHour(new Date(2026, 8, 29, 11, 30, 0, 1)).getTime()).toBe(new Date(2026, 8, 29, 12, 0).getTime());
     });
 });

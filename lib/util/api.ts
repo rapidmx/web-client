@@ -261,6 +261,12 @@ export interface ApiClient {
      * `ApiRequestError` on a non-ok response. */
     fetch<T = unknown>(path: string, init?: RequestInit): Promise<T>;
     /**
+     * Like `fetch()` - same origin, authentication and error decoding - but resolves the response's own bytes instead of parsing JSON, for a picture or other
+     * file. An `<img src>` cannot send an `Authorization` header, so a token-authenticated client shows such a file by fetching it here and displaying a
+     * `blob:` URL. No `Content-Type` is added.
+     */
+    fetchBlob(path: string, init?: RequestInit): Promise<Blob>;
+    /**
      * This client instance's own `setApiUnauthorizedObserver()` equivalent - see `createApiClient()`'s doc
      * comment for why it is per-instance rather than shared with the module-level `setApiUnauthorizedObserver()`
      * (or across other `ApiClient` instances).
@@ -309,18 +315,34 @@ export function createApiClient(options: CreateApiClientOptions): ApiClient {
     const { getAccessToken } = options;
     let unauthorizedObserver: ((error: ApiRequestError) => void) | undefined;
 
-    async function clientFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+    async function send(path: string, init: RequestInit, json: boolean): Promise<Response> {
         const headers = new Headers(init.headers);
-        headers.set("Content-Type", "application/json");
+        // JSON unless the caller sent a body of its own kind (an upload names the file's type).
+        if (json && !headers.has("Content-Type")) {
+            headers.set("Content-Type", "application/json");
+        }
         const token = await getAccessToken();
         headers.set("Authorization", `jwt ${token}`);
 
-        const res = await fetch(`${baseUrl}/api${path}`, { ...init, headers });
-        return decodeApiResponse<T>(res, (error) => unauthorizedObserver?.(error));
+        return fetch(`${baseUrl}/api${path}`, { ...init, headers });
+    }
+
+    async function clientFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+        return decodeApiResponse<T>(await send(path, init, true), (error) => unauthorizedObserver?.(error));
+    }
+
+    async function clientFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+        const res = await send(path, init, false);
+        if (!res.ok) {
+            // Throws the same `ApiRequestError` (and tells the observer of a 401) as every other request.
+            await decodeApiResponse<never>(res, (error) => unauthorizedObserver?.(error));
+        }
+        return res.blob();
     }
 
     return {
         fetch: clientFetch,
+        fetchBlob: clientFetchBlob,
         setUnauthorizedObserver(observer) {
             unauthorizedObserver = observer;
         },
@@ -339,4 +361,35 @@ export function createApiClient(options: CreateApiClientOptions): ApiClient {
  */
 export function withClient<T = unknown>(client: ApiClient | undefined, path: string, init?: RequestInit): Promise<T> {
     return client ? client.fetch<T>(path, init) : apiFetch<T>(path, init);
+}
+
+/**
+ * Sends a file's own bytes (not JSON) to `path` - the upload counterpart of `withClient()`. With an explicit `client` the request goes through it, so it
+ * reaches that account's origin with its token (the client keeps the `Content-Type` given here). Without one it is a plain `fetch()` to the global
+ * origin that carries the `jwt` cookie and the CSRF header, exactly as a same-origin upload always was. Resolves the decoded JSON response and rejects with
+ * an `ApiRequestError` (`failureMessage` when the server gave no message) on a non-ok one.
+ */
+export async function withClientRaw<T = unknown>(
+    client: ApiClient | undefined,
+    path: string,
+    method: string,
+    file: Blob,
+    contentType: string = file.type,
+    failureMessage: string = "Upload failed.",
+): Promise<T> {
+    if (client) {
+        return client.fetch<T>(path, { method, headers: { "Content-Type": contentType }, body: file });
+    }
+    const res = await fetch(apiUrl(path), {
+        method,
+        credentials: "include",
+        headers: withCsrfHeader({ "Content-Type": contentType }, method),
+        body: file,
+    });
+    const responseType = res.headers.get("content-type") ?? "";
+    const body = responseType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
+    if (!res.ok) {
+        throw new ApiRequestError((body && (body.message || body.error)) || res.statusText || failureMessage, res.status, body?.code);
+    }
+    return body as T;
 }
