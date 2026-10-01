@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-01
+
+### Added
+- Added swiping to archive or move a message or conversation in the All mailboxes views and in search results, acting in the mailbox of the one swiped
+
+### Changed
+- Start bulk selection on a phone by pressing and holding a message or conversation, and tap to select more
+
 ## [0.29.0] - 2026-10-01
 
 ### Added
@@ -1209,7 +1217,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/rapidmx/web-client/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/rapidmx/web-client/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/rapidmx/web-client/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/rapidmx/web-client/compare/v0.26.0...v0.27.0
