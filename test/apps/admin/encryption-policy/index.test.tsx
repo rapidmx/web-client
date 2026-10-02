@@ -73,6 +73,23 @@ describe("EncryptionPolicyPage", () => {
         expect(saved).toHaveLength(1);
     });
 
+    it("closes the question about turning encryption off on Escape and saves nothing", async () => {
+        const saved: any[] = [];
+        mockPolicy((body) => {
+            saved.push(body);
+            return jsonResponse(200, body);
+        });
+        const user = userEvent.setup();
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        await user.selectOptions(await screen.findByLabelText("Mail within this server"), "prohibited");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await screen.findByRole("dialog", { name: "Turn off encryption?" });
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(saved).toEqual([]);
+    });
+
     it("does not ask again about a kind of mail that is already set to Never encrypt", async () => {
         const saved: any[] = [];
         mockPolicy(
