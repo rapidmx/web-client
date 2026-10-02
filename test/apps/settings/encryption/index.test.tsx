@@ -1869,7 +1869,7 @@ describe("SettingsEncryptionPage", () => {
             const user = userEvent.setup();
             render(<SettingsEncryptionPage userUid="u1" />);
             await screen.findByText("Password");
-            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
 
             await user.click(screen.getByRole("button", { name: "Enable digital signatures" }));
 
@@ -1930,7 +1930,7 @@ describe("SettingsEncryptionPage", () => {
             render(<SettingsEncryptionPage userUid="u1" />);
 
             expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
-            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
             expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
         });
 
@@ -1943,7 +1943,7 @@ describe("SettingsEncryptionPage", () => {
             render(<SettingsEncryptionPage userUid="u1" />);
 
             expect(await screen.findByText("Failed: CA said no")).toBeInTheDocument();
-            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
             expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
         });
 
@@ -1987,7 +1987,7 @@ describe("SettingsEncryptionPage", () => {
 
             await act(() => vi.advanceTimersByTimeAsync(15_000));
             expect(await screen.findByText(/^Failed: /)).toBeInTheDocument();
-            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
         });
 
         it("keeps following after the page is left: an answer that arrives later still ends the enrollment (the stored id is forgotten), a 404 too", async () => {
@@ -2119,7 +2119,7 @@ describe("SettingsEncryptionPage", () => {
             await user.click(screen.getByRole("button", { name: "Cancel enrollment" }));
 
             expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
-            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
         });
 
         it("forgets an enrollment the server no longer knows (404)", async () => {
@@ -2393,7 +2393,7 @@ describe("SettingsEncryptionPage", () => {
             expect(screen.getByText("0A1B2C3D...C6D7E8F9")).toBeInTheDocument();
             expect(await screen.findByText(/Signing key: sign-fp-/)).toBeInTheDocument();
             expect(screen.getByText(/Enabled — outgoing mail/)).toBeInTheDocument();
-            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
             expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
         });
 
@@ -2498,7 +2498,7 @@ describe("SettingsEncryptionPage", () => {
             expect(screen.getByRole("button", { name: "Enable digital signatures" })).toBeEnabled();
             expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
             expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
-            expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled();
+            await waitFor(() => expect(screen.getByRole("button", { name: "Rotate keys now" })).toBeEnabled());
             expect(checkSignEnrollmentStatus).toHaveBeenCalledTimes(1);
         });
 
