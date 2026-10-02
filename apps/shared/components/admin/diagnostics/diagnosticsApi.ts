@@ -76,8 +76,8 @@ export interface DiagnosticsVersions {
 }
 
 /**
- * One environment variable or configuration setting. A `redacted` one has no `value`: the server withholds every secret-like
- * or unrecognized value and never sends it, so there is nothing for the client to hide.
+ * One environment variable or configuration setting. A `redacted` one has no `value`: the server withholds the value of every setting on its
+ * hidden list and never sends it, so there is nothing for the client to hide.
  */
 export interface DiagnosticsSetting {
     name: string;

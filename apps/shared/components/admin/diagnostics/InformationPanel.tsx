@@ -41,13 +41,13 @@ export default function InformationPanel({ versions, plugins, information }: Inf
                             <SettingsTable
                                 id="diagnostics-environment"
                                 title="Environment variables"
-                                description="The server process's environment. Only variables known to be harmless show their value; the value of a secret, or of anything unrecognized, is withheld by the server and never sent."
+                                description="The server process's environment. Every variable shows its value except those on the server's list of hidden settings, whose value is withheld by the server and never sent."
                                 settings={information.data.environment ?? []}
                             />
                             <SettingsTable
                                 id="diagnostics-configuration"
                                 title="Configuration"
-                                description="The effective settings the server runs with: the environment, saved plugin settings and defaults combined. Passwords, tokens, keys, certificates and the credentials in URLs are withheld by the server and never sent."
+                                description="The effective settings the server runs with: the environment, saved plugin settings and defaults combined. Settings on the server's list of hidden settings, such as passwords, tokens and keys, are withheld by the server and never sent, and so are the credentials in URLs."
                                 settings={information.data.configuration ?? []}
                             />
                         </>
