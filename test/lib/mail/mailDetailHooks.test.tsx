@@ -177,3 +177,68 @@ describe("useMarkMessageRead", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
     });
 });
+
+describe("stale responses and re-renders", () => {
+    const READ = { read: true, flagged: false, answered: false, forwarded: false };
+
+    it("keeps the attachments of the message now shown when an earlier message's list arrives late", async () => {
+        const resolvers: Record<string, () => void> = {};
+        mockFetch(
+            (url) =>
+                new Promise((resolve) => {
+                    const uid = url.includes("messageUid=m1") ? "m1" : "m2";
+                    resolvers[uid] = () => resolve(jsonResponse(200, uid === "m1" ? [{ uid: "a1" }, { uid: "a2" }, { uid: "a3" }] : [{ uid: "b1" }]));
+                }),
+        );
+        const { rerender } = render(<AttachmentsHarness message={messageFixture({ uid: "m1", hasAttachments: true })} />);
+        rerender(<AttachmentsHarness message={messageFixture({ uid: "m2", hasAttachments: true })} />);
+        await waitFor(() => expect(resolvers.m2).toBeDefined());
+
+        resolvers.m2();
+        await waitFor(() => expect(screen.getByTestId("count")).toHaveTextContent("1"));
+        resolvers.m1();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.getByTestId("count")).toHaveTextContent("1");
+    });
+
+    it("does not let an earlier message's failed fetch blank the attachments of the one now shown", async () => {
+        const resolvers: Record<string, () => void> = {};
+        mockFetch(
+            (url) =>
+                new Promise((resolve) => {
+                    const uid = url.includes("messageUid=m1") ? "m1" : "m2";
+                    resolvers[uid] = () => resolve(uid === "m1" ? jsonResponse(500, { message: "boom" }) : jsonResponse(200, [{ uid: "b1" }]));
+                }),
+        );
+        const { rerender } = render(<AttachmentsHarness message={messageFixture({ uid: "m1", hasAttachments: true })} />);
+        rerender(<AttachmentsHarness message={messageFixture({ uid: "m2", hasAttachments: true })} />);
+        await waitFor(() => expect(resolvers.m2).toBeDefined());
+        resolvers.m2();
+        await waitFor(() => expect(screen.getByTestId("count")).toHaveTextContent("1"));
+        resolvers.m1();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.getByTestId("count")).toHaveTextContent("1");
+    });
+
+    it("sends one mark-as-read request, and still applies its answer, when a metadata patch swaps the message object meanwhile", async () => {
+        let resolveRequest: (() => void) | undefined;
+        const fetchMock = mockFetch(
+            () =>
+                new Promise((resolve) => {
+                    resolveRequest = () => resolve(jsonResponse(200, messageFixture({ version: 1, flags: READ })));
+                }),
+        );
+        const onUpdated = vi.fn();
+        function Harness({ message }: { message: Message }) {
+            useMarkMessageRead(message, onUpdated);
+            return null;
+        }
+        const { rerender } = render(<Harness message={messageFixture()} />);
+        await waitFor(() => expect(resolveRequest).toBeDefined());
+
+        rerender(<Harness message={messageFixture({ flags: { read: false, flagged: true, answered: false, forwarded: false } })} />);
+        resolveRequest!();
+        await waitFor(() => expect(onUpdated).toHaveBeenCalledTimes(1));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+});

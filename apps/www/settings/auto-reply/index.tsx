@@ -9,6 +9,7 @@ import { updateMailbox } from "../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import Button from "../../../../lib/components/buttons/Button.js";
+import Alert from "../../../../lib/components/feedback/Alert.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 
 const INPUT_CLASS =
@@ -41,10 +42,21 @@ function AutoReplyContent() {
     const [version, setVersion] = useState(mailbox.version);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
         setSaved(false);
+        // Turned on with nothing to send, or over a window that ends before it starts, would answer people with an empty message or never at all.
+        if (oofEnabled && !oofMessage.trim()) {
+            setError("Write the message to send while automatic replies are on.");
+            return;
+        }
+        if (oofEnabled && oofStartTime && oofEndTime && new Date(oofEndTime) <= new Date(oofStartTime)) {
+            setError("The end must be after the start.");
+            return;
+        }
+        setError(null);
         setSaving(true);
         try {
             const updated = await updateMailbox({
@@ -75,6 +87,7 @@ function AutoReplyContent() {
                 </p>
 
                 {saved && <div className="mb-4 text-sm text-success font-medium">Saved.</div>}
+                {error && <Alert>{error}</Alert>}
 
                 <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                     <label className="flex items-center gap-2 text-sm font-medium">

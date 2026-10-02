@@ -115,7 +115,7 @@ describe("RecoveryFollowUpModal", () => {
 
             expect(screen.getByText(/If you.ve forgotten your encryption password, set a new one now/)).toBeInTheDocument();
             await setPassword(user, "short");
-            expect(screen.getByText("Password must be at least 8 characters.")).toBeInTheDocument();
+            expect(screen.getByText("Password must be at least 12 characters.")).toBeInTheDocument();
             await user.clear(screen.getByLabelText("New encryption password"));
             await user.clear(screen.getByLabelText("Confirm new password"));
             await setPassword(user, "new password 1", "different password");

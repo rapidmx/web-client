@@ -206,3 +206,24 @@ describe("with an explicit ApiClient", () => {
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });
+
+describe("branding uploads with a client", () => {
+    it("goes through an explicit client, to that account's origin with its token, when given one", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { companyName: "A", title: "B" }));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        await uploadBrandingLogo(new File(["x"], "l.png", { type: "image/png" }), client);
+        expect(fetchMock.mock.calls[0][0]).toMatch(/^https:\/\/a\.example\.com\/api\//);
+        expect(((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers).get("Authorization")).toBe("jwt tok");
+    });
+
+    it("passes the client to the icon and stylesheet uploads too", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { companyName: "A", title: "B" }));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        await uploadBrandingIcon(new File(["x"], "i.png", { type: "image/png" }), client);
+        await uploadBrandingStylesheet(new File(["a{}"], "b.css", { type: "text/css" }), client);
+        expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+            "https://a.example.com/api/system/branding/icon",
+            "https://a.example.com/api/system/branding/stylesheet",
+        ]);
+    });
+});

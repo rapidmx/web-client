@@ -193,6 +193,33 @@ describe("SettingsSharingPage", () => {
         expect(await screen.findByText("No one else has access to this mailbox yet.")).toBeInTheDocument();
     });
 
+    it("shows only the member list the latest request answered, when an earlier one answers late, or fails late", async () => {
+        for (const late of ["answers", "fails"]) {
+            const releases: (() => void)[] = [];
+            let loads = 0;
+            mockShell((url) => {
+                if (url !== "/api/mail/mailboxes/mb1/access") return undefined;
+                loads += 1;
+                if (loads % 2 === 1) {
+                    // The first request of a pair is the superseded one (effects run twice under StrictMode): it is held, and answers last.
+                    return new Promise<Response>((resolve) => releases.push(() => resolve(late === "answers" ? jsonResponse(200, []) : jsonResponse(500, { message: "stale failure" })))) as never;
+                }
+                return jsonResponse(200, [{ userOrRoleId: "u2", role: "viewer" }]);
+            });
+            const { unmount } = render(
+                <React.StrictMode>
+                    <SettingsSharingPage userUid="u1" />
+                </React.StrictMode>,
+            );
+            await screen.findByText("u2");
+            releases.forEach((release) => release());
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(screen.getByText("u2")).toBeInTheDocument();
+            expect(screen.queryByText("stale failure")).not.toBeInTheDocument();
+            unmount();
+        }
+    });
+
     it("shows the API's own error message when loading fails", async () => {
         mockShell((url) => (url === "/api/mail/mailboxes/mb1/access" ? jsonResponse(500, { message: "db down" }) : undefined));
         render(<SettingsSharingPage userUid="u1" />);

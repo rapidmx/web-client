@@ -29,6 +29,16 @@ import {
 } from "react-icons/bs";
 import GifPicker from "./GifPicker.js";
 
+/** What a typed link target is stored as. One without a scheme (`example.com`) would be a relative link, which readers' clients drop as dead text: a bare
+ * email address becomes `mailto:`, anything else that is not a path or an anchor `https://`. A target with a scheme is kept as it is. */
+export function linkHref(typed: string): string {
+    const target = typed.trim();
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || /^[/#]/.test(target)) {
+        return target;
+    }
+    return /^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(target) ? `mailto:${target}` : `https://${target}`;
+}
+
 /** Loaded when the picker is first opened: the emoji list is a half-megabyte JSON file that nothing else needs. */
 const EmojiPicker = lazy(() => import("./EmojiPicker.js"));
 
@@ -153,7 +163,7 @@ export default function ComposeToolbar({ editor, onUploadImage }: ComposeToolbar
         if (linkUrl.trim().length === 0) {
             run((ed) => ed.chain().focus().extendMarkRange("link").unsetLink().run());
         } else {
-            run((ed) => ed.chain().focus().extendMarkRange("link").setLink({ href: linkUrl.trim() }).run());
+            run((ed) => ed.chain().focus().extendMarkRange("link").setLink({ href: linkHref(linkUrl) }).run());
         }
         setOpenPopup(null);
     }

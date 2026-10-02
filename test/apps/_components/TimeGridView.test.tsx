@@ -6,7 +6,7 @@ import React from "react";
 import { DndContext, useSensors } from "@dnd-kit/core";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import TimeGridView from "../../../apps/shared/components/calendar/TimeGridView.js";
 import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
 
@@ -184,5 +184,77 @@ describe("TimeGridView", () => {
         expect(label.style.height).toBe("48px");
         expect(label.className).toContain("relative");
         expect(label.className).not.toMatch(/(^|\s)-m[tb]-/);
+    });
+});
+
+describe("TimeGridView: events that overlap in time", () => {
+    const at = (title: string, from: string, to: string) =>
+        occurrence({ occurrenceKey: title, uid: title, title, startDate: `2026-06-10T${from}:00.000Z`, endDate: `2026-06-10T${to}:00.000Z` });
+    const block = (title: string) => screen.getByText(title).closest("div[style]") as HTMLElement;
+
+    it("puts events that overlap side by side, each reachable, and leaves one that overlaps nothing the whole width", () => {
+        renderGrid({ occurrences: [at("A", "09:00", "10:00"), at("B", "09:30", "10:30"), at("C", "09:45", "11:00"), at("D", "12:00", "13:00")] });
+        // A, B and C chain into one group of three lanes.
+        expect(block("A").style.left).toBe("calc(0% + 2px)");
+        expect(block("A").style.width).toContain("33.33");
+        expect(block("B").style.left).toContain("33.33");
+        expect(block("C").style.left).toContain("66.66");
+        // D is alone, in its own group.
+        expect(block("D").style.left).toBe("2px");
+        expect(block("D").style.right).toBe("2px");
+        expect(block("D").style.width).toBe("");
+    });
+
+    it("reuses a lane that has become free, and does not group events that merely touch", () => {
+        renderGrid({ occurrences: [at("A", "09:00", "10:00"), at("B", "09:30", "11:00"), at("C", "10:00", "10:30"), at("D", "11:00", "12:00")] });
+        // C starts as A ends: it takes A's lane, beside B, and the two lanes are all that group needs.
+        expect(block("A").style.left).toBe("calc(0% + 2px)");
+        expect(block("C").style.left).toBe("calc(0% + 2px)");
+        expect(block("B").style.left).toBe("calc(50% + 2px)");
+        expect(block("C").style.width).toBe("calc(50% - 4px)");
+        // D starts as B ends: a new group, the whole width.
+        expect(block("D").style.left).toBe("2px");
+    });
+});
+
+describe("TimeGridView: events that start together", () => {
+    it("puts the longer one first, whatever order they were given in", () => {
+        const at = (title: string, to: string) => occurrence({ occurrenceKey: title, uid: title, title, startDate: "2026-06-10T09:00:00.000Z", endDate: `2026-06-10T${to}:00.000Z` });
+        renderGrid({ occurrences: [at("Short", "09:30"), at("Long", "11:00")] });
+        expect((screen.getByText("Long").closest("div[style]") as HTMLElement).style.left).toBe("calc(0% + 2px)");
+        expect((screen.getByText("Short").closest("div[style]") as HTMLElement).style.left).toBe("calc(50% + 2px)");
+    });
+});
+
+describe("TimeGridView: days a daylight-saving change makes shorter or longer", () => {
+    const zone = process.env.TZ;
+    afterEach(() => {
+        process.env.TZ = zone;
+    });
+
+    it("keeps events and rows on their clock hours on the 23-hour day the clocks go forward", async () => {
+        process.env.TZ = "America/New_York";
+        const onSelectSlot = vi.fn();
+        const user = userEvent.setup();
+        const day = new Date(2026, 2, 8); // 8 March 2026: 02:00 became 03:00
+        const event = occurrence({ startDate: new Date(2026, 2, 8, 10, 0).toISOString(), endDate: new Date(2026, 2, 8, 11, 0).toISOString() });
+        renderGrid({ days: [day], occurrences: [event], onSelectSlot });
+
+        const block = screen.getByText("Standup").closest("div[style]") as HTMLElement;
+        expect(block.style.top).toBe("480px");
+        expect(block.style.height).toBe("48px");
+        await user.click(screen.getByLabelText(/New event at 10:00 AM/));
+        expect(onSelectSlot.mock.calls[0][0]).toEqual(new Date(2026, 2, 8, 10, 0));
+    });
+
+    it("keeps the last hour of the 25-hour day the clocks go back inside the column", () => {
+        process.env.TZ = "America/New_York";
+        const day = new Date(2026, 10, 1); // 1 November 2026: 02:00 became 01:00
+        const event = occurrence({ startDate: new Date(2026, 10, 1, 23, 0).toISOString(), endDate: new Date(2026, 10, 2, 0, 0).toISOString() });
+        renderGrid({ days: [day], occurrences: [event] });
+
+        const block = screen.getByText("Standup").closest("div[style]") as HTMLElement;
+        expect(block.style.top).toBe("1104px");
+        expect(block.style.height).toBe("48px");
     });
 });

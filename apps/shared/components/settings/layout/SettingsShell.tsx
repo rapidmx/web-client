@@ -156,7 +156,7 @@ export default function SettingsShell({
     // A full-screen takeover, not nested inside the rest of the app's chrome — same as ContactsShell/
     // TasksShell, there's nothing else for a mailbox-less caller to configure here yet.
     if (userUid && status === "ready" && !mailboxUid) {
-        return <MailboxProvisioning />;
+        return <MailboxProvisioning impersonating={impersonating} impersonationBaseUrl={impersonationBaseUrl} />;
     }
 
     let inner: ReactNode = null;

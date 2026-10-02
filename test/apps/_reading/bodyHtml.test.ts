@@ -249,6 +249,19 @@ describe("sanitizeCss", () => {
         expect(sanitizeCss("@import 'x.css'; a{color:red}")).toBe(" a{color:red}");
     });
 
+    it("sees through CSS escapes and comments: what a browser reads is what is checked", () => {
+        expect(sanitizeCss("a{position:\\66ixed}")).toBe("a{position:relative}");
+        expect(sanitizeCss("a{po\\73ition : \\46 IXED}")).toBe("a{position:relative}");
+        expect(sanitizeCss("a{min-height:200\\76h}")).toBe("a{min-height:200px}");
+        expect(sanitizeCss("a{position/**/:fixed;top:0}")).toBe("a{position:relative;top:0}");
+        expect(sanitizeCss("a{position:/* x */sticky}")).toBe("a{position:relative}");
+        // A decoded backslash that starts another escape is decoded again.
+        expect(sanitizeCss("a{min-height:200\\5c 76h}")).toBe("a{min-height:200px}");
+        expect(sanitizeCss("@\\69mport 'x.css'; a{color:red}")).toBe(" a{color:red}");
+        // Escapes and comments that hide nothing are left as written.
+        expect(sanitizeCss("a{color:\\72ed} /* note */ .\\31 23{top:0}")).toBe("a{color:\\72ed} /* note */ .\\31 23{top:0}");
+    });
+
     it("turns lengths in viewport-height units into pixels, so a message cannot make its frame grow by growing itself", () => {
         expect(sanitizeCss("a{height:100vh;min-height: 50.5dvh;max-height:20svh;top:5lvh;width:10vmin;left:3vmax;margin:1vb}")).toBe(
             "a{height:100px;min-height: 50.5px;max-height:20px;top:5px;width:10px;left:3px;margin:1px}",

@@ -6,6 +6,7 @@ import { pageTitle } from "../../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useState } from "react";
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
+    EscrowInfo,
     KeyVault,
     MasterKeyWrap,
     PublicKey,
@@ -43,6 +44,7 @@ import { getMailbox } from "../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import KeyEnrollmentGate from "../../../shared/components/layout/KeyEnrollmentGate.js";
+import { MIN_PASSWORD_LENGTH } from "../../../shared/components/layout/RecoveryCodeUnlock.js";
 import { useUnlockPrompt } from "../../../shared/components/layout/UnlockPromptProvider.js";
 import { destroyLocalIndex } from "../../../shared/search/localIndexRpcClient.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
@@ -61,8 +63,6 @@ import {
 } from "../../../shared/signing/enrollmentTracker.js";
 import { STALE_REQUEST_TEXT, beforeRequestText, healthWarning, isInstalling, timeOf } from "../../../shared/signing/enrollmentView.js";
 import { useSigningEnrollmentInfo } from "../../../shared/signing/signingInfo.js";
-
-const MIN_PASSWORD_LENGTH = 8;
 
 /** Mirrors restapi's `BaseKeyVaultRoute` `MAX_MASTER_KEY_WRAPS` - `addMasterKeyWrap()` refuses a vault
  * already holding this many wraps (escrow included). */
@@ -304,6 +304,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     const hasEscrowWrap = vault?.masterKeyWraps.some((w) => w.method === "escrow") ?? false;
     const [wrappingEscrow, setWrappingEscrow] = useState(false);
     const [escrowError, setEscrowError] = useState<string | null>(null);
+    const [pendingEscrow, setPendingEscrow] = useState<EscrowInfo | null>(null);
 
     /**
      * This mailbox's unlocked keys *right now* - never a copy read at render time, which a lock (idle
@@ -351,13 +352,28 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
         return err instanceof ApiRequestError ? err.message : fallback;
     }
 
+    /** Looks up the certificate the server says this mailbox's escrow scope holds, and asks the owner to confirm it
+     * before the master key is wrapped to it: nothing else vouches for that certificate, and whoever holds its
+     * private key can read this mailbox's encrypted mail. */
     async function handleWrapEscrow() {
         setEscrowError(null);
         setWrappingEscrow(true);
         try {
             // Only reachable when mailbox.escrowScopeId is set (see the render guard below).
+            await verifiedUnlockedKeys();
+            setPendingEscrow(await getEscrowInfo(mailboxUid!, client));
+        } catch (err) {
+            setEscrowError(errorMessage(err, "Could not add escrow protection for this mailbox."));
+        } finally {
+            setWrappingEscrow(false);
+        }
+    }
+
+    async function handleConfirmEscrow(escrowInfo: EscrowInfo) {
+        setPendingEscrow(null);
+        setWrappingEscrow(true);
+        try {
             const { current } = await verifiedUnlockedKeys();
-            const escrowInfo = await getEscrowInfo(mailboxUid!, client);
             const wrap = await buildEscrowWrap(current.masterKey, escrowInfo.escrowScopeId, fromBase64(escrowInfo.publicKey.publicKey));
             await addMasterKeyWrap(mailboxUid!, wrap, undefined, client);
             await loadVault();
@@ -1038,6 +1054,30 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                                 )}
                             </div>
                         )}
+                        <Modal open={pendingEscrow !== null} onClose={() => setPendingEscrow(null)} title="Confirm escrow certificate">
+                            <p className="text-sm mb-3">
+                                Anyone holding the private key for this certificate will be able to recover this mailbox&rsquo;s
+                                encrypted mail. Confirm it is the escrow certificate your organization expects before continuing.
+                            </p>
+                            <dl className="text-sm mb-5 flex flex-col gap-1">
+                                <div>
+                                    <dt className="text-xs text-text-muted">Escrow scope</dt>
+                                    <dd className="break-all">{pendingEscrow?.escrowScopeId}</dd>
+                                </div>
+                                <div>
+                                    <dt className="text-xs text-text-muted">Certificate fingerprint</dt>
+                                    <dd className="font-mono break-all">{pendingEscrow?.publicKey.fingerprint}</dd>
+                                </div>
+                            </dl>
+                            <div className="flex gap-3 justify-end">
+                                <Button type="button" variant="secondary" className="!w-auto" onClick={() => setPendingEscrow(null)}>
+                                    Cancel
+                                </Button>
+                                <Button type="button" className="!w-auto" onClick={() => void handleConfirmEscrow(pendingEscrow!)}>
+                                    Trust this certificate
+                                </Button>
+                            </div>
+                        </Modal>
                     </div>
                 )}
 

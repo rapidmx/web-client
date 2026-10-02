@@ -160,6 +160,28 @@ describe("ComposeWindow while its quoted original is still loading", () => {
         expect(saves(fetchMock)).toEqual([]);
     });
 
+    it("stops handing the editor the quote once it has added it, so a restored window does not get it twice", async () => {
+        mockCompose();
+        const { arrive } = renderWindow();
+        const editor = await screen.findByTestId("html-editor");
+        arrive({ quotedHtml: "<blockquote>Hi</blockquote>" });
+        await waitFor(() => expect(editor).toHaveAttribute("data-append", "<p></p><blockquote>Hi</blockquote>"));
+        fireEvent.click(screen.getByRole("button", { name: "fake-appended" }));
+        await waitFor(() => expect(editor).toHaveAttribute("data-append", ""));
+    });
+
+    it("does not offer Send, or Send later, until the original has arrived", async () => {
+        mockCompose();
+        const { arrive } = renderWindow();
+        await screen.findByTestId("html-editor");
+        await waitFor(() => expect(screen.getByLabelText("Subject")).toBeInTheDocument());
+        expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Send later" })).toBeDisabled();
+        arrive({ quotedHtml: "<blockquote>Hi</blockquote>" });
+        await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+        expect(screen.getByRole("button", { name: "Send later" })).toBeEnabled();
+    });
+
     it("keeps what the reader typed above the quote as an edit worth saving", async () => {
         const fetchMock = mockCompose();
         const { arrive } = renderWindow();

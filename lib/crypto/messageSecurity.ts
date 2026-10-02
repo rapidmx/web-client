@@ -123,8 +123,11 @@ export interface MessageSecurityResult {
      * recovered and it carried a protected Subject. */
     subject?: string;
     /** Every protected header recovered from inside the signed/decrypted entity - present only when that entity
-     * carries RFC 9788 protected headers (a protected `From`). Absent for a legacy S/MIME sender's signed-only
-     * message: its outer Subject/To/Cc were then never signed, and a UI should not present them as verified. */
+     * carries RFC 9788 protected headers (a protected `From`) AND a signature over them verified (so also for a
+     * `"verified_at_first_open"` result). Absent for a legacy S/MIME sender's signed-only message (its outer
+     * Subject/To/Cc were then never signed, and a UI should not present them as verified), and for an encrypted
+     * message without a verified signature: anyone holding the reader's public certificate can encrypt headers of their
+     * own choosing, so they are never exposed. */
     protectedHeaders?: MessageProtectedHeaders;
     /** The attachments inside the verified/decrypted entity - for a signed-only message the only attachments the
      * signature covers, so a UI showing a verified badge should list these rather than the server's attachment
@@ -189,7 +192,7 @@ function isEncryptedContentType(contentType: { value: string; params: Record<str
 
 const NO_KEY_ERROR = "This device doesn't have the key needed to decrypt this message.";
 const UNSUPPORTED_ENCRYPTION_ERROR =
-    "This message uses an older, unauthenticated encryption algorithm that RapidMX doesn't accept, so it can't be opened safely.";
+    "This message uses an older, unauthenticated encryption algorithm, or an encryption format, that RapidMX doesn't accept, so it can't be opened safely.";
 
 function renderDisplayBody(display: DisplayBody | undefined): Pick<MessageSecurityResult, "html" | "text"> {
     if (display?.html !== undefined) {
@@ -219,7 +222,7 @@ export interface SignerBindingInput {
     /** The certificate matched to the verified SignerInfo; `undefined` fails closed. */
     signerCertificateDer: Uint8Array | undefined;
     /** Headers recovered from inside the signed content (RFC 9788), if any. */
-    protectedHeaders: (Pick<ProtectedHeaders, "from" | "to"> & Partial<Pick<ProtectedHeaders, "cc" | "subject">>) | undefined;
+    protectedHeaders: (Pick<ProtectedHeaders, "from" | "to"> & Partial<Pick<ProtectedHeaders, "cc" | "subject" | "date">>) | undefined;
     /** The received message's outer header map (lowercased names), as `parseMimeEntity()` returns it. */
     outerHeaders: Record<string, string>;
     /** Every outer header field in order (`parseMimeEntity()`'s `fields`) - checked for repeated
@@ -229,7 +232,7 @@ export interface SignerBindingInput {
     protectedFields?: MimeHeaderField[];
     /** One trusted fingerprint or several (any match is accepted). An empty array counts as none supplied. */
     pinnedSignerFingerprint?: string | string[];
-    /** Also require the protected `Subject` (when protected headers are present) to equal the outer one - right for
+    /** Also require the protected `Subject` and `Date` (when protected headers are present) to equal the outer ones - right for
      * a signed-only (`hp="clear"`) message, wrong for an encrypted one whose outer Subject is obscured. */
     compareSubject?: boolean;
 }
@@ -244,6 +247,15 @@ function hasRepeatedAddressField(fields: MimeHeaderField[] | undefined): boolean
         counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     return SINGLETON_ADDRESS_FIELDS.some((name) => (counts.get(name) ?? 0) > 1);
+}
+
+/** Whether two `Date:` header values name the same instant. Only a pair that both parse can differ: a missing or
+ * unreadable date on either side is nothing to compare. */
+function sameInstant(a: string | undefined, b: string | undefined): boolean {
+    // `String(undefined)` is not a date either.
+    const left = Date.parse(String(a));
+    const right = Date.parse(String(b));
+    return Number.isNaN(left) || Number.isNaN(right) || left === right;
 }
 
 function normalizePins(pins: string | string[] | undefined): string[] {
@@ -292,7 +304,13 @@ function checkIdentityAndHeaders(input: SignerBindingInput, certDer: Uint8Array)
         if (!sameAddressSet(extractAddresses(protectedHeaders?.cc), extractAddresses(outerHeaders["cc"]))) {
             return "header_mismatch";
         }
-        if (input.compareSubject && normalizeSubject(protectedHeaders?.subject) !== normalizeSubject(outerHeaders["subject"])) {
+        // A signed-only message's outer Date is unsigned too: a signed message replayed later carries a new one. (An encrypted
+        // message's outer Date is checked against its HP-Outer copy instead - see `headerTamperDetected`.)
+        if (
+            input.compareSubject &&
+            (normalizeSubject(protectedHeaders?.subject) !== normalizeSubject(outerHeaders["subject"]) ||
+                !sameInstant(protectedHeaders?.date, outerHeaders["date"]))
+        ) {
             return "header_mismatch";
         }
     }
@@ -448,14 +466,16 @@ async function evaluateLive(
         if (!parsed.decrypted) {
             return { result: { state: "encrypted", decryptError: parsed.unsupportedContentEncryption ? UNSUPPORTED_ENCRYPTION_ERROR : NO_KEY_ERROR }, kind: "encrypted" };
         }
+        // Anyone holding the reader's public certificate can encrypt a message with any protected headers they like, so they
+        // are only exposed once a signature over them verified - and a key-changed message keeps them aside for a seal.
         const content = {
             ...renderDisplayBody(parsed.displayBody),
             headerTamperDetected: parsed.headerTamperDetected,
             subject: parsed.protectedHeaders?.subject || undefined,
-            ...exposedHeaders(parsed.protectedHeaders),
             attachments: parsed.attachments,
             ...addressing(parsed.protectedHeaders),
         };
+        const signedHeaders = exposedHeaders(parsed.protectedHeaders);
         if (parsed.signatureVerified === undefined) {
             return { result: { state: "encrypted", ...content }, kind: "encrypted" };
         }
@@ -464,9 +484,13 @@ async function evaluateLive(
         }
         const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
         if (failure) {
-            return { result: { state: "signature_failed", signatureFailureReason: failure, ...content, ...(failure === "signer_key_changed" ? acceptedSigner : signer) }, kind: "encrypted" };
+            return {
+                result: { state: "signature_failed", signatureFailureReason: failure, ...content, ...(failure === "signer_key_changed" ? acceptedSigner : signer) },
+                kind: "encrypted",
+                ...(failure === "signer_key_changed" ? { signedContent: signedHeaders } : {}),
+            };
         }
-        return { result: { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner }, kind: "encrypted" };
+        return { result: { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...signedHeaders, ...acceptedSigner }, kind: "encrypted" };
     }
 
     return { result: { state: "unprotected" }, kind: "other" };

@@ -11,6 +11,7 @@ import {
     signOutOfConsole,
 } from "../../../../apps/shared/components/admin/signOut.js";
 import { PENDING_DELETIONS_KEY, SIGN_OUT_CHANNEL } from "../../../../apps/shared/search/localIndexRpcClient.js";
+import { getNotificationsSnapshot, notify } from "../../../../apps/shared/notifications/store.js";
 
 const AUTH_SERVER_URL = "https://auth.example.com";
 
@@ -22,6 +23,15 @@ afterEach(() => {
 });
 
 describe("signOutOfConsole", () => {
+    it("forgets the tab's notification history, which would otherwise outlive the session", async () => {
+        mockLocation();
+        mockFetch(() => emptyResponse());
+        notify({ kind: "error", title: "Couldn't save", message: "a detail" });
+        expect(getNotificationsSnapshot().history).not.toHaveLength(0);
+        await signOutOfConsole(AUTH_SERVER_URL);
+        expect(getNotificationsSnapshot().history).toEqual([]);
+    });
+
     it("uses the same cross-tab channel AppShell listens on", () => {
         expect(CONSOLE_SIGN_OUT_CHANNEL).toBe(SIGN_OUT_CHANNEL);
     });

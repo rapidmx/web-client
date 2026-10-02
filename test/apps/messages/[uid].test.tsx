@@ -332,6 +332,36 @@ describe("MessageDetailPage", () => {
         );
     });
 
+    it("shows only the answer for the message now asked about when an earlier request answers late, or fails late", async () => {
+        for (const late of ["answers", "fails"]) {
+            const releases: (() => void)[] = [];
+            let loads = 0;
+            mockShell((url, init) => {
+                if (url !== "/api/mail/messages/m1") return undefined;
+                if (init?.method === "PUT") return jsonResponse(200, { ...message, flags: { ...message.flags, read: true } });
+                loads += 1;
+                if (loads % 2 === 1) {
+                    // The first request of a pair is the superseded one (effects run twice under StrictMode): it is held, and answers last.
+                    return new Promise<Response>((resolve) =>
+                        releases.push(() => resolve(late === "answers" ? jsonResponse(200, { ...message, subject: "Stale subject" }) : jsonResponse(500, { message: "stale failure" }))),
+                    ) as never;
+                }
+                return jsonResponse(200, message);
+            });
+            const { unmount } = render(
+                <React.StrictMode>
+                    <MessageDetailPage userUid="u1" params={{ uid: "m1" }} />
+                </React.StrictMode>,
+            );
+            await screen.findByRole("heading", { name: "Hello there" });
+            releases.forEach((release) => release());
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(screen.getByRole("heading", { name: "Hello there" })).toBeInTheDocument();
+            expect(screen.queryByText("stale failure")).not.toBeInTheDocument();
+            unmount();
+        }
+    });
+
     it("shows an error message when the message fails to load", async () => {
         mockShell((url) => (url === "/api/mail/messages/m1" ? jsonResponse(404, { message: "not found" }) : undefined));
         render(<MessageDetailPage userUid="u1" params={{ uid: "m1" }} />);

@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import { contactToVCard, contactsToVCardFile, parseVCards } from "../../../lib/contacts/vcard.js";
+import { VCARD_MAX_CHARS, VCARD_MAX_CONTACTS, contactToVCard, contactsToVCardFile, parseVCards } from "../../../lib/contacts/vcard.js";
 import type { Contact } from "../../../lib/contacts/contactsApi.js";
 
 const baseContact: Contact = {
@@ -208,5 +208,58 @@ describe("vCard escaping and parsing fixes (round-4 review)", () => {
         );
         expect(parsed.map((c) => c.displayName)).toEqual(["Ann", "Bob"]);
         expect(parsed[0].notes).toBe("folded line BEGIN:VCARD");
+    });
+});
+
+describe("parseVCards: limits and gaps", () => {
+    it("takes at most VCARD_MAX_CONTACTS records from a file", () => {
+        const card = (n: number) => `BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Person ${n}\r\nEND:VCARD\r\n`;
+        const text = Array.from({ length: VCARD_MAX_CONTACTS + 50 }, (_, n) => card(n)).join("");
+        const parsed = parseVCards(text);
+        expect(parsed).toHaveLength(VCARD_MAX_CONTACTS);
+        expect(parsed[VCARD_MAX_CONTACTS - 1].displayName).toBe(`Person ${VCARD_MAX_CONTACTS - 1}`);
+    });
+
+    it("reads no more than VCARD_MAX_CHARS of the text", () => {
+        const text = `BEGIN:VCARD\r\nFN:First\r\nEND:VCARD\r\n${"X".repeat(VCARD_MAX_CHARS)}\r\nBEGIN:VCARD\r\nFN:Last\r\nEND:VCARD\r\n`;
+        expect(parseVCards(text).map((c) => c.displayName)).toEqual(["First"]);
+    });
+
+    it("leaves out an empty EMAIL or TEL rather than giving the server a blank address", () => {
+        const [card] = parseVCards("BEGIN:VCARD\r\nFN:A\r\nEMAIL;TYPE=WORK:\r\nEMAIL:   \r\nEMAIL: a@example.com \r\nTEL:\r\nTEL:555-1\r\nEND:VCARD");
+        expect(card.emails).toEqual([{ address: "a@example.com", type: "other" }]);
+        expect(card.phones).toEqual([{ phoneNumber: "555-1", type: "other" }]);
+    });
+
+    it("decodes a quoted-printable value in its charset, soft line breaks included", () => {
+        const [card] = parseVCards(
+            [
+                "BEGIN:VCARD",
+                "VERSION:2.1",
+                "FN;ENCODING=QUOTED-PRINTABLE;CHARSET=UTF-8:Ren=C3=A9e =F0=9F=98=80",
+                "N;QUOTED-PRINTABLE;CHARSET=ISO-8859-1:M=FCller;J=F6rg;;;",
+                "NOTE;ENCODING=QUOTED-PRINTABLE:first line=0Asecond =",
+                "line of the note",
+                'ORG;ENCODING=QUOTED-PRINTABLE;CHARSET="no-such-charset":Caf=C3=A9 Inc',
+                "TITLE;ENCODING=QUOTED-PRINTABLE:café =zz =4",
+                "END:VCARD",
+            ].join("\r\n"),
+        );
+        expect(card.displayName).toBe("Renée 😀");
+        expect(card.surname).toBe("Müller");
+        expect(card.givenName).toBe("Jörg");
+        expect(card.notes).toBe("first line\nsecond line of the note");
+        expect(card.company).toBe("Café Inc");
+        expect(card.jobTitle).toBe("café =zz =4");
+    });
+
+    it("does not join a line that merely ends in = when it is not quoted-printable (base64 padding)", () => {
+        const [card] = parseVCards("BEGIN:VCARD\r\nFN:A\r\nPHOTO;ENCODING=b:AAAA=\r\nNOTE:after\r\nEND:VCARD");
+        expect(card.notes).toBe("after");
+    });
+
+    it("keeps a quoted-printable line that ends in = at the end of the card as it is", () => {
+        const [card] = parseVCards("BEGIN:VCARD\r\nNOTE;ENCODING=QUOTED-PRINTABLE:dangling=");
+        expect(card.notes).toBe("dangling=");
     });
 });

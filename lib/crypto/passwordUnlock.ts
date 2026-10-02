@@ -33,6 +33,11 @@ export const DEFAULT_ARGON2ID_PARAMS: Argon2idParams = { memorySize: 65536, iter
 
 const ARGON2ID_HASH_LENGTH_BYTES = 32;
 
+/** The most a `MasterKeyWrap.kdf` label read back from the server may ask this device to spend: 1 GiB (in KiB),
+ * 10 passes and 16 lanes - well above every default this system has used, but far from what a hostile or buggy
+ * server could name (`m=4294967295`) to freeze the tab or exhaust WebAssembly memory. */
+export const MAX_ARGON2ID_PARAMS: Argon2idParams = { memorySize: 1048576, iterations: 10, parallelism: 16 };
+
 /** Builds the `kdf` string stored alongside a password-method `MasterKeyWrap`, so parameters can be
  * upgraded over time without breaking existing accounts (each wrap records the parameters it was
  * actually created with). */
@@ -44,7 +49,8 @@ export function argon2idKdfLabel(params: Argon2idParams): string {
  * created with, so unlocking always re-derives with the *original* parameters even if
  * `DEFAULT_ARGON2ID_PARAMS` has since changed (the spec's own "KDF parameters ... MUST be stored
  * alongside each wrap, so costs can be raised over time without breaking existing accounts"). Returns
- * `undefined` for anything that isn't a well-formed `argon2id:m=...,t=...,p=...` label — including a
+ * `undefined` for anything that isn't a well-formed `argon2id:m=...,t=...,p=...` label, or whose parameters are
+ * zero or beyond `MAX_ARGON2ID_PARAMS` — including a
  * different KDF entirely (e.g. recovery codes' own `"hkdf-sha256"` label), which callers must not
  * attempt to unlock as if it were password-derived.
  */
@@ -53,7 +59,13 @@ export function parseArgon2idKdfLabel(label: string): Argon2idParams | undefined
     if (!match) {
         return undefined;
     }
-    return { memorySize: Number(match[1]), iterations: Number(match[2]), parallelism: Number(match[3]) };
+    const params = { memorySize: Number(match[1]), iterations: Number(match[2]), parallelism: Number(match[3]) };
+    const inRange = (value: number, max: number) => value >= 1 && value <= max;
+    return inRange(params.memorySize, MAX_ARGON2ID_PARAMS.memorySize) &&
+        inRange(params.iterations, MAX_ARGON2ID_PARAMS.iterations) &&
+        inRange(params.parallelism, MAX_ARGON2ID_PARAMS.parallelism)
+        ? params
+        : undefined;
 }
 
 /** A fresh random salt for a new password enrollment. 16 bytes is Argon2id's own recommended minimum. */

@@ -34,6 +34,7 @@ import { SIGN_OUT_CHANNEL, destroyAllLocalIndexes } from "../../search/localInde
 import { authApiFetch, setApiUnauthorizedObserver } from "../../../../lib/util/api.js";
 import { destroyUnlockedKeys } from "../../../../lib/crypto/keySession.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
+import { resetNotifications } from "../../notifications/store.js";
 import { clearContactPhotoCache } from "../../../../lib/contacts/useContactPhotoSrc.js";
 import { pluginIcon } from "../../plugins/pluginIcons.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../plugins/pluginNav.js";
@@ -268,6 +269,8 @@ export function AppChrome({
             clearPinnedSignerCache();
             clearAppearanceCache();
             clearContactPhotoCache();
+            // The notification history (meeting titles, error details) is this session's, and the tab's storage outlives it.
+            resetNotifications();
             // Bounded by its own timeout and never rejects - awaited so navigating doesn't kill the Worker mid-delete.
             void destroyAllLocalIndexes().then(() => {
                 window.location.href = authServerUrl ?? "/";
@@ -287,6 +290,7 @@ export function AppChrome({
         clearPinnedSignerCache();
         clearAppearanceCache();
         clearContactPhotoCache();
+        resetNotifications();
         // Open compose windows save edits still waiting on their autosave debounce while the session is still
         // valid - logout invalidates it. Bounded the same way as logout itself, and never rejects.
         await flushComposeDrafts(LOGOUT_TIMEOUT_MS);
@@ -309,6 +313,8 @@ export function AppChrome({
             // they were, so there's nothing else useful to show — matching this app's other network-error
             // handling, which surfaces via a full reload rather than an inline retry affordance.
         } finally {
+            // What the impersonated user's session raised (their meetings, their errors) must not be left for the administrator to read.
+            resetNotifications();
             window.location.href = "/admin";
         }
     }

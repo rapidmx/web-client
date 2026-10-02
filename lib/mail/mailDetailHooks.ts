@@ -14,9 +14,14 @@ export function useMessageAttachments(message: Message | null): Attachment[] {
             setAttachments([]);
             return;
         }
+        // A response for a message since replaced must not overwrite the one now shown.
+        let cancelled = false;
         listAttachments(message.folderUid, message.uid)
-            .then(setAttachments)
-            .catch(() => setAttachments([]));
+            .then((listed) => !cancelled && setAttachments(listed))
+            .catch(() => !cancelled && setAttachments([]));
+        return () => {
+            cancelled = true;
+        };
         // Only the fields the fetch actually depends on — not the whole `message` object, which gets a new
         // reference on every metadata-only patch (e.g. `useMarkMessageRead`'s `onUpdated(updated)`, or a
         // star/flag/label change wired to the same state) and would otherwise trigger a needless re-fetch.
@@ -53,5 +58,8 @@ export function useMarkMessageRead(message: Message | null, onUpdated: (updated:
         return () => {
             cancelled = true;
         };
-    }, [message]);
+        // Only the message's identity and read flag: a metadata-only patch swaps the object while the request is in flight, and
+        // restarting then would drop the first answer and send a second request with the old version (a 409 that leaves the
+        // message unread).
+    }, [message?.uid, message?.flags.read]);
 }

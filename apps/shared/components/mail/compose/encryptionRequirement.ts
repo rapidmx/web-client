@@ -23,6 +23,11 @@ import type { EncryptionPolicy } from "../../../../../lib/crypto/keyvaultApi.js"
  * reported in `unknown`, so a caller that is about to send can give the loads a moment - and only a caller that finds out later that the
  * message *does* need encryption acts on it (see `ComposeWindow`'s transition rules).
  *
+ * That is this function's answer, and it stays fail open for everything that is about a draft or the compose window. The background send
+ * (`sendDecision.ts`'s `decideSend()` with `lookupsComplete`) reads `unknown` once its loads are in: a sender who has an encryption key, and
+ * whose policy or recipients' keys could not be checked, is blocked with the `lookup-failed` decision (the sender may still send without
+ * encryption) rather than sent in the clear on a guess.
+ *
  * Why this is safe enough: the requirement only ever protects *this client's* plaintext drafts and sends from being unencrypted when the
  * server's policy says they should be; it is not the enforcement point (the keys are the user's, the server never sees them). A missing
  * policy therefore does not mean "encrypt or refuse" - it means the client cannot tell, and the honest default is the one that works.

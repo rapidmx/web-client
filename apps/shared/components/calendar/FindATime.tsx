@@ -105,7 +105,7 @@ export default function FindATime({ c }: { c: EventFormController }) {
     }, [startDay]);
 
     // You, then each guest once (case-insensitively), at most as many as one look-up may ask about.
-    const rows = useMemo<Row[]>(() => {
+    const { rows, skipped } = useMemo<{ rows: Row[]; skipped: number }>(() => {
         const seen = new Set([organizerAddress.toLowerCase()]);
         const guests: Row[] = [];
         for (const attendee of values.attendees) {
@@ -115,7 +115,8 @@ export default function FindATime({ c }: { c: EventFormController }) {
                 guests.push({ address: attendee.address, name: attendee.displayName || attendee.address, you: false });
             }
         }
-        return [{ address: organizerAddress, name: "You", you: true }, ...guests].slice(0, FREE_BUSY_MAX_ADDRESSES);
+        const everyone = [{ address: organizerAddress, name: "You", you: true }, ...guests];
+        return { rows: everyone.slice(0, FREE_BUSY_MAX_ADDRESSES), skipped: Math.max(0, everyone.length - FREE_BUSY_MAX_ADDRESSES) };
     }, [values.attendees, organizerAddress]);
     const guestCount = rows.length - 1;
     const addresses = rows.map((row) => row.address);
@@ -241,6 +242,13 @@ export default function FindATime({ c }: { c: EventFormController }) {
                 </button>
                 <span className="text-xs text-text-muted">{describeTimeZone(formZone, zoneDate(dayKey))}</span>
             </div>
+
+            {skipped > 0 && (
+                <p className="text-xs text-text-muted">
+                    {skipped} {skipped === 1 ? "guest" : "guests"} beyond the first {FREE_BUSY_MAX_ADDRESSES - 1} {skipped === 1 ? "isn’t" : "aren’t"} checked, and {skipped === 1 ? "is" : "are"} not
+                    counted in who is free.
+                </p>
+            )}
 
             {lookUp.status === "error" && (
                 <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-danger">

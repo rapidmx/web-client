@@ -78,6 +78,17 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
             .finally(() => setAssetBusy(null));
     }
 
+    /** Sets a branding asset to an address the administrator typed. Every visitor's browser loads it - the anonymous booking pages too - so it must be an
+     * encrypted (`https:`) address or one on this server (a path), not `http:`, `data:` or `javascript:`. */
+    function runUrl(name: string, field: "logoUrl" | "iconUrl" | "stylesheetUrl", value: string) {
+        const address = value.trim();
+        if (address !== "" && !/^https:\/\/[^\s/]/i.test(address) && !/^\/(?![/\\])/.test(address)) {
+            setError("Use an https:// address, or a path on this server, or upload a file instead.");
+            return;
+        }
+        void runAsset(name, () => updateBranding({ [field]: address }));
+    }
+
     function handleLogoFileChange(e: ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -208,7 +219,7 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
                                 className="!w-auto"
                                 disabled={assetBusy !== null || logoUrlInput === (branding.logoUrl ?? "")}
                                 loading={assetBusy === "logo-url"}
-                                onClick={() => void runAsset("logo-url", () => updateBranding({ logoUrl: logoUrlInput }))}
+                                onClick={() => runUrl("logo-url", "logoUrl", logoUrlInput)}
                             >
                                 Set
                             </Button>
@@ -280,7 +291,7 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
                                 className="!w-auto"
                                 disabled={assetBusy !== null || iconUrlInput === (branding.iconUrl ?? "")}
                                 loading={assetBusy === "icon-url"}
-                                onClick={() => void runAsset("icon-url", () => updateBranding({ iconUrl: iconUrlInput }))}
+                                onClick={() => runUrl("icon-url", "iconUrl", iconUrlInput)}
                             >
                                 Set
                             </Button>
@@ -331,6 +342,10 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
                     </div>
                     <label className="flex flex-col gap-1.5 text-sm">
                         <span className="font-semibold">Or use an external stylesheet URL</span>
+                        <span className="text-xs text-text-muted">
+                            Every visitor&rsquo;s browser loads it, and a stylesheet can read what the page shows: only use an address you control, or
+                            upload the file instead.
+                        </span>
                         <div className="flex gap-2">
                             <input
                                 aria-label="Stylesheet URL"
@@ -344,9 +359,7 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
                                 className="!w-auto"
                                 disabled={assetBusy !== null || stylesheetUrlInput === (branding.stylesheetUrl ?? "")}
                                 loading={assetBusy === "stylesheet-url"}
-                                onClick={() =>
-                                    void runAsset("stylesheet-url", () => updateBranding({ stylesheetUrl: stylesheetUrlInput }))
-                                }
+                                onClick={() => runUrl("stylesheet-url", "stylesheetUrl", stylesheetUrlInput)}
                             >
                                 Set
                             </Button>

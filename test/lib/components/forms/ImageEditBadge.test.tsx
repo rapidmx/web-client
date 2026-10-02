@@ -319,6 +319,30 @@ describe("ImageEditBadge: Take photo", () => {
             expect(onFile).toHaveBeenCalledTimes(1);
         });
 
+        it("hands over no picture when the dialog was cancelled or left while the frame was still being encoded", async () => {
+            setMediaDevices(async () => STREAM);
+            canvasStub(null);
+            const callbacks: BlobCallback[] = [];
+            vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(((callback: BlobCallback) => callbacks.push(callback)));
+            const user = userEvent.setup();
+            const onFile = vi.fn();
+            const { unmount } = render(<ImageEditBadge {...props({ onFile })} />);
+            for (const leave of ["cancel", "unmount"]) {
+                await openCamera(user);
+                const video = screen.getByLabelText("Camera preview");
+                await waitFor(() => expect((video as HTMLVideoElement).srcObject).toBe(STREAM));
+                fireEvent.loadedMetadata(video);
+                fireEvent.click(screen.getByRole("button", { name: "Capture" }));
+                if (leave === "cancel") {
+                    await user.click(screen.getByRole("button", { name: "Cancel" }));
+                } else {
+                    unmount();
+                }
+            }
+            act(() => callbacks.forEach((callback) => callback(new Blob([new Uint8Array(3)], { type: "image/jpeg" }))));
+            expect(onFile).not.toHaveBeenCalled();
+        });
+
         it("says so, and keeps the camera, when the frame could not be turned into a picture", async () => {
             setMediaDevices(async () => STREAM);
             canvasStub(null);

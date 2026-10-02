@@ -429,7 +429,7 @@ describe("SettingsEncryptionPage", () => {
         await user.type(screen.getByLabelText("Confirm new password"), "short");
         await user.click(screen.getByRole("button", { name: "Add password" }));
 
-        expect(await screen.findByText(/at least 8 characters/)).toBeInTheDocument();
+        expect(await screen.findByText(/at least 12 characters/)).toBeInTheDocument();
         expect(buildPasswordWrap).not.toHaveBeenCalled();
     });
 
@@ -1295,7 +1295,7 @@ describe("SettingsEncryptionPage", () => {
 
         await submitRotation(user, "short");
 
-        expect(await screen.findByText(/at least 8 characters/)).toBeInTheDocument();
+        expect(await screen.findByText(/at least 12 characters/)).toBeInTheDocument();
         expect(openWithKey).not.toHaveBeenCalled();
         expect(getKeyVault).toHaveBeenCalledTimes(1);
     });
@@ -1719,7 +1719,7 @@ describe("SettingsEncryptionPage", () => {
         const unlockedFixture = { masterKey: new Uint8Array(32) };
         getUnlockedKeys.mockReturnValue(unlockedFixture);
         const escrowWrap = { method: "escrow" as const, escrowScopeId: "scope-1", ciphertext: "ct", nonce: "n/a", salt: "n/a", kdf: "cms-enveloped-data", schemeVersion: 1, createdAt: 0 };
-        getKeyVault.mockResolvedValueOnce(vault).mockResolvedValueOnce(vault).mockResolvedValueOnce({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, escrowWrap] });
+        getKeyVault.mockResolvedValueOnce(vault).mockResolvedValueOnce(vault).mockResolvedValueOnce(vault).mockResolvedValueOnce({ wrappedKeys: vault.wrappedKeys, masterKeyWraps: [...vault.masterKeyWraps, escrowWrap] });
         getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } });
         buildEscrowWrap.mockResolvedValue(escrowWrap);
         addMasterKeyWrap.mockResolvedValue(vault);
@@ -1732,6 +1732,12 @@ describe("SettingsEncryptionPage", () => {
         await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
 
         expect(getEscrowInfo).toHaveBeenCalledWith("mb1", undefined);
+        // Nothing is wrapped until the owner has seen which certificate it would be wrapped to.
+        const dialog = await screen.findByRole("dialog");
+        expect(within(dialog).getByText("scope-1")).toBeInTheDocument();
+        expect(within(dialog).getByText("fp1")).toBeInTheDocument();
+        expect(buildEscrowWrap).not.toHaveBeenCalled();
+        await user.click(within(dialog).getByRole("button", { name: "Trust this certificate" }));
         await waitFor(() =>
             expect(buildEscrowWrap).toHaveBeenCalledWith(unlockedFixture.masterKey, "scope-1", expect.any(Uint8Array)),
         );
@@ -1766,8 +1772,31 @@ describe("SettingsEncryptionPage", () => {
         await screen.findByRole("button", { name: "Add escrow protection" });
 
         await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
+        await user.click(await screen.findByRole("button", { name: "Trust this certificate" }));
 
         expect(await screen.findByText("Could not add escrow protection for this mailbox.")).toBeInTheDocument();
+    });
+
+    it("wraps nothing when the owner declines the escrow certificate, by Cancel or by closing the dialog", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope-1", publicKey: { publicKey: "Y2VydA==", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 } });
+        const scopedMailbox = { ...mailbox, escrowScopeId: "scope-1" };
+        mockShell((url) => (url.startsWith("/api/mail/mailboxes") ? jsonResponse(200, [scopedMailbox]) : undefined));
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByRole("button", { name: "Add escrow protection" });
+
+        await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        await user.click(screen.getByRole("button", { name: "Add escrow protection" }));
+        await screen.findByRole("dialog");
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+        expect(buildEscrowWrap).not.toHaveBeenCalled();
+        expect(addMasterKeyWrap).not.toHaveBeenCalled();
     });
 
     it("treats a refreshed mailbox with no keys at all as having none", async () => {

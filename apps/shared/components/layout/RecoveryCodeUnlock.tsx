@@ -26,8 +26,10 @@ import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../lib/components/forms/FormField.js";
 
-/** The same minimum every other "set an encryption password" form in this app uses. */
-export const MIN_PASSWORD_LENGTH = 8;
+/** The same minimum every other "set an encryption password" form in this app uses. The password is the only thing
+ * between an offline guesser holding the server's wrapped master key and the mailbox's private keys, so it is
+ * long: a passphrase of a few words clears it easily. */
+export const MIN_PASSWORD_LENGTH = 12;
 
 /** Where recovery codes are regenerated. */
 export const ENCRYPTION_SETTINGS_HREF = "/settings/encryption";

@@ -78,16 +78,22 @@ export interface PersonAvailability {
 /** What a person's calendar says about a stretch of time. `"unknown"` is any person the server did not (or would not) tell about - never free. */
 export type AvailabilityState = "free" | "tentative" | "busy" | "unknown";
 
-/** The response's results with their times as milliseconds (a person who isn't `"available"` has no blocks whatever the server sent). */
+/** The response's results with their times as milliseconds (a person who isn't `"available"` has no blocks whatever the server sent). A window
+ * whose start or end can't be read is busy for all time - never silently free, which is what comparing `NaN` would make it. */
 export function availabilityOf(response: FreeBusyResponse): PersonAvailability[] {
     return response.results.map((result) => ({
         address: result.address,
         status: result.status,
-        busy:
-            result.status === "available"
-                ? result.busy.map((window) => ({ startMs: Date.parse(window.start), endMs: Date.parse(window.end), tentative: window.tentative }))
-                : [],
+        busy: result.status === "available" ? result.busy.map(toBusyBlock) : [],
     }));
+}
+
+function toBusyBlock(window: { start: string; end: string; tentative: boolean }): BusyBlock {
+    const startMs = Date.parse(window.start);
+    const endMs = Date.parse(window.end);
+    return Number.isFinite(startMs) && Number.isFinite(endMs)
+        ? { startMs, endMs, tentative: window.tentative }
+        : { startMs: Number.NEGATIVE_INFINITY, endMs: Number.POSITIVE_INFINITY, tentative: window.tentative };
 }
 
 /** Whether a block overlaps the stretch from `startMs` to `endMs` (touching ends do not overlap). */
@@ -165,6 +171,8 @@ export interface SuggestTimesOptions {
 }
 
 const DEFAULT_STEP_MS = 30 * 60_000;
+/** The finest step `suggestTimes()` takes: a zero or negative one would never advance, a tiny one would test millions of slots. */
+const MIN_STEP_MS = 60_000;
 const DEFAULT_SUGGESTIONS = 5;
 
 /**
@@ -177,7 +185,7 @@ export function suggestTimes(people: PersonAvailability[], options: SuggestTimes
     if (known.length === 0 || options.durationMs <= 0) {
         return [];
     }
-    const step = options.stepMs ?? DEFAULT_STEP_MS;
+    const step = Number.isFinite(options.stepMs) ? Math.max(MIN_STEP_MS, options.stepMs!) : DEFAULT_STEP_MS;
     const limit = options.limit ?? DEFAULT_SUGGESTIONS;
     const found: number[] = [];
     for (const window of [...options.windows].sort((a, b) => a.startMs - b.startMs)) {

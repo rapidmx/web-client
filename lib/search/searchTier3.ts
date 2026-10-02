@@ -23,7 +23,7 @@ import { evaluateMessageSecurity, type MessageSecurityResult } from "../crypto/m
 import { getMessage, getMessageRawContent } from "../mail/mailApi.js";
 import type { ParsedSearchQuery } from "./queryGrammar.js";
 import { SEARCH_FIELD_WEIGHTS } from "./searchScoring.js";
-import { candidates, SearchResult } from "./searchApi.js";
+import { candidates, type CandidateResultPage, SearchResult } from "./searchApi.js";
 
 /** Longest decrypted HTML body `stripHtml()` examines, in UTF-16 code units - content past it is ignored
  * for Tier 3 matching. A hostile sender controls this input entirely, so it is bounded on top of the
@@ -271,6 +271,11 @@ function hasAnyFilter(parsed: ParsedSearchQuery): boolean {
  * concurrent WebCrypto work a large candidate page would otherwise fire all at once. */
 export const TIER3_DECRYPT_CONCURRENCY = 4;
 
+/** The most candidate pages one search walks (`nextCursor` onwards) while it is still short of `limit` results - a
+ * search that matches little must not download and decrypt a whole mailbox, but an encrypted message beyond the first
+ * page of candidates is still found. */
+export const TIER3_MAX_CANDIDATE_PAGES = 4;
+
 /** `Promise.allSettled()` over `items`, but never running more than `concurrency` `task`s at a time.
  * Outcomes are returned in `items`' own order. */
 async function settleWithConcurrency<T, R>(
@@ -301,7 +306,8 @@ export interface SearchEncryptedCandidatesOptions {
 }
 
 /**
- * Runs Tier 3 for one parsed query: fetches a bounded candidate set from the server, decrypts each
+ * Runs Tier 3 for one parsed query: fetches a bounded candidate set from the server (following `nextCursor` for up to
+ * `TIER3_MAX_CANDIDATE_PAGES` pages while fewer than `limit` messages have matched), decrypts each
  * candidate this device can open (at most `TIER3_DECRYPT_CONCURRENCY` at a time), and returns only the
  * ones whose real (decrypted) content actually matches - each with a raw (not yet normalized) score the
  * caller should run through `searchScoring.ts#normalizeServerScores()` alongside Tier 1's own scores
@@ -330,41 +336,68 @@ export async function searchEncryptedCandidates(
 
     const participants = [parsed.from, parsed.to, parsed.cc].filter((value): value is string => Boolean(value));
 
-    const page = await candidates({
-        types: ["message"],
-        participants: participants.length > 0 ? participants : undefined,
-        before: parsed.before,
-        after: parsed.after,
-        folderUid: parsed.folderUid,
-        flags: parsed.flags,
-        labels: parsed.labels,
-        limit,
-        mailboxUid: options.mailboxUid,
-    });
+    const results: SearchResult[] = [];
+    let cursor: string | undefined;
+    for (let pageNumber = 0; pageNumber < TIER3_MAX_CANDIDATE_PAGES; pageNumber++) {
+        let page: CandidateResultPage;
+        try {
+            page = await candidates({
+                types: ["message"],
+                participants: participants.length > 0 ? participants : undefined,
+                before: parsed.before,
+                after: parsed.after,
+                folderUid: parsed.folderUid,
+                flags: parsed.flags,
+                labels: parsed.labels,
+                limit,
+                cursor,
+                mailboxUid: options.mailboxUid,
+            });
+        } catch (err) {
+            if (pageNumber === 0) {
+                throw err;
+            }
+            // A later page failing keeps what the earlier ones found.
+            break;
+        }
 
-    const settled = await settleWithConcurrency(
-        page.candidates.filter((candidate) => candidate.entityType === "message"),
-        TIER3_DECRYPT_CONCURRENCY,
-        async (candidate) => {
-            if (parsed.hasAttachment !== undefined) {
-                const message = await getMessage(candidate.entityUid);
-                if (Boolean(message.hasAttachments) !== parsed.hasAttachment) {
+        const settled = await settleWithConcurrency(
+            page.candidates.filter((candidate) => candidate.entityType === "message"),
+            TIER3_DECRYPT_CONCURRENCY,
+            async (candidate) => {
+                if (parsed.hasAttachment !== undefined) {
+                    const message = await getMessage(candidate.entityUid);
+                    if (Boolean(message.hasAttachments) !== parsed.hasAttachment) {
+                        return undefined;
+                    }
+                }
+                const rawMime = await getMessageRawContent(candidate.entityUid);
+                if (unlocked.destroyed) {
                     return undefined;
                 }
-            }
-            const rawMime = await getMessageRawContent(candidate.entityUid);
-            if (unlocked.destroyed) {
-                return undefined;
-            }
-            const security: MessageSecurityResult = await evaluateMessageSecurity(rawMime, unlocked);
-            return { entityUid: candidate.entityUid, security };
-        },
-    );
+                const security: MessageSecurityResult = await evaluateMessageSecurity(rawMime, unlocked);
+                return { entityUid: candidate.entityUid, security };
+            },
+        );
 
-    if (unlocked.destroyed) {
-        // Locked while candidates were being fetched/decrypted - don't surface decrypted content after a lock.
-        return [];
+        if (unlocked.destroyed) {
+            // Locked while candidates were being fetched/decrypted - don't surface decrypted content after a lock.
+            return [];
+        }
+        results.push(...matchDecrypted(parsed, settled));
+        cursor = page.nextCursor;
+        if (!cursor || results.length >= limit) {
+            break;
+        }
     }
+    return results;
+}
+
+/** The decrypted candidates of one page whose real content matches `parsed`, scored and with their snippets. */
+function matchDecrypted(
+    parsed: ParsedSearchQuery,
+    settled: PromiseSettledResult<{ entityUid: string; security: MessageSecurityResult } | undefined>[],
+): SearchResult[] {
     const subjectFilter = parsed.subject?.toLowerCase();
     const results: SearchResult[] = [];
     for (const outcome of settled) {

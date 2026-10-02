@@ -4,13 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "../../../../lib/util/api.js";
-import { MailboxAutoProvisionAliasOption, autoProvisionMailbox } from "../../../../lib/mail/mailApi.js";
+import { MailboxAutoProvisionAliasOption, autoProvisionMailbox, stopImpersonating } from "../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import { FrameTakeover } from "../../navigation/frameContext.js";
 
-type Status = "checking" | "needs_selection" | "creating" | "unavailable" | "retryable";
+type Status = "checking" | "needs_selection" | "creating" | "unavailable" | "retryable" | "impersonating";
 
 /** What the "Retry" screen says: the server couldn't read its provisioning policy (503) ... */
 const RETRY_POLICY_TEXT = "We couldn\u2019t check whether a mailbox can be set up for you. Please try again.";
@@ -48,7 +48,7 @@ function unavailableReason(err: unknown): string | null {
  * refused deliberately (a 4xx, e.g. "Automatic mailbox provisioning is not enabled.") so the caller and the
  * administrator they ask can tell why - see `unavailableReason()`.
  */
-export default function MailboxProvisioning() {
+export default function MailboxProvisioning({ impersonating, impersonationBaseUrl }: { impersonating?: boolean; impersonationBaseUrl?: string }) {
     const client = useApiClient();
     const [status, setStatus] = useState<Status>("checking");
     const [options, setOptions] = useState<MailboxAutoProvisionAliasOption[]>([]);
@@ -62,6 +62,12 @@ export default function MailboxProvisioning() {
     const [attempt, setAttempt] = useState(0);
 
     useEffect(() => {
+        if (impersonating) {
+            // An administrator viewing as a user must never create a mailbox for them just by looking: nothing is provisioned, and the way back is shown
+            // (this takeover hides the frame's own "Return to admin" bar).
+            setStatus("impersonating");
+            return;
+        }
         setStatus("checking");
         autoProvisionMailbox(undefined, client)
             .then((result) => {
@@ -92,6 +98,18 @@ export default function MailboxProvisioning() {
                 }
             });
     }, [attempt]);
+
+    const [returning, setReturning] = useState(false);
+    async function handleReturnToAdmin() {
+        setReturning(true);
+        try {
+            await stopImpersonating(impersonationBaseUrl ?? "");
+        } catch {
+            // Navigate either way, as the frame's own banner does: a failed call leaves the session as it was.
+        } finally {
+            window.location.href = "/admin";
+        }
+    }
 
     async function handleConfirm() {
         // `selected` only ever takes a value from `options` itself (the initial default, or the
@@ -135,6 +153,16 @@ export default function MailboxProvisioning() {
                     Continue
                 </Button>
             </div>
+        );
+    } else if (status === "impersonating") {
+        content = (
+            <>
+                <h1 className="text-lg font-bold uppercase tracking-wide">No mailbox</h1>
+                <p className="text-sm text-text-muted">The user you are viewing as has no mailbox, and none is created for them while you are viewing as them.</p>
+                <Button type="button" onClick={() => void handleReturnToAdmin()} loading={returning} disabled={returning} className="!w-auto self-center">
+                    Return to admin
+                </Button>
+            </>
         );
     } else if (status === "retryable") {
         content = (

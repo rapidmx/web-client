@@ -113,7 +113,7 @@ export default function ContactsShell({
     // A full-screen takeover, not nested inside the rest of the app's chrome — there's nothing else
     // for a mailbox-less caller to do here yet, so the icon rail/header don't render at all.
     if (userUid && status === "ready" && !mailboxUid) {
-        return <MailboxProvisioning />;
+        return <MailboxProvisioning impersonating={impersonating} impersonationBaseUrl={impersonationBaseUrl} />;
     }
 
     let inner: ReactNode = null;

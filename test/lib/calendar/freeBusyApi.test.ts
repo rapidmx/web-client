@@ -183,3 +183,34 @@ describe("with an explicit ApiClient", () => {
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });
+
+describe("free/busy helpers fail closed", () => {
+    it("treats a busy window whose date can't be read as busy for all time, not as free", () => {
+        const [a] = availabilityOf({
+            start: "2026-06-16T00:00:00.000Z",
+            end: "2026-06-17T00:00:00.000Z",
+            results: [
+                {
+                    address: "a@example.com",
+                    status: "available",
+                    busy: [
+                        { start: "not a date", end: "2026-06-16T10:00:00.000Z", tentative: false },
+                        { start: "2026-06-16T09:00:00.000Z", end: "", tentative: true },
+                    ],
+                },
+            ],
+        });
+        expect(availabilityDuring(a, t("2026-06-16T12:00:00Z"), t("2026-06-16T13:00:00Z"))).toBe("busy");
+        expect(a.busy[1]).toEqual({ startMs: -Infinity, endMs: Infinity, tentative: true });
+    });
+
+    it("never loops forever on a step that does not advance, and takes a minute as the finest step", () => {
+        const window = { startMs: t("2026-06-16T08:00:00Z"), endMs: t("2026-06-16T09:00:00Z") };
+        const people = [person("a@example.com", [])];
+        for (const stepMs of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+            expect(suggestTimes(people, { windows: [window], durationMs: 30 * 60_000, stepMs, limit: 100 }).length).toBeGreaterThan(0);
+        }
+        expect(suggestTimes(people, { windows: [window], durationMs: 30 * 60_000, stepMs: 1, limit: 100 })).toHaveLength(31);
+        expect(suggestTimes(people, { windows: [window], durationMs: 30 * 60_000, stepMs: Number.NaN, limit: 100 })).toHaveLength(2);
+    });
+});

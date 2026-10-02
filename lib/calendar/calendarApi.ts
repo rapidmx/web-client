@@ -151,6 +151,8 @@ export interface CalendarEvent {
 
 const LIST_PAGE_SIZE = 500;
 const LIST_CALENDAR_EVENTS_MAX_PAGES = 100;
+/** Without an order, a page boundary can skip or repeat an event: the `uid` is a fixed one. */
+const EVENT_SORT = JSON.stringify({ uid: "ASC" });
 
 /**
  * Lists every event in a folder (same "fetch the flat list, filter client-side" contract as
@@ -173,7 +175,7 @@ export async function listCalendarEvents(folderUid: string, client?: ApiClient):
     for (let page = 0; page < LIST_CALENDAR_EVENTS_MAX_PAGES; page++) {
         const batch = await withClient<CalendarEvent[]>(
             client,
-            `/mail/calendar-events?${buildQuery({ limit: LIST_PAGE_SIZE, page }, { folderUid })}`,
+            `/mail/calendar-events?${buildQuery({ limit: LIST_PAGE_SIZE, page }, { folderUid, sort: EVENT_SORT })}`,
         );
         events.push(...batch);
         if (batch.length < LIST_PAGE_SIZE) {

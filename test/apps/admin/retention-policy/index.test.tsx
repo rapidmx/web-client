@@ -161,6 +161,23 @@ describe("RetentionPolicyPage", () => {
         expect(await screen.findByText("'messageRetentionDays' must be a positive integer number of days.")).toBeInTheDocument();
     });
 
+    it("asks the administrator to confirm their identity again when saving needs an elevated token", async () => {
+        mockShell((url, init) => {
+            if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});
+            if (url === "/api/system/retention-policy" && init?.method === "PUT") return jsonResponse(403, { code: "api-104", message: "Requires elevation." });
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<RetentionPolicyPage userUid="admin-1" />);
+        await screen.findByLabelText("Message retention (days)");
+
+        await user.type(screen.getByLabelText("Message retention (days)"), "30");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await user.click(within(await screen.findByRole("dialog", { name: "Delete older data?" })).getByRole("button", { name: "Save and delete older data" }));
+
+        expect(await screen.findByText("This needs you to have recently confirmed your identity. Reload this page to confirm it again, then try once more.")).toBeInTheDocument();
+    });
+
     it("shows a generic error when saving fails with a non-API error", async () => {
         mockShell((url, init) => {
             if (url === "/api/system/retention-policy" && (init?.method ?? "GET") === "GET") return jsonResponse(200, {});

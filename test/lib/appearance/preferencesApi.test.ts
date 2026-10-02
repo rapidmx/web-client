@@ -350,3 +350,13 @@ describe("with an explicit ApiClient", () => {
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });
+
+describe("uploadAppearanceBackground with a client", () => {
+    it("goes through an explicit client, to that account's origin with its token, when given one", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, stored));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        await uploadAppearanceBackground(new Blob(["x"], { type: "image/png" }), client);
+        expect(fetchMock.mock.calls[0][0]).toMatch(/^https:\/\/a\.example\.com\/api\//);
+        expect(((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers).get("Authorization")).toBe("jwt tok");
+    });
+});

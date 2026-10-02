@@ -157,12 +157,18 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
     applyCsrfHeader(headers, init.method);
     const credentials = apiBaseUrl ? "include" : init.credentials;
 
-    let res = await fetch(apiUrl(path), { ...init, headers, credentials });
-    // The access token has run out (a sleeping tab or laptop stops the timer that renews it in time): renew the session, and ask again once.
-    if (res.status === 401 && sessionRecovery && (await recoverSession())) {
-        res = await fetch(apiUrl(path), { ...init, headers, credentials });
-    }
+    const res = await fetchWithRecovery(path, { ...init, headers, credentials });
     return decodeApiResponse<T>(res, (error) => unauthorizedObserver?.(error));
+}
+
+/** `fetch()` of `path` against the global origin. When the access token has run out (a sleeping tab or laptop stops the timer that renews it in
+ * time) it renews the session, and asks again once. */
+async function fetchWithRecovery(path: string, init: RequestInit): Promise<Response> {
+    let res = await fetch(apiUrl(path), init);
+    if (res.status === 401 && sessionRecovery && (await recoverSession())) {
+        res = await fetch(apiUrl(path), init);
+    }
+    return res;
 }
 
 let sessionRecovery: (() => Promise<boolean>) | undefined;
@@ -229,13 +235,19 @@ export function setApiUnauthorizedObserver(observer: ((error: ApiRequestError) =
  * `createApiClient()`-made client's `fetch()` (which forwards to that instance's own
  * `setUnauthorizedObserver()`) pass their own. A throwing `onUnauthorized` never changes what the caller sees.
  */
-async function decodeApiResponse<T>(res: Response, onUnauthorized?: (error: ApiRequestError) => void): Promise<T> {
+async function decodeApiResponse<T>(
+    res: Response,
+    onUnauthorized?: (error: ApiRequestError) => void,
+    failureMessage: string = "Request failed.",
+): Promise<T> {
     const contentType = res.headers.get("content-type") ?? "";
     const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
 
     if (!res.ok) {
-        const message = (body && (body.message || body.error)) || res.statusText || "Request failed.";
-        const error = new ApiRequestError(message, res.status, body?.code, body);
+        // A body is untrusted: only a non-empty string is a message (anything else would read "[object Object]"), only a string a code.
+        const reported = body && (body.message || body.error);
+        const message = (typeof reported === "string" && reported) || res.statusText || failureMessage;
+        const error = new ApiRequestError(message, res.status, typeof body?.code === "string" ? body.code : undefined, body);
         if (res.status === 401 && onUnauthorized) {
             try {
                 onUnauthorized(error);
@@ -380,16 +392,33 @@ export async function withClientRaw<T = unknown>(
     if (client) {
         return client.fetch<T>(path, { method, headers: { "Content-Type": contentType }, body: file });
     }
-    const res = await fetch(apiUrl(path), {
+    const res = await fetchWithRecovery(path, {
         method,
         credentials: "include",
         headers: withCsrfHeader({ "Content-Type": contentType }, method),
         body: file,
     });
-    const responseType = res.headers.get("content-type") ?? "";
-    const body = responseType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
-    if (!res.ok) {
-        throw new ApiRequestError((body && (body.message || body.error)) || res.statusText || failureMessage, res.status, body?.code);
+    return decodeApiResponse<T>(res, (error) => unauthorizedObserver?.(error), failureMessage);
+}
+
+/**
+ * Fetches `path`'s own bytes (a message's raw source, say) rather than JSON - the download counterpart of `withClient()`. With an explicit `client` the
+ * request goes through its `fetchBlob()`, so it reaches that account's origin with its token. Without one it is a plain `fetch()` to the global origin
+ * with the `jwt` cookie, renewing the session and asking again once on a `401`, as `apiFetch()` does. Rejects with an `ApiRequestError`
+ * (`failureMessage` when the server gave no message) on a non-ok response.
+ */
+export async function withClientBlob(
+    client: ApiClient | undefined,
+    path: string,
+    failureMessage: string = "Download failed.",
+): Promise<Blob> {
+    if (client) {
+        return client.fetchBlob(path);
     }
-    return body as T;
+    const res = await fetchWithRecovery(path, { credentials: "include" });
+    if (!res.ok) {
+        // Throws the same `ApiRequestError` (and tells the observer of a 401) as every other request.
+        await decodeApiResponse<never>(res, (error) => unauthorizedObserver?.(error), failureMessage);
+    }
+    return res.blob();
 }

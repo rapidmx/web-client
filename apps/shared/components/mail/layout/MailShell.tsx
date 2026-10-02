@@ -338,7 +338,7 @@ export default function MailShell({
     // `mailboxes.length` directly (not `!mailboxUid`) since `mailboxUid` is legitimately undefined in
     // aggregate mode even with mailboxes present.
     if (userUid && status === "ready" && mailboxes.length === 0) {
-        return <MailboxProvisioning />;
+        return <MailboxProvisioning impersonating={impersonating} impersonationBaseUrl={impersonationBaseUrl} />;
     }
 
     let inner: ReactNode = null;

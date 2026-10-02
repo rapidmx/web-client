@@ -9,7 +9,7 @@
  * stages the upload and returns the `pending` request; poll `getImportRequest()`/`listImportRequests()`
  * for `status` to become `"completed"` (with `importedCount`/`failedCount`) or `"failed"`.
  */
-import { ApiClient, ApiRequestError, apiUrl, withClient, withCsrfHeader } from "../util/api.js";
+import { ApiClient, withClient, withClientRaw } from "../util/api.js";
 import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 
 export type { RequestListParams };
@@ -51,24 +51,18 @@ export interface UploadMailboxImportInput {
  * with `format`/`targetFolderUid`/`mailboxUid` as query-string parameters, not a JSON body — the same
  * shape `mailApi.ts`'s `uploadAttachment()` already establishes for a raw-bytes upload.
  */
-export async function uploadMailboxImport(file: File, input: UploadMailboxImportInput): Promise<MailboxImportRequest> {
+export function uploadMailboxImport(file: File, input: UploadMailboxImportInput, client?: ApiClient): Promise<MailboxImportRequest> {
     const params = new URLSearchParams({ format: input.format, targetFolderUid: input.targetFolderUid });
     if (input.mailboxUid) {
         params.set("mailboxUid", input.mailboxUid);
     }
-    const res = await fetch(apiUrl(`/mail/mailbox-import-requests?${params.toString()}`), {
-        method: "POST",
-        credentials: "include",
-        headers: withCsrfHeader({ "Content-Type": input.format === "pst" ? "application/vnd.ms-outlook" : "application/mbox" }),
-        body: file,
-    });
-    const contentType = res.headers.get("content-type") ?? "";
-    const responseBody = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
-    if (!res.ok) {
-        const message = (responseBody && (responseBody.message || responseBody.error)) || res.statusText || "Upload failed.";
-        throw new ApiRequestError(message, res.status, responseBody?.code);
-    }
-    return responseBody as MailboxImportRequest;
+    return withClientRaw(
+        client,
+        `/mail/mailbox-import-requests?${params.toString()}`,
+        "POST",
+        file,
+        input.format === "pst" ? "application/vnd.ms-outlook" : "application/mbox",
+    );
 }
 
 /** `client`, given by every function below that isn't a raw-bytes upload, is an explicit `ApiClient` from

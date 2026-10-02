@@ -40,12 +40,17 @@ function MessageDetailContent({ uid }: { uid: string }) {
     const conversationId: string | null = useSearchParams()[0].get("conversation");
 
     useEffect(() => {
+        // An answer for a message since replaced (the uid changed without the page remounting) must not be shown as the current one.
+        let cancelled = false;
         setLoading(true);
         setError(null);
         getMessage(uid, client)
-            .then(setMessage)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this message."))
-            .finally(() => setLoading(false));
+            .then((loaded) => !cancelled && setMessage(loaded))
+            .catch((err) => !cancelled && setError(err instanceof ApiRequestError ? err.message : "Could not load this message."))
+            .finally(() => !cancelled && setLoading(false));
+        return () => {
+            cancelled = true;
+        };
     }, [uid, client]);
 
     // See `apps/www/index.tsx`'s identical effect's own doc comment - a failure here just hides the

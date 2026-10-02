@@ -10,7 +10,13 @@ import FormField from "../../../../lib/components/forms/FormField.js";
 import { enrollKey, getKeyVault, PublicKey, VaultAlreadyInitializedError } from "../../../../lib/crypto/keyvaultApi.js";
 import { UnopenableKeysNotice, unlockErrorMessage } from "./UnlockPromptProvider.js";
 import { FrameTakeover } from "../../navigation/frameContext.js";
-import { RecoveryFollowUp, RecoveryFollowUpModal, UnlockModeToggle, startRecoveryUnlock } from "./RecoveryCodeUnlock.js";
+import {
+    MIN_PASSWORD_LENGTH,
+    RecoveryFollowUp,
+    RecoveryFollowUpModal,
+    UnlockModeToggle,
+    startRecoveryUnlock,
+} from "./RecoveryCodeUnlock.js";
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
     getUnlockedKeys,
@@ -22,8 +28,6 @@ import { buildPasswordWrap, buildRecoveryWraps } from "../../../../lib/crypto/ma
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "../../../../lib/crypto/keys.js";
 
 type Status = "checking" | "setup_password" | "enrolling" | "already_set_up" | "show_recovery_codes" | "unlock" | "unlocking" | "ready";
-
-const MIN_PASSWORD_LENGTH = 8;
 
 async function provisionEncryptionKey(
     mailboxUid: string,
@@ -299,7 +303,8 @@ export default function KeyEnrollmentGate({
                     <h1 className="text-lg font-bold mb-2">Protect your mailbox</h1>
                     <p className="text-sm text-text-muted mb-5">
                         Choose a password to protect your encryption keys. This is separate from your sign-in
-                        password and is never sent to the server.
+                        password and is never sent to the server. Make it {MIN_PASSWORD_LENGTH} or more characters: a
+                        passphrase of several unrelated words is long enough and easy to remember.
                     </p>
                     {error && <Alert>{error}</Alert>}
                     <form onSubmit={handleSetPassword}>

@@ -63,6 +63,15 @@ describe("RecipientInput", () => {
             expect(input()).toHaveValue("");
         });
 
+        it("shows the address next to a name that looks like another address, so the real one is not hidden", () => {
+            render(<Harness initial={'"billing@bank.com" <x@evil.tld>, "Jane Doe" <jane@example.com>, "ＣＥＯ＠corp.com" <y@evil.tld>'} />);
+            const [spoof, plain, wide] = within(screen.getByRole("list", { name: "To recipients" })).getAllByRole("listitem");
+            expect(spoof).toHaveTextContent("billing@bank.com <x@evil.tld>");
+            expect(plain).toHaveTextContent("Jane Doe");
+            expect(plain).not.toHaveTextContent("jane@example.com");
+            expect(wide).toHaveTextContent("<y@evil.tld>");
+        });
+
         it("turns typed text into chips at commas and semicolons, but not inside a quoted name", async () => {
             const user = userEvent.setup();
             const onChange = vi.fn();

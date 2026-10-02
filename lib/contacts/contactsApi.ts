@@ -83,10 +83,14 @@ export interface Contact {
     rejectedKeys?: RejectedKey[];
 }
 
+/** The order a contacts list is read in: alphabetical, with the `uid` as the tie-breaker so contacts sharing a name keep one fixed order and
+ * a page boundary between them can neither skip nor repeat one. */
+const CONTACT_SORT = JSON.stringify({ displayName: "ASC", uid: "ASC" });
+
 /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
  * `listDeletedContacts()` for those. */
 export function listContacts(folderUid: string, params: ListParams = {}, client?: ApiClient): Promise<Contact[]> {
-    return withClient(client, `/mail/contacts?${buildQuery(params, { folderUid, sort: JSON.stringify({ displayName: "ASC" }) })}`);
+    return withClient(client, `/mail/contacts?${buildQuery(params, { folderUid, sort: CONTACT_SORT })}`);
 }
 
 function contactsMatching(contacts: Contact[], address: string): Contact[] {
@@ -195,7 +199,7 @@ export async function fetchSignerKeyState(folderUids: string[], address: string,
 export function listDeletedContacts(folderUid: string, params: ListParams = {}, client?: ApiClient): Promise<Contact[]> {
     return withClient(
         client,
-        `/mail/contacts?${buildQuery(params, { folderUid, deleted: "true", sort: JSON.stringify({ displayName: "ASC" }) })}`,
+        `/mail/contacts?${buildQuery(params, { folderUid, deleted: "true", sort: CONTACT_SORT })}`,
     );
 }
 

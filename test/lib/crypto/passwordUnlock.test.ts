@@ -29,6 +29,16 @@ describe("parseArgon2idKdfLabel", () => {
     it("returns undefined for a malformed label", () => {
         expect(parseArgon2idKdfLabel("argon2id:m=not-a-number,t=3,p=4")).toBeUndefined();
     });
+
+    it("returns undefined for parameters a hostile server could use to exhaust the device", () => {
+        expect(parseArgon2idKdfLabel("argon2id:m=4294967295,t=3,p=4")).toBeUndefined();
+        expect(parseArgon2idKdfLabel("argon2id:m=65536,t=999,p=4")).toBeUndefined();
+        expect(parseArgon2idKdfLabel("argon2id:m=65536,t=3,p=64")).toBeUndefined();
+        expect(parseArgon2idKdfLabel("argon2id:m=0,t=3,p=4")).toBeUndefined();
+        expect(parseArgon2idKdfLabel("argon2id:m=65536,t=0,p=4")).toBeUndefined();
+        expect(parseArgon2idKdfLabel("argon2id:m=65536,t=3,p=0")).toBeUndefined();
+        expect(parseArgon2idKdfLabel("argon2id:m=1048576,t=10,p=16")).toEqual({ memorySize: 1048576, iterations: 10, parallelism: 16 });
+    });
 });
 
 describe("argon2idKdfLabel", () => {

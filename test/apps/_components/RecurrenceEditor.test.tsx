@@ -16,17 +16,20 @@ function Controlled({
     onChange,
     allDay,
     startWeekday,
+    startDateKey,
 }: {
     initial: RecurrenceRule | null;
     onChange: (v: RecurrenceRule | null) => void;
     allDay?: boolean;
     startWeekday?: WeekdayCode;
+    startDateKey?: string;
 }) {
     const [value, setValue] = useState(initial);
     return (
         <RecurrenceEditor
             allDay={allDay}
             startWeekday={startWeekday}
+            startDateKey={startDateKey}
             value={value}
             onChange={(v) => {
                 setValue(v);
@@ -224,6 +227,32 @@ describe("RecurrenceEditor", () => {
         expect(call[0].count).toBeUndefined();
         expect(typeof call[0].until).toBe("string");
         expect(screen.getByLabelText("End date")).toBeEnabled();
+    });
+
+    it("starts \"On\" at today, or at the event's own start date when that is later - never before it starts", async () => {
+        const user = userEvent.setup();
+        const today = new Date();
+        const key = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+        const rule = { freq: "daily", interval: 1, count: 10, exceptions: [] } as RecurrenceRule;
+
+        const { unmount } = render(<Controlled initial={rule} onChange={vi.fn()} startDateKey="2099-03-04" />);
+        await user.click(screen.getByRole("radio", { name: "On" }));
+        expect(screen.getByLabelText("End date")).toHaveValue("2099-03-04");
+        unmount();
+
+        render(<Controlled initial={rule} onChange={vi.fn()} startDateKey="2000-01-01" />);
+        await user.click(screen.getByRole("radio", { name: "On" }));
+        expect(screen.getByLabelText("End date")).toHaveValue(key(today));
+    });
+
+    it("caps an interval at 999 and a count at 1000, however large a number is typed", () => {
+        const onChange = vi.fn();
+        render(<Controlled initial={{ freq: "daily", interval: 1, count: 10, exceptions: [] }} onChange={onChange} />);
+        fireEvent.change(screen.getByLabelText("Recurrence interval"), { target: { value: "5000" } });
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ interval: 999 }));
+        fireEvent.change(screen.getByLabelText("Number of occurrences"), { target: { value: "1000000000" } });
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ count: 1000 }));
+        expect(screen.getByLabelText("Recurrence interval")).toHaveAttribute("max", "999");
     });
 
     it("editing the end date updates until", async () => {

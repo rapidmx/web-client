@@ -50,10 +50,16 @@ const WEEKDAY_OBJECT: Record<WeekdayCode, Weekday> = {
     SU: RRule.SU,
 };
 
+/** A rule's interval as `rrule` can take it: a whole number of at least 1. A zero, negative, fractional or missing one (an
+ * imported or hand-edited rule) would make `rrule` loop forever, or expand to nothing, so it counts as the default 1. */
+function normalizedInterval(interval: number): number {
+    return Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : 1;
+}
+
 function createRRule(rule: RecurrenceRule, dtstart: Date, until: Date | null, tzid: string | null): RRuleNS.RRule {
     return new RRule({
         freq: FREQ_MAP[rule.freq],
-        interval: rule.interval,
+        interval: normalizedInterval(rule.interval),
         dtstart,
         tzid,
         byweekday: rule.byDay?.map((code) => WEEKDAY_OBJECT[code]),
@@ -200,6 +206,21 @@ export function fromEventWallClock(wallMs: number, timezone: string | undefined,
 }
 
 /**
+ * `startWall` moved forward by whole repeat periods to just before `from`, for a daily or weekly rule that has no `count`: `rrule`
+ * walks every occurrence from the start, so a series that began centuries ago would cost a hundred thousand steps each time it is
+ * drawn. A multiple of the period lands on the same days, so the occurrences from `from` on are exactly those of the original.
+ * Anything else is returned as it is.
+ */
+function advancedStart(rule: RecurrenceRule, startWall: number, from: number): number {
+    if (rule.count !== undefined || (rule.freq !== "daily" && rule.freq !== "weekly")) {
+        return startWall;
+    }
+    const period = normalizedInterval(rule.interval) * (rule.freq === "weekly" ? 7 : 1) * MS_PER_DAY;
+    const periods = Math.floor((from - startWall) / period) - 1;
+    return periods > 0 ? startWall + periods * period : startWall;
+}
+
+/**
  * Expands `event` into every occurrence whose interval overlaps `[rangeStart, rangeEnd]`. A
  * non-recurring event yields itself (in a one-element array) if it overlaps, or `[]` otherwise —
  * callers don't need to special-case recurring vs. not.
@@ -228,17 +249,17 @@ export function expandOccurrences(event: CalendarEvent, rangeStart: Date, rangeE
     // The duration in wall-clock terms, so an occurrence also keeps its local end time across DST.
     const wallDurationMs = zone.toWall(end.getTime()) - startWall;
     const { until } = event.recurrenceRule;
-    const rule = createRRule(
-        event.recurrenceRule,
-        new Date(startWall),
-        until ? new Date(zone.toWall(new Date(until).getTime())) : null,
-        null,
-    );
     // Query in the wall-clock frame, widened by one occurrence's duration (so an occurrence that started
     // before `rangeStart` but is still in progress isn't missed) plus a day on each side to absorb the
     // zone's offset; the exact instant-based overlap filter at the end trims the excess.
     const queryStart = new Date(zone.toWall(rangeStart.getTime()) - wallDurationMs - MS_PER_DAY);
     const queryEnd = new Date(zone.toWall(rangeEnd.getTime()) + MS_PER_DAY);
+    const rule = createRRule(
+        event.recurrenceRule,
+        new Date(advancedStart(event.recurrenceRule, startWall, queryStart.getTime())),
+        until ? new Date(zone.toWall(new Date(until).getTime())) : null,
+        null,
+    );
     const occurrenceStarts = rule
         .between(queryStart, queryEnd, true)
         .map((occWall) => ({ start: new Date(zone.fromWall(occWall.getTime())), wall: occWall.getTime() }));
@@ -264,7 +285,14 @@ export function expandOccurrences(event: CalendarEvent, rangeStart: Date, rangeE
 
 /** Expands every event in `events` and flattens the result — the usual entry point for a grid view. */
 export function expandAllOccurrences(events: CalendarEvent[], rangeStart: Date, rangeEnd: Date): CalendarOccurrence[] {
-    return events.flatMap((event) => expandOccurrences(event, rangeStart, rangeEnd));
+    return events.flatMap((event) => {
+        try {
+            return expandOccurrences(event, rangeStart, rangeEnd);
+        } catch {
+            // One event whose rule or dates cannot be expanded must not blank the whole grid: it is shown once, as the stored event.
+            return expandOccurrences({ ...event, recurrenceRule: undefined }, rangeStart, rangeEnd);
+        }
+    });
 }
 
 /** A human-readable summary of `rule` (e.g. "every 2 weeks on Monday, Wednesday until Jan 1, 2027"). */

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { FormEvent, MutableRefObject, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import { ApiClient, ApiRequestError } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
@@ -245,6 +245,9 @@ export default function EventEditor({
     // finish the video-conferencing step after it: the modal then stays open on that error, and the retry
     // must update *that* record (its uid and its new version), not re-create it or reuse the stale prop.
     const [savedEvent, setSavedEvent] = useState<CalendarEvent | null>(null);
+    // Whether that stored record is a series saved with `toSeriesFields()`: its master's dates are not the form's (the occurrence's), so a retry
+    // must not send them - the first save already applied any change of time.
+    const savedAsSeries = useRef(false);
     const [editScope, setEditScope] = useState<EditScope>("occurrence");
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
@@ -546,8 +549,17 @@ export default function EventEditor({
                 // A retry after the event was stored but its video meeting couldn't be (see `savedEvent`):
                 // update exactly the record the first attempt left behind, whichever branch below created it.
                 // A series' own exception/detached-occurrence re-pointing already ran on that attempt and has
-                // nothing left to shift - the dates being sent again are the ones it moved everything to.
-                saved = await updateCalendarEvent({ uid: savedEvent.uid, version: savedEvent.version, ...(fields as Partial<CalendarEventInput>) }, client);
+                // nothing left to shift. For a series the form's dates are those of the edited occurrence, not
+                // the master's: sending them would move the whole series to that occurrence, so they (and the
+                // zone and all-day flag they go with) stay as the first attempt left them.
+                const retryFields: EventFields = { ...fields };
+                if (savedAsSeries.current) {
+                    delete retryFields.startDate;
+                    delete retryFields.endDate;
+                    delete retryFields.timezone;
+                    delete retryFields.allDay;
+                }
+                saved = await updateCalendarEvent({ uid: savedEvent.uid, version: savedEvent.version, ...(retryFields as Partial<CalendarEventInput>) }, client);
             } else if (!occurrence) {
                 // The organizer is only ever set on create - an edit keeps the event's own organizer.
                 saved = await createCalendarEvent(
@@ -568,6 +580,7 @@ export default function EventEditor({
                     client,
                 );
                 saved = series;
+                savedAsSeries.current = true;
                 detachedSyncFailed = !!series.detachedOccurrenceSyncFailed;
             } else {
                 saved = await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) }, client);

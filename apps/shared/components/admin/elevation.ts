@@ -23,6 +23,20 @@ export function isElevationRequired(err: unknown): boolean {
     return err instanceof ApiRequestError && err.status === 403 && err.code === ELEVATION_REQUIRED_CODE;
 }
 
+/** What an administrator action says when the server refuses it because the token isn't elevated (any longer). The console confirms the user's identity
+ * when a page opens (see `AdminShell`), so reloading is what sends them round auth-server's confirmation again. */
+export const ELEVATION_ACTION_MESSAGE = "This needs you to have recently confirmed your identity. Reload this page to confirm it again, then try once more.";
+
+/** The text for an administrator action that failed: the elevation message when it only needed the user to confirm their identity (an action the
+ * server newly gates behind an elevated token - truncating or deleting a mailbox, a retention policy, an export of another mailbox, approving an
+ * erasure), else the server's own message, else `fallback`. */
+export function actionErrorMessage(err: unknown, fallback: string): string {
+    if (isElevationRequired(err)) {
+        return ELEVATION_ACTION_MESSAGE;
+    }
+    return err instanceof ApiRequestError ? err.message : fallback;
+}
+
 /** auth-server's elevation page: it sends the browser back to `returnTo` once the user has confirmed their
  * identity, or to its own account page if they cancel. */
 export function elevationUrl(authServerUrl: string, returnTo: string): string {

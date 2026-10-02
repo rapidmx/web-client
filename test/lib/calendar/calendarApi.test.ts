@@ -41,7 +41,7 @@ describe("listCalendarEvents", () => {
     it("fetches every event scoped by folderUid, leaving range filtering to the caller", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [event]));
         const result = await listCalendarEvents("f1");
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events?limit=500&page=0&folderUid=f1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events?limit=500&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })), expect.anything());
         expect(result).toEqual([event]);
     });
 
@@ -55,9 +55,9 @@ describe("listCalendarEvents", () => {
         });
         const result = await listCalendarEvents("f1");
         expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
-            "/api/mail/calendar-events?limit=500&page=0&folderUid=f1",
-            "/api/mail/calendar-events?limit=500&page=1&folderUid=f1",
-            "/api/mail/calendar-events?limit=500&page=2&folderUid=f1",
+            "/api/mail/calendar-events?limit=500&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })),
+            "/api/mail/calendar-events?limit=500&page=1&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })),
+            "/api/mail/calendar-events?limit=500&page=2&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })),
         ]);
         expect(result).toHaveLength(1000);
         expect(result[500].uid).toBe("p1-0");

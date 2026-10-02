@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { actionErrorMessage } from "../elevation.js";
 import { MIN_AUDIT_LOG_RETENTION_DAYS, RetentionPolicy, RetentionPolicyUpdate, updateRetentionPolicy } from "../../../../../lib/admin/retentionPolicyApi.js";
 import Alert from "../../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
@@ -80,7 +80,7 @@ export default function RetentionPolicyForm({
             setSavedSnapshot(snapshot);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save the retention policy.");
+            setError(actionErrorMessage(err, "Could not save the retention policy."));
         } finally {
             setSaving(false);
         }

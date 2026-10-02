@@ -31,8 +31,49 @@ export class ContactPhotoError extends Error {
     }
 }
 
-/** What the start of a picture says about it: whether it is a JPEG, and its size when that can be read from it. */
-function inspect(head: Uint8Array): { jpeg: boolean; width?: number; height?: number } {
+/** How many JPEG segments are read, one small read each, past the start of a picture before giving up on finding its size. */
+const MAX_JPEG_SEGMENTS = 4096;
+
+/** What a JPEG segment starting at `view[0]` (`view` holds its first 9 bytes, fewer at the end of the file) says: how far to its
+ * next segment (`skip`), its size when it is the first frame header ("SOFn"), or `undefined` when there is nothing more to read -
+ * not a marker, the start of the scan, or a cut-off header. */
+function jpegSegment(view: Uint8Array): { skip: number } | { width: number; height: number } | undefined {
+    const be16 = (offset: number) => (view[offset] << 8) | view[offset + 1];
+    if (view.length < 4 || view[0] !== 0xff) {
+        return undefined;
+    }
+    const marker = view[1];
+    if (marker === 0xff) {
+        return { skip: 1 };
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        return { skip: 2 };
+    }
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return view.length >= 9 ? { width: be16(7), height: be16(5) } : undefined;
+    }
+    return marker === 0xda ? undefined : { skip: 2 + be16(2) };
+}
+
+/** The size of the JPEG `file`, read segment by segment from `offset` (where its start ran out) - an ICC profile or several EXIF/XMP
+ * segments can put the frame header well past the start. */
+async function jpegSizeFrom(file: Blob, offset: number): Promise<{ width: number; height: number } | undefined> {
+    for (let count = 0; count < MAX_JPEG_SEGMENTS && offset < file.size; count++) {
+        const segment = jpegSegment(new Uint8Array(await file.slice(offset, offset + 9).arrayBuffer()));
+        if (!segment) {
+            return undefined;
+        }
+        if ("width" in segment) {
+            return segment;
+        }
+        offset += segment.skip;
+    }
+    return undefined;
+}
+
+/** What the start of a picture says about it: whether it is a JPEG, its size when that can be read from it and, for a JPEG whose
+ * start ran out before its frame header, where to read on from (`resume`). */
+function inspect(head: Uint8Array): { jpeg: boolean; width?: number; height?: number; resume?: number } {
     const at = (offset: number, text: string) => Array.from(text).every((char, i) => head[offset + i] === char.charCodeAt(0));
     const be16 = (offset: number) => (head[offset] << 8) | head[offset + 1];
     const be32 = (offset: number) => be16(offset) * 65536 + be16(offset + 2);
@@ -64,23 +105,16 @@ function inspect(head: Uint8Array): { jpeg: boolean; width?: number; height?: nu
     // A JPEG is a run of segments (`FF marker`, then a length unless the marker stands alone); the size is in the first frame header, "SOFn".
     let offset = 2;
     while (offset + 4 <= head.length) {
-        if (head[offset] !== 0xff) {
-            break;
+        const segment = jpegSegment(head.subarray(offset, offset + 9));
+        if (!segment) {
+            return { jpeg: true };
         }
-        const marker = head[offset + 1];
-        if (marker === 0xff) {
-            offset++;
-        } else if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
-            offset += 2;
-        } else if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-            return offset + 9 <= head.length ? { jpeg: true, width: be16(offset + 7), height: be16(offset + 5) } : { jpeg: true };
-        } else if (marker === 0xda) {
-            break;
-        } else {
-            offset += 2 + be16(offset + 2);
+        if ("width" in segment) {
+            return { jpeg: true, ...segment };
         }
+        offset += segment.skip;
     }
-    return { jpeg: true };
+    return { jpeg: true, resume: offset };
 }
 
 interface Decoded {
@@ -165,7 +199,10 @@ function renamed(name: string, extension: "jpg" | "png" | "webp"): string {
  */
 export async function prepareContactPhoto(file: File): Promise<File> {
     const accepted = CONTACT_PHOTO_TYPES.includes(file.type) && file.size <= CONTACT_PHOTO_MAX_BYTES;
-    const head = inspect(new Uint8Array(await file.slice(0, HEADER_BYTES).arrayBuffer()));
+    let head = inspect(new Uint8Array(await file.slice(0, HEADER_BYTES).arrayBuffer()));
+    if (head.resume !== undefined) {
+        head = { ...head, ...(await jpegSizeFrom(file, head.resume)) };
+    }
     if (head.width !== undefined && head.height !== undefined && head.width * head.height > CONTACT_PHOTO_MAX_PIXELS) {
         throw new ContactPhotoError(CONTACT_PHOTO_TOO_LARGE_MESSAGE);
     }
@@ -183,6 +220,11 @@ export async function prepareContactPhoto(file: File): Promise<File> {
     }
     try {
         const { source, width, height } = decoded;
+        // The size could not be read from the file itself (a format with no reader above, or a size past the segments read): what
+        // the decoder made of it is the last check before it is drawn.
+        if (width * height > CONTACT_PHOTO_MAX_PIXELS) {
+            throw new ContactPhotoError(CONTACT_PHOTO_TOO_LARGE_MESSAGE);
+        }
         if (accepted && !jpeg && Math.max(width, height) <= CONTACT_PHOTO_MAX_SIDE) {
             return file;
         }

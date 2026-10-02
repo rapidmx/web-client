@@ -10,6 +10,7 @@ import { toDatetimeLocal } from "../../../../../lib/util/dateInput.js";
 import Alert from "../../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../../lib/components/forms/FormField.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
 import EscrowScopeKeyAndHoldersFields, {
     emptyEscrowScopeKeyAndHoldersValue,
     EscrowScopeKeyAndHoldersValue,
@@ -54,6 +55,8 @@ export default function EscrowSetupStep({ adminUid }: { adminUid?: string }) {
     const [generated, setGenerated] = useState<GeneratedEscrowKeys | null>(null);
     const [downloadedPrivateKey, setDownloadedPrivateKey] = useState(false);
     const [savedPrivateKey, setSavedPrivateKey] = useState(false);
+    // The private key leaves the browser as a plain file, so it is only offered after the administrator has read what that means.
+    const [confirmingDownload, setConfirmingDownload] = useState(false);
     const [keyAndHolders, setKeyAndHolders] = useState<EscrowScopeKeyAndHoldersValue>(emptyEscrowScopeKeyAndHoldersValue());
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
@@ -70,6 +73,7 @@ export default function EscrowSetupStep({ adminUid }: { adminUid?: string }) {
         setGenerated(null);
         setDownloadedPrivateKey(false);
         setSavedPrivateKey(false);
+        setConfirmingDownload(false);
         setKeyAndHolders(emptyEscrowScopeKeyAndHoldersValue());
     }
 
@@ -248,10 +252,7 @@ export default function EscrowSetupStep({ adminUid }: { adminUid?: string }) {
                                 <Button
                                     type="button"
                                     className="!w-auto"
-                                    onClick={() => {
-                                        downloadTextFile(`${fileSafe(name)}-private-key.pem`, generated.privateKeyPem);
-                                        setDownloadedPrivateKey(true);
-                                    }}
+                                    onClick={() => setConfirmingDownload(true)}
                                 >
                                     Download private key
                                 </Button>
@@ -276,6 +277,32 @@ export default function EscrowSetupStep({ adminUid }: { adminUid?: string }) {
                             {!downloadedPrivateKey && (
                                 <p className="text-xs text-text-muted">Download the private key before continuing.</p>
                             )}
+                            <Modal open={confirmingDownload} onClose={() => setConfirmingDownload(false)} title="Download the private key?">
+                                <p className="text-sm mb-3">
+                                    The file is <strong>not encrypted</strong>: it lands in this computer&rsquo;s downloads folder (and its download history),
+                                    and anyone who obtains it can decrypt every mailbox covered by this escrow scope on their own - the number of
+                                    required holders does not apply to a copy of the key.
+                                </p>
+                                <p className="text-sm mb-5">
+                                    Move it straight to offline storage or a password manager your escrow holders control, and delete it from here.
+                                </p>
+                                <div className="flex gap-3 justify-end">
+                                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingDownload(false)}>
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        className="!w-auto"
+                                        onClick={() => {
+                                            downloadTextFile(`${fileSafe(name)}-private-key.pem`, generated.privateKeyPem);
+                                            setDownloadedPrivateKey(true);
+                                            setConfirmingDownload(false);
+                                        }}
+                                    >
+                                        Download unencrypted key
+                                    </Button>
+                                </div>
+                            </Modal>
                         </div>
                     )}
                 </div>

@@ -37,6 +37,25 @@ export interface PluginManifest {
 
 export type PluginSettingValue = string | number | boolean;
 
+/** What `@rapidmx/restapi` answers in place of the saved value of a setting whose key names a secret (secret, password, credential, token, api key), so a
+ * stored API key or shared secret never reaches the console. Sent back as it was given, it means "left alone": the saved value stays. */
+export interface PluginSecretSetting {
+    secret: true;
+}
+
+/** A saved setting as a response shows it. */
+export type PluginSavedSetting = PluginSettingValue | PluginSecretSetting;
+
+/** Whether `value` is the placeholder a saved secret setting is shown as. */
+export function isSecretSetting(value: unknown): value is PluginSecretSetting {
+    return typeof value === "object" && value !== null && (value as { secret?: unknown }).secret === true;
+}
+
+/** Whether a setting's key names a secret - mirrors `@rapidmx/restapi`'s `SECRET_SETTING_KEY`, which decides what it withholds. */
+export function isSecretSettingKey(key: string): boolean {
+    return /secret|password|credential|token|api_?key/i.test(key);
+}
+
 /** Mirrors `@rapidmx/restapi`'s `PluginConfiguredSetting`: what the deployment's own configuration (the command line, the
  * environment, the server's defaults) says about one setting. It applies until a value is saved, which wins over it. */
 export interface PluginConfiguredSetting {
@@ -54,7 +73,7 @@ export interface Plugin {
     packageVersion: string;
     integrity?: string;
     enabled: boolean;
-    settings: Record<string, PluginSettingValue>;
+    settings: Record<string, PluginSavedSetting>;
     /** For each setting the deployment's configuration provides a value for, what it says. Absent from a server that
      * predates it, which reads as nothing being configured. */
     configured?: Record<string, PluginConfiguredSetting>;
@@ -216,7 +235,7 @@ export interface UpdatePluginInput {
     packageVersion?: string;
     enabled?: boolean;
     /** A `null` value clears a setting back to the plugin's own default. */
-    settings?: Record<string, PluginSettingValue | null>;
+    settings?: Record<string, PluginSavedSetting | null>;
     /** What a previewed version change or enable was confirmed to also install and enable. */
     expectedPlan?: PluginExpectedPlan;
 }

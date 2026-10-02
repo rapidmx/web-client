@@ -327,6 +327,37 @@ describe("BrandingPage", () => {
         expect(await screen.findByAltText("Current logo")).toHaveAttribute("src", "https://cdn.example.com/l.png");
     });
 
+    it("refuses an asset address that is not https or a path on this server, saying so, and sends nothing", async () => {
+        const user = userEvent.setup();
+        const puts: unknown[] = [];
+        mockAdminFetch((url, init) => {
+            if (url === "/api/system/branding" && (!init.method || init.method === "GET")) return jsonResponse(200, BRANDING);
+            if (url === "/api/system/branding" && init.method === "PUT") {
+                puts.push(JSON.parse(init.body as string));
+                return jsonResponse(200, { ...BRANDING, ...JSON.parse(init.body as string) });
+            }
+        });
+        render(<BrandingPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByLabelText("Company name");
+        const setButtons = screen.getAllByRole("button", { name: "Set" });
+
+        for (const bad of ["http://cdn.example.com/l.png", "javascript:alert(1)", "data:image/png;base64,AAAA", "//evil.example/l.png", "/\\evil.example/l.png", "https:///l.png"]) {
+            await user.clear(screen.getByLabelText("Logo URL"));
+            await user.type(screen.getByLabelText("Logo URL"), bad);
+            await user.click(setButtons[0]);
+            expect(await screen.findByText(/Use an https:\/\/ address/)).toBeInTheDocument();
+        }
+        await user.type(screen.getByLabelText("Stylesheet URL"), "http://evil.example/s.css");
+        await user.click(setButtons[2]);
+        expect(puts).toEqual([]);
+
+        await user.clear(screen.getByLabelText("Logo URL"));
+        await user.type(screen.getByLabelText("Logo URL"), "/images/my-logo.png");
+        await user.click(setButtons[0]);
+        expect(await screen.findByAltText("Current logo")).toHaveAttribute("src", "/images/my-logo.png");
+        expect(puts).toEqual([{ logoUrl: "/images/my-logo.png" }]);
+    });
+
     it("uploads a stylesheet file, shows its URL, and removes it", async () => {
         const user = userEvent.setup();
         mockAdminFetch((url, init) => {

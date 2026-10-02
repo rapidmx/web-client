@@ -15,7 +15,7 @@ import {
     setContactFavorite,
     updateContact,
 } from "../../../lib/contacts/contactsApi.js";
-import { contactsToVCardFile, contactToVCard, parseVCards } from "../../../lib/contacts/vcard.js";
+import { VCARD_MAX_CHARS, VCARD_MAX_CONTACTS, contactsToVCardFile, contactToVCard, parseVCards } from "../../../lib/contacts/vcard.js";
 import useIsMobile from "../../../lib/util/useIsMobile.js";
 import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import { useCompose } from "../../shared/components/mail/compose/ComposeContext.js";
@@ -37,6 +37,7 @@ import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigne
 import { SHORTCUTS } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
+import { notify } from "../../shared/notifications/store.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -381,9 +382,29 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         if (!mailboxUid || !folderUid) {
             return;
         }
-        const text = await file.text();
-        const parsed = parseVCards(text);
-        for (const input of parsed) {
+        // A file is only read, and only so many records taken from it (see `parseVCards()`): one contact is one request, and a huge export would
+        // lock the page for minutes and flood the server. Whatever goes wrong while reading it is said, not left as an unhandled rejection.
+        if (file.size > VCARD_MAX_CHARS) {
+            notify({ kind: "error", title: "Couldn't import contacts", message: `That file is larger than ${Math.round(VCARD_MAX_CHARS / 1_000_000)} MB. Split it into smaller files.` });
+            return;
+        }
+        let parsed: ReturnType<typeof parseVCards>;
+        try {
+            parsed = parseVCards(await file.text());
+        } catch (err) {
+            notifyApiError(err, "Couldn't read that contacts file");
+            return;
+        }
+        if (parsed.length >= VCARD_MAX_CONTACTS) {
+            notify({ kind: "warning", title: "Only part of the file was imported", message: `A file is imported up to its first ${VCARD_MAX_CONTACTS} contacts - import the rest from another file.` });
+        }
+        // Importing a file twice must not double every contact: one whose address is already a contact's is left alone.
+        const known = new Set(contacts.flatMap((contact) => contact.emails.map((email) => email.address.trim().toLowerCase())));
+        const fresh = parsed.filter((input) => !input.emails!.some((email) => known.has(email.address.toLowerCase())));
+        if (fresh.length < parsed.length) {
+            notify({ kind: "info", title: "Some contacts were skipped", message: `${parsed.length - fresh.length} of the contacts in that file already have an address in your contacts.` });
+        }
+        for (const input of fresh) {
             try {
                 await createContact({ mailboxUid, folderUid, ...input }, client);
             } catch (err) {
@@ -512,7 +533,13 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                                             </td>
                                         )}
                                         <td className="px-3 py-2">
-                                            <button type="button" onClick={() => handleSelectRow(contact)} className="flex w-full min-w-0 items-center gap-2 text-left">
+                                            <button
+                                                type="button"
+                                                // A deleted contact has no pane to show (it can't be restored or opened), and its route would answer 404.
+                                                disabled={isDeletedView}
+                                                onClick={() => handleSelectRow(contact)}
+                                                className="flex w-full min-w-0 items-center gap-2 text-left disabled:cursor-default"
+                                            >
                                                 <ContactPhotoAvatar lazy displayName={contact.displayName} size={28} contact={contact} email={contact.emails[0]?.address} />
                                                 <span className="min-w-0 truncate font-medium">
                                                     {contact.displayName}

@@ -68,7 +68,8 @@ export async function embedQuotedImages(
     let budget = MAX_QUOTED_IMAGES_CHARS;
     let changed = false;
     for (const { image, uri } of targets) {
-        if (uri !== undefined && uri.length <= budget) {
+        // Only a picture of the original's own is ever put in: whatever a resolver answers, a `src` that is not a `data:` image never gets in.
+        if (uri !== undefined && /^data:image\//i.test(uri) && uri.length <= budget) {
             budget -= uri.length;
             image.setAttribute("src", uri);
             changed = true;

@@ -57,9 +57,32 @@ const STYLE_HAZARDS: [RegExp, string][] = [
     [/@import[^;]*;?/gi, ""],
 ];
 
-/** CSS with the constructs above neutralised. */
-export function sanitizeCss(css: string): string {
+function neutraliseHazards(css: string): string {
     return STYLE_HAZARDS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), css);
+}
+
+/** `css` as a browser reads it: comments gone, and every escape resolved - repeatedly, since a decoded backslash can start another (`\5c 76h`). */
+function readAsBrowser(css: string): string {
+    let text = css;
+    for (let pass = 0; pass < 3; pass++) {
+        const next = unescapeCss(text.replace(/\/\*[\s\S]*?\*\//g, " "));
+        if (next === text) {
+            break;
+        }
+        text = next;
+    }
+    return text;
+}
+
+/**
+ * CSS with the constructs above neutralised. The patterns run on what a browser would read, not only on the raw text: `position:\66ixed` and
+ * `min-height:200\76h` are `position:fixed` and `200vh` to it, and a comment inside a name (`position/**\/:fixed`) is no obstacle either. When the
+ * decoded text holds one, that text (escapes resolved, comments dropped) is what is kept, neutralised; CSS whose escapes hide nothing is left as written.
+ */
+export function sanitizeCss(css: string): string {
+    const decoded = readAsBrowser(css);
+    const decodedClean = neutraliseHazards(decoded);
+    return decodedClean !== decoded ? decodedClean : neutraliseHazards(css);
 }
 
 /** Elements removed together with everything inside them. */

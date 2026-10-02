@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "../../../lib/util/api.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 import {
     DataExportFormat,
     createExportRequest,
@@ -90,7 +91,7 @@ function ExportRequestsSection() {
             setMailboxUid("");
             await list.reload();
         } catch (err) {
-            setCreateError(err instanceof ApiRequestError ? err.message : "Could not start this export.");
+            setCreateError(actionErrorMessage(err, "Could not start this export."));
         } finally {
             setCreating(false);
         }
@@ -345,7 +346,7 @@ function ErasureRequestsSection() {
             closeApproveModal();
             await list.reload();
         } catch (err) {
-            setApproveError(err instanceof ApiRequestError ? err.message : "Could not approve this request.");
+            setApproveError(actionErrorMessage(err, "Could not approve this request."));
         } finally {
             setApproving(false);
         }

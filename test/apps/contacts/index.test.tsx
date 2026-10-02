@@ -36,6 +36,12 @@ vi.mock("../../../apps/shared/mail/listAllPages.js", async (importOriginal) => {
     };
 });
 
+// Three contacts at most per import file, so the cap is reached without a thousand requests.
+vi.mock("../../../lib/contacts/vcard.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../lib/contacts/vcard.js")>();
+    return { ...actual, VCARD_MAX_CONTACTS: 3, parseVCards: (text: string) => actual.parseVCards(text).slice(0, 3) };
+});
+
 // Round 6: every contact add/update/delete drops the trusted-signer pins cached from contacts.
 const { clearPinnedSignerCache } = vi.hoisted(() => ({ clearPinnedSignerCache: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
@@ -865,6 +871,8 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
         expect(screen.queryByLabelText("Select Jane Doe")).not.toBeInTheDocument();
         expect(screen.queryByLabelText("Select all contacts")).not.toBeInTheDocument();
+        // A deleted contact has nothing to open: its row is not a button that selects nothing (or, on a phone, goes to a page that is not there).
+        expect(screen.getByText("Jane Doe").closest("button")).toBeDisabled();
     });
 
     it("shows an error, using the ApiRequestError message, when loading deleted contacts fails.", async () => {
@@ -1384,6 +1392,76 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await user.upload(screen.getByLabelText("Import contacts file"), file);
 
         expect(fetchMock.mock.calls.length).toBe(callsBefore);
+    });
+
+    describe("toolbar Import: a file that is too big, unreadable, long, or already imported", () => {
+        const posts = (fetchMock: ReturnType<typeof mockFetch>) =>
+            fetchMock.mock.calls.filter(([url, init]) => url === "/api/mail/contacts" && (init as RequestInit | undefined)?.method === "POST");
+        const card = (name: string, email?: string) => `BEGIN:VCARD\r\nFN:${name}\r\n${email ? `EMAIL:${email}\r\n` : ""}END:VCARD\r\n`;
+
+        function serve(existing: unknown[]) {
+            return mockShellAndContactsWithLists(existing, [list], (url, init) =>
+                url === "/api/mail/contacts" && init?.method === "POST" ? jsonResponse(200, { ...bob, uid: "new" }) : undefined,
+            );
+        }
+
+        it("says so, and reads nothing, when the file is larger than a contacts file can be", async () => {
+            const fetchMock = serve([]);
+            const user = userEvent.setup();
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("No contacts found.");
+
+            await user.upload(screen.getByLabelText("Import contacts file"), new File([new Uint8Array(5_000_001)], "big.vcf", { type: "text/vcard" }));
+
+            expect(await screen.findByText("Couldn't import contacts")).toBeInTheDocument();
+            expect(screen.getByText(/larger than 5 MB/)).toBeInTheDocument();
+            expect(posts(fetchMock)).toHaveLength(0);
+        });
+
+        it("says so, and imports nothing, when the file cannot be read", async () => {
+            const fetchMock = serve([]);
+            const user = userEvent.setup();
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("No contacts found.");
+            const file = new File([card("Imported Person")], "contacts.vcf", { type: "text/vcard" });
+            Object.defineProperty(file, "text", { value: () => Promise.reject(new Error("unreadable")) });
+
+            await user.upload(screen.getByLabelText("Import contacts file"), file);
+
+            expect(await screen.findByText("Couldn't read that contacts file")).toBeInTheDocument();
+            expect(posts(fetchMock)).toHaveLength(0);
+        });
+
+        it("warns when the file has more contacts than are imported at once, and imports the first ones", async () => {
+            const fetchMock = serve([]);
+            const user = userEvent.setup();
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("No contacts found.");
+
+            await user.upload(
+                screen.getByLabelText("Import contacts file"),
+                new File([["A", "B", "C", "D", "E"].map((name) => card(name)).join("")], "contacts.vcf", { type: "text/vcard" }),
+            );
+
+            expect(await screen.findByText("Only part of the file was imported")).toBeInTheDocument();
+            await waitFor(() => expect(posts(fetchMock)).toHaveLength(3));
+        });
+
+        it("leaves out a contact whose address is already in the address book, and says how many", async () => {
+            const fetchMock = serve([jane]);
+            const user = userEvent.setup();
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Jane Doe");
+
+            await user.upload(
+                screen.getByLabelText("Import contacts file"),
+                new File([card("Jane Again", "JANE@example.com") + card("Somebody New", "new@example.com")], "contacts.vcf", { type: "text/vcard" }),
+            );
+
+            expect(await screen.findByText("Some contacts were skipped")).toBeInTheDocument();
+            await waitFor(() => expect(posts(fetchMock)).toHaveLength(1));
+            expect(JSON.parse((posts(fetchMock)[0][1] as RequestInit).body as string).displayName).toBe("Somebody New");
+        });
     });
 
     describe("on mobile", () => {

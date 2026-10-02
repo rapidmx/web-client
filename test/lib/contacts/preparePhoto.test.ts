@@ -205,6 +205,43 @@ describe("prepareContactPhoto: a picture whose size says it cannot be decoded sa
     });
 });
 
+describe("prepareContactPhoto: a JPEG whose frame header lies past the start of the file", () => {
+    // Three 64 KB application segments (an ICC profile, say) push the frame header beyond the 128 KB read at first.
+    const bigSegments = () => Array.from({ length: 3 }, () => bytes(0xff, 0xe2, be16(0xffff), new Array(0xffff - 2).fill(0))).flat();
+    const frame = (w: number, h: number) => bytes(0xff, 0xc2, be16(11), 8, be16(h), be16(w), 3, 0, 0, 0);
+    const jpegFile = (...parts: number[][]) => new File([new Uint8Array([0xff, 0xd8, ...parts.flat()])], "me.jpg", { type: "image/jpeg" });
+
+    it("refuses one that says it is 30000 x 30000 pixels, without decoding it", async () => {
+        install();
+        const failure = prepareContactPhoto(jpegFile(bigSegments(), frame(30000, 30000)));
+        await expect(failure).rejects.toThrow(CONTACT_PHOTO_TOO_LARGE_MESSAGE);
+        expect(createImageBitmap).not.toHaveBeenCalled();
+    });
+
+    it("decodes one of 4000 x 3000 pixels as usual", async () => {
+        install({ width: 4000, height: 3000 });
+        await expect(prepareContactPhoto(jpegFile(bigSegments(), frame(4000, 3000)))).resolves.toBeInstanceOf(File);
+    });
+
+    it("gives up on the size, and leaves it to the decoder, after too many segments, a segment that is not one, or the end of the file", async () => {
+        install({ width: 400, height: 300 });
+        const tiny = Array.from({ length: 5000 }, () => [0xff, 0xe0, 0, 2]).flat();
+        await expect(prepareContactPhoto(jpegFile(bigSegments(), tiny, frame(30000, 30000)))).resolves.toBeInstanceOf(File);
+        await expect(prepareContactPhoto(jpegFile(bigSegments(), [0, 0, 0, 0, 0], frame(30000, 30000)))).resolves.toBeInstanceOf(File);
+        await expect(prepareContactPhoto(jpegFile(bigSegments(), bytes(0xff, 0xe0, be16(5000), 0)))).resolves.toBeInstanceOf(File);
+    });
+});
+
+describe("prepareContactPhoto: a picture whose size only the decoder knows", () => {
+    it("is refused when what it decodes to has too many pixels, and the decoded bitmap is released", async () => {
+        const rec = install({ width: 30000, height: 30000 });
+        const bitmap = new File([new Uint8Array(bytes("BM", new Array(60).fill(0)))], "wide.bmp", { type: "image/bmp" });
+        await expect(prepareContactPhoto(bitmap)).rejects.toThrow(CONTACT_PHOTO_TOO_LARGE_MESSAGE);
+        expect(rec.bitmap.close).toHaveBeenCalledTimes(1);
+        expect(rec.sides).toEqual([]);
+    });
+});
+
 describe("prepareContactPhoto: a picture that has to change", () => {
     it("crops a landscape photo to the centered square, scales it to 512, applies EXIF orientation, and makes a JPEG on white", async () => {
         const rec = install({ width: 4000, height: 3000 });

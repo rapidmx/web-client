@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
-import { sanitizeMessageBodyHtml, sanitizeQuotedHtml, stripRemoteCssUrls } from "../../../lib/mail/messageBodySanitizer.js";
+import { sanitizeMessageBodyHtml, sanitizeQuotedHtml, sanitizeSignatureHtml, stripRemoteCssUrls } from "../../../lib/mail/messageBodySanitizer.js";
 
 describe("stripRemoteCssUrls", () => {
     it("neutralizes remote url() references and keeps embedded ones", () => {
@@ -67,5 +67,38 @@ describe("sanitizeQuotedHtml", () => {
                 '<p style="color:blue">Kept</p><img src="cid:logo@x"><img><img src="data:image/png;base64,AAAA">',
         );
         expect(html).toBe('bot<p style="color:blue">Kept</p><img src="data:image/png;base64,AAAA">');
+    });
+});
+
+describe("srcset remote-content filtering", () => {
+    const img = (srcset: string) => `<img id="i" src="data:image/png;base64,AAAA" srcset="${srcset}">`;
+
+    it("drops a srcset whose second candidate follows a comma with no whitespace", () => {
+        for (const sanitize of [sanitizeMessageBodyHtml, sanitizeQuotedHtml]) {
+            expect(sanitize(img("cid:a@x 1x,https://t.example/p.gif 2x"))).not.toMatch(/t.example/);
+            expect(sanitize(img("cid:a@x 1x, https://t.example/p.gif 2x"))).not.toMatch(/t.example/);
+            expect(sanitize(img("cid:a@x, https://t.example/p.gif"))).not.toMatch(/t.example/);
+        }
+    });
+
+    it("keeps a srcset made only of cid: candidates", () => {
+        expect(sanitizeMessageBodyHtml(img("cid:a@x 1x,cid:b@x 2x,, cid:c@x"))).toContain("srcset=");
+        expect(sanitizeMessageBodyHtml(img("cid:a@x"))).toContain("srcset=");
+        expect(sanitizeMessageBodyHtml(img(" "))).toContain("<img");
+    });
+});
+
+describe("sanitizeSignatureHtml", () => {
+    it("drops scripts, handlers, javascript: links and the quote's forbidden tags, keeping the signature's own links and pictures", () => {
+        const signature =
+            '<p onclick="evil()">Jane <a href="https://example.com/jane">site</a> <a href="javascript:evil()">x</a></p><script>evil()</script>' +
+            '<style>p{color:red}</style><iframe src="https://evil.example"></iframe><form action="https://evil.example"><input></form>' +
+            '<img src="https://example.com/logo.png">';
+        const html = sanitizeSignatureHtml(signature);
+        expect(html).not.toMatch(/script|onclick|javascript:|<style|<iframe|<form|<input/);
+        expect(html).toContain('<a href="https://example.com/jane">site</a>');
+        expect(html).toContain('<img src="https://example.com/logo.png">');
+        // The same instance serves every later call.
+        expect(sanitizeSignatureHtml("<p>Best</p>")).toBe("<p>Best</p>");
     });
 });

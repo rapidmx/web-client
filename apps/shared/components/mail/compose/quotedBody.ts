@@ -11,6 +11,15 @@ import type { MessageSecurityResult } from "../../../../../lib/crypto/messageSec
 import { MimeAttachment, decodeHeaderText, extractDisplayBody, parseMimeEntity } from "../../../../../lib/crypto/mime.js";
 import { parseRecipientList } from "./recipients.js";
 
+/** The security states whose `protectedHeaders` a signature covers - the only ones Reply All takes recipients from. */
+const TRUSTED_HEADER_STATES = new Set<MessageSecurityResult["state"]>([
+    "signed_verified",
+    "encrypted_verified",
+    "signed_unverified_signer",
+    "encrypted_unverified_signer",
+    "verified_at_first_open",
+]);
+
 /** What a Reply/Reply All/Forward needs from the message being answered, beyond what its `Message` record holds. */
 export interface OriginalMessage {
     /** The body to quote. Empty when none could be loaded - the quote builders then fall back to `bodyPreview`. */
@@ -159,7 +168,9 @@ export async function loadOriginalMessage(
 ): Promise<OriginalMessage> {
     const recovered: QuotedBody | undefined =
         security?.text !== undefined ? { text: security.text } : security?.html !== undefined ? { html: security.html } : undefined;
-    const protectedHeaders = security?.protectedHeaders;
+    // Headers inside an unsigned (or badly signed) encrypted message are whatever its encrypter chose to write, so only a
+    // verified signature makes them a source of recipients.
+    const protectedHeaders = security && TRUSTED_HEADER_STATES.has(security.state) ? security.protectedHeaders : undefined;
     const protectedRecipients = protectedHeaders
         ? [...headerRecipients(protectedHeaders.to, "to"), ...headerRecipients(protectedHeaders.cc, "cc")]
         : [];

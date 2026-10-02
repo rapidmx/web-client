@@ -134,6 +134,14 @@ describe("unlockWithPassword", () => {
         await expect(unlockWithPassword(MAILBOX_UID, [], PASSWORD)).rejects.toThrow(/unrecognized kdf/i);
     });
 
+    it("refuses, with a clean error and before deriving anything, a password wrap whose KDF cost is unreasonable", async () => {
+        const { vault } = await enrollForTest(["encrypt"]);
+        const hostile = { ...vault, masterKeyWraps: [{ ...vault.masterKeyWraps[0], kdf: "argon2id:m=4294967295,t=999,p=4" }] };
+        getKeyVault.mockResolvedValue(hostile);
+
+        await expect(unlockWithPassword(MAILBOX_UID, [], PASSWORD)).rejects.toThrow(/unrecognized kdf/i);
+    });
+
     it("skips a public key with no matching wrapped private key, rather than throwing", async () => {
         const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
         // A published key with no corresponding vault entry - e.g. published by a different device

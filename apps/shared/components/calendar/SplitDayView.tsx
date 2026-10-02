@@ -3,15 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { addDays, addMinutes, format, startOfDay } from "date-fns";
+import { addMinutes, format, startOfDay } from "date-fns";
 import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { occursOnDay } from "./allDay.js";
 import { occurrenceMarker, useActiveOccurrenceKey } from "./activeOccurrence.js";
 import { EventAnchor, anchorOf } from "./EventShell.js";
+import { HOUR_HEIGHT_PX, SLOTS_PER_DAY, SLOT_MINUTES, blockSpan, laneStyle, layoutLanes, slotStart } from "./gridLayout.js";
 
-const HOUR_HEIGHT_PX = 48;
-const SLOT_MINUTES = 30;
-const SLOTS_PER_DAY = (24 * 60) / SLOT_MINUTES;
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 
 export interface SplitDayColumn {
@@ -93,31 +91,30 @@ function SplitColumn({
     onSelectSlot: (start: Date, end: Date, folderUid: string, anchor: EventAnchor) => void;
 }) {
     const activeKey = useActiveOccurrenceKey();
+    // Clipped to this day, so a multi-day event fills only the part of the day it covers. An all-day event is date-only (see `allDay.ts`), so it
+    // always spans the whole local day. Events that overlap in time share the column's width instead of covering one another.
+    const spans = occurrences.map((occurrence) =>
+        blockSpan(new Date(occurrence.startDate).getTime(), new Date(occurrence.endDate).getTime(), dayStart, occurrence.allDay),
+    );
+    const lanes = layoutLanes(spans);
     return (
         <div className="flex-1 min-w-0 relative border-l border-border">
             {Array.from({ length: SLOTS_PER_DAY }, (_, i) => {
-                const slotStart = addMinutes(dayStart, i * SLOT_MINUTES);
+                const start = slotStart(dayStart, i);
                 return (
                     <button
                         key={i}
                         type="button"
-                        onClick={(e) => onSelectSlot(slotStart, addMinutes(slotStart, SLOT_MINUTES), column.folderUid, anchorOf(e.currentTarget))}
+                        onClick={(e) => onSelectSlot(start, addMinutes(start, SLOT_MINUTES), column.folderUid, anchorOf(e.currentTarget))}
                         style={{ height: HOUR_HEIGHT_PX / 2 }}
                         className="block w-full border-b border-border/50 text-left"
-                        aria-label={`New event at ${format(slotStart, "h:mm a")} in ${column.name}`}
+                        aria-label={`New event at ${format(start, "h:mm a")} in ${column.name}`}
                     />
                 );
             })}
-            {occurrences.map((occurrence) => {
+            {occurrences.map((occurrence, index) => {
                 const start = new Date(occurrence.startDate);
-                const end = new Date(occurrence.endDate);
-                // Clipped to this day, so a multi-day event fills only the part of the day it covers. An
-                // all-day event is date-only (see `allDay.ts`), so it always spans the whole local day.
-                const dayEnd = addDays(dayStart, 1).getTime();
-                const visibleStart = occurrence.allDay ? dayStart.getTime() : Math.max(start.getTime(), dayStart.getTime());
-                const visibleEnd = occurrence.allDay ? dayEnd : Math.min(end.getTime(), dayEnd);
-                const top = ((visibleStart - dayStart.getTime()) / 60_000 / 60) * HOUR_HEIGHT_PX;
-                const height = Math.max(((visibleEnd - visibleStart) / 60_000 / 60) * HOUR_HEIGHT_PX, 16);
+                const { top, height } = spans[index];
                 const isFree = occurrence.busyStatus === "free";
                 const marker = occurrenceMarker(activeKey, occurrence);
                 return (
@@ -129,8 +126,7 @@ function SplitColumn({
                             position: "absolute",
                             top,
                             height,
-                            left: 2,
-                            right: 2,
+                            ...laneStyle(lanes[index]),
                             ...(isFree ? undefined : { backgroundColor: column.color, color: "#fff" }),
                         }}
                         className={[

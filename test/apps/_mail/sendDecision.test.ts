@@ -49,10 +49,22 @@ describe("decideSend - plain by default (fail open)", () => {
         expect(decideSend(input({ recipients: [undefined], lookupsComplete: false }))).toEqual({ action: "plain" });
     });
 
-    it("sends plain when the policy is unknown or the recipients' lookups failed and nothing was asked for, even with a key", () => {
-        const withKey = { hasEncryptionKey: true, keys: { canSign: false, canEncryptSelf: true, unlocked: true } };
+    it("sends plain, in the compose window's early check, when the policy is unknown or the recipients' lookups failed, even with a key", () => {
+        const withKey = { hasEncryptionKey: true, keys: { canSign: false, canEncryptSelf: true, unlocked: true }, lookupsComplete: false };
         expect(decideSend(input({ ...withKey, policy: undefined }))).toEqual({ action: "plain" });
         expect(decideSend(input({ ...withKey, policy: AUTO, recipients: [undefined] }))).toEqual({ action: "plain" });
+    });
+
+    it("blocks, rather than sends plain, when a sender with a key sends and the policy or a recipient's key could not be checked", () => {
+        const withKey = { hasEncryptionKey: true, keys: { canSign: false, canEncryptSelf: true, unlocked: true } };
+        const blocked = { action: "blocked", block: { kind: "lookup-failed", message: LOOKUP_UNAVAILABLE_MESSAGE, overrideLabel: "Send without encryption", keysLocked: false } };
+        expect(decideSend(input({ ...withKey, policy: undefined }))).toEqual(blocked);
+        expect(decideSend(input({ ...withKey, policy: AUTO, recipients: [undefined] }))).toEqual(blocked);
+        // Even with the keys locked: an enrolled key is enough for encryption to be in play.
+        expect(decideSend(input({ hasEncryptionKey: true, policy: undefined }))).toEqual(blocked);
+        // The sender's own override still sends it, and a policy that never encrypts is nothing to check.
+        expect(decideSend(input({ ...withKey, policy: undefined, forcePlaintext: true }))).toEqual({ action: "plain" });
+        expect(decideSend(input({ ...withKey, policy: OPTIONAL, recipients: [undefined] }))).toEqual({ action: "plain" });
     });
 
     it("signs when it can, and plain attachments are fine when nothing is signed or encrypted", () => {

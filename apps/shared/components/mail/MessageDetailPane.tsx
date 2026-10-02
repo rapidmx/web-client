@@ -1038,10 +1038,11 @@ function MessageDetailContent({
         (verifiedOrSealed || security.state === "encrypted" || security.state === "encrypted_unverified_signer" || security.state === "signature_failed")
             ? security.attachments
             : undefined;
-    // Any state that involves a signature shows the address actually signed for (the protected From when the message
+    // Any state with a valid signature shows the address actually signed for (the protected From when the message
     // carries one - it equals the outer From's address, or verification would have failed) next to the badge, never a
-    // display name alone: anyone can put "ceo@corp.com" in the name of a message sent from x@corp-pay.com.
-    const signatureShown = security !== null && security.state !== "unprotected" && security.state !== "encrypted";
+    // display name alone: anyone can put "ceo@corp.com" in the name of a message sent from x@corp-pay.com. A failed
+    // signature vouches for nothing, so its message shows the outer address like an unsigned one.
+    const signatureShown = security !== null && (verifiedOrSealed || UNVERIFIED_SIGNER_STATES.has(security.state));
     const senderAddress = (signatureShown ? extractAddresses(security.protectedHeaders?.from)[0] : undefined) ?? message.from.address;
     const senderName = message.from.displayName;
     const senderNameCheck = checkSenderName(senderName, senderAddress);

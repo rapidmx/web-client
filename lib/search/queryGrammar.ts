@@ -64,13 +64,22 @@ const VALID_ENTITY_TYPES: ReadonlySet<string> = new Set<SearchEntityType>(["mess
  * `parseSearchQuery()` itself, after every extraction has run. */
 function extractFirst(input: string, key: string): { value?: string; rest: string } {
     const pattern = new RegExp(`(^|\\s)${key}:(?:"([^"]*)"|(\\S+))`, "i");
-    const match = pattern.exec(input);
-    if (!match) {
+    const found = pattern.exec(maskQuoted(input));
+    if (!found) {
         return { rest: input };
     }
+    // The masked text only says where the operator is - what it holds is read from the real one.
+    const match = pattern.exec(input.slice(found.index))!;
     const value = match[2] ?? match[3] ?? "";
-    const rest = input.slice(0, match.index) + match[1] + input.slice(match.index + match[0].length);
+    const rest = input.slice(0, found.index) + match[1] + input.slice(found.index + match[0].length);
     return { value, rest };
+}
+
+/** `input` with the inside of every quoted phrase blanked out (the length stays the same, so positions carry over to
+ * `input`): a word that looks like an operator inside a phrase - `"meeting from:bob"` - is part of the phrase, never an
+ * operator. */
+function maskQuoted(input: string): string {
+    return input.replace(/"([^"]*)"/g, (_phrase, inner: string) => `"${"\0".repeat(inner.length)}"`);
 }
 
 /** Repeatedly applies `extractFirst()` for `key` until no more occurrences remain, splitting any
@@ -98,7 +107,7 @@ function extractAll(input: string, key: string): { values: string[]; rest: strin
  * spec defines for this operator — there is no `has:<other value>` form. */
 function extractHasAttachment(input: string): { found: boolean; rest: string } {
     const pattern = /(^|\s)has:attachment\b/i;
-    const match = pattern.exec(input);
+    const match = pattern.exec(maskQuoted(input));
     if (!match) {
         return { found: false, rest: input };
     }

@@ -377,6 +377,28 @@ describe("ComposeToolbar", () => {
         expect(screen.queryByLabelText("Link URL")).not.toBeInTheDocument();
     });
 
+    it("gives a link typed without a scheme one - https:// for an address, mailto: for an email address - and keeps what has a scheme, a path or an anchor", async () => {
+        const typed: [string, string][] = [
+            ["example.com/page", "https://example.com/page"],
+            ["  www.example.com ", "https://www.example.com"],
+            ["jane@example.com", "mailto:jane@example.com"],
+            ["mailto:jane@example.com", "mailto:jane@example.com"],
+            ["http://example.com", "http://example.com"],
+            ["/settings", "/settings"],
+            ["#top", "#top"],
+        ];
+        for (const [input, href] of typed) {
+            const editor = fakeEditor();
+            const user = userEvent.setup();
+            const { unmount } = renderToolbar({ editor });
+            await user.click(screen.getByLabelText("Insert link"));
+            await user.type(await screen.findByLabelText("Link URL"), input);
+            await user.click(screen.getByRole("button", { name: "Apply" }));
+            expect(editor.calls).toContain(`setLink([{"href":"${href}"}])`);
+            unmount();
+        }
+    });
+
     it("removes a link when the prompt is submitted empty.", async () => {
         const editor = fakeEditor({ active: { link: true }, attributes: { link: { href: "https://old.example.com" } } });
         const user = userEvent.setup();

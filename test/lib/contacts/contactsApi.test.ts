@@ -42,7 +42,7 @@ describe("listContacts", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [contact]));
         const result = await listContacts("f1");
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/contacts?limit=25&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ displayName: "ASC" })),
+            "/api/mail/contacts?limit=25&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ displayName: "ASC", uid: "ASC" })),
             expect.anything(),
         );
         expect(result).toEqual([contact]);
@@ -147,7 +147,7 @@ describe("listDeletedContacts", () => {
         const result = await listDeletedContacts("f1");
         expect(fetchMock).toHaveBeenCalledWith(
             "/api/mail/contacts?limit=25&page=0&folderUid=f1&deleted=true&sort=" +
-                encodeURIComponent(JSON.stringify({ displayName: "ASC" })),
+                encodeURIComponent(JSON.stringify({ displayName: "ASC", uid: "ASC" })),
             expect.anything(),
         );
         expect(result[0].deleted).toBe(true);

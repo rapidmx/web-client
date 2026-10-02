@@ -27,7 +27,32 @@ export function stripRemoteCssUrls(css: string): string {
         .replace(/url\(\s*(["']?)(.*?)\1\s*\)/gi, (match, _quote: string, uri: string) => (EMBEDDED_URI.test(uri) ? match : "none"));
 }
 
-type Purifier = ReturnType<typeof DOMPurify>;
+/** The candidate URLs of a `srcset` value, parsed as the HTML spec does: a candidate's URL is a run of non-whitespace
+ * characters (it may itself contain commas - a `data:` URI always does), so a comma that ends a URL or follows its
+ * descriptors separates candidates whether or not whitespace follows it. */
+function srcsetUrls(value: string): string[] {
+    const urls: string[] = [];
+    let position = 0;
+    while (position < value.length) {
+        const start = value.slice(position).search(/[^\s,]/);
+        if (start < 0) {
+            break;
+        }
+        position += start;
+        const end = value.slice(position).search(/\s/);
+        const token = end < 0 ? value.slice(position) : value.slice(position, position + end);
+        position += token.length;
+        urls.push(token.replace(/,+$/, ""));
+        if (!token.endsWith(",")) {
+            // Skip the descriptors, up to the comma that ends the candidate.
+            const comma = value.indexOf(",", position);
+            position = comma < 0 ? value.length : comma + 1;
+        }
+    }
+    return urls;
+}
+
+type Purifier =ReturnType<typeof DOMPurify>;
 let bodyPurifier: Purifier | undefined;
 
 /** A dedicated DOMPurify instance (hooks registered here never leak into any other DOMPurify caller) that
@@ -58,7 +83,7 @@ function getBodyPurifier(): Purifier | undefined {
         }
         const isNavigationLink = name === "href" && ["a", "area"].includes(node.nodeName.toLowerCase());
         if (RESOURCE_URI_ATTRIBUTES.has(name) || (name === "href" && !isNavigationLink)) {
-            const candidates = name === "srcset" ? data.attrValue.split(/,\s+/) : [data.attrValue];
+            const candidates = name === "srcset" ? srcsetUrls(data.attrValue) : [data.attrValue];
             if (!candidates.every((candidate) => EMBEDDED_URI.test(candidate))) {
                 data.keepAttr = false;
             }
@@ -105,6 +130,21 @@ const QUOTE_FORBIDDEN_TAGS = [
     "track",
     // svg/math are already in DISPLAY_FORBIDDEN_TAGS, spread above — not repeated here.
 ];
+
+let signaturePurifier: Purifier | undefined;
+
+/**
+ * Sanitizes a signature's HTML for the compose body: DOMPurify's defaults (no scripts, handlers or `javascript:` URLs) and
+ * the quote's tag list (nothing that styles, frames or submits). Unlike a quoted message, a signature is the sender's own
+ * and may carry pictures from the web, so remote images and links stay. Returns `""` when there is no DOM to sanitize with.
+ */
+export function sanitizeSignatureHtml(html: string): string {
+    if (typeof window === "undefined") {
+        return "";
+    }
+    signaturePurifier ??= DOMPurify(window);
+    return signaturePurifier.isSupported ? signaturePurifier.sanitize(html, { FORBID_TAGS: QUOTE_FORBIDDEN_TAGS }) : "";
+}
 
 /**
  * Sanitizes message HTML for quoting into a compose body: the display policy (`sanitizeMessageBodyHtml()`), without

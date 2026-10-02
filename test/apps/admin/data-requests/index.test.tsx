@@ -294,6 +294,21 @@ describe("DataRequestsPage — export requests", () => {
         expect(await screen.findByText("no resource could be found")).toBeInTheDocument();
     });
 
+    it("asks the administrator to confirm their identity again when an export needs an elevated token", async () => {
+        mockShell((url, init) => {
+            if (url === "/api/mail/data-export-requests" && init?.method === "POST") return jsonResponse(403, { code: "api-104", message: "Requires elevation." });
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+        await screen.findByText("No export requests.");
+
+        await user.type(screen.getByLabelText("Export mailbox UID"), "mb1");
+        await user.click(screen.getByRole("button", { name: "Create export" }));
+
+        expect(await screen.findByText("This needs you to have recently confirmed your identity. Reload this page to confirm it again, then try once more.")).toBeInTheDocument();
+    });
+
     it("shows a generic message when creating an export fails with a non-API error", async () => {
         mockShell((url, init) => {
             if (url === "/api/mail/data-export-requests" && init?.method === "POST") throw new TypeError("network down");
@@ -824,6 +839,21 @@ describe("DataRequestsPage — erasure requests", () => {
         await user.click(await screen.findByRole("button", { name: "Erase mailbox" }));
 
         expect(await screen.findByText("This action is blocked by an active legal hold: matter-1.")).toBeInTheDocument();
+    });
+
+    it("asks the administrator to confirm their identity again when approving an erasure needs an elevated token", async () => {
+        mockShell((url, init) => {
+            if (url === "/api/mail/erasure-requests/eer1/approve" && init?.method === "POST") return jsonResponse(403, { code: "api-104", message: "Requires elevation." });
+            if (url === "/api/mail/erasure-requests?limit=50&page=0" && (init?.method ?? "GET") === "GET") return jsonResponse(200, [erasureRequest()]);
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+
+        await user.click(await screen.findByRole("button", { name: "Approve" }));
+        await user.click(await screen.findByRole("button", { name: "Erase mailbox" }));
+
+        expect(await screen.findByText("This needs you to have recently confirmed your identity. Reload this page to confirm it again, then try once more.")).toBeInTheDocument();
     });
 
     it("shows a generic message when approval fails with a non-API error", async () => {

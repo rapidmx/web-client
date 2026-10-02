@@ -381,7 +381,7 @@ describe("KeyEnrollmentGate", () => {
         await user.type(screen.getByLabelText("Encryption password"), "short");
         await user.type(screen.getByLabelText("Confirm password"), "short");
         await user.click(screen.getByRole("button", { name: "Continue" }));
-        expect(await screen.findByText(/at least 8 characters/)).toBeInTheDocument();
+        expect(await screen.findByText(/at least 12 characters/)).toBeInTheDocument();
         expect(enrollKey).not.toHaveBeenCalled();
     });
 

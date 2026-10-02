@@ -82,9 +82,12 @@ export interface SendDecisionInput {
  * can choose, or rejected outright. Used twice with the same rules - by the compose window, from what it already knows, to catch a problem
  * *before* it closes (`lookupsComplete: false`), and by the background send, once its recipient lookups are in.
  *
- * Encryption follows `evaluateEncryptionRequirement()` - fail open: only a message the user asked to encrypt, or one the loaded policy
- * encrypts, is encrypted; everything unknown is plain and sends. The one place unknown blocks is a message the user *explicitly* asked to
- * encrypt whose recipients' keys could not be looked up: they asked for encryption, and it cannot be delivered.
+ * Encryption follows `evaluateEncryptionRequirement()`. The compose window's early check (`lookupsComplete: false`) is fail open: only a message
+ * the user asked to encrypt, or one the loaded policy encrypts, is encrypted there; everything unknown is plain, so a flapping gateway never
+ * blocks a draft or Close. The background send (`lookupsComplete: true`) is not: once its loads are in, a message that might have to be encrypted
+ * because the policy or a recipient's key could not be checked (the sender having a key to encrypt with) is blocked (`lookup-failed`) rather than
+ * sent in the clear - and so is one the user *explicitly* asked to encrypt whose recipients' keys could not be looked up. Either way the sender can
+ * choose to send it without encryption.
  */
 export function decideSend(input: SendDecisionInput): SendDecision {
     const { keys } = input;
@@ -121,6 +124,14 @@ export function decideSend(input: SendDecisionInput): SendDecision {
         recipients: input.recipients,
     });
     const encrypting = requirement.required;
+
+    if (!encrypting && input.lookupsComplete && requirement.unknown.some((fact) => fact !== "mailbox")) {
+        // The sender has a key to encrypt with, the loads are all in (or gave up), and the policy or a recipient's key is still unknown: the message
+        // might have to be encrypted, and plaintext must not go out on a guess. The sender can still choose to send it without encryption. (An unknown
+        // *mailbox* is not one of these: with no key known there is nothing to say encryption applies, and a mailbox that will not load must not
+        // stop everyone's mail.)
+        return { action: "blocked", block: { kind: "lookup-failed", message: LOOKUP_UNAVAILABLE_MESSAGE, overrideLabel: "Send without encryption", keysLocked: false } };
+    }
 
     if (encrypting) {
         const statuses = input.recipients.filter((status): status is RecipientEncryptionStatus => !!status);

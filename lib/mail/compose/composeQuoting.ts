@@ -15,7 +15,7 @@
  */
 
 import { Message, Recipient } from "../mailApi.js";
-import { sanitizeQuotedHtml } from "../messageBodySanitizer.js";
+import { sanitizeQuotedHtml, sanitizeSignatureHtml } from "../messageBodySanitizer.js";
 
 function escapeHtml(text: string): string {
     return text
@@ -154,7 +154,8 @@ export function buildComposeBodyHtml(signatureHtml?: string, quotedHtml?: string
     }
     const separator = signatureHtml && quotedHtml ? "<p></p>" : "";
     const aboveQuote = quotedHtml ? "<p></p>" : "";
-    return `<p></p>${signatureHtml ?? ""}${separator}${aboveQuote}${quotedHtml ?? ""}`;
+    // A signature can be written by someone else (a shared mailbox's delegate): it is sanitized like anything else the editor is given.
+    return `<p></p>${signatureHtml ? sanitizeSignatureHtml(signatureHtml) : ""}${separator}${aboveQuote}${quotedHtml ?? ""}`;
 }
 
 /**

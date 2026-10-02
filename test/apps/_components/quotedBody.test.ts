@@ -105,10 +105,21 @@ describe("loadOriginalMessage", () => {
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it("recovers an encrypted message's recipients from its protected headers, and nothing else", async () => {
+    it("ignores the protected headers of a message no signature covers, whoever it names", async () => {
         const fetchMock = mockFetch(() => new Response("never", { status: 500 }));
         const security = {
             state: "encrypted",
+            protectedHeaders: { from: "bob@partner.test", to: "dave@partner.test, hidden@evil.test", subject: "Hi" },
+        } as never;
+
+        expect(await loadOriginalMessage(encrypted, security, { recipients: true })).toEqual({ body: {} });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("recovers an encrypted message's recipients from its protected headers, and nothing else", async () => {
+        const fetchMock = mockFetch(() => new Response("never", { status: 500 }));
+        const security = {
+            state: "encrypted_verified",
             protectedHeaders: { from: "bob@partner.test", to: "dave@partner.test", subject: "Hi" },
         } as never;
 

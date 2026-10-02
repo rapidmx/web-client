@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -97,6 +97,20 @@ describe("EscrowSetupStep", () => {
         await user.click(screen.getByRole("button", { name: "Download certificate" }));
         expect(screen.getByLabelText("I’ve saved the private key somewhere safe")).toBeDisabled();
         await user.click(screen.getByRole("button", { name: "Download private key" }));
+        // Nothing is downloaded until the administrator has read that the file is not encrypted - and Cancel leaves it undownloaded.
+        const confirm = await screen.findByRole("dialog", { name: "Download the private key?" });
+        expect(within(confirm).getByText(/not encrypted/)).toBeInTheDocument();
+        expect(createObjectURL).toHaveBeenCalledTimes(1);
+        await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("I’ve saved the private key somewhere safe")).toBeDisabled();
+        await user.click(screen.getByRole("button", { name: "Download private key" }));
+        await screen.findByRole("dialog");
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        expect(createObjectURL).toHaveBeenCalledTimes(1);
+        await user.click(screen.getByRole("button", { name: "Download private key" }));
+        await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Download unencrypted key" }));
         expect(createObjectURL).toHaveBeenCalledTimes(2);
         // Revoked later, so a browser still reading the download isn't cut off.
         expect(revokeObjectURL).not.toHaveBeenCalled();
@@ -187,6 +201,7 @@ describe("EscrowSetupStep", () => {
             await user.type(screen.getByLabelText("Escrow scope name"), "!!!");
             await user.click(screen.getByRole("button", { name: "Generate keys" }));
             await user.click(await screen.findByRole("button", { name: "Download private key" }));
+            await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Download unencrypted key" }));
             await user.click(screen.getByRole("button", { name: "Download certificate" }));
             expect(filenames).toEqual(["escrow-private-key.pem", "escrow-certificate.pem"]);
 

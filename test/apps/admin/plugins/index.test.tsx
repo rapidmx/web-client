@@ -801,6 +801,78 @@ describe("PluginsPage", () => {
             expect(putSent(fetchMock)).toBe(false);
         });
 
+        describe("a secret the server keeps to itself", () => {
+            const secretPlugin = (settings: Record<string, unknown>) => ({
+                ...mapi,
+                settings,
+                manifest: {
+                    apiVersion: 1,
+                    displayName: "MAPI over HTTP",
+                    settings: [
+                        { key: "x:api_key", label: "API key", type: "string", required: true },
+                        { key: "x:note", label: "Note", type: "string", default: "" },
+                    ],
+                },
+            });
+
+            it("shows a saved secret as an empty, write-only password field, never as its placeholder object", async () => {
+                respondingWith(secretPlugin({ "x:api_key": { secret: true }, "x:note": "hello" }));
+                const user = userEvent.setup();
+                renderPage();
+                const dialog = await openSettings(user);
+                const field = within(dialog).getByLabelText("API key");
+                expect(field).toHaveValue("");
+                expect(field).toHaveAttribute("type", "password");
+                expect(field).toHaveAttribute("autocomplete", "new-password");
+                expect(field).toHaveAttribute("placeholder", "Saved - type a new value to replace it");
+                expect(field).not.toBeRequired();
+                expect(within(dialog).getByLabelText("Note")).toHaveAttribute("type", "text");
+            });
+
+            it("sends the placeholder back as it was given, keeping the secret, when another setting is changed", async () => {
+                const fetchMock = respondingWith(secretPlugin({ "x:api_key": { secret: true }, "x:note": "hello" }));
+                const user = userEvent.setup();
+                renderPage();
+                const dialog = await openSettings(user);
+                await user.clear(within(dialog).getByLabelText("Note"));
+                await user.type(within(dialog).getByLabelText("Note"), "changed");
+                await user.click(within(dialog).getByRole("button", { name: "Save" }));
+                await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+                expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings).toEqual({ "x:api_key": { secret: true }, "x:note": "changed" });
+            });
+
+            it("replaces the secret with what is typed, and saves nothing when it is left alone", async () => {
+                const fetchMock = respondingWith(secretPlugin({ "x:api_key": { secret: true }, "x:note": "hello" }));
+                const user = userEvent.setup();
+                renderPage();
+                let dialog = await openSettings(user);
+                await user.click(within(dialog).getByRole("button", { name: "Save" }));
+                await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+                expect(putSent(fetchMock)).toBe(false);
+
+                dialog = await openSettings(user);
+                await user.type(within(dialog).getByLabelText("API key"), "sk-new");
+                await user.click(within(dialog).getByRole("button", { name: "Save" }));
+                await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+                expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings).toEqual({ "x:api_key": "sk-new", "x:note": "hello" });
+            });
+
+            it("hides what is typed into a secret-named setting even before one is saved, and Reset drops a saved secret", async () => {
+                const fetchMock = respondingWith(secretPlugin({ "x:api_key": { secret: true }, "x:note": "hello" }));
+                const user = userEvent.setup();
+                renderPage();
+                const dialog = await openSettings(user);
+                await user.click(within(dialog).getByRole("button", { name: "Reset" }));
+                const field = within(dialog).getByLabelText("API key");
+                expect(field).toHaveAttribute("type", "password");
+                expect(field).not.toHaveAttribute("placeholder");
+                await user.type(field, "sk-fresh");
+                await user.click(within(dialog).getByRole("button", { name: "Save" }));
+                await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+                expect(requestBody(fetchMock, "/api/system/plugins/p-mapi", "PUT").settings["x:api_key"]).toBe("sk-fresh");
+            });
+        });
+
         it("shows a saved value over the deployment's, and saves a different one", async () => {
             const fetchMock = respondingWith(configuredPlugin({ "x:limit": 9 }));
             const user = userEvent.setup();

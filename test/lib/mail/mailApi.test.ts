@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError, configureApiBaseUrl, createApiClient } from "../../../lib/util/api.js";
+import { ApiRequestError, configureApiBaseUrl, createApiClient, setApiSessionRecovery } from "../../../lib/util/api.js";
 import { deviceTimeZone } from "../../../lib/util/timeZone.js";
 import {
     approveReceipt,

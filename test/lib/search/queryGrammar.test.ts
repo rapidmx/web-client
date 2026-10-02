@@ -5,6 +5,27 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { parseSearchQuery } from "../../../lib/search/queryGrammar.js";
 
+describe("parseSearchQuery: quoted phrases", () => {
+    it("never takes an operator-looking word inside a quoted phrase for an operator", () => {
+        expect(parseSearchQuery('"meeting from:bob"')).toEqual({ text: '"meeting from:bob"' });
+        expect(parseSearchQuery('"has:attachment before:2026-01-01 is:read"')).toEqual({ text: '"has:attachment before:2026-01-01 is:read"' });
+        expect(parseSearchQuery('notes "to:carol cc:dave" in:f1')).toEqual({ text: 'notes "to:carol cc:dave"', folderUid: "f1" });
+    });
+
+    it("still extracts the operators around, and the quoted value of, a real one", () => {
+        expect(parseSearchQuery('from:"bob smith" "budget from:eve" report is:read')).toEqual({
+            text: '"budget from:eve" report',
+            from: "bob smith",
+            flags: ["read"],
+        });
+        expect(parseSearchQuery('"a b" subject:"x y" has:attachment')).toEqual({ text: '"a b"', subject: "x y", hasAttachment: true });
+    });
+
+    it("treats an unbalanced quote as plain text, so an operator after it is still an operator", () => {
+        expect(parseSearchQuery('"meeting from:bob')).toEqual({ text: '"meeting', from: "bob" });
+    });
+});
+
 describe("parseSearchQuery", () => {
     it("returns the whole string as text when there are no operators", () => {
         expect(parseSearchQuery("quarterly budget")).toEqual({ text: "quarterly budget" });

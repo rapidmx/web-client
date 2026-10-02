@@ -227,6 +227,41 @@ describe("EventModal video conferencing toggle", () => {
         expect(onSaved).not.toHaveBeenCalled();
     });
 
+    it("never moves a series to the edited occurrence's dates when the save is retried after the video step failed", async () => {
+        const fifth = occurrence({
+            startDate: "2026-07-01T15:00:00.000Z",
+            endDate: "2026-07-01T15:30:00.000Z",
+            recurrenceRule: { freq: "weekly", interval: 1, byDay: ["WE"], exceptions: [] },
+            recurrenceId: "2026-07-01T15:00:00.000Z",
+            isRecurringOccurrence: true,
+            attendees: [{ address: "jane@example.com", role: "required", responseStatus: "accepted", isOrganizer: true }],
+        });
+        const fetchMock = mockFetch((url, init) => {
+            const method = (init?.method ?? "GET").toUpperCase();
+            if (url.startsWith("/api/mail/video-meetings")) return jsonResponse(200, { meeting: meetingFixture, organizerJoinUrl: JOIN_URL });
+            return method === "PUT" ? jsonResponse(200, { ...fifth, startDate: "2026-06-03T15:00:00.000Z", version: 3 }) : jsonResponse(200, []);
+        });
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(fifth);
+        await user.click(screen.getByRole("radio", { name: "The entire series" }));
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Add at least one attendee other than yourself to add video conferencing.")).toBeInTheDocument();
+
+        await addGuest(user, "carol@example.com");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        const puts = callsTo(fetchMock, "/api/mail/calendar-events", "PUT");
+        expect(puts.length).toBeGreaterThanOrEqual(2);
+        for (const [, init] of puts) {
+            const body = JSON.parse((init as RequestInit).body as string);
+            expect(body.startDate).toBeUndefined();
+            expect(body.endDate).toBeUndefined();
+        }
+        expect(JSON.parse((puts[1][1] as RequestInit).body as string).version).toBe(3);
+    });
+
     it("leaves an already-linked meeting completely alone when attendees changed", async () => {
         const fetchMock = mockVideoFetch();
         const user = userEvent.setup();

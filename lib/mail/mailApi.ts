@@ -13,7 +13,17 @@
  * `@rapidmx/restapi` and this repo's `.claude/NOTES.md`.
  */
 
-import { ApiClient, ApiRequestError, apiFetch, apiUrl, authApiFetch, withClient, withClientRaw, withCsrfHeader } from "../util/api.js";
+import {
+    ApiClient,
+    ApiRequestError,
+    apiFetch,
+    apiUrl,
+    authApiFetch,
+    withClient,
+    withClientBlob,
+    withClientRaw,
+    withCsrfHeader,
+} from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import { deviceTimeZone } from "../util/timeZone.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
@@ -1331,8 +1341,9 @@ export async function queueMessageSend(messageUid: string, client?: ApiClient): 
 
 /**
  * Fetches a message's raw RFC 5322 MIME source — for client-side E2E decrypt/signature-verification
- * only (`crypto/smimeMessage.ts`), never for display. Bypasses `apiFetch()` (which only ever decodes a
- * JSON response body): this server-local route (`BaseMessageRawContentRoute.ts` in `server`, mounted
+ * only (`crypto/smimeMessage.ts`), never for display. Goes through `withClientBlob()` rather than `apiFetch()` (which
+ * only ever decodes a JSON response body, and renews an expired session) - the same session renewal and, given a
+ * `client`, the same account and token as every other call: this server-local route (`BaseMessageRawContentRoute.ts` in `server`, mounted
  * alongside `@rapidmx/restapi`'s own `MessageRoute`) returns `message/rfc822`, not JSON — the one thing
  * that library's own `GET /:id/content` deliberately never serves (see that route's own doc comment).
  *
@@ -1342,17 +1353,15 @@ export async function queueMessageSend(messageUid: string, client?: ApiClient): 
  * straight to `evaluateMessageSecurity()` (see `crypto/mime.ts`'s doc comment on binary strings); it is
  * not display text.
  */
-export async function getMessageRawContent(messageUid: string): Promise<string> {
-    const res = await fetch(apiUrl(`/mail/messages/${encodeURIComponent(messageUid)}/raw`), { credentials: "include" });
-    if (!res.ok) {
-        const contentType = res.headers.get("content-type") ?? "";
-        const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
-        const message = (body && (body.message || body.error)) || res.statusText || "Could not load this message's raw content.";
-        throw new ApiRequestError(message, res.status, body?.code);
-    }
+export async function getMessageRawContent(messageUid: string, client?: ApiClient): Promise<string> {
+    const raw = await withClientBlob(
+        client,
+        `/mail/messages/${encodeURIComponent(messageUid)}/raw`,
+        "Could not load this message's raw content.",
+    );
     // Not `new TextDecoder("latin1")`: WHATWG maps that label to windows-1252, which remaps 0x80-0x9F and so
     // isn't byte-preserving. `bytesToBinaryString()` is an exact byte -> code unit conversion.
-    return bytesToBinaryString(new Uint8Array(await res.arrayBuffer()));
+    return bytesToBinaryString(new Uint8Array(await raw.arrayBuffer()));
 }
 
 export interface ImpersonationResult {

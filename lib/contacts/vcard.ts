@@ -104,6 +104,43 @@ function valueSeparatorIndex(line: string): number {
     return -1;
 }
 
+/** How much of a file's text `parseVCards()` reads, and how many records it takes from it (the rest is ignored). */
+export const VCARD_MAX_CHARS = 5_000_000;
+export const VCARD_MAX_CONTACTS = 2_000;
+
+/** Decodes a quoted-printable value: each `=XX` is one byte, and the bytes are text in `charset` (UTF-8 when none is named or the name is unknown). */
+function decodeQuotedPrintable(value: string, charset: string | undefined): string {
+    const encoder = new TextEncoder();
+    const bytes: number[] = [];
+    for (const [, hex, literal] of value.matchAll(/=([0-9a-f]{2})|([\s\S])/giu)) {
+        if (hex) {
+            bytes.push(parseInt(hex, 16));
+        } else {
+            bytes.push(...encoder.encode(literal));
+        }
+    }
+    try {
+        return new TextDecoder(charset || "utf-8").decode(new Uint8Array(bytes));
+    } catch {
+        return new TextDecoder().decode(new Uint8Array(bytes));
+    }
+}
+
+/** `lines` with each quoted-printable line that ends in `=` (a soft line break) joined to the line that carries on from it. */
+function joinQuotedPrintableLines(lines: string[]): string[] {
+    const joined: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        if (/^[^:]*QUOTED-PRINTABLE/i.test(line)) {
+            while (line.endsWith("=") && i + 1 < lines.length) {
+                line = line.slice(0, -1) + lines[++i];
+            }
+        }
+        joined.push(line);
+    }
+    return joined;
+}
+
 /**
  * Maps a property's type parameters onto `ContactAddressKind`: every `TYPE=` value (vCard 3/4, including
  * comma lists and quoted lists like `TYPE="work,voice"`) plus vCard 2.1's bare parameters (`EMAIL;WORK:`)
@@ -134,13 +171,15 @@ function normalizeType(params: string[]): ContactAddressKind {
  * `normalizeType()`); structured values are split on unescaped `;` only.
  */
 export function parseVCards(text: string): ParsedVCardContact[] {
+    // A file is read only so far: nothing legitimate is this large, and a huge one would be minutes of parsing and thousands of records.
+    const source = text.length > VCARD_MAX_CHARS ? text.slice(0, VCARD_MAX_CHARS) : text;
     // Unfold first, then split only on a line that is exactly BEGIN:VCARD - a NOTE (or a folded line) that
     // merely contains the text "BEGIN:VCARD" must not start a bogus record.
-    const unfolded = text.replace(/(?:\r\n|\r|\n)[ \t]/g, "");
-    const cards = unfolded.split(/^[ \t]*BEGIN:VCARD[ \t]*$/im).slice(1);
+    const unfolded = source.replace(/(?:\r\n|\r|\n)[ \t]/g, "");
+    const cards = unfolded.split(/^[ \t]*BEGIN:VCARD[ \t]*$/im).slice(1, VCARD_MAX_CONTACTS + 1);
     return cards.map((card) => {
         const contact: ParsedVCardContact = { displayName: "", emails: [], phones: [], addresses: [] };
-        const lines = card.split(/\r\n|\r|\n/);
+        const lines = joinQuotedPrintableLines(card.split(/\r\n|\r|\n/));
         for (const rawLine of lines) {
             const line = rawLine.trim();
             const colonIndex = valueSeparatorIndex(line);
@@ -148,9 +187,13 @@ export function parseVCards(text: string): ParsedVCardContact[] {
                 continue;
             }
             const key = line.slice(0, colonIndex);
-            const rawValue = line.slice(colonIndex + 1);
-            const value = unescapeVCardValue(rawValue);
             const [groupedName, ...params] = key.split(";");
+            // vCard 2.1 may encode a value as quoted-printable (`ENCODING=QUOTED-PRINTABLE`, or the bare parameter), in a named charset;
+            // such a value has no backslash escapes.
+            const quotedPrintable = params.some((param) => /^(?:ENCODING=)?QUOTED-PRINTABLE$/i.test(param.trim()));
+            const charset = params.find((param) => /^CHARSET=/i.test(param.trim()))?.trim().slice("CHARSET=".length).replace(/"/g, "");
+            const rawValue = quotedPrintable ? decodeQuotedPrintable(line.slice(colonIndex + 1), charset) : line.slice(colonIndex + 1);
+            const value = quotedPrintable ? rawValue : unescapeVCardValue(rawValue);
             const name = groupedName.slice(groupedName.lastIndexOf(".") + 1).toUpperCase();
             const type = normalizeType(params);
 
@@ -172,10 +215,15 @@ export function parseVCards(text: string): ParsedVCardContact[] {
                     contact.jobTitle = value;
                     break;
                 case "EMAIL":
-                    contact.emails!.push({ address: value, type });
+                    // An empty one would make the server refuse the whole contact.
+                    if (value.trim()) {
+                        contact.emails!.push({ address: value.trim(), type });
+                    }
                     break;
                 case "TEL":
-                    contact.phones!.push({ phoneNumber: value, type });
+                    if (value.trim()) {
+                        contact.phones!.push({ phoneNumber: value, type });
+                    }
                     break;
                 case "ADR": {
                     const [, , street, city, state, postalCode, country] = splitStructuredValue(rawValue);

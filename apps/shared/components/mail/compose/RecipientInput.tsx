@@ -312,7 +312,8 @@ export default function RecipientInput({
                     {drawn.map(({ chip, index }) => {
                         const recipient = parseRecipient(chip);
                         const valid = isValidRecipientAddress(recipient.address);
-                        const name = recipient.displayName || recipient.address;
+                        // A name that is itself an address (`"billing@bank.com" <x@evil.tld>`) would hide the one it is really sent to: both are shown.
+                        const name = /[@＠﹫]/.test(recipient.displayName ?? "") ? `${recipient.displayName} <${recipient.address}>` : recipient.displayName || recipient.address;
                         return (
                             <li
                                 key={`${index}-${chip}`}

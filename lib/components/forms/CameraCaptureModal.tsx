@@ -39,6 +39,8 @@ function cameraErrorMessage(err: unknown): string {
 export default function CameraCaptureModal({ onCapture, onClose, onError }: CameraCaptureModalProps) {
     const video = useRef<HTMLVideoElement>(null);
     const stream = useRef<MediaStream | null>(null);
+    // Cleared when the dialog is cancelled or gone: a frame still being encoded then must not reach `onCapture` of a caller that has moved on.
+    const open = useRef(true);
     const [ready, setReady] = useState(false);
     const [error, setError] = useState<string | null>(null);
     // From pressing Capture until the frame is encoded: a second press then would hand the caller a second picture.
@@ -69,9 +71,16 @@ export default function CameraCaptureModal({ onCapture, onClose, onError }: Came
         );
         return () => {
             cancelled = true;
+            open.current = false;
             stop();
         };
     }, []);
+
+    function close() {
+        open.current = false;
+        stop();
+        onClose();
+    }
 
     function capture() {
         setCapturing(true);
@@ -82,6 +91,9 @@ export default function CameraCaptureModal({ onCapture, onClose, onError }: Came
         canvas.getContext("2d")!.drawImage(element, 0, 0, canvas.width, canvas.height);
         canvas.toBlob(
             (blob) => {
+                if (!open.current) {
+                    return;
+                }
                 if (!blob) {
                     setCapturing(false);
                     fail("The picture could not be captured - try again.");
@@ -96,7 +108,7 @@ export default function CameraCaptureModal({ onCapture, onClose, onError }: Came
     }
 
     return (
-        <Modal open onClose={onClose} title="Take photo">
+        <Modal open onClose={close} title="Take photo">
             {error && <Alert>{error}</Alert>}
             {/* Mirrored like a mirror, which is what looking at yourself expects; the picture that is kept is not. */}
             <video
@@ -109,7 +121,7 @@ export default function CameraCaptureModal({ onCapture, onClose, onError }: Came
                 className={`w-full aspect-square object-cover rounded-sm bg-black -scale-x-100 ${error ? "hidden" : ""}`}
             />
             <div className="mt-5 flex justify-end gap-2">
-                <Button type="button" variant="secondary" className="!w-auto" onClick={onClose}>
+                <Button type="button" variant="secondary" className="!w-auto" onClick={close}>
                     Cancel
                 </Button>
                 <Button type="button" className="!w-auto" disabled={!ready || !!error || capturing} onClick={capture}>

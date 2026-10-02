@@ -154,6 +154,7 @@ describe("SettingsAutoReplyPage", () => {
         render(<SettingsAutoReplyPage userUid="u1" />);
 
         await user.click(await screen.findByRole("checkbox", { name: "Automatic replies are on" }));
+        await user.type(screen.getByLabelText("Automatic reply message"), "Away until Monday");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
         await screen.findByText("Saved.");
@@ -178,7 +179,8 @@ describe("SettingsAutoReplyPage", () => {
         const user = userEvent.setup();
         render(<SettingsAutoReplyPage userUid="u1" />);
 
-        fireEvent.change(await screen.findByLabelText("Automatic reply start"), { target: { value: "" } });
+        await user.type(await screen.findByLabelText("Automatic reply message"), "Away until Monday");
+        fireEvent.change(screen.getByLabelText("Automatic reply start"), { target: { value: "" } });
         fireEvent.change(screen.getByLabelText("Automatic reply end"), { target: { value: "" } });
         await user.click(screen.getByRole("button", { name: "Save" }));
         await screen.findByText("Saved.");
@@ -190,6 +192,47 @@ describe("SettingsAutoReplyPage", () => {
             .map(([, init]) => JSON.parse((init as RequestInit).body as string));
         expect(bodies[0]).toMatchObject({ version: 0, oofStartTime: null, oofEndTime: null });
         expect(bodies[1]).toMatchObject({ version: 1 });
+    });
+
+    it("refuses to save, saying why, when automatic replies are on with no message, or end before start, and saves once it is fixed", async () => {
+        const fetchMock = mockShell(mailbox(), (url, init) =>
+            url === "/api/mail/mailboxes/mb1" && init?.method === "PUT" ? jsonResponse(200, mailbox({ oofEnabled: true })) : undefined,
+        );
+        const puts = () => fetchMock.mock.calls.filter(([url, init]) => url === "/api/mail/mailboxes/mb1" && (init as RequestInit)?.method === "PUT");
+        const user = userEvent.setup();
+        render(<SettingsAutoReplyPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("checkbox", { name: "Automatic replies are on" }));
+        await user.type(screen.getByLabelText("Automatic reply message"), "   ");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Write the message to send while automatic replies are on.")).toBeInTheDocument();
+
+        await user.clear(screen.getByLabelText("Automatic reply message"));
+        await user.type(screen.getByLabelText("Automatic reply message"), "Away");
+        fireEvent.change(screen.getByLabelText("Automatic reply start"), { target: { value: "2026-06-08T09:00" } });
+        fireEvent.change(screen.getByLabelText("Automatic reply end"), { target: { value: "2026-06-01T09:00" } });
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("The end must be after the start.")).toBeInTheDocument();
+        expect(puts()).toHaveLength(0);
+
+        fireEvent.change(screen.getByLabelText("Automatic reply end"), { target: { value: "2026-06-15T09:00" } });
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(screen.queryByText("The end must be after the start.")).not.toBeInTheDocument();
+        expect(puts()).toHaveLength(1);
+    });
+
+    it("saves a turned-off reply without a message", async () => {
+        const fetchMock = mockShell(mailbox({ oofEnabled: true, oofMessage: "Away" }), (url, init) =>
+            url === "/api/mail/mailboxes/mb1" && init?.method === "PUT" ? jsonResponse(200, mailbox()) : undefined,
+        );
+        const user = userEvent.setup();
+        render(<SettingsAutoReplyPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("checkbox", { name: "Automatic replies are on" }));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PUT")).toBe(true);
     });
 
     it("shows an API error message when saving fails", async () => {
@@ -247,6 +290,7 @@ describe("SettingsAutoReplyPage", () => {
         );
 
         await user.click(await screen.findByRole("checkbox", { name: "Automatic replies are on" }));
+        await user.type(screen.getByLabelText("Automatic reply message"), "Away until Monday");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
         expect(await screen.findByText("Saved.")).toBeInTheDocument();

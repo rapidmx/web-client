@@ -45,6 +45,8 @@ export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersO
                 kind: "calendar",
                 title: notice.title,
                 message: reminderMessage(notice.startDate),
+                // Anyone who can invite you can put any address in an event's location: the button says where it goes.
+                hint: joinUrl ? `Join Meeting opens ${new URL(joinUrl).host}` : undefined,
                 href: CALENDAR_HREF,
                 sticky: true,
                 actions: [

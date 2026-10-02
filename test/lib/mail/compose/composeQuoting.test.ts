@@ -211,6 +211,10 @@ describe("buildComposeBodyHtml", () => {
         expect(buildComposeBodyHtml(undefined, "<blockquote>Hi</blockquote>")).toBe("<p></p><p></p><blockquote>Hi</blockquote>");
     });
 
+    it("sanitizes the signature, which may have been written by someone else", () => {
+        expect(buildComposeBodyHtml('<p onclick="evil()">Jane</p><script>evil()</script>')).toBe("<p></p><p>Jane</p>");
+    });
+
     it("puts an empty paragraph above the signature", () => {
         expect(buildComposeBodyHtml("<p>Best,<br>Jane</p>")).toBe("<p></p><p>Best,<br>Jane</p>");
     });

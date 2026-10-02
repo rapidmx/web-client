@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../../shared/navigation/pageTitle.js";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
     MailboxAccessMember,
@@ -60,15 +60,25 @@ function SharingContent() {
     // `SettingsShell` only ever renders its children once `mailboxUid` has resolved (a mailbox-less caller
     // gets `<MailboxProvisioning />` instead) - same established precedent as the Labels/Focused Inbox
     // settings pages, so none of the handlers below need their own `!mailboxUid` guard.
+    // Only the latest request's answer is shown (a reload after a change can overtake a slower earlier one).
+    const latestLoad = useRef(0);
+
     function reload() {
+        const load = ++latestLoad.current;
         setStatus("loading");
         setError(null);
         listMailboxAccess(mailboxUid!)
             .then((result) => {
+                if (load !== latestLoad.current) {
+                    return;
+                }
                 setMembers(result);
                 setStatus("ready");
             })
             .catch((err) => {
+                if (load !== latestLoad.current) {
+                    return;
+                }
                 // A 403 here is the live, server-verified "can this caller manage this mailbox's sharing"
                 // signal - the same permission threshold (ACLAction.UPDATE) this route itself requires, so
                 // no separate probe call is needed to decide which state to render.

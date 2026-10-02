@@ -334,3 +334,53 @@ describe("describeRecurrence", () => {
         expect(describeRecurrence({ freq: "yearly", interval: 1, exceptions: [] })).toBe("every year");
     });
 });
+
+describe("hostile and ancient recurrence rules", () => {
+    const rule = (overrides: Record<string, unknown>) => ({ freq: "daily" as const, interval: 1, exceptions: [], ...overrides });
+    const starts = (e: CalendarEvent) => expandOccurrences(e, RANGE_START, RANGE_END).map((o) => o.startDate);
+
+    it.each([0, -1, Number.NaN, 1.5, undefined])("treats the interval %s as 1 rather than looping forever", (interval) => {
+        const result = starts(event({ recurrenceRule: rule({ interval }) }));
+        expect(result).toHaveLength(14);
+        expect(result[1]).toBe("2026-06-02T15:00:00.000Z");
+    });
+
+    it("does not let one event that cannot be expanded blank the others", () => {
+        const broken = event({ uid: "bad", startDate: "garbage", recurrenceRule: rule({}) });
+        const result = expandAllOccurrences([broken, event({ uid: "ok", recurrenceRule: rule({ interval: 7 }) })], RANGE_START, RANGE_END);
+        expect(result.map((o) => o.uid)).toEqual(["ok", "ok"]);
+    });
+
+    it("still shows the stored event of one whose rule cannot be expanded, when it is in range", () => {
+        const broken = event({ uid: "odd", recurrenceRule: rule({ exceptions: undefined }) });
+        const result = expandAllOccurrences([broken], RANGE_START, RANGE_END);
+        expect(result).toMatchObject([{ uid: "odd", isRecurringOccurrence: false, startDate: "2026-06-01T15:00:00.000Z" }]);
+    });
+
+    it("expands a daily series that began centuries ago exactly as it would have from a recent start", () => {
+        const ancient = event({ startDate: "1600-01-01T15:00:00.000Z", endDate: "1600-01-01T15:30:00.000Z", recurrenceRule: rule({ interval: 3 }) });
+        const result = starts(ancient);
+        expect(result.length).toBeGreaterThan(3);
+        for (const start of result) {
+            const days = (Date.parse(start) - Date.parse("1600-01-01T15:00:00.000Z")) / 86_400_000;
+            expect(days % 3).toBe(0);
+        }
+        // Every third day from 2026-06-01's neighbourhood, nothing skipped.
+        const gaps = result.slice(1).map((start, i) => (Date.parse(start) - Date.parse(result[i])) / 86_400_000);
+        expect(new Set(gaps)).toEqual(new Set([3]));
+    });
+
+    it("expands a biweekly series on given weekdays that began long ago exactly as from a start a whole number of periods later", () => {
+        const byDay = ["MO", "WE"] as const;
+        const original = event({ startDate: "1700-01-03T15:00:00.000Z", endDate: "1700-01-03T15:30:00.000Z", recurrenceRule: rule({ freq: "weekly", interval: 2, byDay: [...byDay] }) });
+        const shifted = new Date(Date.parse("1700-01-03T15:00:00.000Z") + 14 * 86_400_000 * 6000).toISOString();
+        const later = event({ startDate: shifted, endDate: shifted, recurrenceRule: rule({ freq: "weekly", interval: 2, byDay: [...byDay] }) });
+        expect(Date.parse(shifted)).toBeLessThan(RANGE_START.getTime());
+        expect(starts(original)).toEqual(starts(later));
+        expect(starts(original).length).toBeGreaterThan(0);
+    });
+
+    it("leaves a series with a count alone, however old", () => {
+        expect(starts(event({ startDate: "1600-01-01T15:00:00.000Z", endDate: "1600-01-01T15:30:00.000Z", recurrenceRule: rule({ count: 5 }) }))).toEqual([]);
+    });
+});

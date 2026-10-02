@@ -16,6 +16,13 @@ describe("messageBodySanitizer without a usable DOM", () => {
         expect(sanitizeQuotedHtml("<p>Hi</p><script>evil()</script>")).toBe("");
     });
 
+    it("returns an empty signature rather than the unsanitized input when there is no window, or DOMPurify can't run", async () => {
+        const { sanitizeSignatureHtml } = await import("../../../lib/mail/messageBodySanitizer.js");
+        expect(sanitizeSignatureHtml("<p>Jane</p><script>evil()</script>")).toBe("");
+        vi.stubGlobal("window", {});
+        expect(sanitizeSignatureHtml("<p>Jane</p>")).toBe("");
+    });
+
     it("returns an empty string when DOMPurify can't run in the window it's given", async () => {
         vi.stubGlobal("window", {});
         const { sanitizeMessageBodyHtml } = await import("../../../lib/mail/messageBodySanitizer.js");

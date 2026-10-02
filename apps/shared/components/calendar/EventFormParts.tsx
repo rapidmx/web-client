@@ -339,11 +339,14 @@ export function RecurrenceSelect({
     onChange,
     allDay,
     startWeekday,
+    startDateKey,
 }: {
     value: RecurrenceRule | null;
     onChange: (rule: RecurrenceRule | null) => void;
     allDay: boolean;
     startWeekday: WeekdayCode | undefined;
+    /** The event's start date (`yyyy-MM-dd`), for a custom rule's default end date. */
+    startDateKey?: string;
 }) {
     // Picking "Custom…" for a rule that is also a plain repeat still opens the editor.
     const [customRequested, setCustomRequested] = useState(false);
@@ -377,7 +380,7 @@ export function RecurrenceSelect({
                 <option value="weekdays">Every weekday (Monday to Friday)</option>
                 <option value="custom">Custom…</option>
             </select>
-            {selected === "custom" && <RecurrenceEditor value={value} onChange={onChange} allDay={allDay} startWeekday={startWeekday} hideToggle />}
+            {selected === "custom" && <RecurrenceEditor value={value} onChange={onChange} allDay={allDay} startWeekday={startWeekday} startDateKey={startDateKey} hideToggle />}
         </div>
     );
 }
@@ -454,7 +457,7 @@ export function DateTimeControls({ c }: { c: EventFormController }) {
                 All day
             </label>
             {!c.editingSingleOccurrence && (
-                <RecurrenceSelect value={values.recurrenceRule} onChange={(rule) => c.update({ recurrenceRule: rule })} allDay={values.allDay} startWeekday={c.startWeekday} />
+                <RecurrenceSelect value={values.recurrenceRule} onChange={(rule) => c.update({ recurrenceRule: rule })} allDay={values.allDay} startWeekday={c.startWeekday} startDateKey={values.start.slice(0, 10)} />
             )}
         </div>
     );

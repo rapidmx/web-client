@@ -207,14 +207,19 @@ describe("extractCertificateEmails", () => {
     });
 
     it("falls back to subject emailAddress attributes and an email-shaped CN", async () => {
-        const withE = await generateIdentity("CN=Alice Example, E=alice@example.com", "sign", [
-            new x509.SubjectAlternativeNameExtension([{ type: "dns", value: "example.com" }]),
-        ]);
+        const withE = await generateIdentity("CN=Alice Example, E=alice@example.com");
         expect(extractCertificateEmails(withE.certDer)).toEqual(["alice@example.com"]);
         const cnOnly = await generateIdentity("CN=Bob@Example.com, O=Example");
         expect(extractCertificateEmails(cnOnly.certDer)).toEqual(["bob@example.com"]);
         const noEmail = await generateIdentity("CN=Not An Email");
         expect(extractCertificateEmails(noEmail.certDer)).toEqual([]);
+    });
+
+    it("names nobody when the certificate has a SAN with no rfc822Name, whatever its subject says", async () => {
+        const dnsOnly = await generateIdentity("CN=victim@example.com, E=victim@example.com", "sign", [
+            new x509.SubjectAlternativeNameExtension([{ type: "dns", value: "attacker.example" }]),
+        ]);
+        expect(extractCertificateEmails(dnsOnly.certDer)).toEqual([]);
     });
 
     it("returns [] for unparseable input", () => {

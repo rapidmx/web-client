@@ -110,6 +110,21 @@ describe("MessageDetailPane (round 6)", () => {
             );
         });
 
+        it("never takes the From address from the headers of a message whose signature failed", async () => {
+            getPinnedSignerFingerprints.mockResolvedValue([]);
+            evaluateMessageSecurity.mockResolvedValue({
+                state: "signature_failed",
+                signatureFailureReason: "invalid_signature",
+                html: "<p>Hi</p>",
+                protectedHeaders: { from: "ceo@corp.com", to: "u1@example.com", subject: "Hello there" },
+            });
+            renderSecure({ encrypted: true });
+
+            expect(await screen.findByText(/Signature failed/)).toBeInTheDocument();
+            expect(fromLine()).toHaveTextContent("From Sender One <sender@example.com>");
+            expect(fromLine()).not.toHaveTextContent("ceo@corp.com");
+        });
+
         it.each(["signed_unverified_signer", "encrypted_unverified_signer", "encrypted_verified", "signature_failed"])(
             "shows the outer From address beside an ordinary name for %s when there are no usable protected headers",
             async (state) => {

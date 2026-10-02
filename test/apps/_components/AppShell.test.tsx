@@ -356,6 +356,48 @@ describe("AppShell", () => {
         await waitFor(() => expect(location.href).toBe("/admin"));
     });
 
+    it("forgets the notification history when the user signs out, when another tab does, and when an impersonation ends", async () => {
+        const raise = () => notify({ kind: "calendar", title: "Meeting with the CEO", message: "starts in 5 minutes" });
+        mockFetch(() => new Response(null, { status: 204 }));
+        const location = mockLocation();
+        const user = userEvent.setup();
+        const first = render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+        raise();
+        expect(getNotificationsSnapshot().history).not.toHaveLength(0);
+        await user.click(screen.getByRole("button", { name: "Account menu" }));
+        await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+        await waitFor(() => expect(location.href).toBe(AUTH_SERVER_URL));
+        expect(getNotificationsSnapshot().history).toEqual([]);
+        first.unmount();
+
+        const other = new BroadcastChannel("test-sign-out");
+        const second = render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL}>
+                content
+            </AppShell>,
+        );
+        raise();
+        other.postMessage({ type: "sign-out" });
+        await waitFor(() => expect(getNotificationsSnapshot().history).toEqual([]));
+        other.close();
+        second.unmount();
+
+        mockFetch((url) => (url === "https://auth.example.com/api/admin/impersonate/stop" ? jsonResponse(500, { message: "nope" }) : new Response(null, { status: 204 })));
+        render(
+            <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL} impersonationBaseUrl={AUTH_SERVER_URL} impersonating>
+                content
+            </AppShell>,
+        );
+        raise();
+        await user.click(screen.getByRole("button", { name: "Return to admin" }));
+        await waitFor(() => expect(location.href).toBe("/admin"));
+        expect(getNotificationsSnapshot().history).toEqual([]);
+    });
+
     it("signs out to auth-server", async () => {
         const location = mockLocation();
         const fetchMock = mockFetch(() => new Response(null, { status: 204 }));

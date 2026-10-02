@@ -32,6 +32,13 @@ describe("embedQuotedImages", () => {
         expect(resolve).not.toHaveBeenCalled();
     });
 
+    it("never puts anything but a data: image in, whatever the resolver answers", async () => {
+        const html = '<img src="cid:a@x"><img src="cid:b@x"><img src="cid:c@x">';
+        const answers: Record<string, string> = { "a@x": "https://tracker.example/p.gif", "b@x": "javascript:evil()", "c@x": "data:text/html;base64,PHNjcmlwdD4=" };
+        const resolve = vi.fn(async (reference: { cid?: string }) => answers[reference.cid!]);
+        expect(await embedQuotedImages(html, resolve)).toBe(html);
+    });
+
     it("returns the markup as given when there is no image, or nothing to put in one", async () => {
         const resolve = vi.fn(async () => undefined);
         expect(await embedQuotedImages("<p>No pictures</p>", resolve)).toBe("<p>No pictures</p>");

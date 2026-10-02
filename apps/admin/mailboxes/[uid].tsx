@@ -7,6 +7,8 @@ import { useRouter } from "@rapidrest/react/client";
 import { ApiRequestError } from "../../../lib/util/api.js";
 import { deleteMailbox, getMailbox, impersonateUser, Mailbox } from "../../../lib/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
+import { resetNotifications } from "../../shared/notifications/store.js";
 import ShareAccessCard from "../../shared/components/admin/mailboxes/ShareAccessCard.js";
 import ResourceSettingsCard from "../../shared/components/admin/mailboxes/ResourceSettingsCard.js";
 import EscrowScopeCard from "../../shared/components/admin/mailboxes/EscrowScopeCard.js";
@@ -64,6 +66,8 @@ function MailboxDetailContent({
         setAccessError(null);
         try {
             await impersonateUser(impersonationBaseUrl ?? "", mailbox!.ownerUserUid!);
+            // The administrator's own notification history is not the impersonated user's to read.
+            resetNotifications();
             window.location.href = "/";
         } catch (err) {
             setAccessError(err instanceof ApiRequestError ? err.message : "Could not impersonate this user.");
@@ -92,19 +96,24 @@ function MailboxDetailContent({
             // Most commonly a 409 if this mailbox is a custodian on an open legal hold (restapi's own
             // `assertNotOnLegalHold()`, naming the blocking Matter uid(s)) - surfaced as-is, same as
             // every other destructive-action error in this codebase, rather than special-cased here.
-            setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this mailbox.");
+            setDeleteError(actionErrorMessage(err, "Could not delete this mailbox."));
             setDeleting(false);
         }
     }
 
     useEffect(() => {
+        // An answer for a mailbox since replaced (another uid) must not be shown as the current one: the delete and impersonate actions act on what is shown.
+        let cancelled = false;
         setLoading(true);
         setError(null);
         // The administration scope: administrative metadata only - the console never shows a mailbox's mail or settings.
         getMailbox(uid, { scope: "admin" })
-            .then(setMailbox)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this mailbox."))
-            .finally(() => setLoading(false));
+            .then((loaded) => !cancelled && setMailbox(loaded))
+            .catch((err) => !cancelled && setError(err instanceof ApiRequestError ? err.message : "Could not load this mailbox."))
+            .finally(() => !cancelled && setLoading(false));
+        return () => {
+            cancelled = true;
+        };
     }, [uid]);
 
     if (loading) {

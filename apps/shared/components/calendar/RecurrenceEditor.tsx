@@ -22,6 +22,10 @@ const FREQ_LABEL: Record<RecurrenceFrequency, { unit: string; unitPlural: string
 
 type EndCondition = "never" | "count" | "until";
 
+/** The most an interval ("every N days") or a count ("after N occurrences") can be set to. */
+const MAX_INTERVAL = 999;
+const MAX_COUNT = 1000;
+
 function endConditionOf(rule: RecurrenceRule): EndCondition {
     if (rule.count) return "count";
     if (rule.until) return "until";
@@ -38,6 +42,9 @@ export interface RecurrenceEditorProps {
     /** The weekday the event starts on (in the frame its series expands in - see `allDay.ts`'s
      * `startWeekdayCode()`): the day a new weekly rule, or one switched to Weekly, repeats on. Defaults to Monday. */
     startWeekday?: WeekdayCode;
+    /** The event's start date (`yyyy-MM-dd`): "Ends on" starts at today, or at this date when the event starts later - a series that ends before it
+     * starts has no occurrences at all. */
+    startDateKey?: string;
     /** Leaves out the "Repeats" checkbox, for a caller that already turns repeating on and off itself (the event form's
      * "Does not repeat" menu): what remains is the rule's details, shown only while there is a rule. */
     hideToggle?: boolean;
@@ -49,7 +56,7 @@ export interface RecurrenceEditorProps {
  * live "every ... until/for ..." summary comes from `describeRecurrence()` (built on `rrule`'s own
  * `.toText()`), so it never drifts out of sync with what will actually be submitted.
  */
-export default function RecurrenceEditor({ value, onChange, allDay = false, startWeekday = "MO", hideToggle = false }: RecurrenceEditorProps) {
+export default function RecurrenceEditor({ value, onChange, allDay = false, startWeekday = "MO", startDateKey, hideToggle = false }: RecurrenceEditorProps) {
     function handleEnable(enabled: boolean) {
         onChange(enabled ? { freq: "weekly", interval: 1, byDay: [startWeekday], exceptions: [] } : null);
     }
@@ -83,25 +90,27 @@ export default function RecurrenceEditor({ value, onChange, allDay = false, star
         } else if (condition === "count") {
             update({ count: 10, until: undefined });
         } else {
-            update({ until: recurrenceUntilInstant(format(new Date(), "yyyy-MM-dd"), allDay), count: undefined });
+            const today = format(new Date(), "yyyy-MM-dd");
+            update({ until: recurrenceUntilInstant(startDateKey && startDateKey > today ? startDateKey : today, allDay), count: undefined });
         }
     }
 
-    /** A positive whole number from a number input, or `null` while it's empty (a user clearing the field
-     * to type a new value) — the rule keeps its previous value then, rather than becoming 0/NaN. */
-    function parsePositive(raw: string): number | null {
+    /** A whole number from 1 to `max` from a number input, or `null` while it's empty (a user clearing the field
+     * to type a new value) — the rule keeps its previous value then, rather than becoming 0/NaN. A huge one (an event
+     * every day, a billion times) would make every view expand it forever. */
+    function parsePositive(raw: string, max: number): number | null {
         if (raw.trim() === "") return null;
         const n = Math.floor(Number(raw));
-        return n >= 1 ? n : 1;
+        return n >= 1 ? Math.min(n, max) : 1;
     }
 
     function handleInterval(raw: string) {
-        const interval = parsePositive(raw);
+        const interval = parsePositive(raw, MAX_INTERVAL);
         if (interval !== null) update({ interval });
     }
 
     function handleCount(raw: string) {
-        const count = parsePositive(raw);
+        const count = parsePositive(raw, MAX_COUNT);
         if (count !== null) update({ count });
     }
 
@@ -126,6 +135,7 @@ export default function RecurrenceEditor({ value, onChange, allDay = false, star
                         <input
                             type="number"
                             min={1}
+                            max={MAX_INTERVAL}
                             className={`${INPUT_CLASS} w-16`}
                             value={value.interval}
                             onChange={(e) => handleInterval(e.target.value)}
@@ -189,6 +199,7 @@ export default function RecurrenceEditor({ value, onChange, allDay = false, star
                             <input
                                 type="number"
                                 min={1}
+                                max={MAX_COUNT}
                                 className={`${INPUT_CLASS} w-16`}
                                 value={value.count ?? 10}
                                 disabled={endConditionOf(value) !== "count"}

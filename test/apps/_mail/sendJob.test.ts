@@ -316,6 +316,29 @@ describe("startSend - encryption and signing", () => {
         expect(toasts()).toEqual([]);
     });
 
+    it("refuses, rather than sends plain, when the policy cannot be loaded for a sender with a key", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedEncryption);
+        mocks.getEncryptionPolicy.mockRejectedValue(new ApiRequestError("gateway", 502));
+        startSend(request({ policy: undefined, mailbox: { ...mailbox, keys: [enrolledKey] } as Mailbox }));
+        await settle();
+        expect(toasts()[0].message).toContain("encryption keys couldn't be checked");
+        expect(toasts()[0].actions.map((action) => action.label)).toContain("Send without encryption");
+        expect(mocks.assembleDraft).not.toHaveBeenCalled();
+        // The sender's own override sends it.
+        toasts()[0].actions.find((action) => action.label === "Send without encryption")!.onClick!();
+        await vi.waitFor(() => expect(mocks.assembleDraft).toHaveBeenCalledTimes(1));
+    });
+
+    it("refuses, rather than sends plain, when a recipient's key lookup fails and the policy would have encrypted", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedEncryption);
+        mocks.lookupKeys.mockRejectedValue(new ApiRequestError("lookup down", 500));
+        startSend(request({ policy: AUTO, mailbox: { ...mailbox, keys: [enrolledKey] } as Mailbox }));
+        await settle();
+        expect(toasts()[0].message).toContain("encryption keys couldn't be checked");
+        expect(mocks.assembleDraft).not.toHaveBeenCalled();
+        expect(mocks.buildEncryptedMessage).not.toHaveBeenCalled();
+    });
+
     it("loads the mailbox and policy it was not given, in the background, and encrypts when they say so", async () => {
         mocks.getUnlockedKeys.mockReturnValue(unlockedEncryption);
         mocks.getMailbox.mockResolvedValue(mailbox);

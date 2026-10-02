@@ -175,3 +175,13 @@ describe("with an explicit ApiClient", () => {
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });
+
+describe("uploadMailboxImport with a client", () => {
+    it("goes through an explicit client, to that account's origin with its token, when given one", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, request));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        await uploadMailboxImport(new File(["From x\n"], "a.mbox"), { format: "mbox", targetFolderUid: "f1" }, client);
+        expect(fetchMock.mock.calls[0][0]).toMatch(/^https:\/\/a\.example\.com\/api\//);
+        expect(((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers).get("Authorization")).toBe("jwt tok");
+    });
+});

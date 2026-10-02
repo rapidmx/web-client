@@ -127,3 +127,22 @@ describe("SplitDayView", () => {
         expect(holiday.style.height).toBe("1152px");
     });
 });
+
+describe("SplitDayView: overlapping events", () => {
+    it("share their column's width instead of covering one another, and an all-day one fills the day", () => {
+        renderSplit({
+            occurrences: [
+                occurrence({ occurrenceKey: "a", uid: "a", title: "First", startDate: "2026-06-10T09:00:00.000Z", endDate: "2026-06-10T10:00:00.000Z" }),
+                occurrence({ occurrenceKey: "b", uid: "b", title: "Second", startDate: "2026-06-10T09:30:00.000Z", endDate: "2026-06-10T10:30:00.000Z" }),
+                occurrence({ occurrenceKey: "c", uid: "c", title: "Holiday", allDay: true, startDate: "2026-06-10T00:00:00.000Z", endDate: "2026-06-11T00:00:00.000Z", folderUid: "f2" }),
+            ],
+        });
+        const first = screen.getByText("First").closest("div[style]") as HTMLElement;
+        const second = screen.getByText("Second").closest("div[style]") as HTMLElement;
+        expect(first.style.left).toBe("calc(0% + 2px)");
+        expect(second.style.left).toBe("calc(50% + 2px)");
+        const holiday = screen.getByText("Holiday").closest("div[style]") as HTMLElement;
+        expect(holiday.style.top).toBe("0px");
+        expect(holiday.style.height).toBe("1152px");
+    });
+});

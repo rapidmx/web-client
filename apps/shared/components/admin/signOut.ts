@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { authApiFetch } from "../../../../lib/util/api.js";
+import { resetNotifications } from "../../notifications/store.js";
 
 /**
  * The cross-tab sign-out channel - must stay identical to `SIGN_OUT_CHANNEL` in
@@ -73,6 +74,8 @@ async function logOutOfAuthServer(authServerUrl: string | undefined): Promise<vo
  */
 export async function signOutOfConsole(authServerUrl: string | undefined): Promise<void> {
     markLocalIndexesForDeletion();
+    // The tab's notification history is the session's, and its storage outlives it.
+    resetNotifications();
     broadcastSignOut();
     await logOutOfAuthServer(authServerUrl);
     window.location.href = authServerUrl ?? "/";

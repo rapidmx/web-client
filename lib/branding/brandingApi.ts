@@ -9,7 +9,7 @@
  * it); every write is `@RequiresTrustedRole()` on the backend.
  */
 
-import { ApiClient, ApiRequestError, apiUrl, withClient, withCsrfHeader } from "../util/api.js";
+import { ApiClient, withClient, withClientRaw } from "../util/api.js";
 
 export interface Branding {
     companyName: string;
@@ -52,36 +52,24 @@ export function updateBranding(input: UpdateBrandingInput, client?: ApiClient): 
     });
 }
 
-async function uploadBrandingAsset(path: string, file: File): Promise<Branding> {
-    const res = await fetch(apiUrl(path), {
-        method: "POST",
-        credentials: "include",
-        headers: withCsrfHeader({ "Content-Type": file.type || "application/octet-stream" }),
-        body: file,
-    });
-    const contentType = res.headers.get("content-type") ?? "";
-    const responseBody = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
-    if (!res.ok) {
-        const message = (responseBody && (responseBody.message || responseBody.error)) || res.statusText || "Upload failed.";
-        throw new ApiRequestError(message, res.status, responseBody?.code);
-    }
-    return responseBody as Branding;
+function uploadBrandingAsset(path: string, file: File, client?: ApiClient): Promise<Branding> {
+    return withClientRaw(client, path, "POST", file, file.type || "application/octet-stream");
 }
 
 /** Uploads `file` as the logo, self-hosted via `BlobStore` — bypasses `apiFetch` (which always forces
  * `Content-Type: application/json`) the same way `mailApi.ts`'s `uploadAttachment()` does, since
  * `BaseBrandingRoute.uploadLogo()` reads the raw request body directly. */
-export function uploadBrandingLogo(file: File): Promise<Branding> {
-    return uploadBrandingAsset("/system/branding/logo", file);
+export function uploadBrandingLogo(file: File, client?: ApiClient): Promise<Branding> {
+    return uploadBrandingAsset("/system/branding/logo", file, client);
 }
 
 /** Uploads `file` as the compact nav-header icon, independently of `uploadBrandingLogo()`'s full logo. */
-export function uploadBrandingIcon(file: File): Promise<Branding> {
-    return uploadBrandingAsset("/system/branding/icon", file);
+export function uploadBrandingIcon(file: File, client?: ApiClient): Promise<Branding> {
+    return uploadBrandingAsset("/system/branding/icon", file, client);
 }
 
-export function uploadBrandingStylesheet(file: File): Promise<Branding> {
-    return uploadBrandingAsset("/system/branding/stylesheet", file);
+export function uploadBrandingStylesheet(file: File, client?: ApiClient): Promise<Branding> {
+    return uploadBrandingAsset("/system/branding/stylesheet", file, client);
 }
 
 export function deleteBrandingLogo(client?: ApiClient): Promise<void> {

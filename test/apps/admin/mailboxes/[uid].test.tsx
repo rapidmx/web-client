@@ -7,6 +7,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, mockLocation } from "../../testUtils.js";
+import { getNotificationsSnapshot, notify } from "../../../../apps/shared/notifications/store.js";
 import MailboxDetailPageBase from "../../../../apps/admin/mailboxes/[uid].js";
 import { latestRouter, withTestRouter } from "../../routerTestUtils.js";
 
@@ -160,6 +161,39 @@ describe("MailboxDetailPage", () => {
         expect(await screen.findByText("not found")).toBeInTheDocument();
     });
 
+    it("shows only the answer for the mailbox now asked about when an earlier request answers late, or fails late", async () => {
+        const staleMailbox = { ...mailbox, uid: "mb-old", primarySmtpAddress: "old@example.com" };
+        for (const late of ["answers", "fails"]) {
+            const releases: (() => void)[] = [];
+            let loads = 0;
+            mockFetch((url) => {
+                if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+                if (url === "/api/mail/mailboxes/mb1?scope=admin") {
+                    loads += 1;
+                    if (loads % 2 === 1) {
+                        // The first request of a pair is the superseded one (effects run twice under StrictMode): it is held, and answers last.
+                        return new Promise<Response>((resolve) => releases.push(() => resolve(late === "answers" ? jsonResponse(200, staleMailbox) : jsonResponse(500, { message: "stale failure" }))));
+                    }
+                    return jsonResponse(200, mailbox);
+                }
+                if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
+                if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
+                throw new Error(`unexpected ${url}`);
+            });
+            const { unmount } = render(
+                <React.StrictMode>
+                    <MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />
+                </React.StrictMode>,
+            );
+            await screen.findByRole("heading", { name: "u1@example.com" });
+            releases.forEach((release) => release());
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(screen.getByRole("heading", { name: "u1@example.com" })).toBeInTheDocument();
+            expect(screen.queryByText("stale failure")).not.toBeInTheDocument();
+            unmount();
+        }
+    });
+
     it("shows a generic error message when loading the mailbox fails with a non-API error", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
@@ -310,6 +344,24 @@ describe("MailboxDetailPage", () => {
         await user.click(screen.getByRole("button", { name: "Delete" }));
 
         expect(await screen.findByText("This action is blocked by an active legal hold: matter-1.")).toBeInTheDocument();
+    });
+
+    it("asks the administrator to confirm their identity again when the server wants an elevated token to delete the mailbox", async () => {
+        mockFetch((url, init) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/mail/mailboxes/mb1?scope=admin" && (init?.method ?? "GET") === "GET") return jsonResponse(200, mailbox);
+            if (url === "/api/mail/mailboxes/mb1/access") return jsonResponse(200, []);
+            if (url.startsWith("/api/escrow/scopes")) return jsonResponse(200, []);
+            if (url === "/api/mail/mailboxes/mb1?version=0" && init?.method === "DELETE") return jsonResponse(403, { code: "api-104", message: "Requires elevation." });
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<MailboxDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "mb1" }} />);
+
+        await user.click(await screen.findByRole("button", { name: "Delete mailbox" }));
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+
+        expect(await screen.findByText("This needs you to have recently confirmed your identity. Reload this page to confirm it again, then try once more.")).toBeInTheDocument();
     });
 
     it("shows a generic message when deleting the mailbox fails with a non-API error", async () => {
@@ -477,9 +529,12 @@ describe("MailboxDetailPage", () => {
 
         const button = await screen.findByRole("button", { name: "Impersonate this user" });
         const location = mockLocation();
+        notify({ kind: "info", title: "Something the administrator saw", message: "private" });
         await user.click(button);
         await user.click(within(await screen.findByRole("dialog", { name: "Impersonate this user" })).getByRole("button", { name: "Impersonate" }));
         await vi.waitFor(() => expect(location.href).toBe("/"));
+        // What the administrator's own session raised is not the impersonated user's to read.
+        expect(getNotificationsSnapshot().history).toEqual([]);
     });
 
     it("keeps the access and delete confirmations open while their action is under way", async () => {

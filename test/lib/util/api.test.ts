@@ -15,6 +15,7 @@ import {
     setApiSessionRecovery,
     setApiUnauthorizedObserver,
     withClient,
+    withClientBlob,
     withClientRaw,
     withCsrfHeader,
 } from "../../../lib/util/api.js";
@@ -598,5 +599,79 @@ describe("withClientRaw", () => {
     ])("without a client says why it was refused (%#)", async (response, message, status) => {
         mockFetch(() => response());
         await expect(withClientRaw(undefined, "/up", "PUT", file)).rejects.toMatchObject({ message, status });
+    });
+});
+
+describe("withClientRaw session recovery", () => {
+    const file = new File([new Uint8Array(4)], "me.png", { type: "image/png" });
+
+    it("renews the session on a 401 and sends the same upload once more", async () => {
+        const recovery = vi.fn().mockResolvedValue(true);
+        setApiSessionRecovery(recovery);
+        const fetchMock = mockFetch(() => jsonResponse(200, { done: true }));
+        fetchMock.mockResolvedValueOnce(jsonResponse(401, { message: "Expired" }));
+        await expect(withClientRaw(undefined, "/up", "POST", file)).resolves.toEqual({ done: true });
+        expect(recovery).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect((fetchMock.mock.calls[1][1] as RequestInit).body).toBe(file);
+    });
+
+    it("tells the global observer of a 401 that renewing could not fix", async () => {
+        const observer = vi.fn();
+        setApiUnauthorizedObserver(observer);
+        mockFetch(() => jsonResponse(401, { message: "Expired" }));
+        await expect(withClientRaw(undefined, "/up", "POST", file)).rejects.toMatchObject({ status: 401 });
+        expect(observer).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("withClientBlob", () => {
+    it("goes through the explicit client's fetchBlob(), with that account's token and origin", async () => {
+        const fetchMock = mockFetch(() => new Response("raw", { status: 200 }));
+        const client = createApiClient({ baseUrl: "https://a.example.com", getAccessToken: async () => "tok" });
+        const blob = await withClientBlob(client, "/mail/messages/m1/raw");
+        expect(await blob.text()).toBe("raw");
+        expect(fetchMock.mock.calls[0][0]).toBe("https://a.example.com/api/mail/messages/m1/raw");
+        expect(((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers).get("Authorization")).toBe("jwt tok");
+    });
+
+    it("without a client is a cookie request to the global origin", async () => {
+        configureApiBaseUrl("https://global.example.com");
+        const fetchMock = mockFetch(() => new Response("raw", { status: 200 }));
+        expect(await (await withClientBlob(undefined, "/x")).text()).toBe("raw");
+        expect(fetchMock).toHaveBeenCalledWith("https://global.example.com/api/x", { credentials: "include" });
+    });
+
+    it("renews the session on a 401 and asks again once, like apiFetch()", async () => {
+        const recovery = vi.fn().mockResolvedValue(true);
+        setApiSessionRecovery(recovery);
+        const fetchMock = mockFetch(() => new Response("raw", { status: 200 }));
+        fetchMock.mockResolvedValueOnce(jsonResponse(401, { message: "Expired" }));
+        expect(await (await withClientBlob(undefined, "/x")).text()).toBe("raw");
+        expect(recovery).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects with the server's message, the fallback when there is none, and tells the observer of a 401", async () => {
+        const observer = vi.fn();
+        setApiUnauthorizedObserver(observer);
+        mockFetch(() => jsonResponse(401, { message: "Expired" }));
+        await expect(withClientBlob(undefined, "/x")).rejects.toMatchObject({ message: "Expired", status: 401 });
+        expect(observer).toHaveBeenCalledTimes(1);
+        mockFetch(() => new Response(null, { status: 500, statusText: "" }));
+        await expect(withClientBlob(undefined, "/x", "Nope.")).rejects.toMatchObject({ message: "Nope.", status: 500 });
+        mockFetch(() => new Response(null, { status: 500, statusText: "" }));
+        await expect(withClientBlob(undefined, "/x")).rejects.toMatchObject({ message: "Download failed." });
+    });
+});
+
+describe("error decoding of an untrusted body", () => {
+    it("never turns a non-string message into [object Object], and ignores a non-string code", async () => {
+        mockFetch(() => jsonResponse(400, { message: { nested: true }, code: { evil: 1 } }));
+        await expect(apiFetch("/x")).rejects.toMatchObject({ message: "Request failed.", status: 400, code: undefined });
+        mockFetch(() => jsonResponse(400, { message: ["a"], error: 5, code: 7 }));
+        await expect(apiFetch("/x")).rejects.toMatchObject({ message: "Request failed.", code: undefined });
+        mockFetch(() => jsonResponse(400, { message: { nested: true }, code: "api-9" }));
+        await expect(apiFetch("/x")).rejects.toMatchObject({ code: "api-9" });
     });
 });

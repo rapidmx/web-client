@@ -41,6 +41,10 @@ const ID_DATA = pkijs.ContentInfo.DATA;
 
 /** AES-GCM content-encryption OIDs (id-aes128-GCM, id-aes192-GCM, id-aes256-GCM - RFC 5084). The only
  * content encryption `decryptEnvelopedData()` accepts: see `UnsupportedContentEncryptionError`. */
+/** The CMS content type of RFC 5083 `AuthEnvelopedData` (`smime-type="authenveloped-data"`): authenticated, but not the
+ * structure `decryptEnvelopedDataWithKeys()` reads - it is reported as unsupported rather than as a missing key. */
+const AUTH_ENVELOPED_DATA_OID = "1.2.840.113549.1.9.16.1.23";
+
 const AEAD_CONTENT_ENCRYPTION_OIDS = new Set(["2.16.840.1.101.3.4.1.6", "2.16.840.1.101.3.4.1.26", "2.16.840.1.101.3.4.1.46"]);
 
 /**
@@ -56,7 +60,7 @@ export class UnsupportedContentEncryptionError extends Error {
     public readonly algorithmOid: string;
 
     constructor(algorithmOid: string) {
-        super(`This message uses unauthenticated content encryption (${algorithmOid}), which is not accepted.`);
+        super(`This message uses content encryption (${algorithmOid}) that is not accepted: only AES-GCM EnvelopedData is.`);
         this.name = "UnsupportedContentEncryptionError";
         this.algorithmOid = algorithmOid;
     }
@@ -178,10 +182,12 @@ export function extractCertificateEmails(certDer: Uint8Array): string[] {
         return [];
     }
     const sanEmails: string[] = [];
+    let hasSan = false;
     for (const extension of cert.extensions ?? []) {
         if (extension.extnID !== "2.5.29.17") {
             continue;
         }
+        hasSan = true;
         // pkijs parses a well-formed SubjectAlternativeName into an AltName automatically, and leaves
         // `parsedValue` unset for a malformed one - a certificate asserting an unreadable SAN names nobody.
         const altNames = (extension.parsedValue as pkijs.AltName | undefined)?.altNames;
@@ -195,7 +201,9 @@ export function extractCertificateEmails(certDer: Uint8Array): string[] {
             }
         }
     }
-    if (sanEmails.length > 0) {
+    // The SAN is authoritative whenever the certificate has one: DNS names alone name no mailbox, so a subject email
+    // address next to them must not stand in for it.
+    if (hasSan) {
         return sanEmails;
     }
     const subjectEmails: string[] = [];
@@ -376,6 +384,9 @@ function recipientMatchesCertificate(recipientInfo: pkijs.RecipientInfo, certifi
  */
 export async function decryptEnvelopedDataWithKeys(envelopedDer: Uint8Array, keys: DecryptionKey[]): Promise<Uint8Array> {
     const contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(envelopedDer));
+    if (contentInfo.contentType === AUTH_ENVELOPED_DATA_OID) {
+        throw new UnsupportedContentEncryptionError(AUTH_ENVELOPED_DATA_OID);
+    }
     if (contentInfo.contentType !== pkijs.ContentInfo.ENVELOPED_DATA) {
         throw new Error("This CMS content is not EnvelopedData.");
     }

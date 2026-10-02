@@ -272,3 +272,29 @@ describe("MailboxProvisioning", () => {
         expect(new Headers((call[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
 });
+
+describe("MailboxProvisioning while an administrator is viewing as the user", () => {
+    it("creates nothing, says so, and offers the way back, which ends the impersonation and returns to the console", async () => {
+        const fetchMock = mockFetch(() => emptyResponse(204));
+        const location = mockLocation();
+        const user = userEvent.setup();
+        render(<MailboxProvisioning impersonating impersonationBaseUrl="https://auth.example.com" />);
+
+        expect(await screen.findByText(/has no mailbox, and none is created for them/)).toBeInTheDocument();
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        await user.click(screen.getByRole("button", { name: "Return to admin" }));
+        await waitFor(() => expect(location.href).toBe("/admin"));
+        expect(fetchMock).toHaveBeenCalledWith("https://auth.example.com/api/admin/impersonate/stop", expect.objectContaining({ method: "POST" }));
+    });
+
+    it("returns to the console even when ending the impersonation fails", async () => {
+        mockFetch(() => jsonResponse(500, { message: "boom" }));
+        const location = mockLocation();
+        const user = userEvent.setup();
+        render(<MailboxProvisioning impersonating />);
+
+        await user.click(await screen.findByRole("button", { name: "Return to admin" }));
+        await waitFor(() => expect(location.href).toBe("/admin"));
+    });
+});

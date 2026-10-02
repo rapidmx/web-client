@@ -19,7 +19,7 @@
  * Everything that comes from outside - the response, a push event, the page's server-rendered props, `localStorage` - goes through
  * `normalizeAppearance()`, which keeps only well-formed values (so a stale or hostile value can never reach a CSS declaration).
  */
-import { ApiClient, ApiRequestError, apiUrl, withClient, withCsrfHeader } from "../util/api.js";
+import { ApiClient, ApiRequestError, apiUrl, withClient, withClientRaw } from "../util/api.js";
 
 export type AppearanceMode = "system" | "light" | "dark";
 export type BackgroundKind = "none" | "color" | "image";
@@ -283,19 +283,8 @@ export async function saveAppearance(update: AppearanceUpdate, client?: ApiClien
 
 /** Stores `file` (already checked with `validateBackgroundFile()`) as the background: its raw bytes, with its own content type - which
  * bypasses `apiFetch()`, as it always sends JSON. Answers with the updated preferences. */
-export async function uploadAppearanceBackground(file: Blob): Promise<AppearancePreferences> {
-    const res = await fetch(apiUrl(`${PATH}/background`), {
-        method: "POST",
-        credentials: "include",
-        headers: withCsrfHeader({ "Content-Type": file.type || "application/octet-stream" }),
-        body: file,
-    });
-    const contentType = res.headers.get("content-type") ?? "";
-    const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
-    if (!res.ok) {
-        const message = (body && (body.message || body.error)) || res.statusText || "Upload failed.";
-        throw new ApiRequestError(message, res.status, body?.code);
-    }
+export async function uploadAppearanceBackground(file: Blob, client?: ApiClient): Promise<AppearancePreferences> {
+    const body = await withClientRaw(client, `${PATH}/background`, "POST", file, file.type || "application/octet-stream");
     const stored = normalizeAppearance(body);
     if (!stored) {
         throw new ApiRequestError("The server did not return the saved appearance.", 502);

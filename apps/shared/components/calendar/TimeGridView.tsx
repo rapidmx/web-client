@@ -4,16 +4,14 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { addDays, addMinutes, format, isToday, startOfDay } from "date-fns";
+import { addMinutes, format, isToday, startOfDay } from "date-fns";
 import { dayDropId, eventDragId, resizeDragId, slotDropId } from "../../../../lib/calendar/calendarDragIds.js";
 import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import { occursOnDay, startsOnDay } from "./allDay.js";
 import { occurrenceMarker, useActiveOccurrenceKey } from "./activeOccurrence.js";
 import { EventAnchor, anchorOf } from "./EventShell.js";
+import { HOUR_HEIGHT_PX, Lane, SLOTS_PER_DAY, SLOT_MINUTES, blockSpan, laneStyle, layoutLanes, slotStart } from "./gridLayout.js";
 
-const HOUR_HEIGHT_PX = 48;
-const SLOT_MINUTES = 30;
-const SLOTS_PER_DAY = (24 * 60) / SLOT_MINUTES;
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 
 export interface TimeGridViewProps {
@@ -111,20 +109,22 @@ interface DayColumnProps {
 
 function DayColumn({ day, occurrences, folderColors, onSelectEvent, onSelectSlot }: DayColumnProps) {
     const dayStart = startOfDay(day);
+    // Events that overlap in time share the column's width instead of covering one another.
+    const lanes = layoutLanes(occurrences.map((occurrence) => blockSpan(new Date(occurrence.startDate).getTime(), new Date(occurrence.endDate).getTime(), dayStart)));
 
     return (
         <div className={["flex-1 min-w-0 relative border-l border-border", isToday(day) ? "bg-primary/5" : ""].join(" ")}>
-            {Array.from({ length: SLOTS_PER_DAY }, (_, i) => {
-                const slotStart = addMinutes(dayStart, i * SLOT_MINUTES);
-                return <TimeSlot key={i} start={slotStart} onSelectSlot={onSelectSlot} />;
-            })}
-            {occurrences.map((occurrence) =>
+            {Array.from({ length: SLOTS_PER_DAY }, (_, i) => (
+                <TimeSlot key={i} start={slotStart(dayStart, i)} onSelectSlot={onSelectSlot} />
+            ))}
+            {occurrences.map((occurrence, index) =>
                 startsOnDay(occurrence, day) ? (
                     <EventBlock
                         key={occurrence.occurrenceKey}
                         occurrence={occurrence}
                         color={folderColors[occurrence.folderUid]}
                         dayStart={dayStart}
+                        lane={lanes[index]}
                         onSelect={onSelectEvent}
                     />
                 ) : (
@@ -133,6 +133,7 @@ function DayColumn({ day, occurrences, folderColors, onSelectEvent, onSelectSlot
                         occurrence={occurrence}
                         color={folderColors[occurrence.folderUid]}
                         dayStart={dayStart}
+                        lane={lanes[index]}
                         onSelect={onSelectEvent}
                     />
                 ),
@@ -158,12 +159,7 @@ function TimeSlot({ start, onSelectSlot }: { start: Date; onSelectSlot: (start: 
 /** A block's position within its day column. A multi-day event is drawn in every day column it
  * overlaps, clipped to that day. */
 function blockGeometry(occurrence: CalendarOccurrence, dayStart: Date): { top: number; height: number } {
-    const visibleStart = Math.max(new Date(occurrence.startDate).getTime(), dayStart.getTime());
-    const visibleEnd = Math.min(new Date(occurrence.endDate).getTime(), addDays(dayStart, 1).getTime());
-    return {
-        top: ((visibleStart - dayStart.getTime()) / 60_000 / 60) * HOUR_HEIGHT_PX,
-        height: Math.max(((visibleEnd - visibleStart) / 60_000 / 60) * HOUR_HEIGHT_PX, 16),
-    };
+    return blockSpan(new Date(occurrence.startDate).getTime(), new Date(occurrence.endDate).getTime(), dayStart);
 }
 
 /** A multi-day event's block in a day column after its first: clickable, but not draggable/resizable
@@ -172,11 +168,13 @@ function ContinuationBlock({
     occurrence,
     color,
     dayStart,
+    lane,
     onSelect,
 }: {
     occurrence: CalendarOccurrence;
     color: string;
     dayStart: Date;
+    lane: Lane;
     onSelect: (occurrence: CalendarOccurrence) => void;
 }) {
     const isFree = occurrence.busyStatus === "free";
@@ -186,7 +184,7 @@ function ContinuationBlock({
         <div
             {...marker.attrs}
             onClick={() => onSelect(occurrence)}
-            style={{ position: "absolute", top, height, left: 2, right: 2, ...(isFree ? undefined : { backgroundColor: color, color: "#fff" }) }}
+            style={{ position: "absolute", top, height, ...laneStyle(lane), ...(isFree ? undefined : { backgroundColor: color, color: "#fff" }) }}
             className={["rounded-sm px-1.5 py-0.5 text-xs text-left overflow-hidden cursor-pointer", isFree ? "bg-surface-alt text-text-muted" : "", marker.className].join(" ")}
         >
             <div className="font-medium truncate">{occurrence.title}</div>
@@ -198,6 +196,7 @@ function EventBlock({
     occurrence,
     color,
     dayStart,
+    lane,
     onSelect,
 }: {
     occurrence: CalendarOccurrence;
@@ -205,6 +204,8 @@ function EventBlock({
      * "free" one keeps Outlook's own muted/outline treatment regardless of which calendar it's on. */
     color: string;
     dayStart: Date;
+    /** Its share of the column's width, when other events overlap it in time. */
+    lane: Lane;
     onSelect: (occurrence: CalendarOccurrence) => void;
 }) {
     const { setNodeRef, listeners, attributes, transform, isDragging } = useDraggable({ id: eventDragId(occurrence) });
@@ -230,8 +231,7 @@ function EventBlock({
                 position: "absolute",
                 top,
                 height,
-                left: 2,
-                right: 2,
+                ...laneStyle(lane),
                 transform: transform ? `translate(${transform.x}px, ${transform.y}px)` : undefined,
                 zIndex: isDragging ? 10 : undefined,
                 ...(isFree ? undefined : { backgroundColor: color, color: "#fff" }),

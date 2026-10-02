@@ -9,6 +9,8 @@ import {
     expectedPlanOf,
     getPluginStatus,
     getPluginUpdates,
+    isSecretSetting,
+    isSecretSettingKey,
     listPluginNamespaces,
     listPlugins,
     lookupPluginPackage,
@@ -21,6 +23,7 @@ import {
     PluginPurgeInfo,
     PluginPurgeState,
     PluginRegistryLookup,
+    PluginSavedSetting,
     PluginSearchResult,
     PluginSettingDefinition,
     PluginSettingValue,
@@ -1675,7 +1678,7 @@ function ConfirmDependenciesModal({
 }
 
 /** Whether a required select has no value to fall back on, so the form has to pick (and save) one. */
-function needsSelection(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined): boolean {
+function needsSelection(definition: PluginSettingDefinition, saved: PluginSavedSetting | undefined): boolean {
     return (
         definition.type === "select" &&
         !!definition.required &&
@@ -1693,7 +1696,7 @@ const HOST_PLACEHOLDER = "<host>";
  * saved yet - nothing, an empty value, or the placeholder itself, which an older server stores when it installs the
  * plugin. It's the default with this console's host filled in, and is only stored once the form is saved.
  */
-function suggestedHost(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined): string | undefined {
+function suggestedHost(definition: PluginSettingDefinition, saved: PluginSavedSetting | undefined): string | undefined {
     if (typeof definition.default !== "string" || !definition.default.includes(HOST_PLACEHOLDER) || typeof window === "undefined") {
         return undefined;
     }
@@ -1710,12 +1713,12 @@ function configuredValue(definition: PluginSettingDefinition, configured: Plugin
 }
 
 /** Whether a saved value is absent - nothing, or the empty value a plugin's own "" default is saved as. */
-function isUnsaved(saved: PluginSettingValue | undefined): boolean {
+function isUnsaved(saved: PluginSavedSetting | undefined): boolean {
     return saved === undefined || saved === "";
 }
 
 /** The suggestion for the host, unless the deployment configures the setting, which is offered instead. */
-function hostSuggestion(definition: PluginSettingDefinition, saved: PluginSettingValue | undefined, configured: PluginConfiguredSetting | undefined): string | undefined {
+function hostSuggestion(definition: PluginSettingDefinition, saved: PluginSavedSetting | undefined, configured: PluginConfiguredSetting | undefined): string | undefined {
     return configured ? undefined : suggestedHost(definition, saved);
 }
 
@@ -1724,9 +1727,13 @@ function hostSuggestion(definition: PluginSettingDefinition, saved: PluginSettin
  * option. Kept as a string for text inputs. */
 function initialValue(
     definition: PluginSettingDefinition,
-    saved: PluginSettingValue | undefined,
+    saved: PluginSavedSetting | undefined,
     configured?: PluginConfiguredSetting,
 ): PluginSettingValue | "" {
+    if (isSecretSetting(saved)) {
+        // Write-only: the saved secret never reaches the browser, so the field starts empty. Left empty, the placeholder is sent back and the secret stays.
+        return "";
+    }
     if (configured && isUnsaved(saved)) {
         return configuredValue(definition, configured);
     }
@@ -1768,12 +1775,12 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
         // A required select with nothing to fall back on, and a setting offering this console's host, are sent as the
         // form shows them. What the deployment configures is never saved as a copy, which would outrank it when it changes
         // - a field that shows it is sent as nothing.
-        const settings: Record<string, PluginSettingValue | null> = {};
+        const settings: Record<string, PluginSavedSetting | null> = {};
         let changed = false;
         for (const definition of definitions) {
             const key: string = definition.key;
             const configured: PluginConfiguredSetting | undefined = plugin.configured?.[key];
-            const saved: PluginSettingValue | undefined = plugin.settings[key];
+            const saved: PluginSavedSetting | undefined = plugin.settings[key];
             const value = values[key];
             if (resetting && value === initialValue(definition, undefined, configured)) {
                 // What a fresh install saves: only a default naming this console's host has to be, for the plugin to work.
@@ -1820,6 +1827,7 @@ function SettingsModal({ plugin, onClose, onSaved }: { plugin: Plugin; onClose: 
                         definition={definition}
                         value={values[definition.key]}
                         configured={plugin.configured?.[definition.key]}
+                        secretSaved={!resetting && isSecretSetting(plugin.settings[definition.key])}
                         onChange={(value) => setValues((prev) => ({ ...prev, [definition.key]: value }))}
                     />
                 ))}
@@ -1852,11 +1860,14 @@ function SettingField({
     definition,
     value,
     configured,
+    secretSaved,
     onChange,
 }: {
     definition: PluginSettingDefinition;
     value: PluginSettingValue | "";
     configured?: PluginConfiguredSetting;
+    /** A secret is saved: the server never sends it, so the field is write-only - typing replaces it, leaving it empty keeps it. */
+    secretSaved: boolean;
     onChange: (value: PluginSettingValue | "") => void;
 }) {
     // What applies without a saved value; one saved here replaces it, and Reset goes back to it.
@@ -1865,8 +1876,10 @@ function SettingField({
             This deployment&apos;s configuration provides {configured.secret ? "a value" : "the value shown"} unless one is saved here.
         </span>
     );
-    // A secret's value never reaches the browser, so the field only says that it is set.
-    const placeholder: string | undefined = configured?.secret ? "Set by this deployment" : undefined;
+    // A secret's value never reaches the browser, so the field only says that it is set - and never shows what is typed, or offers it to the
+    // browser's form fill.
+    const secretField: boolean = definition.type === "string" && (isSecretSettingKey(definition.key) || secretSaved || !!configured?.secret);
+    const placeholder: string | undefined = secretSaved ? "Saved - type a new value to replace it" : configured?.secret ? "Set by this deployment" : undefined;
     const help = (
         <>
             {definition.help && <span className="text-xs text-text-muted">{definition.help}</span>}
@@ -1901,10 +1914,11 @@ function SettingField({
                 <input
                     aria-label={definition.label}
                     className={INPUT_CLASS}
-                    type={definition.type === "number" ? "number" : "text"}
+                    type={definition.type === "number" ? "number" : secretField ? "password" : "text"}
+                    autoComplete={secretField ? "new-password" : undefined}
                     min={definition.min}
                     max={definition.max}
-                    required={definition.required && !configured}
+                    required={definition.required && !configured && !secretSaved}
                     placeholder={placeholder}
                     value={String(value)}
                     onChange={(e) => onChange(e.target.value)}

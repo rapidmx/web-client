@@ -1402,6 +1402,9 @@ export default function ComposeWindow({
     // isn't mistaken for an edit (and autosaved) just because the editor was focused or clicked.
     /** The quote has been added: unless the reader has typed something already, that is still exactly what compose seeded. */
     function handleQuoteAppended(normalized: string) {
+        // Added for good: an editor mounted again (after a minimize and restore) is seeded from the body that already holds the quote, and
+        // must not be handed it a second time.
+        setSeededWithoutQuote(false);
         const latest = latestRef.current;
         if (latest.html === latest.seededHtml) {
             setHtml(normalized);
@@ -1427,8 +1430,9 @@ export default function ComposeWindow({
     // dispatcher the focus is in a compose window at all). They do what the Send and Close buttons and autosave do, under the same conditions -
     // a shortcut pressed while its button would be disabled is consumed and does nothing.
     // Send never waits for the encryption settings to load (fail open, see `encryptionRequirement.ts`); it only needs the draft to exist. Pressed
-    // while an earlier press is still being handled it does nothing (`submit()` guards that itself).
-    const canSend = !!draft && !closing && !waitingForUploads;
+    // while an earlier press is still being handled it does nothing (`submit()` guards that itself). A reply or forward waits for its quoted original
+    // (at most `QUOTE_FETCH_TIMEOUT_MS`): sent sooner it would go without the quote, a forward without its content, a Reply All to the sender alone.
+    const canSend = !!draft && !closing && !waitingForUploads && !quotePending;
     useShortcut(SHORTCUTS.compose.send, () => void (canSend && submit(false)), { container: windowRef });
     useShortcut(
         SHORTCUTS.compose.saveDraft,
@@ -1807,7 +1811,7 @@ export default function ComposeWindow({
                             onClick={() => void submit(false)}
                             title={withHint("Send", SHORTCUTS.compose.send, keyEnv)}
                             aria-keyshortcuts={ariaKeyShortcuts(SHORTCUTS.compose.send, keyEnv)}
-                            disabled={!draft || closing || waitingForUploads}
+                            disabled={!canSend}
                             className="py-1.5 pl-5 pr-3 font-semibold text-sm hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >
                             Send
@@ -1818,7 +1822,7 @@ export default function ComposeWindow({
                             aria-label="Send later"
                             aria-haspopup="true"
                             aria-expanded={schedulePickerOpen}
-                            disabled={!draft || closing || waitingForUploads}
+                            disabled={!canSend}
                             onClick={() => setSchedulePickerOpen((o) => !o)}
                             className="py-1.5 px-2 border-l border-white/30 hover:not-disabled:bg-primary-dark disabled:opacity-55 disabled:cursor-not-allowed"
                         >

@@ -6,7 +6,13 @@ import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { TIER3_DECRYPT_CONCURRENCY, TIER3_MAX_HTML_LENGTH, searchEncryptedCandidates, stripHtml } from "../../../lib/search/searchTier3.js";
+import {
+    TIER3_DECRYPT_CONCURRENCY,
+    TIER3_MAX_CANDIDATE_PAGES,
+    TIER3_MAX_HTML_LENGTH,
+    searchEncryptedCandidates,
+    stripHtml,
+} from "../../../lib/search/searchTier3.js";
 import { ParsedSearchQuery } from "../../../lib/search/queryGrammar.js";
 import { UnlockedKeys } from "../../../lib/crypto/keySession.js";
 import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage } from "../../../lib/crypto/smimeMessage.js";
@@ -632,5 +638,72 @@ describe("stripHtml (round-4 review)", () => {
     it("ignores content past TIER3_MAX_HTML_LENGTH", () => {
         const html = `${"a".repeat(TIER3_MAX_HTML_LENGTH - 1)} tail-marker`;
         expect(stripHtml(html)).not.toContain("tail-marker");
+    });
+});
+
+describe("searchEncryptedCandidates paging", () => {
+    async function setup() {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const hit = await buildEncryptedRawMime("the budget", HEADERS, bob);
+        const miss = await buildEncryptedRawMime("nothing relevant", { ...HEADERS, subject: "Lunch" }, bob);
+        return { unlocked, hit, miss };
+    }
+
+    it("follows nextCursor to find an encrypted message beyond the first page of candidates", async () => {
+        const { unlocked, hit, miss } = await setup();
+        const fetchMock = mockFetch((url) => {
+            if (url.includes("/search/candidates") && !url.includes("cursor=")) {
+                return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m1" }], nextCursor: "c2" });
+            }
+            if (url.includes("/search/candidates") && url.includes("cursor=c2")) {
+                return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m2" }] });
+            }
+            return new Response(url.includes("/messages/m2/raw") ? hit : miss, { status: 200 });
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked);
+        expect(result.map((r) => r.entityUid)).toEqual(["m2"]);
+        expect(fetchMock.mock.calls.filter(([url]) => (url as string).includes("/search/candidates"))).toHaveLength(2);
+    });
+
+    it("stops paging once it has `limit` results, and never walks more than TIER3_MAX_CANDIDATE_PAGES pages", async () => {
+        const { unlocked, hit, miss } = await setup();
+        let pages = 0;
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                pages++;
+                return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: `m${pages}` }], nextCursor: `c${pages + 1}` });
+            }
+            return new Response(miss, { status: 200 });
+        });
+        await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked);
+        expect(pages).toBe(TIER3_MAX_CANDIDATE_PAGES);
+
+        pages = 0;
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                pages++;
+                return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m1" }], nextCursor: "more" });
+            }
+            return new Response(hit, { status: 200 });
+        });
+        expect(await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked, 1)).toHaveLength(1);
+        expect(pages).toBe(1);
+    });
+
+    it("keeps what the earlier pages found when a later page fails, but throws when the first does", async () => {
+        const { unlocked, hit } = await setup();
+        mockFetch((url) => {
+            if (url.includes("/search/candidates") && !url.includes("cursor=")) {
+                return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m1" }], nextCursor: "c2" });
+            }
+            if (url.includes("/search/candidates")) return jsonResponse(500, { message: "boom" });
+            return new Response(hit, { status: 200 });
+        });
+        expect(await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked, 10)).toHaveLength(1);
+
+        mockFetch(() => jsonResponse(500, { message: "boom" }));
+        await expect(searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked)).rejects.toMatchObject({ status: 500 });
     });
 });

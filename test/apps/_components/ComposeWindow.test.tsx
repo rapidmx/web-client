@@ -2548,7 +2548,7 @@ describe("ComposeWindow", () => {
             expect(body.rawMime).not.toContain("Secret");
         });
 
-        it("fails open: a failed key lookup is not 'must encrypt', so a message nobody asked to encrypt just sends plaintext (no block)", async () => {
+        it("blocks, rather than sends plaintext, when a sender with a key sends and a recipient's key lookup fails: the policy may have required encryption", async () => {
             const own = fakeCertDer("alice-encrypt");
             getUnlockedKeys.mockReturnValue({
                 masterKey: new Uint8Array(32),
@@ -2570,11 +2570,11 @@ describe("ComposeWindow", () => {
             await user.type(screen.getByLabelText("To"), "bob@example.com");
             await user.click(screen.getByRole("button", { name: "Send" }));
 
-            // Nothing asked for encryption and the recipient's key could not be checked: unknown counts as unencrypted, so it goes.
+            // The window closes (the send runs in the background), and the send is refused with the lookup-failed message and its override.
             await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-            expect(screen.queryByText(/encryption keys couldn't be checked/)).not.toBeInTheDocument();
-            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })));
-            expect(toasts().filter((toast) => toast.kind === "error" || toast.kind === "warning")).toEqual([]);
+            await waitFor(() => expect(toasts().some((toast) => /encryption keys couldn't be checked/.test(toast.message ?? ""))).toBe(true));
+            expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/compose/m1/assemble")).toBe(false);
+            expect(toasts().find((toast) => /encryption keys couldn't be checked/.test(toast.message ?? ""))!.actions.map((action) => action.label)).toContain("Send without encryption");
         });
 
         it("still sends plaintext after a failed key lookup when no policy tier auto-encrypts and encryption wasn't requested", async () => {
@@ -2910,7 +2910,7 @@ describe("ComposeWindow", () => {
             expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/mail/compose/"))).toBe(false);
         });
 
-        it("fails open when the encryption policy couldn't be loaded: nothing is blocked and the message sends unencrypted", async () => {
+        it("blocks, rather than sends unencrypted, when the encryption policy couldn't be loaded for a sender with a key", async () => {
             getUnlockedKeys.mockReturnValue(encryptionKeys);
             const fetchMock = mockCryptoEndpoints((url, init) => {
                 if (url === "/api/system/encryption-policy") return jsonResponse(500, { message: "policy down" });
@@ -2924,11 +2924,10 @@ describe("ComposeWindow", () => {
             await user.type(screen.getByLabelText("To"), "b@example.com");
             await user.click(screen.getByRole("button", { name: "Send" }));
 
-            await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/compose/m1/assemble", expect.objectContaining({ method: "POST" })));
-            expect(screen.queryByText(/encryption settings couldn't be loaded/)).not.toBeInTheDocument();
+            await waitFor(() => expect(toasts().some((toast) => /encryption keys couldn't be checked/.test(toast.message ?? ""))).toBe(true));
+            expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/compose/m1/assemble")).toBe(false);
             expect(requestUnlock).not.toHaveBeenCalled();
             expect(buildEncryptedMessage).not.toHaveBeenCalled();
-            expect(toasts().filter((toast) => toast.kind === "error" || toast.kind === "warning")).toEqual([]);
         });
 
         it("blocks an encrypted message with Bcc recipients rather than disclosing them in the shared envelope", async () => {

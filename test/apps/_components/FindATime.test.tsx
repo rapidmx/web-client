@@ -134,6 +134,27 @@ describe("FindATime look-up", () => {
         expect(lookUps(fetchMock)[0].addresses[0]).toBe("jane@example.com");
     });
 
+    it("says how many guests beyond the fifty it can ask about are not checked", async () => {
+        answer();
+        const many = Array.from({ length: 52 }, (_, i) => guest(`g${i}@example.com`));
+        const { unmount } = render(<FindATime c={controller({ attendees: many })} />);
+        await settle();
+        expect(screen.getByText(/3 guests beyond the first 49 aren’t checked/)).toBeInTheDocument();
+        unmount();
+
+        const one = Array.from({ length: 50 }, (_, i) => guest(`g${i}@example.com`));
+        render(<FindATime c={controller({ attendees: one })} />);
+        await settle();
+        expect(screen.getByText(/1 guest beyond the first 49 isn’t checked/)).toBeInTheDocument();
+    });
+
+    it("says nothing about unchecked guests when everyone fits", async () => {
+        answer();
+        render(<FindATime c={controller({ attendees: [guest("a@example.com")] })} />);
+        await settle();
+        expect(screen.queryByText(/beyond the first/)).not.toBeInTheDocument();
+    });
+
     it("reads the day in the zone the event is set in", async () => {
         const fetchMock = answer();
         render(<FindATime c={controller({ formZone: "America/New_York" })} />);

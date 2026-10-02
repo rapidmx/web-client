@@ -100,6 +100,8 @@ describe("useCalendarReminders", () => {
         await fireReminder({ ...NOTICE, location: "https://meet.example.com/room/abc" } as typeof NOTICE);
 
         const toast = getNotificationsSnapshot().visible[0];
+        // The destination is named, so an invitation's location can't send someone to a page they did not expect unseen.
+        expect(toast.hint).toBe("Join Meeting opens meet.example.com");
         expect(toast.actions.map((action) => action.label)).toEqual(["Join Meeting", "Dismiss", "Snooze"]);
         const joinAction = toast.actions[0];
         expect(joinAction.keepOpen).toBe(true);
@@ -116,6 +118,7 @@ describe("useCalendarReminders", () => {
         await fireReminder({ ...NOTICE, location: "Room 12" } as typeof NOTICE);
 
         expect(getNotificationsSnapshot().visible[0].actions.map((action) => action.label)).toEqual(["Dismiss", "Snooze"]);
+        expect(getNotificationsSnapshot().visible[0].hint).toBeUndefined();
     });
 
     it("has no Join Meeting action when the event has no location", async () => {

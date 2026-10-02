@@ -5,15 +5,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
+    ELEVATION_ACTION_MESSAGE,
     ELEVATION_ATTEMPT_KEY,
     ELEVATION_REQUIRED_CODE,
     ELEVATION_RETRY_WINDOW_MS,
+    actionErrorMessage,
     clearElevationAttempt,
     elevationAttemptedRecently,
     elevationUrl,
     isElevationRequired,
     recordElevationAttempt,
 } from "../../../../apps/shared/components/admin/elevation.js";
+
+describe("actionErrorMessage", () => {
+    it("tells an elevation refusal to reload and confirm again, and otherwise gives the server's message or the fallback", () => {
+        expect(actionErrorMessage(new ApiRequestError("Requires elevation.", 403, ELEVATION_REQUIRED_CODE), "Failed.")).toBe(ELEVATION_ACTION_MESSAGE);
+        expect(actionErrorMessage(new ApiRequestError("Not an administrator.", 403, "api-103"), "Failed.")).toBe("Not an administrator.");
+        expect(actionErrorMessage(new TypeError("offline"), "Failed.")).toBe("Failed.");
+    });
+});
 
 afterEach(() => {
     vi.restoreAllMocks();
