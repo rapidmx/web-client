@@ -33,7 +33,9 @@ import {
     retryPluginPurge,
     searchPlugins,
     updatePlugin,
+    uploadPlugin,
 } from "../../../../../lib/admin/pluginsApi.js";
+import { ApiRequestError } from "../../../../../lib/util/api.js";
 import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
@@ -83,6 +85,21 @@ function purgeFailure(purge: PluginPurgeInfo): string {
 
 /** A day, in the administrator's own format. */
 const formatDate = (iso: string): string => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
+
+/** The file names an uploaded plugin may have: what `npm pack` produces (`<name>-<version>.tgz`), or the same gzipped. */
+const PLUGIN_PACK_NAME = /\.(tgz|tar\.gz|gz)$/i;
+
+/** What the server answers (409) an upload of a plugin that is already installed, which the administrator may replace. */
+const ALREADY_INSTALLED = /already installed/i;
+
+/** An upload the administrator is being asked to let replace the plugin of the same name. */
+interface PendingReplace {
+    file: File;
+    /** What the replacement would do, as a question. */
+    question: string;
+    /** Why the server refused, in its words. */
+    reason: string;
+}
 
 /** A change waiting for the administrator to confirm the other plugins it also installs or enables. */
 interface PendingChange {
@@ -225,6 +242,11 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
     const [confirmingBulkUninstall, setConfirmingBulkUninstall] = useState<Plugin[] | null>(null);
     /** How many changes (or the lookups that come before them) are waiting on the server. */
     const [working, setWorking] = useState(0);
+    /** Set while an uploaded plugin is being sent to the server. */
+    const [uploading, setUploading] = useState(false);
+    /** An upload that would replace an installed plugin, waiting for the administrator to confirm it. */
+    const [replacing, setReplacing] = useState<PendingReplace | null>(null);
+    const fileInput = useRef<HTMLInputElement>(null);
     const statusRequest = useRef<Promise<void> | null>(null);
     /** The state each data deletion was last seen in, so a notification is raised when one that was under way ends. */
     const seenPurges = useRef<Map<string, PluginPurgeState>>(new Map());
@@ -517,6 +539,54 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         return onRow(plugin, () => changeVersion(plugin, packageVersion));
     }
 
+    /** Sends `file` to the server as a plugin to install - replacing the installed plugin of that name only when `replace` is set. A plugin that is
+     * already installed isn't an error but a question, asked of the administrator before it is replaced. */
+    async function runUpload(file: File, replace: boolean) {
+        setUploading(true);
+        setError(null);
+        setRetryEnableUid(null);
+        try {
+            const uploaded: Plugin = await track(uploadPlugin(file, { replace }));
+            applied(uploaded);
+            notify({
+                kind: "success",
+                title: `${uploaded.name}@${uploaded.packageVersion} uploaded`,
+                message: "The servers restart one at a time to load it.",
+            });
+        } catch (err) {
+            if (!replace && err instanceof ApiRequestError && err.status === 409 && ALREADY_INSTALLED.test(err.message)) {
+                const installed: Plugin | undefined = plugins.find((plugin) => err.message.includes(plugin.name));
+                setReplacing({
+                    file,
+                    question: installed
+                        ? `Replace ${installed.name} ${installed.packageVersion} with the uploaded pack?`
+                        : "Replace the installed plugin with the uploaded pack?",
+                    reason: err.message,
+                });
+            } else if (err instanceof ApiRequestError && err.status === 413) {
+                setError("That file is too large for the server to accept.");
+            } else {
+                setError(errorMessage(err, "Could not upload the plugin."));
+            }
+        }
+        setUploading(false);
+    }
+
+    /** Takes the file the administrator chose, unless it can't be what `npm pack` produces. */
+    function onFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
+        const file: File | undefined = e.target.files?.[0];
+        // So choosing the same file again (after fixing what was wrong) still counts as a change.
+        e.target.value = "";
+        if (!file) {
+            return;
+        }
+        if (!PLUGIN_PACK_NAME.test(file.name)) {
+            setError(`${file.name} isn't a plugin pack. Choose the .tgz file that npm pack produces.`);
+            return;
+        }
+        void runUpload(file, false);
+    }
+
     /** Installs an uninstalled plugin again, at its latest version - as adding it by name would. */
     function reinstall(purge: PluginPurgeInfo) {
         const displayName: string = purgeName(purge);
@@ -682,12 +752,34 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
     const displayNameOf = (name: string): string => plugins.find((plugin) => plugin.name === name)?.manifest.displayName ?? name;
 
     const SectionHeading = embedded ? "h3" : "h2";
-    const addButton = (
-        <Button type="button" variant="secondary" className="!w-auto shrink-0" onClick={() => setAdding(true)}>
-            Add by name
-        </Button>
-    );
     const bulkBusy: boolean = bulk !== null;
+    const addButton = (
+        <div className="flex flex-wrap gap-2 shrink-0">
+            <input
+                ref={fileInput}
+                type="file"
+                className="hidden"
+                accept=".tgz,.tar.gz,application/gzip,application/x-gzip"
+                aria-label="Plugin pack file"
+                tabIndex={-1}
+                onChange={onFileChosen}
+            />
+            <Button
+                type="button"
+                variant="secondary"
+                className="!w-auto"
+                title="Install a plugin from the .tgz file that npm pack produces"
+                loading={uploading}
+                disabled={uploading || bulkBusy}
+                onClick={() => fileInput.current?.click()}
+            >
+                {uploading ? "Uploading\u2026" : "Upload"}
+            </Button>
+            <Button type="button" variant="secondary" className="!w-auto" onClick={() => setAdding(true)}>
+                Add by name
+            </Button>
+        </div>
+    );
 
     return (
         <>
@@ -741,24 +833,18 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                     </div>
                 </Alert>
             )}
-            {error && (
-                <Alert>
-                    {error}
-                    {retryEnable && (
-                        <>
-                            {" "}
-                            <Button
-                                type="button"
-                                variant="text"
-                                className="!w-auto !p-0"
-                                onClick={() => void toggle(retryEnable)}
-                            >
-                                Try again
-                            </Button>
-                        </>
-                    )}
-                </Alert>
-            )}
+            {/* A message on its own is a plain string child, which is what lets the alert offer to confirm the identity again. */}
+            {error &&
+                (retryEnable ? (
+                    <Alert>
+                        {error}{" "}
+                        <Button type="button" variant="text" className="!w-auto !p-0" onClick={() => void toggle(retryEnable)}>
+                            Try again
+                        </Button>
+                    </Alert>
+                ) : (
+                    <Alert>{error}</Alert>
+                ))}
             <RolloutBanner status={status} />
             {statusStale && status && (
                 <p className="mb-4 text-xs text-text-muted">Couldn&apos;t refresh server status. Showing the last status reported.</p>
@@ -871,7 +957,9 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                         <tbody role="rowgroup" className="block lg:table-row-group">
                             {plugins.map((plugin) => {
                                 const update: PluginUpdateInfo | undefined = updates.get(plugin.uid);
-                                const latest: string | undefined = update?.updateAvailable ? update.latestVersion : undefined;
+                                const uploaded: boolean = plugin.source === "upload";
+                                // An uploaded pack has no registry version to be newer than.
+                                const latest: string | undefined = !uploaded && update?.updateAvailable ? update.latestVersion : undefined;
                                 const busy: boolean = busyUids.has(plugin.uid) || confirming?.uid === plugin.uid || bulkBusy;
                                 const requires: string[] = Object.keys(plugin.manifest.requires ?? {}).map(displayNameOf);
                                 const requiredBy: string[] = plugins
@@ -894,6 +982,13 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                                                     <div className="text-xs text-text-muted">{plugin.name}</div>
                                                     {plugin.manifest.description && (
                                                         <div className="text-xs text-text-muted mt-1 max-w-md">{plugin.manifest.description}</div>
+                                                    )}
+                                                    {uploaded && (
+                                                        <div className="text-xs text-text-muted mt-1 break-words">
+                                                            <span className={`${BADGE_CLASS} bg-surface-alt text-text-muted`}>Uploaded</span>{" "}
+                                                            {plugin.uploadFilename}
+                                                            {plugin.uploadedAt ? `, ${formatDate(plugin.uploadedAt)}` : ""}
+                                                        </div>
                                                     )}
                                                     {requires.length > 0 && <div className="text-xs text-text-muted mt-1">Requires: {requires.join(", ")}</div>}
                                                     {requiredBy.length > 0 && (
@@ -942,7 +1037,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                                                 </div>
                                                 <div className="flex flex-wrap gap-x-4 lg:justify-end">
                                                     <Button variant="text" type="button" onClick={() => setUpgrading(plugin)}>
-                                                        Change version
+                                                        {uploaded ? "Install the registry version" : "Change version"}
                                                     </Button>
                                                     <Button variant="text" type="button" onClick={() => setRemoving(plugin)}>
                                                         Uninstall
@@ -1001,6 +1096,28 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                         return problem;
                     }}
                 />
+            )}
+            {replacing && (
+                <Modal open onClose={() => setReplacing(null)} title="Replace plugin?">
+                    <p className="text-sm mb-2">{replacing.question}</p>
+                    <p className="text-sm text-text-muted mb-4 break-words">{replacing.reason}</p>
+                    <div className="flex gap-2 justify-end">
+                        <Button type="button" variant="secondary" className="!w-auto" onClick={() => setReplacing(null)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            className="!w-auto"
+                            onClick={() => {
+                                const { file } = replacing;
+                                setReplacing(null);
+                                void runUpload(file, true);
+                            }}
+                        >
+                            Replace
+                        </Button>
+                    </div>
+                </Modal>
             )}
             {confirming && (
                 <ConfirmDependenciesModal
@@ -1570,15 +1687,20 @@ function ChangeVersionModal({
     const [selected, setSelected] = useState(plugin.packageVersion);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    // An uploaded pack isn't a registry version, so any registry version is a change from it - the newest is offered first.
+    const uploaded: boolean = plugin.source === "upload";
 
     useEffect(() => {
         lookupPluginPackage(plugin.name, undefined, { prerelease })
             .then((found) => {
                 setVersions(found.package.versions);
                 setLatest(found.package.latest);
+                if (uploaded && found.package.latest) {
+                    setSelected(found.package.latest);
+                }
             })
             .catch((err) => setError(errorMessage(err, "Could not load the available versions.")));
-    }, [plugin.name, prerelease]);
+    }, [plugin.name, prerelease, uploaded]);
 
     async function save() {
         setBusy(true);
@@ -1591,12 +1713,17 @@ function ChangeVersionModal({
     }
 
     return (
-        <Modal open onClose={onClose} title={`${plugin.manifest.displayName} version`}>
+        <Modal open onClose={onClose} title={uploaded ? `Install the registry version of ${plugin.manifest.displayName}` : `${plugin.manifest.displayName} version`}>
             {error && <Alert>{error}</Alert>}
             {versions === null ? (
                 !error && <p className="text-sm text-text-muted">Loading&hellip;</p>
             ) : (
                 <div className="flex flex-col gap-3">
+                    {uploaded && (
+                        <p className="text-sm text-text-muted">
+                            {plugin.manifest.displayName} {plugin.packageVersion} was uploaded as {plugin.uploadFilename}. This replaces it with the version from the registry.
+                        </p>
+                    )}
                     <label className="flex flex-col gap-1.5 text-sm">
                         <span className="font-semibold">Version</span>
                         <select aria-label="Version" className={INPUT_CLASS} value={selected} onChange={(e) => setSelected(e.target.value)}>
@@ -1604,7 +1731,7 @@ function ChangeVersionModal({
                                 <option key={version} value={version}>
                                     {version}
                                     {version === latest ? " (latest)" : ""}
-                                    {version === plugin.packageVersion ? " (installed)" : ""}
+                                    {!uploaded && version === plugin.packageVersion ? " (installed)" : ""}
                                 </option>
                             ))}
                         </select>
@@ -1617,10 +1744,10 @@ function ChangeVersionModal({
                             type="button"
                             className="!w-auto"
                             loading={busy}
-                            disabled={busy || selected === plugin.packageVersion}
+                            disabled={busy || (!uploaded && selected === plugin.packageVersion)}
                             onClick={() => void save()}
                         >
-                            Save
+                            {uploaded ? "Install" : "Save"}
                         </Button>
                     </div>
                 </div>

@@ -17,6 +17,7 @@ import {
     removePlugin,
     retryPluginPurge,
     updatePlugin,
+    uploadPlugin,
 } from "../../../lib/admin/pluginsApi.js";
 import { createApiClient } from "../../../lib/util/api.js";
 
@@ -175,5 +176,56 @@ describe("with an explicit ApiClient", () => {
         await listPlugins();
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins", expect.anything());
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
+    });
+});
+
+describe("uploadPlugin", () => {
+    const row = { uid: "p1", name: "@acme/x-plugin", packageVersion: "1.2.3", source: "upload", uploadFilename: "acme-x-plugin-1.2.3.tgz" };
+
+    it("posts the file's raw bytes as application/gzip with its name in the query string", async () => {
+        const file = new File(["gz"], "acme x&plugin-1.2.3.tgz");
+        const fetchMock = mockFetch(() => jsonResponse(201, row));
+        expect(await uploadPlugin(file)).toEqual(row);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/system/plugins/upload?filename=acme+x%26plugin-1.2.3.tgz",
+            expect.objectContaining({ method: "POST", body: file, credentials: "include" }),
+        );
+        expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Content-Type")).toBe("application/gzip");
+    });
+
+    it("adds replace=true only when asked to replace", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, row));
+        await uploadPlugin(new File(["gz"], "a.tgz"), { replace: true });
+        await uploadPlugin(new File(["gz"], "a.tgz"), { replace: false });
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/system/plugins/upload?filename=a.tgz&replace=true");
+        expect(fetchMock.mock.calls[1][0]).toBe("/api/system/plugins/upload?filename=a.tgz");
+    });
+
+    it("throws an ApiRequestError carrying the server's status, code and message", async () => {
+        mockFetch(() => jsonResponse(409, { message: "@acme/x-plugin 1.0.0 is already installed from the registry." }));
+        await expect(uploadPlugin(new File(["gz"], "a.tgz"))).rejects.toMatchObject({
+            name: "ApiRequestError",
+            status: 409,
+            message: "@acme/x-plugin 1.0.0 is already installed from the registry.",
+        });
+        mockFetch(() => jsonResponse(403, { code: "api-104", message: "Elevation required" }));
+        await expect(uploadPlugin(new File(["gz"], "a.tgz"))).rejects.toMatchObject({ status: 403, code: "api-104" });
+    });
+
+    it("falls back to its own message when the server gave none", async () => {
+        mockFetch(() => emptyResponse(413));
+        await expect(uploadPlugin(new File(["gz"], "a.tgz"))).rejects.toMatchObject({ status: 413, message: "Could not upload the plugin." });
+    });
+
+    it("goes through an explicit client's origin and token", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(201, row));
+        const file = new File(["gz"], "a.tgz");
+        await uploadPlugin(file, {}, client);
+        expect(fetchMock.mock.calls[0][0]).toBe("https://account-a.example.com/api/system/plugins/upload?filename=a.tgz");
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(init.body).toBe(file);
+        expect((init.headers as Headers).get("Authorization")).toBe("jwt tok-a");
+        expect((init.headers as Headers).get("Content-Type")).toBe("application/gzip");
     });
 });

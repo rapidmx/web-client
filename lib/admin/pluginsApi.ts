@@ -8,7 +8,7 @@
  * each server copy installs the new plugin set and restarts itself, one copy at a time, and reports back through
  * `getPluginStatus()`.
  */
-import { ApiClient, withClient } from "../util/api.js";
+import { ApiClient, withClient, withClientRaw } from "../util/api.js";
 
 /** Mirrors `@rapidmx/restapi`'s `PluginSettingDefinition`. */
 export interface PluginSettingDefinition {
@@ -78,6 +78,14 @@ export interface Plugin {
      * predates it, which reads as nothing being configured. */
     configured?: Record<string, PluginConfiguredSetting>;
     manifest: PluginManifest;
+    /** Where the installed package came from: the npm registry (also what a server that predates uploads means), or a `.tgz` an administrator uploaded. */
+    source?: "registry" | "upload";
+    /** The name of the uploaded file, for a plugin with `source` `upload`. */
+    uploadFilename?: string;
+    /** ISO time the file was uploaded. */
+    uploadedAt?: string;
+    /** The uid of the administrator who uploaded it. */
+    uploadedByUserUid?: string;
 }
 
 /** Mirrors `@rapidmx/restapi`'s `RegistryPackageVersion`. `manifest` is a message when the version isn't a
@@ -329,6 +337,21 @@ export function addPlugin(
     client?: ApiClient,
 ): Promise<AddPluginResult> {
     return withClient(client, BASE, { method: "POST", body: JSON.stringify({ name, packageVersion, expectedPlan }) });
+}
+
+/**
+ * Installs a plugin from `file`, the `.tgz` that `npm pack` produces, instead of from the registry - to try a new version before it is released, or an
+ * alternative distribution. The file's raw bytes are the request body (not multipart); its name travels in the query string. Needs an elevated
+ * administrator (403 `api-104` otherwise) and uploads switched on by the operator (403). Refused with 409 when a plugin of that name is already
+ * installed - unless `replace` is set, which swaps it for the uploaded one - or when a plugin it requires isn't installed; 400 when it isn't a
+ * loadable plugin and 413 when it is too large. Like adding one, it starts a rollout.
+ */
+export function uploadPlugin(file: File, options: { replace?: boolean } = {}, client?: ApiClient): Promise<Plugin> {
+    const params = new URLSearchParams({ filename: file.name });
+    if (options.replace) {
+        params.set("replace", "true");
+    }
+    return withClientRaw(client, `${BASE}/upload?${params.toString()}`, "POST", file, "application/gzip", "Could not upload the plugin.");
 }
 
 export function updatePlugin(uid: string, input: UpdatePluginInput, client?: ApiClient): Promise<Plugin> {
