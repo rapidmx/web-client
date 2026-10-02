@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-10-02
+
+### Changed
+- Say in the Diagnostics that only the settings on the server's list of hidden settings are withheld, rather than every unrecognized one
+- Upload a plugin from an npm pack file on the plugins page, asking before it replaces an installed plugin of the same name
+- Mark a plugin that was uploaded, without offering to update it from the registry, and let it be switched back to the registry
+- Show the button to confirm the identity again for the errors of the plugins page
+- Wait for the rotation button to be enabled in the encryption settings tests instead of expecting it the moment a failed enrollment shows
+
 ## [0.31.0] - 2026-10-02
 
 ### Added
@@ -1328,7 +1337,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/rapidmx/web-client/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/rapidmx/web-client/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/rapidmx/web-client/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/rapidmx/web-client/compare/v0.28.0...v0.29.0
