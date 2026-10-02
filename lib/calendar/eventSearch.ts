@@ -115,11 +115,24 @@ function occurrencesOf(events: CalendarEvent[], include: (event: CalendarEvent) 
         if (!include(event)) {
             continue;
         }
+        const once = (): CalendarOccurrence[] =>
+            expandOccurrences(
+                { ...event, recurrenceRule: undefined },
+                new Date(new Date(event.startDate).getTime() - 1),
+                new Date(new Date(event.endDate).getTime() + 1),
+            );
         if (!event.recurrenceRule) {
-            found.push(...expandOccurrences(event, new Date(new Date(event.startDate).getTime() - 1), new Date(new Date(event.endDate).getTime() + 1)));
+            found.push(...once());
             continue;
         }
-        const occurrences = expandOccurrences(event, from, to);
+        let occurrences: CalendarOccurrence[];
+        try {
+            occurrences = expandOccurrences(event, from, to);
+        } catch {
+            // One event whose rule or dates cannot be expanded must not fail the whole search or agenda: it counts once, as the stored event.
+            found.push(...once());
+            continue;
+        }
         found.push(...(occurrences.length > SEARCH_MAX_OCCURRENCES_PER_SERIES ? nearest(occurrences, now.getTime(), SEARCH_MAX_OCCURRENCES_PER_SERIES) : occurrences));
     }
     return found.sort(byStart);

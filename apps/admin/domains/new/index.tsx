@@ -4,12 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "../../../../lib/util/api.js";
 import { createDomain, Domain, listDomains } from "../../../../lib/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../../lib/components/feedback/Alert.js";
+import Alert from "../../../shared/components/admin/ActionAlert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../lib/components/forms/FormField.js";
+import { actionErrorMessage } from "../../../shared/components/admin/elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -52,7 +52,7 @@ function NewDomainForm() {
             const domain = await createDomain({ name: name.trim(), aliasOf: aliasOf || undefined });
             void navigate(`/admin/domains/${encodeURIComponent(domain.uid)}`);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not create the domain.");
+            setError(actionErrorMessage(err, "Could not create the domain."));
         } finally {
             setSaving(false);
         }

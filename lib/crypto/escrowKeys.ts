@@ -15,7 +15,7 @@
 import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
 import type { EscrowScopePublicKey } from "../admin/escrowScopesApi.js";
-import { toBase64 } from "./encoding.js";
+import { fromBase64, toBase64 } from "./encoding.js";
 import { computeCertFingerprint } from "./smime.js";
 
 x509.cryptoProvider.set(crypto);
@@ -29,6 +29,26 @@ export interface GeneratedEscrowKeys {
     privateKeyPem: string;
     /** Ready to pass as `createEscrowScope()`'s `publicKey`. */
     publicKey: EscrowScopePublicKey;
+}
+
+/**
+ * The SHA-256 fingerprint (lower-case hex, as `computeCertFingerprint()` gives it) of the certificate that `publicKey` - an escrow scope's pasted public key,
+ * the base64 of its DER - holds, or `null` when it is not a certificate. The holders compare a scope's fingerprint out of band, so one typed beside a
+ * different key makes that check worthless: this is what it has to be.
+ */
+export async function escrowPublicKeyFingerprint(publicKey: string): Promise<string | null> {
+    try {
+        const der = fromBase64(publicKey.trim());
+        void new x509.X509Certificate(new Uint8Array(der));
+        return await computeCertFingerprint(der);
+    } catch {
+        return null;
+    }
+}
+
+/** A fingerprint as `escrowPublicKeyFingerprint()` writes it: lower-case hex only, whatever separators (`AB:CD`, spaces) it was typed with. */
+export function normalizeFingerprint(fingerprint: string): string {
+    return fingerprint.replace(/[^0-9a-f]/gi, "").toLowerCase();
 }
 
 function toPem(label: string, der: Uint8Array): string {

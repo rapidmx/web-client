@@ -38,7 +38,8 @@ export function linkFromInput(input: string): string | undefined {
     if (/\s/.test(text)) {
         return undefined;
     }
-    if (/^[a-z][a-z0-9+.-]*:/i.test(text)) {
+    // "example.com:8080/x" and "localhost:3000" name a host and a port, not a scheme.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(text) && !/^(?:localhost|[^\s:/@]+\.[^\s:/@]+):\d{1,5}(?:[/?#]|$)/i.test(text)) {
         return safeDescriptionHref(text);
     }
     return safeDescriptionHref(/^[^\s@/]+@[^\s@/]+$/.test(text) ? `mailto:${text}` : `https://${text}`);

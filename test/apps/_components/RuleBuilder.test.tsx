@@ -280,6 +280,23 @@ describe("RuleBuilder", () => {
         expect(sequence).toHaveValue(5);
     });
 
+    it("lets the sequence field be cleared without turning it into 0, and shows the rule's own number again when it loses focus", async () => {
+        const onChangeSpy = vi.fn();
+        const user = userEvent.setup();
+        render(<ControlledRuleBuilder onChangeSpy={onChangeSpy} />);
+
+        const sequence = screen.getByRole("spinbutton");
+        await user.clear(sequence);
+        expect(sequence).toHaveValue(null);
+        expect(onChangeSpy).not.toHaveBeenCalledWith(expect.objectContaining({ sequence: 0 }));
+        await user.type(sequence, "7");
+        expect(onChangeSpy).toHaveBeenLastCalledWith(expect.objectContaining({ sequence: 7 }));
+
+        await user.clear(sequence);
+        await user.tab();
+        expect(sequence).toHaveValue(7);
+    });
+
     it("calls onChange with the full updated value on every edit", async () => {
         const onChangeSpy = vi.fn();
         const user = userEvent.setup();

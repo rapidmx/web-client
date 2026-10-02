@@ -16,6 +16,10 @@ export interface ListParams {
 
 const DEFAULT_PAGE_SIZE = 25;
 
+/** The page size of a list that a settings screen shows whole (labels, signatures, filter rules, task lists, contact lists): a few dozen rows at most in practice, so one
+ * large page rather than the default 25 that would hide everything after the 25th with no way to reach it. */
+export const SETTINGS_LIST_LIMIT = 200;
+
 /**
  * Builds a `limit`/`page` query string, plus any extra scope/filter params (e.g. `folderUid`,
  * or one of `@rapidmx/restapi`'s generic query-operator values like `startDate=lte(...)`).
@@ -26,6 +30,15 @@ export function buildQuery(params: ListParams, extra: Record<string, string> = {
         parts.push(`${key}=${encodeURIComponent(value)}`);
     }
     return parts.join("&");
+}
+
+/**
+ * The `sort` query value for `buildQuery()`'s extra params, in the order the keys are given. Paging with no sort leaves the order to the
+ * database, which on SQL can repeat or skip a row between two pages and on MongoDB is the oldest first: end the sort with a unique key (`uid`)
+ * so every row lands on exactly one page.
+ */
+export function sortQuery(sort: Record<string, "ASC" | "DESC">): { sort: string } {
+    return { sort: JSON.stringify(sort) };
 }
 
 /**

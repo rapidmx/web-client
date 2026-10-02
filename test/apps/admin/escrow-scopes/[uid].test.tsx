@@ -124,6 +124,22 @@ describe("EscrowScopeDetailPage", () => {
         ).toBeInTheDocument();
     });
 
+    it("asks for both validity dates when one is cleared before saving", async () => {
+        mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url === "/api/escrow/scopes/es1") return jsonResponse(200, scope);
+            throw new Error(`unexpected ${url}`);
+        });
+        const user = userEvent.setup();
+        render(<EscrowScopeDetailPage userUid="admin-1" authServerUrl="https://auth.example.com" params={{ uid: "es1" }} />);
+        await screen.findByLabelText("Name");
+
+        fireEvent.change(screen.getByLabelText("Not before"), { target: { value: "" } });
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+        expect(await screen.findByText("The key's validity dates, not before and not after, are both required.")).toBeInTheDocument();
+    });
+
     it("validates requiredHolders stays within 1..holderUserUids.length before saving", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});

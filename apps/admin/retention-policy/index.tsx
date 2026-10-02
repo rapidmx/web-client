@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { RetentionPolicy, getRetentionPolicy } from "../../../lib/admin/retentionPolicyApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import RetentionPolicyForm from "../../shared/components/admin/settings/RetentionPolicyForm.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 export default function RetentionPolicyPage(props: Omit<AdminShellProps, "active">) {
     return (
@@ -25,7 +25,7 @@ function RetentionPolicyContent() {
     useEffect(() => {
         getRetentionPolicy()
             .then(setPolicy)
-            .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load the retention policy."))
+            .catch((err) => setLoadError(actionErrorMessage(err, "Could not load the retention policy.")))
             .finally(() => setLoading(false));
     }, []);
 

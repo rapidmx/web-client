@@ -90,7 +90,7 @@ describe("AuditLogPage", () => {
         render(<AuditLogPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
 
         await vi.waitFor(() =>
-            expect(lastUrl).toBe("/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1&actorUserUid=u1&action=domain.create&targetType=Domain"),
+            expect(lastUrl).toBe("/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1&actorUserUid=u1&action=domain.create&targetType=Domain&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D"),
         );
         expect(screen.getByLabelText("Mailbox uid")).toHaveValue("mb1");
         expect(screen.getByLabelText("Actor user uid")).toHaveValue("u1");
@@ -138,7 +138,7 @@ describe("AuditLogPage", () => {
         render(<AuditLogPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
 
         expect(await screen.findByText("No matching audit log entries.")).toBeInTheDocument();
-        expect(auditUrls).toEqual(["/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1"]);
+        expect(auditUrls).toEqual(["/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D"]);
     });
 
     it("waits for typing to pause before fetching, and only applies the latest fetch's result", async () => {
@@ -147,7 +147,7 @@ describe("AuditLogPage", () => {
         mockFetch((url) => {
             if (!url.startsWith("/api/mail/audit-log")) return jsonResponse(200, {});
             auditUrls.push(url);
-            if (url.endsWith("page=0")) return jsonResponse(200, [entry(0)]);
+            if (url.endsWith("page=0&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })))) return jsonResponse(200, [entry(0)]);
             return new Promise<Response>((resolve, reject) => pending.set(url, { resolve, reject }));
         });
         const user = userEvent.setup();
@@ -157,21 +157,21 @@ describe("AuditLogPage", () => {
         await user.type(screen.getByLabelText("Action"), "abc");
         await vi.waitFor(() => expect(pending.size).toBe(1));
         // One fetch for the whole burst of typing, not one per keystroke.
-        expect(auditUrls).toEqual(["/api/mail/audit-log?limit=25&page=0", "/api/mail/audit-log?limit=25&page=0&action=abc"]);
+        expect(auditUrls).toEqual(["/api/mail/audit-log?limit=25&page=0&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D", "/api/mail/audit-log?limit=25&page=0&action=abc&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D"]);
 
         await user.type(screen.getByLabelText("Action"), "d");
         await vi.waitFor(() => expect(pending.size).toBe(2));
-        pending.get("/api/mail/audit-log?limit=25&page=0&action=abcd")!.resolve(jsonResponse(200, [entry(4)]));
+        pending.get("/api/mail/audit-log?limit=25&page=0&action=abcd&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D")!.resolve(jsonResponse(200, [entry(4)]));
         expect(await screen.findByText("Domain · example4.com")).toBeInTheDocument();
 
         // The older "abc" fetch landing afterwards - either way - changes nothing.
-        pending.get("/api/mail/audit-log?limit=25&page=0&action=abc")!.resolve(jsonResponse(200, [entry(3)]));
+        pending.get("/api/mail/audit-log?limit=25&page=0&action=abc&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D")!.resolve(jsonResponse(200, [entry(3)]));
         await user.type(screen.getByLabelText("Target type"), "X");
         await vi.waitFor(() => expect(pending.size).toBe(3));
         await user.type(screen.getByLabelText("Target type"), "Y");
         await vi.waitFor(() => expect(pending.size).toBe(4));
-        pending.get("/api/mail/audit-log?limit=25&page=0&action=abcd&targetType=X")!.reject(new TypeError("stale"));
-        pending.get("/api/mail/audit-log?limit=25&page=0&action=abcd&targetType=XY")!.resolve(jsonResponse(200, [entry(5)]));
+        pending.get("/api/mail/audit-log?limit=25&page=0&action=abcd&targetType=X&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D")!.reject(new TypeError("stale"));
+        pending.get("/api/mail/audit-log?limit=25&page=0&action=abcd&targetType=XY&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D")!.resolve(jsonResponse(200, [entry(5)]));
         expect(await screen.findByText("Domain · example5.com")).toBeInTheDocument();
         expect(screen.queryByText("Domain · example3.com")).not.toBeInTheDocument();
         expect(screen.queryByText("Could not load the audit log.")).not.toBeInTheDocument();
@@ -191,7 +191,7 @@ describe("AuditLogPage", () => {
         await user.type(screen.getByLabelText("Action"), "x");
         unmount();
         await new Promise((resolve) => setTimeout(resolve, FILTER_DEBOUNCE_MS + 50));
-        expect(auditUrls).toEqual(["/api/mail/audit-log?limit=25&page=0"]);
+        expect(auditUrls).toEqual(["/api/mail/audit-log?limit=25&page=0&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D"]);
     });
 
     it("shows an error message when loading the audit log fails", async () => {

@@ -18,6 +18,10 @@ export const LIVE_POLL_INTERVAL_MS = 45_000;
 /** Events arriving this close together are answered with one refresh - a burst of new mail is one refetch, not one each. */
 export const LIVE_EVENT_DEBOUNCE_MS = 400;
 
+/** Refreshes are also at least this far apart: while mail keeps arriving (a bulk delivery, an import) the list, the folder counts and an open
+ * thread are read about once in this time - a trailing refresh then picks up whatever came since - instead of every debounce window. */
+export const LIVE_EVENT_MIN_INTERVAL_MS = 1_500;
+
 /** What changed, as far as a list on screen is concerned. */
 export interface LiveUpdates {
     /** Bumped each time the list should quietly refetch its first page. `0` until the first bump. */
@@ -153,10 +157,12 @@ export function useMailLiveUpdates({
         let pendingFolders = new Set<string>();
         let pendingUnknown = false;
         let everOpen = false;
+        let lastFlushAt = -Infinity;
 
         // Never runs once `stopped`: whatever sets it clears the timer first.
         function flush() {
             timer = undefined;
+            lastFlushAt = Date.now();
             const folderUids = pendingUnknown ? null : new Set(pendingFolders);
             pendingFolders = new Set();
             pendingUnknown = false;
@@ -174,7 +180,7 @@ export function useMailLiveUpdates({
             } else {
                 pendingUnknown = true;
             }
-            timer ??= setTimeout(flush, LIVE_EVENT_DEBOUNCE_MS);
+            timer ??= setTimeout(flush, Math.max(LIVE_EVENT_DEBOUNCE_MS, lastFlushAt + LIVE_EVENT_MIN_INTERVAL_MS - Date.now()));
         }
 
         const offEvent = client.onEvent((event) => {

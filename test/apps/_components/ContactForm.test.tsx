@@ -103,6 +103,27 @@ describe("ContactForm", () => {
         expect(body.mailboxUid).toBeUndefined();
     });
 
+    it("leaves out an email or phone row that was added and not filled in, and trims the ones that were", async () => {
+        const fetchMock = mockFetch((_url, init) => jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string) }));
+        const onSaved = vi.fn();
+        const user = userEvent.setup();
+        render(<ContactForm mailboxUid="mb1" folderUid="f1" onSaved={onSaved} onCancel={vi.fn()} />);
+
+        await user.type(screen.getByLabelText("Display name"), "New Person");
+        await user.click(screen.getByRole("button", { name: "+ Add email" }));
+        await user.click(screen.getByRole("button", { name: "+ Add email" }));
+        await user.type(screen.getByLabelText("Email address 2"), "  new@example.com ");
+        await user.click(screen.getByRole("button", { name: "+ Add phone" }));
+        await user.click(screen.getByRole("button", { name: "+ Add phone" }));
+        await user.type(screen.getByLabelText("Phone number 1"), " 555 0100 ");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.emails).toEqual([expect.objectContaining({ address: "new@example.com" })]);
+        expect(body.phones).toEqual([expect.objectContaining({ phoneNumber: "555 0100" })]);
+    });
+
     it("omits cleared optional fields on create", async () => {
         const fetchMock = mockFetch((_url, init) => jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string) }));
         const onSaved = vi.fn();

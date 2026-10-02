@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { listTransportRules, TransportRule } from "../../../lib/admin/transportRulesApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const PAGE_SIZE = 25;
 
@@ -48,7 +48,7 @@ function TransportRulesContent() {
     useEffect(() => {
         listAllTransportRules()
             .then(setRules)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load transport rules."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load transport rules.")))
             .finally(() => setLoading(false));
     }, []);
 

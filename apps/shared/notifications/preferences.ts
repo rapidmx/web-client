@@ -5,7 +5,7 @@
 /**
  * The user's one switch for every pop-up (new mail, a failed send, an API error, a reminder), per browser in `localStorage`.
  * Framework-free like the store, which reads it: `notify()` keeps a notification out of sight while it is off (it is still
- * listed in "Recent notifications").
+ * listed in "Recent notifications") - except an error that carries actions (Retry, Open draft), which would otherwise be unreachable.
  */
 
 /**

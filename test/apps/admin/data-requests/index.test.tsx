@@ -478,6 +478,59 @@ describe("DataRequestsPage — import requests", () => {
         expect(screen.getByRole("button", { name: "Upload Mbox or PST file" })).toBeEnabled();
     });
 
+    it("shows only the folders of the mailbox now typed when an earlier mailbox's slower answer (or failure) lands after it", async () => {
+        const answers = new Map<string, (r: Response) => void>();
+        mockShell((url) => {
+            if (!url.startsWith("/api/mail/folders")) return undefined;
+            if (url.includes("mailboxUid=mbB")) return jsonResponse(200, [{ ...secondFolder, mailboxUid: "mbB" }]);
+            return new Promise<Response>((resolve) => answers.set(url, resolve)) as unknown as Response;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+        await screen.findByText("No import requests.");
+
+        const input = screen.getByLabelText("Import mailbox UID");
+        await user.type(input, "mbA");
+        await user.tab();
+        await vi.waitFor(() => expect(answers.size).toBe(1));
+        await user.clear(input);
+        await user.type(input, "mbB");
+        await user.tab();
+        expect(await screen.findByRole("option", { name: "Archive" })).toBeInTheDocument();
+
+        // mbA's answer comes in late: it neither replaces the folders nor the destination.
+        answers.values().next().value!(jsonResponse(200, [{ ...folder, mailboxUid: "mbA" }]));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(screen.queryByRole("option", { name: "Inbox" })).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Import destination folder")).toHaveValue("f2");
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("ignores an earlier mailbox's folder failure that lands after a newer lookup began", async () => {
+        const answers = new Map<string, (r: Response) => void>();
+        mockShell((url) => {
+            if (!url.startsWith("/api/mail/folders")) return undefined;
+            if (url.includes("mailboxUid=mbB")) return jsonResponse(200, [folder]);
+            return new Promise<Response>((resolve) => answers.set(url, resolve)) as unknown as Response;
+        });
+        const user = userEvent.setup();
+        render(<DataRequestsPage userUid="admin-1" />);
+        await screen.findByText("No import requests.");
+
+        const input = screen.getByLabelText("Import mailbox UID");
+        await user.type(input, "mbA");
+        await user.tab();
+        await vi.waitFor(() => expect(answers.size).toBe(1));
+        await user.clear(input);
+        await user.type(input, "mbB");
+        await user.tab();
+        expect(await screen.findByLabelText("Import destination folder")).toBeInTheDocument();
+
+        answers.values().next().value!(jsonResponse(404, { message: "no such mailbox" }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(screen.queryByText("no such mailbox")).not.toBeInTheDocument();
+    });
+
     it("clears the folder picker when the mailbox UID is blurred while empty", async () => {
         mockShell();
         const user = userEvent.setup();

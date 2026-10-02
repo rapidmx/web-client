@@ -59,6 +59,10 @@ function NewMatterForm() {
             setError("At least one custodian mailbox is required.");
             return;
         }
+        if (Number.isNaN(new Date(dateRangeStart).getTime()) || Number.isNaN(new Date(dateRangeEnd).getTime())) {
+            setError("The date range start and end are both required.");
+            return;
+        }
         if (new Date(dateRangeStart).getTime() >= new Date(dateRangeEnd).getTime()) {
             setError("The date range start must be before its end.");
             return;

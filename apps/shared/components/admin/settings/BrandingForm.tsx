@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ChangeEvent, FormEvent, useRef, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import {
     Branding,
     deleteBrandingIcon,
@@ -14,9 +13,10 @@ import {
     uploadBrandingLogo,
     uploadBrandingStylesheet,
 } from "../../../../../lib/branding/brandingApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import CopyButton from "../../../../../lib/components/buttons/CopyButton.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -74,7 +74,7 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
                 setIconUrlInput(updated.iconUrl ?? "");
                 setStylesheetUrlInput(updated.stylesheetUrl ?? "");
             })
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not update branding."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not update branding.")))
             .finally(() => setAssetBusy(null));
     }
 
@@ -136,7 +136,7 @@ export default function BrandingForm({ branding, onChange, embedded = false }: B
             onChange(updated);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save branding.");
+            setError(actionErrorMessage(err, "Could not save branding."));
         } finally {
             setSaving(false);
         }

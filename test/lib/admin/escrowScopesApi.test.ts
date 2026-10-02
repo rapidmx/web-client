@@ -43,14 +43,14 @@ describe("listEscrowScopes", () => {
     it("fetches with default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [scope]));
         const result = await listEscrowScopes();
-        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/scopes?limit=25&page=0", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/scopes?limit=25&page=0&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })), expect.anything());
         expect(result).toEqual([scope]);
     });
 
     it("forwards a custom page/limit", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listEscrowScopes({ page: 2, limit: 10 });
-        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/scopes?limit=10&page=2", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/scopes?limit=10&page=2&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })), expect.anything());
     });
 });
 

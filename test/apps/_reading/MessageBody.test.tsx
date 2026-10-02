@@ -166,6 +166,37 @@ describe("MessageBody loading", () => {
         await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     });
 
+    it("keeps the frame and the body in place while a newer version of the same message is fetched, then shows the fresh copy", async () => {
+        let respond!: (response: Response) => void;
+        let calls = 0;
+        mockFetch(() => (++calls === 1 ? html("<p>Before</p>") : new Promise<Response>((resolve) => (respond = resolve))));
+        const { rerender } = render(<MessageBody messageUid="m1" messageVersion={1} title="Hello" />);
+        const frame = await screen.findByTitle("Hello");
+
+        rerender(<MessageBody messageUid="m1" messageVersion={2} title="Hello" />);
+        await waitFor(() => expect(calls).toBe(2));
+        // The very same frame element: nothing was torn down.
+        expect(screen.getByTitle("Hello")).toBe(frame);
+        expect(frame).toHaveAttribute("srcdoc", expect.stringContaining("Before"));
+
+        respond(html("<p>After</p>"));
+        await waitFor(() => expect(screen.getByTitle("Hello")).toHaveAttribute("srcdoc", expect.stringContaining("After")));
+    });
+
+    it("leaves the body it is showing when fetching a newer version of the same message fails", async () => {
+        let calls = 0;
+        mockFetch(() => (++calls === 1 ? html("<p>Before</p>") : jsonResponse(500, { message: "The mail store is down." })));
+        const { rerender } = render(<MessageBody messageUid="m1" messageVersion={1} title="Hello" />);
+        await screen.findByTitle("Hello");
+
+        rerender(<MessageBody messageUid="m1" messageVersion={2} title="Hello" />);
+        await waitFor(() => expect(calls).toBe(2));
+        await act(async () => undefined);
+
+        expect(screen.queryByText("The mail store is down.")).not.toBeInTheDocument();
+        expect(screen.getByTitle("Hello")).toHaveAttribute("srcdoc", expect.stringContaining("Before"));
+    });
+
     it("does not ask the server for a body it was handed (decrypted or verified content)", async () => {
         const fetchMock = mockFetch(() => html("never"));
         const { rerender } = render(<MessageBody messageUid="m1" messageVersion={1} title="Hello" content={{ kind: "html", html: "<p>Secret</p>" }} />);

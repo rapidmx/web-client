@@ -4,7 +4,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "../../../../lib/util/api.js";
 import {
     createTransportRule,
     TransportRuleAction,
@@ -19,9 +18,10 @@ import {
     TRANSPORT_RULE_ACTION_TYPES,
     TRANSPORT_RULE_CONDITION_FIELDS,
 } from "../_transportRuleConfig.js";
-import Alert from "../../../../lib/components/feedback/Alert.js";
+import Alert from "../../../shared/components/admin/ActionAlert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../lib/components/forms/FormField.js";
+import { actionErrorMessage } from "../../../shared/components/admin/elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -77,7 +77,7 @@ function NewTransportRuleForm() {
             const created = await createTransportRule({ name: name.trim(), ...rule });
             void navigate(`/admin/transport-rules/${encodeURIComponent(created.uid)}`);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not create the transport rule.");
+            setError(actionErrorMessage(err, "Could not create the transport rule."));
         } finally {
             setSaving(false);
         }

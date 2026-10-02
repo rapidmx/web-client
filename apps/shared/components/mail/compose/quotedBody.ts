@@ -9,6 +9,7 @@ import { MAX_QUOTED_IMAGE_BYTES, QuotedImageReference, embedQuotedImages } from 
 import { EMBEDDED_IMAGE_TYPES, findInlineAttachment, toDataUri } from "../../../../../lib/mail/inlineImages.js";
 import type { MessageSecurityResult } from "../../../../../lib/crypto/messageSecurity.js";
 import { MimeAttachment, decodeHeaderText, extractDisplayBody, parseMimeEntity } from "../../../../../lib/crypto/mime.js";
+import { onSigningOut } from "./composeFlushRegistry.js";
 import { parseRecipientList } from "./recipients.js";
 
 /** The security states whose `protectedHeaders` a signature covers - the only ones Reply All takes recipients from. */
@@ -35,6 +36,9 @@ export const QUOTE_FETCH_TIMEOUT_MS = 10_000;
 /** How long a fetched (or prefetched) body is remembered, so hovering Reply and then clicking it costs one request. */
 export const QUOTE_CACHE_MS = 30_000;
 
+/** How many bodies are remembered at most: each is a whole message body, and a mailbox read for hours would otherwise keep every one it was asked about. */
+const QUOTE_CACHE_MAX = 20;
+
 const contentCache = new Map<string, { at: number; promise: Promise<string | undefined> }>();
 
 /**
@@ -59,6 +63,12 @@ function fetchContentHtml(uid: string): Promise<string | undefined> {
             clearTimeout(timer);
         }
     })();
+    // Whatever has expired goes, and the oldest of the rest once there are too many.
+    for (const [key, entry] of contentCache) {
+        if (Date.now() - entry.at >= QUOTE_CACHE_MS || contentCache.size >= QUOTE_CACHE_MAX) {
+            contentCache.delete(key);
+        }
+    }
     contentCache.set(uid, { at: Date.now(), promise });
     void promise.then((html) => {
         if (html === undefined && contentCache.get(uid)?.promise === promise) {
@@ -92,6 +102,7 @@ export function prefetchOriginalMessage(message: Message): void {
 export function clearOriginalMessageCache(): void {
     contentCache.clear();
 }
+onSigningOut(clearOriginalMessageCache);
 
 /** The recipients one address-list header names, RFC 2047-decoded, with their display names. */
 function headerRecipients(value: string | undefined, type: "to" | "cc"): Recipient[] {

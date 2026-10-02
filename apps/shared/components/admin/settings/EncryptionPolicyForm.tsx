@@ -3,10 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { EncryptionPolicy, PolicyState, updateEncryptionPolicy } from "../../../../../lib/crypto/keyvaultApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const SELECT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -54,8 +55,21 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
     const dirty: boolean = TIERS.some((tier) => values[tier.key] !== savedValues[tier.key]);
     useEffect(() => onDirtyChange?.(dirty), [dirty]);
 
-    async function handleSubmit(e: FormEvent) {
+    // Tiers this save would newly set to "Never encrypt", which switches encryption off for everyone's mail of that kind: confirmed first.
+    const [confirmingProhibit, setConfirmingProhibit] = useState<string[] | null>(null);
+
+    function handleSubmit(e: FormEvent) {
         e.preventDefault();
+        const newlyProhibited = TIERS.filter((tier) => values[tier.key] === "prohibited" && savedValues[tier.key] !== "prohibited");
+        if (newlyProhibited.length > 0) {
+            setConfirmingProhibit(newlyProhibited.map((tier) => tier.label));
+            return;
+        }
+        void save();
+    }
+
+    async function save() {
+        setConfirmingProhibit(null);
         setError(null);
         setSaved(false);
         setSaving(true);
@@ -65,7 +79,7 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
             setSavedValues(values);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save the encryption policy.");
+            setError(actionErrorMessage(err, "Could not save the encryption policy."));
         } finally {
             setSaving(false);
         }
@@ -114,6 +128,21 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
                     </Button>
                 </div>
             </form>
+
+            <Modal open={confirmingProhibit !== null} onClose={() => setConfirmingProhibit(null)} title="Turn off encryption?">
+                <p className="text-sm mb-3">
+                    Saving sets <strong>{confirmingProhibit?.join(", ")}</strong> to Never encrypt. Nobody on this server can then encrypt
+                    that mail end to end, whatever they have chosen for themselves, until an administrator allows it again.
+                </p>
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingProhibit(null)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger" onClick={() => void save()}>
+                        Save and turn off encryption
+                    </Button>
+                </div>
+            </Modal>
         </div>
     );
 }

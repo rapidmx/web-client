@@ -30,14 +30,14 @@ describe("listAuditLogEntries", () => {
     it("fetches with default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [entry]));
         const result = await listAuditLogEntries();
-        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/audit-log?limit=25&page=0", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/audit-log?limit=25&page=0&sort=" + encodeURIComponent(JSON.stringify({ sequence: "DESC" })), expect.anything());
         expect(result).toEqual([entry]);
     });
 
     it("forwards a custom page/limit", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listAuditLogEntries({ page: 2, limit: 10 });
-        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/audit-log?limit=10&page=2", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/audit-log?limit=10&page=2&sort=" + encodeURIComponent(JSON.stringify({ sequence: "DESC" })), expect.anything());
     });
 });
 

@@ -995,6 +995,11 @@ describe("SettingsEncryptionPage", () => {
         await user.type(screen.getByLabelText("New password for rotated keys"), password);
         await user.type(screen.getByLabelText("Confirm new password for rotated keys"), password);
         await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        // Rotating ends every other unlock method, so it asks first; a password that is refused never gets that far.
+        const confirm = screen.queryByRole("button", { name: "Yes, rotate my keys" });
+        if (confirm) {
+            await user.click(confirm);
+        }
     }
 
     /** Default crypto mocks for a rotation: every vault entry opens, and re-seals to a recognizable ciphertext. */
@@ -1296,6 +1301,29 @@ describe("SettingsEncryptionPage", () => {
         await submitRotation(user, "short");
 
         expect(await screen.findByText(/at least 12 characters/)).toBeInTheDocument();
+        expect(openWithKey).not.toHaveBeenCalled();
+        expect(getKeyVault).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks before rotating, and rotates nothing when it is cancelled", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await user.type(screen.getByLabelText("New password for rotated keys"), "a good new password");
+        await user.type(screen.getByLabelText("Confirm new password for rotated keys"), "a good new password");
+        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+
+        expect(await screen.findByRole("dialog", { name: "Rotate your keys?" })).toBeInTheDocument();
+        expect(screen.getByText(/stops working the moment this finishes/)).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "Rotate your keys?" })).not.toBeInTheDocument());
+        await user.click(screen.getByRole("button", { name: "Rotate keys now" }));
+        await user.click(await screen.findByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog", { name: "Rotate your keys?" })).not.toBeInTheDocument();
         expect(openWithKey).not.toHaveBeenCalled();
         expect(getKeyVault).toHaveBeenCalledTimes(1);
     });

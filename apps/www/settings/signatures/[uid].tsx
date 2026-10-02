@@ -77,10 +77,7 @@ function SignatureDetailContent({ uid }: { uid: string }) {
         setSaving(true);
         setSaved(false);
         try {
-            if (isDefaultForNewMessages || isDefaultForReplyForward) {
-                const existing = await listMailSignatures(mailboxUid!, { limit: 100 });
-                await clearPreviousDefaults(existing, original!.uid, isDefaultForNewMessages, isDefaultForReplyForward);
-            }
+            // This signature is saved first: were it refused (a 409, a 400) after the others had been cleared, the mailbox would be left with no default at all.
             const updated = await updateMailSignature({
                 uid: original!.uid,
                 version: original!.version,
@@ -90,6 +87,11 @@ function SignatureDetailContent({ uid }: { uid: string }) {
                 isDefaultForReplyForward,
             });
             setOriginal(updated);
+            if (isDefaultForNewMessages || isDefaultForReplyForward) {
+                // The signature's own mailbox, not the one the page happens to have selected.
+                const existing = await listMailSignatures(original!.mailboxUid, { limit: 100 });
+                await clearPreviousDefaults(existing, original!.uid, isDefaultForNewMessages, isDefaultForReplyForward);
+            }
             setSaved(true);
         } catch (err) {
             // A pop-up: `error` is only this form's own validation (and the load failure above).

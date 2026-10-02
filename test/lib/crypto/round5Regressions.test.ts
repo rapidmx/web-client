@@ -262,6 +262,26 @@ describe("finding 2: content outside the signature", () => {
         expect(await checkSignerBinding({ ...base, protectedHeaders: { from: "", to: "", subject: "y" }, compareSubject: true })).toBeUndefined();
     });
 
+    it("is header_mismatch for a signed-only message whose outer Date was dropped or garbled, but not when the signed one is unreadable", async () => {
+        const alice = await generateIdentity("CN=alice@example.com");
+        const signedDate = "Mon, 01 Jun 2026 15:00:00 +0000";
+        const outer = { from: "alice@example.com", to: "bob@example.com", subject: "x" };
+        const input = (outerDate: string | undefined, protectedDate: string | undefined) => ({
+            signerCertificateDer: alice.certDer,
+            compareSubject: true,
+            outerHeaders: outerDate === undefined ? outer : { ...outer, date: outerDate },
+            protectedHeaders: { from: "alice@example.com", to: "bob@example.com", subject: "x", date: protectedDate },
+        });
+        // The same instant written another way matches.
+        expect(await checkSignerBinding(input("Mon, 01 Jun 2026 11:00:00 -0400", signedDate))).toBeUndefined();
+        expect(await checkSignerBinding(input("Tue, 02 Jun 2026 15:00:00 +0000", signedDate))).toBe("header_mismatch");
+        expect(await checkSignerBinding(input(undefined, signedDate))).toBe("header_mismatch");
+        expect(await checkSignerBinding(input("garbled", signedDate))).toBe("header_mismatch");
+        // Nothing signed to compare with.
+        expect(await checkSignerBinding(input(undefined, undefined))).toBeUndefined();
+        expect(await checkSignerBinding(input("Tue, 02 Jun 2026 15:00:00 +0000", "garbled"))).toBeUndefined();
+    });
+
     it("lists only the attachments inside the signed entity", async () => {
         const alice = await generateIdentity("CN=alice@example.com");
         const inner = [

@@ -6,6 +6,7 @@ import { ApiRequestError, apiUrl } from "../../../../../lib/util/api.js";
 import { Attachment, attachmentContentUrl } from "../../../../../lib/mail/mailApi.js";
 import type { MimeAttachment } from "../../../../../lib/crypto/mime.js";
 import { bytesToBase64, findInlineAttachment, toDataUri } from "../../../../../lib/mail/inlineImages.js";
+import { onSigningOut } from "../compose/composeFlushRegistry.js";
 
 /** What a message's body is: server-sanitized HTML, or plain text (a message with no HTML part, or the server's plain-text fallback). */
 export type BodyContent = { kind: "html"; html: string } | { kind: "text"; text: string };
@@ -20,6 +21,7 @@ const cache = new Map<string, BodyContent>();
 export function clearBodyContentCache(): void {
     cache.clear();
 }
+onSigningOut(clearBodyContentCache);
 
 /** The remembered body for a message at a version, if any. */
 export function cachedBodyContent(uid: string, version: number): BodyContent | undefined {

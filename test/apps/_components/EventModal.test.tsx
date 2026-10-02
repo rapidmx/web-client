@@ -364,7 +364,7 @@ describe("EventModal", () => {
         expect(onSaved).toHaveBeenCalled();
     });
 
-    it("deletes a non-recurring event immediately (no confirmation sub-step)", async () => {
+    it("deletes a non-recurring event once the confirmation is accepted", async () => {
         const fetchMock = mockFetch(() => new Response(null, { status: 200 }));
         const onDeleted = vi.fn();
         const user = userEvent.setup();
@@ -382,6 +382,7 @@ describe("EventModal", () => {
         );
 
         await user.click(screen.getByRole("button", { name: "Delete" }));
+        await user.click(screen.getByRole("button", { name: "Yes, delete" }));
 
         await waitFor(() =>
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/e1?version=2", expect.objectContaining({ method: "DELETE" })),
@@ -475,9 +476,10 @@ describe("EventModal", () => {
         );
 
         await user.click(screen.getByRole("button", { name: "Delete" }));
+        await user.click(screen.getByRole("button", { name: "Yes, delete" }));
 
         expect(await screen.findByText("delete failed")).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Delete" })).not.toBeDisabled();
+        expect(screen.getByRole("button", { name: "Yes, delete" })).not.toBeDisabled();
         expect(screen.getByRole("button", { name: "Modify" })).not.toBeDisabled();
     });
 
@@ -500,6 +502,7 @@ describe("EventModal", () => {
         );
 
         await user.click(screen.getByRole("button", { name: "Delete" }));
+        await user.click(screen.getByRole("button", { name: "Yes, delete" }));
 
         expect(await screen.findByText("Could not delete this event.")).toBeInTheDocument();
     });
@@ -1391,6 +1394,7 @@ describe("EventModal", () => {
             );
 
             await user.click(screen.getByRole("button", { name: "Delete" }));
+            await user.click(screen.getByRole("button", { name: "Yes, delete" }));
 
             await waitFor(() => expect(onDeleted).toHaveBeenCalled());
             expect(client.fetch).toHaveBeenCalledWith("/mail/calendar-events/e1?version=2", expect.objectContaining({ method: "DELETE" }));

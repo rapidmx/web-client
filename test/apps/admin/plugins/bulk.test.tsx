@@ -346,6 +346,20 @@ describe("upgrading the selected plugins", () => {
         expect(screen.queryByText(/couldn't be upgraded/)).not.toBeInTheDocument();
     });
 
+    it("looks for updates once when it is done, not after every plugin it upgraded", async () => {
+        const fetchMock = mockApi({ updates: [update(eas, "1.1.0"), update(autodiscover, "1.0.1"), update(mapi, "1.2.0")] });
+        const user = userEvent.setup();
+        renderPage();
+        await select(user, "Autodiscover", "MAPI over HTTP", "Exchange ActiveSync");
+        await user.click(bulkButton("Upgrade selected plugins"));
+
+        await waitFor(() => expect(notifications()).toEqual(["success: 3 plugins upgraded"]));
+        // Once as the page opened, once at the end - not three more in between.
+        await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith(`${PLUGINS}/updates`))).toHaveLength(2));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith(`${PLUGINS}/updates`))).toHaveLength(2);
+    });
+
     it("leaves a plugin that would also install or enable others for the administrator to review, and one that conflicts", async () => {
         const fetchMock = mockApi({
             updates: [update(eas, "2.0.0"), update(mapi, "2.0.0"), update(booking, "2.0.0")],
@@ -470,6 +484,21 @@ describe("disabling the selected plugins", () => {
         // The next action clears what was said about the last.
         await user.click(bulkButton("Disable selected plugins"));
         await waitFor(() => expect(screen.getAllByText("1 plugin couldn't be disabled:")).toHaveLength(1));
+    });
+
+    it("stops at the first plugin the server refuses for want of a recently confirmed identity (api-104), as no other will get past it", async () => {
+        const fetchMock = mockApi({
+            extra: (url, init) => (init.method === "PUT" ? jsonResponse(403, { code: "api-104", message: "This operation requires elevation." }) : undefined),
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await select(user, "Exchange ActiveSync", "MAPI over HTTP");
+        await user.click(bulkButton("Disable selected plugins"));
+
+        expect(await screen.findByText("2 plugins couldn't be disabled:")).toBeInTheDocument();
+        expect(screen.getByText(/MAPI over HTTP: This needs you to have recently confirmed your identity/)).toBeInTheDocument();
+        expect(screen.getByText("Exchange ActiveSync: Not attempted.")).toBeInTheDocument();
+        expect(writes(fetchMock)).toHaveLength(1);
     });
 
     it("says nothing was disabled when the server refuses every one", async () => {

@@ -48,6 +48,7 @@ import {
     recordElevationAttempt,
 } from "../elevation.js";
 import { signOutOfConsole } from "../signOut.js";
+import { ReconfirmIdentityContext } from "../ActionAlert.js";
 import { pluginIcon } from "../../../plugins/pluginIcons.js";
 import { mergePluginNavItems, PluginNav, PluginNavProps } from "../../../plugins/pluginNav.js";
 
@@ -402,7 +403,11 @@ export default function AdminShell({ active, userUid, authServerUrl, pluginNav, 
                             <UserMenu userUid={userUid} authServerUrl={authServerUrl} onSignOut={handleSignOut} showMailLink />
                         </header>
                         <div id="app-content" className="flex-1">
-                            <main className="max-w-6xl mx-auto px-6 py-8">{children}</main>
+                            <main className="max-w-6xl mx-auto px-6 py-8">
+                                <ReconfirmIdentityContext.Provider value={authServerUrl ? handleRetryElevation : undefined}>
+                                    {children}
+                                </ReconfirmIdentityContext.Provider>
+                            </main>
                         </div>
                     </div>
                 </div>

@@ -27,6 +27,11 @@ export function isElevationRequired(err: unknown): boolean {
  * when a page opens (see `AdminShell`), so reloading is what sends them round auth-server's confirmation again. */
 export const ELEVATION_ACTION_MESSAGE = "This needs you to have recently confirmed your identity. Reload this page to confirm it again, then try once more.";
 
+/** Whether `text` is one of the messages that say an action needs the user's identity confirmed again (this one, a plugin's or the diagnostics'). */
+export function isElevationMessage(text: string): boolean {
+    return text.includes("recently confirmed your identity");
+}
+
 /** The text for an administrator action that failed: the elevation message when it only needed the user to confirm their identity (an action the
  * server newly gates behind an elevated token - truncating or deleting a mailbox, a retention policy, an export of another mailbox, approving an
  * erasure), else the server's own message, else `fallback`. */

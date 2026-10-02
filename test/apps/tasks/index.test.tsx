@@ -556,7 +556,7 @@ describe("TasksPage (round 3)", () => {
             process.env.TZ = originalTz;
         });
 
-        it("treats the due date input and a date-only dueDate as the user's local day", async () => {
+        it("stores the due date input as that day's UTC midnight, and reads a date-only dueDate as the same day for any reader", async () => {
             process.env.TZ = "America/Los_Angeles";
             const created = task({ uid: "t-new", title: "Ship the report", dueDate: "2026-06-16T07:00:00.000Z" });
             const fetchMock = mockShellAndTasks([task({ uid: "t-dateonly", title: "Date-only task", dueDate: "2026-06-20" })], (url, init) =>
@@ -573,7 +573,7 @@ describe("TasksPage (round 3)", () => {
 
             await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/mail/tasks", expect.objectContaining({ method: "POST" })));
             const post = fetchMock.mock.calls.find((c) => c[0] === "/api/mail/tasks" && (c[1] as RequestInit).method === "POST")!;
-            expect(JSON.parse((post[1] as RequestInit).body as string).dueDate).toBe("2026-06-16T07:00:00.000Z");
+            expect(JSON.parse((post[1] as RequestInit).body as string).dueDate).toBe("2026-06-16T00:00:00.000Z");
         });
     });
 });
@@ -861,6 +861,32 @@ describe("TasksPage — sidebar views, toolbar bulk actions, and grid mode", () 
                 expect.objectContaining({ method: "PUT", body: expect.stringContaining('"completed":true') }),
             ),
         );
+    });
+
+    it("toolbar Complete ignores a second press while the first is still sending, instead of sending stale versions again.", async () => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        const fetchMock = mockShellAndTasksWithLists([todayTask, noDueDateTask], [list], [tasksFolder], (url, init) => {
+            if (init?.method === "PUT") {
+                return new Promise<Response>((resolve) => void gate.then(() => resolve(jsonResponse(200, { ...todayTask, completed: true })))) as unknown as Response;
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+
+        await screen.findByText("Today task");
+        await user.click(screen.getByLabelText("Select Today task"));
+        const complete = within(screen.getByRole("toolbar")).getByText("Complete");
+        fireEvent.click(complete);
+        fireEvent.click(complete);
+        release();
+
+        await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1));
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
     });
 
     it("toolbar Complete shows the ApiRequestError message when updating a checked task fails.", async () => {

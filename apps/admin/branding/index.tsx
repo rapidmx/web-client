@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { Branding, getBranding } from "../../../lib/branding/brandingApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import BrandingForm from "../../shared/components/admin/settings/BrandingForm.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 export default function BrandingPage(props: Omit<AdminShellProps, "active">) {
     return (
@@ -25,7 +25,7 @@ function BrandingContent() {
     useEffect(() => {
         getBranding()
             .then(setBranding)
-            .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load branding."))
+            .catch((err) => setLoadError(actionErrorMessage(err, "Could not load branding.")))
             .finally(() => setLoading(false));
     }, []);
 

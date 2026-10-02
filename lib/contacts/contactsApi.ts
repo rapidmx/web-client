@@ -6,7 +6,7 @@
  * comment for the shared ACL/authorization model every wrapper file here follows. */
 
 import { ApiClient, apiUrl, withClient, withClientRaw } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
 import {
     type EncryptionPreference,
     type KeyConflict,
@@ -299,7 +299,7 @@ export interface ContactList {
 
 /** Lists a mailbox's contact lists (Outlook-style "Your contact lists"), alphabetically by name. */
 export function listContactLists(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<ContactList[]> {
-    return withClient(client, `/mail/contact-lists?${buildQuery(params, { mailboxUid, sort: JSON.stringify({ name: "ASC" }) })}`);
+    return withClient(client, `/mail/contact-lists?${buildQuery({ limit: SETTINGS_LIST_LIMIT, ...params }, { mailboxUid, sort: JSON.stringify({ name: "ASC", uid: "ASC" }) })}`);
 }
 
 export function createContactList(input: { mailboxUid: string; name: string }, client?: ApiClient): Promise<ContactList> {

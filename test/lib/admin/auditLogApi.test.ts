@@ -26,21 +26,21 @@ describe("listAuditLog", () => {
     it("fetches with default pagination and no filters", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [entry]));
         const result = await listAuditLog();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=25&page=0", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=25&page=0&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })), expect.anything());
         expect(result).toEqual([entry]);
     });
 
     it("forwards a custom page/limit", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listAuditLog({}, { page: 2, limit: 10 });
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=10&page=2", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=10&page=2&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })), expect.anything());
     });
 
     it("forwards every provided filter", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listAuditLog({ mailboxUid: "mb1", actorUserUid: "u1", action: "domain.create", targetType: "Domain" });
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1&actorUserUid=u1&action=domain.create&targetType=Domain",
+            "/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1&actorUserUid=u1&action=domain.create&targetType=Domain&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })),
             expect.anything(),
         );
     });
@@ -48,7 +48,7 @@ describe("listAuditLog", () => {
     it("omits filters that are not provided", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listAuditLog({ mailboxUid: "mb1" });
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })), expect.anything());
     });
 });
 
@@ -71,7 +71,7 @@ describe("with an explicit ApiClient", () => {
         createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
         const fetchMock = mockFetch(() => jsonResponse(200, [entry]));
         await listAuditLog();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=25&page=0", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=25&page=0&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })), expect.anything());
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

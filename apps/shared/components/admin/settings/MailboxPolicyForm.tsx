@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { MailboxPolicy, updateMailboxPolicy } from "../../../../../lib/admin/mailboxPolicyApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -109,7 +109,7 @@ export default function MailboxPolicyForm({ policy, onChange, onDirtyChange, emb
             setBaseline(current);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save the mailbox policy.");
+            setError(actionErrorMessage(err, "Could not save the mailbox policy."));
         } finally {
             setSaving(false);
         }

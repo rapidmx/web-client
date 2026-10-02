@@ -232,6 +232,7 @@ describe("ContactDetailPage", () => {
         render(<ContactDetailPage userUid="u1" params={{ uid: "c1" }} />);
 
         await user.click(await screen.findByRole("button", { name: "Delete" }));
+        await user.click(await screen.findByRole("button", { name: "Yes, delete" }));
 
         // A pop-up (see `NotificationCenter`): the server's message under a title saying what failed.
         expect(await screen.findByText("boom")).toBeInTheDocument();
@@ -251,6 +252,7 @@ describe("ContactDetailPage", () => {
         render(<ContactDetailPage userUid="u1" params={{ uid: "c1" }} />);
 
         await user.click(await screen.findByRole("button", { name: "Delete" }));
+        await user.click(await screen.findByRole("button", { name: "Yes, delete" }));
 
         expect(await screen.findByText("Couldn't delete the contact")).toBeInTheDocument();
         expect(screen.getByText("The server couldn't be reached. Check your connection and try again.")).toBeInTheDocument();
@@ -267,6 +269,7 @@ describe("ContactDetailPage", () => {
 
         const button = await screen.findByRole("button", { name: "Delete" });
         await user.click(button);
+        await user.click(await screen.findByRole("button", { name: "Yes, delete" }));
 
         await waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/contacts"));
         expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
@@ -321,6 +324,7 @@ describe("ContactDetailPage", () => {
             expect(new Headers((getCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
 
             await user.click(await screen.findByRole("button", { name: "Delete" }));
+            await user.click(await screen.findByRole("button", { name: "Yes, delete" }));
 
             await waitFor(() => expect(latestRouter().navigate.mock.lastCall?.[0]).toBe("/contacts"));
             const deleteCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")!;

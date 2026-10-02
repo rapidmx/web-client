@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../shared/navigation/pageTitle.js";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { endOfWeek, isAfter, isBefore, isToday, parseISO, startOfDay } from "date-fns";
+import { endOfWeek, isAfter, isBefore, isToday, startOfDay } from "date-fns";
 import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     Task,
@@ -20,6 +20,7 @@ import { listFlaggedMessages } from "../../../lib/mail/flaggedMessages.js";
 import { Message } from "../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import { useDayKey } from "../../../lib/calendar/useDayKey.js";
+import { dueDateInstant, parseDueDate } from "../../shared/components/tasks/dueDate.js";
 import TasksShell, { TasksShellProps, useTasksShell } from "../../shared/components/tasks/layout/TasksShell.js";
 import TasksSidebar, { TasksView } from "../../shared/components/tasks/TasksSidebar.js";
 import TasksToolbar, { TasksViewMode } from "../../shared/components/tasks/TasksToolbar.js";
@@ -43,15 +44,6 @@ function TasksPage(props: TasksShellProps) {
             <TasksContent />
         </TasksShell>
     );
-}
-
-/**
- * Parses a task's `dueDate` - `parseISO()` rather than `new Date()`, since `new Date("2026-06-16")` reads a
- * date-only value as UTC midnight, which is the *previous* local day anywhere west of UTC. A full
- * timestamp parses identically either way.
- */
-function parseDueDate(value: string): Date {
-    return parseISO(value);
 }
 
 type Bucket = "Overdue" | "Today" | "This Week" | "Later" | "No due date";
@@ -211,8 +203,8 @@ function TasksContent() {
                     mailboxUid: target,
                     folderUid: targetFolderUid,
                     title: title.trim(),
-                    // The date input's "yyyy-MM-dd" is the user's *local* day - see `parseDueDate()`.
-                    dueDate: dueDate ? parseDueDate(dueDate).toISOString() : undefined,
+                    // The date input's "yyyy-MM-dd" is stored as that day's UTC midnight - see `dueDateInstant()`.
+                    dueDate: dueDate ? dueDateInstant(dueDate) : undefined,
                     priority,
                 },
                 client,
@@ -312,8 +304,24 @@ function TasksContent() {
 
     const checkedTasks = viewFiltered.filter((t) => checkedUids.has(t.uid));
 
+    // A bulk action sends every checked row's own version: pressed again before it finishes, it would send stale ones and raise a stream of 409s.
+    const bulkRunning = useRef(false);
+    function singleFlight(run: () => Promise<void>): () => Promise<void> {
+        return async () => {
+            if (bulkRunning.current) {
+                return;
+            }
+            bulkRunning.current = true;
+            try {
+                await run();
+            } finally {
+                bulkRunning.current = false;
+            }
+        };
+    }
+
     // The bulk handlers try every task and report each failure: the same failure repeated is one pop-up with a count.
-    async function handleBulkComplete() {
+    const handleBulkComplete = singleFlight(async () => {
         for (const task of checkedTasks) {
             try {
                 await setTaskCompleted(task, true, client);
@@ -323,9 +331,9 @@ function TasksContent() {
         }
         setCheckedUids(new Set());
         await reload();
-    }
+    });
 
-    async function handleBulkAddToMyDay() {
+    const handleBulkAddToMyDay = singleFlight(async () => {
         for (const task of checkedTasks) {
             try {
                 await setTaskMyDay(task, true, client);
@@ -335,7 +343,7 @@ function TasksContent() {
         }
         setCheckedUids(new Set());
         await reload();
-    }
+    });
 
     async function handleBulkDelete() {
         for (const task of checkedTasks) {

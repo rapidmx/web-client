@@ -15,7 +15,7 @@ import {
     HiOutlineStop,
     HiOutlineTrash,
 } from "react-icons/hi2";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import Badge, { BadgeTone } from "./Badge.js";
 import { SaveFile, timestampedFilename } from "./download.js";

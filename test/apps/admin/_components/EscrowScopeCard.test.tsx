@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import EscrowScopeCard from "../../../../apps/shared/components/admin/mailboxes/EscrowScopeCard.js";
+import { ELEVATION_ACTION_MESSAGE } from "../../../../apps/shared/components/admin/elevation.js";
 import { ApiClientContext } from "../../../../lib/util/apiClientContext.js";
 import { createApiClient } from "../../../../lib/util/api.js";
 
@@ -35,7 +36,7 @@ describe("EscrowScopeCard", () => {
     it("assigns a scope, then unassigns it by sending null", async () => {
         const bodies: any[] = [];
         mockFetch((url, init) => {
-            if (url === "/api/escrow/scopes?limit=200&page=0") return jsonResponse(200, [scope("es1", "Legal"), scope("es2", "HR")]);
+            if (url === "/api/escrow/scopes?limit=200&page=0&sort=%7B%22uid%22%3A%22ASC%22%7D") return jsonResponse(200, [scope("es1", "Legal"), scope("es2", "HR")]);
             if (url === "/api/mail/mailboxes/mb1" && init?.method === "PUT") {
                 const body = JSON.parse(init.body as string);
                 bodies.push(body);
@@ -115,6 +116,17 @@ describe("EscrowScopeCard", () => {
         expect(await screen.findByText("Could not load escrow scopes.")).toBeInTheDocument();
     });
 
+    it("tells an administrator whose confirmation of identity has lapsed (api-104) what to do when saving", async () => {
+        mockFetch((_url, init) => (init?.method === "PUT" ? jsonResponse(403, { code: "api-104", message: "This operation requires elevation." }) : jsonResponse(200, [scope("es1", "Legal")])));
+        const user = userEvent.setup();
+        render(<EscrowScopeCard mailbox={mailbox} onUpdate={vi.fn()} />);
+
+        await user.selectOptions(await screen.findByLabelText("Escrow scope"), "es1");
+        await user.click(screen.getByRole("button", { name: "Save escrow scope" }));
+        await user.click(await screen.findByRole("button", { name: "Confirm and save" }));
+        expect(await screen.findByText(ELEVATION_ACTION_MESSAGE)).toBeInTheDocument();
+    });
+
     it("shows save failures", async () => {
         let failure: () => Response = () => jsonResponse(404, { message: "no such scope" });
         mockFetch((url, init) => {
@@ -143,7 +155,7 @@ describe("EscrowScopeCard", () => {
             if (url.startsWith("/api/")) {
                 throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
             }
-            if (url === "https://account-a.example.com/api/escrow/scopes?limit=200&page=0") return jsonResponse(200, [scope("es1", "Legal")]);
+            if (url === "https://account-a.example.com/api/escrow/scopes?limit=200&page=0&sort=%7B%22uid%22%3A%22ASC%22%7D") return jsonResponse(200, [scope("es1", "Legal")]);
             if (url === "https://account-a.example.com/api/mail/mailboxes/mb1" && init?.method === "PUT") {
                 const body = JSON.parse(init.body as string);
                 return jsonResponse(200, { ...mailbox, version: mailbox.version + 1, escrowScopeId: body.escrowScopeId ?? undefined });

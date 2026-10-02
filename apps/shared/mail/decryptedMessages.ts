@@ -5,6 +5,7 @@
 import { useSyncExternalStore } from "react";
 import { getUnlockedKeys, subscribeKeySession } from "../../../lib/crypto/keySession.js";
 import { getMessageRawContent } from "../../../lib/mail/mailApi.js";
+import { onSigningOut } from "../components/mail/compose/composeFlushRegistry.js";
 
 /**
  * What this device has recovered of encrypted messages by decrypting them: the real subject (the server only ever holds RFC 9788's `[...]`
@@ -25,6 +26,50 @@ let entries: Record<string, DecryptedMessage> = {};
 let unlockEpoch = 0;
 const listeners = new Set<() => void>();
 const inFlight = new Set<string>();
+
+/** How long a message that could not be decrypted is left alone before it is tried again (it is also tried again after any unlock). */
+const DECRYPT_RETRY_MS = 10 * 60_000;
+/** How many such messages are remembered. */
+const MAX_FAILED = 1000;
+/** The messages whose decrypting came to nothing (fetch failed, not for this key, nothing readable), by uid: when and in which unlock epoch. */
+const failed = new Map<string, { epoch: number; at: number }>();
+
+/** Whether decrypting this message already came to nothing since the keys were last unlocked, recently enough that trying again would only repeat it. */
+export function decryptFailedBefore(uid: string): boolean {
+    const known = failed.get(uid);
+    return !!known && known.epoch === unlockEpoch && Date.now() - known.at < DECRYPT_RETRY_MS;
+}
+
+/** Remembers that decrypting this message came to nothing, so a list that refreshes does not download and try it again each time. */
+export function markDecryptFailed(uid: string): void {
+    failed.delete(uid);
+    if (failed.size >= MAX_FAILED) {
+        failed.delete(failed.keys().next().value!);
+    }
+    failed.set(uid, { epoch: unlockEpoch, at: Date.now() });
+}
+
+/** Forgets everything remembered about messages that could not be decrypted (sign-out, an account switch). */
+export function clearDecryptedMessages(): void {
+    entries = {};
+    failed.clear();
+    emit();
+}
+onSigningOut(clearDecryptedMessages);
+
+/** Runs `task` over `items` with at most `limit` running at once, resolving to the results in the order of `items`. */
+export async function mapWithConcurrency<T, R>(items: T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let next = 0;
+    async function worker(): Promise<void> {
+        while (next < items.length) {
+            const index = next++;
+            results[index] = await task(items[index]);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return results;
+}
 
 function emit(): void {
     for (const listener of [...listeners]) {
@@ -96,7 +141,7 @@ export function useUnlockEpoch(): number {
  */
 export async function decryptForDisplay(uid: string, mailboxUid: string): Promise<void> {
     const unlocked = getUnlockedKeys(mailboxUid);
-    if (!unlocked || entries[uid] || inFlight.has(uid)) {
+    if (!unlocked || entries[uid] || inFlight.has(uid) || decryptFailedBefore(uid)) {
         return;
     }
     inFlight.add(uid);
@@ -107,9 +152,13 @@ export async function decryptForDisplay(uid: string, mailboxUid: string): Promis
         // A lock while this ran: the result must not go back on screen.
         if (getUnlockedKeys(mailboxUid) === unlocked) {
             rememberDecrypted(uid, mailboxUid, { subject: security.subject, preview: security.html ? previewOf(security.html) : security.text?.slice(0, PREVIEW_MAX_LENGTH) });
+            if (!security.subject && !security.html && !security.text) {
+                markDecryptFailed(uid);
+            }
         }
     } catch {
-        // Left as the placeholder.
+        // Left as the placeholder - and not fetched again until the next unlock.
+        markDecryptFailed(uid);
     } finally {
         inFlight.delete(uid);
     }

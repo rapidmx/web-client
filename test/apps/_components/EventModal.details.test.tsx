@@ -206,6 +206,7 @@ describe("EventModal details", () => {
             const { onDeleted } = renderDetails(invited(), { organizerAddress: "bob@example.com" });
 
             await user.click(screen.getByRole("button", { name: "Delete" }));
+            await user.click(screen.getByRole("button", { name: "Yes, delete" }));
             await waitFor(() => expect(onDeleted).toHaveBeenCalled());
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/e1?version=2", expect.objectContaining({ method: "DELETE" }));
         });
@@ -247,6 +248,7 @@ describe("EventModal details", () => {
             const user = userEvent.setup();
             const { onClose } = renderDetails(occurrence());
             await user.click(screen.getByRole("button", { name: "Modify" }));
+            await user.type(screen.getByLabelText("Title"), " (edited)");
 
             fireEvent.mouseDown(screen.getByRole("dialog").parentElement!);
             expect(screen.getByRole("dialog", { name: "Edit event" })).toBeInTheDocument();

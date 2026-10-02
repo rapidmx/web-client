@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 import LeftoverMailboxesSection from "../../../../apps/shared/components/admin/mailboxes/LeftoverMailboxesSection.js";
+import { ELEVATION_ACTION_MESSAGE } from "../../../../apps/shared/components/admin/elevation.js";
 
 const LIST_URL = "/api/mail/mailboxes/leftover?limit=50";
 const ERASE_URL = "/api/mail/erasure-requests/leftover";
@@ -219,6 +220,13 @@ describe("LeftoverMailboxesSection", () => {
         await user.click(await screen.findByRole("button", { name: "Load more" }));
 
         expect(await screen.findByText("Could not load more deleted mailboxes.")).toBeInTheDocument();
+    });
+
+    it("tells an administrator whose confirmation of identity has lapsed (api-104) what to do, not the server's bare refusal", async () => {
+        mockFetch(() => jsonResponse(403, { code: "api-104", message: "This operation requires elevation." }));
+        render(<LeftoverMailboxesSection />);
+        expect(await screen.findByText(ELEVATION_ACTION_MESSAGE)).toBeInTheDocument();
+        expect(screen.queryByText("This operation requires elevation.")).not.toBeInTheDocument();
     });
 
     it("says why the check failed - the server's own words, or a general one - instead of showing nothing", async () => {

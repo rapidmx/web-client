@@ -27,6 +27,10 @@ export interface RetentionPolicy {
  * the server enforces this regardless. */
 export const MIN_AUDIT_LOG_RETENTION_DAYS = 2190;
 
+/** The server-enforced floor for `messageRetentionDays` (30 days) - `MIN_MESSAGE_RETENTION_DAYS` in `@rapidmx/restapi`, mirrored here for the same reason as
+ * `MIN_AUDIT_LOG_RETENTION_DAYS`. A shorter period is refused with a 400. */
+export const MIN_MESSAGE_RETENTION_DAYS = 30;
+
 /** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
  * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */

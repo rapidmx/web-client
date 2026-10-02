@@ -285,6 +285,24 @@ describe("NewMailboxPage", () => {
         expect(requestBody.primarySmtpAddress).toBe("support@example.org");
     });
 
+    it("refuses a local part with an @ in it, saying so, before asking the server", async () => {
+        const fetchMock = mockFetch((url) => {
+            if (url === "/api/admin/release-notes") return jsonResponse(200, {});
+            if (url.startsWith("/api/mail/mailboxes/domains")) return jsonResponse(200, ["example.com"]);
+            return jsonResponse(200, {});
+        });
+        const user = userEvent.setup();
+        render(<NewMailboxPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByLabelText("Local part");
+
+        await user.type(screen.getByLabelText("Local part"), "support@other.com");
+        await user.type(screen.getByLabelText("Display name"), "Support");
+        await user.click(screen.getByRole("button", { name: "Create mailbox" }));
+
+        expect(await screen.findByText(/can't contain "@"/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/mail/mailboxes" && init?.method === "POST")).toBe(false);
+    });
+
     it("falls back to the free-text address field when the configured-domains lookup itself fails", async () => {
         mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});

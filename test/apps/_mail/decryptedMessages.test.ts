@@ -25,7 +25,17 @@ vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribe
 vi.mock("../../../lib/mail/mailApi.js", () => ({ getMessageRawContent }));
 vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
 
-import { decryptForDisplay, previewOf, rememberDecrypted, useDecryptedMessages, useUnlockEpoch } from "../../../apps/shared/mail/decryptedMessages.js";
+import {
+    clearDecryptedMessages,
+    decryptFailedBefore,
+    decryptForDisplay,
+    mapWithConcurrency,
+    markDecryptFailed,
+    previewOf,
+    rememberDecrypted,
+    useDecryptedMessages,
+    useUnlockEpoch,
+} from "../../../apps/shared/mail/decryptedMessages.js";
 
 const KEYS = { keys: true };
 
@@ -35,6 +45,7 @@ function lock(mailboxUid: string) {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    clearDecryptedMessages();
     getUnlockedKeys.mockReturnValue(KEYS);
     getMessageRawContent.mockResolvedValue("raw");
     lock("mb1");
@@ -116,5 +127,82 @@ describe("decryptForDisplay", () => {
         await act(() => first);
         expect(getMessageRawContent).toHaveBeenCalledTimes(1);
         expect(result.current).toEqual({});
+    });
+});
+
+describe("messages that could not be decrypted", () => {
+    it("are not downloaded again on the next try, until the keys are unlocked again", async () => {
+        getMessageRawContent.mockRejectedValue(new Error("offline"));
+        await decryptForDisplay("m1", "mb1");
+        expect(getMessageRawContent).toHaveBeenCalledTimes(1);
+        expect(decryptFailedBefore("m1")).toBe(true);
+
+        await decryptForDisplay("m1", "mb1");
+        expect(getMessageRawContent).toHaveBeenCalledTimes(1);
+
+        act(() => listeners.forEach((listener) => listener({ mailboxUid: "mb1", state: "unlocked" })));
+        expect(decryptFailedBefore("m1")).toBe(false);
+        await decryptForDisplay("m1", "mb1");
+        expect(getMessageRawContent).toHaveBeenCalledTimes(2);
+    });
+
+    it("also cover a message that opened to nothing readable", async () => {
+        evaluateMessageSecurity.mockResolvedValue({});
+        await decryptForDisplay("m1", "mb1");
+        await decryptForDisplay("m1", "mb1");
+        expect(getMessageRawContent).toHaveBeenCalledTimes(1);
+        expect(decryptFailedBefore("m1")).toBe(true);
+    });
+
+    it("are tried again after ten minutes", () => {
+        vi.useFakeTimers();
+        try {
+            markDecryptFailed("m1");
+            expect(decryptFailedBefore("m1")).toBe(true);
+            vi.advanceTimersByTime(10 * 60_000 + 1);
+            expect(decryptFailedBefore("m1")).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("are remembered up to a limit, the oldest being forgotten first", () => {
+        for (let i = 0; i < 1001; i++) {
+            markDecryptFailed(`m${i}`);
+        }
+        expect(decryptFailedBefore("m0")).toBe(false);
+        expect(decryptFailedBefore("m1")).toBe(true);
+        expect(decryptFailedBefore("m1000")).toBe(true);
+        // Marking one again moves it to the newest end rather than growing the list.
+        markDecryptFailed("m1");
+        markDecryptFailed("new");
+        expect(decryptFailedBefore("m1")).toBe(true);
+        expect(decryptFailedBefore("m2")).toBe(false);
+    });
+
+    it("are forgotten, with everything decrypted, on clearDecryptedMessages", () => {
+        const { result } = renderHook(() => useDecryptedMessages());
+        act(() => rememberDecrypted("m2", "mb1", { subject: "S" }));
+        markDecryptFailed("m1");
+        act(() => clearDecryptedMessages());
+        expect(decryptFailedBefore("m1")).toBe(false);
+        expect(result.current).toEqual({});
+    });
+});
+
+describe("mapWithConcurrency", () => {
+    it("runs at most the limit at once and answers in the order of the items", async () => {
+        let running = 0;
+        let peak = 0;
+        const results = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
+            running++;
+            peak = Math.max(peak, running);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            running--;
+            return n * 2;
+        });
+        expect(results).toEqual([2, 4, 6, 8, 10, 12, 14]);
+        expect(peak).toBe(3);
+        expect(await mapWithConcurrency([], 3, async (n: number) => n)).toEqual([]);
     });
 });

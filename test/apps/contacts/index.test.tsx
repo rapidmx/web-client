@@ -616,6 +616,7 @@ describe("ContactsPage", () => {
 
         await user.click(await screen.findByText("Jane Doe"));
         await user.click(within(screen.getByRole("region", { name: "Contact details" })).getByRole("button", { name: "Delete" }));
+        await user.click(within(screen.getByRole("region", { name: "Contact details" })).getByRole("button", { name: "Yes, delete" }));
 
         await waitFor(() =>
             expect(fetchMock).toHaveBeenCalledWith("/api/mail/contacts/c1?version=0", expect.objectContaining({ method: "DELETE" })),
@@ -633,6 +634,7 @@ describe("ContactsPage", () => {
 
         await user.click(await screen.findByText("Jane Doe"));
         await user.click(within(screen.getByRole("region", { name: "Contact details" })).getByRole("button", { name: "Delete" }));
+        await user.click(within(screen.getByRole("region", { name: "Contact details" })).getByRole("button", { name: "Yes, delete" }));
 
         expect(await screen.findByText("delete failed")).toBeInTheDocument();
     });
@@ -651,6 +653,7 @@ describe("ContactsPage", () => {
 
         await user.click(await screen.findByText("Jane Doe"));
         await user.click(within(screen.getByRole("region", { name: "Contact details" })).getByRole("button", { name: "Delete" }));
+        await user.click(within(screen.getByRole("region", { name: "Contact details" })).getByRole("button", { name: "Yes, delete" }));
 
         // A pop-up (see `NotificationCenter`), not a line in the list pane.
         expect(await screen.findByText("Couldn't delete the contact")).toBeInTheDocument();
@@ -1161,6 +1164,29 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         await waitFor(() => expect(clearPinnedSignerCache).toHaveBeenCalled());
     });
 
+    it("toolbar Favorite ignores a second press while the first is still sending, instead of sending stale versions again.", async () => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        const fetchMock = mockShellAndContactsWithLists([jane, bob], [list], (url, init) => {
+            if (init?.method === "PUT") {
+                return new Promise<Response>((resolve) => void gate.then(() => resolve(jsonResponse(200, { ...jane, favorite: true })))) as unknown as Response;
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        await user.click(screen.getByLabelText("Select Jane Doe"));
+        const favorite = within(screen.getByRole("toolbar")).getByText("Favorite");
+        fireEvent.click(favorite);
+        fireEvent.click(favorite);
+        release();
+
+        await waitFor(() => expect(clearPinnedSignerCache).toHaveBeenCalled());
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+    });
+
     it("toolbar Favorite shows an error when updating a checked contact's favorite status fails.", async () => {
         mockShellAndContactsWithLists([jane], [list], (url, init) => {
             if (init?.method === "PUT") throw new TypeError("network down");
@@ -1461,6 +1487,40 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
             expect(await screen.findByText("Some contacts were skipped")).toBeInTheDocument();
             await waitFor(() => expect(posts(fetchMock)).toHaveLength(1));
             expect(JSON.parse((posts(fetchMock)[0][1] as RequestInit).body as string).displayName).toBe("Somebody New");
+        });
+
+        it("leaves out a card with no email whose name and phone are already stored, and a repeat of one earlier in the same file", async () => {
+            const stored = { ...jane, uid: "c-bob", displayName: "Bob Builder", emails: [], phones: [{ phoneNumber: "+1 (555) 010-0100", type: "mobile" }] };
+            const fetchMock = serve([stored]);
+            const user = userEvent.setup();
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Bob Builder");
+
+            const bob = "BEGIN:VCARD\r\nFN:bob builder\r\nTEL:15550100100\r\nEND:VCARD\r\n";
+            const alice = "BEGIN:VCARD\r\nFN:Alice\r\nTEL:555-0199\r\nEND:VCARD\r\n";
+            await user.upload(screen.getByLabelText("Import contacts file"), new File([bob + alice + alice], "contacts.vcf", { type: "text/vcard" }));
+
+            expect(await screen.findByText("Some contacts were skipped")).toBeInTheDocument();
+            await waitFor(() => expect(posts(fetchMock)).toHaveLength(1));
+            expect(JSON.parse((posts(fetchMock)[0][1] as RequestInit).body as string).displayName).toBe("Alice");
+        });
+
+        it("imports nothing, and says so, when the address book cannot be read to check the file against it", async () => {
+            let failListing = false;
+            const fetchMock = mockShellAndContactsWithLists([jane], [list], (url, init) => {
+                if (url === "/api/mail/contacts" && init?.method === "POST") return jsonResponse(200, { ...bob, uid: "new" });
+                if (failListing && url.startsWith("/api/mail/contacts?")) return jsonResponse(500, { message: "listing failed" });
+                return undefined;
+            });
+            const user = userEvent.setup();
+            render(<ContactsPage userUid="u1" />);
+            await screen.findByText("Jane Doe");
+            failListing = true;
+
+            await user.upload(screen.getByLabelText("Import contacts file"), new File([card("New One", "one@example.com")], "contacts.vcf", { type: "text/vcard" }));
+
+            expect(await screen.findByText("Couldn't check the file against your contacts")).toBeInTheDocument();
+            expect(posts(fetchMock)).toHaveLength(0);
         });
     });
 

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetPushClient } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { MAIL_FOLDER_TYPES, useMailConnection } from "../../../apps/shared/mail/useMailConnection.js";
-import { LIVE_EVENT_DEBOUNCE_MS } from "../../../apps/shared/mail/useMailLiveUpdates.js";
+import { LIVE_EVENT_DEBOUNCE_MS, LIVE_EVENT_MIN_INTERVAL_MS } from "../../../apps/shared/mail/useMailLiveUpdates.js";
 import { badgeFor, countOfFolder } from "../../../apps/shared/mail/folderCounts.js";
 import { folderRows } from "../../../apps/shared/mail/folderTree.js";
 import { sendState } from "../../../apps/shared/mail/outbox/sendState.js";
@@ -189,14 +189,14 @@ describe("a folder the server creates while the page is open", () => {
         act(() => {
             window.dispatchEvent(new Event("focus"));
         });
-        await settle();
+        await settle(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(uids(view)).toContain("ou");
 
         server = [...server, folder("ju", "junk")];
         act(() => {
             window.dispatchEvent(new Event("online"));
         });
-        await settle();
+        await settle(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(uids(view)).toContain("ju");
 
         server = [...server, folder("ar", "archive")];

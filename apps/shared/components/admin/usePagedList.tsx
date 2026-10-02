@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useRef, useState } from "react";
-import { ApiRequestError } from "../../../../lib/util/api.js";
+import { actionErrorMessage } from "./elevation.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 
 /** Page size for the async-request lists (the server returns them newest first and caps `limit` at 500). */
@@ -51,7 +51,7 @@ export function usePagedList<T extends { uid: string }>(
     loaded.current = items;
 
     function describe(err: unknown): string {
-        return err instanceof ApiRequestError ? err.message : errorMessage;
+        return actionErrorMessage(err, errorMessage);
     }
 
     async function reload() {

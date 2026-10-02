@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../../testUtils.js";
@@ -74,6 +74,21 @@ describe("NewMatterPage", () => {
         await user.click(screen.getByRole("button", { name: "Create matter" }));
 
         expect(await screen.findByText("The date range start must be before its end.")).toBeInTheDocument();
+    });
+
+    it("asks for both dates when one is cleared, rather than failing on an invalid date", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        const user = userEvent.setup();
+        render(<NewMatterPage userUid="u1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New matter");
+
+        await fillMinimalRequiredFields(user);
+        fireEvent.change(screen.getByLabelText("Date range end"), { target: { value: "" } });
+        await user.click(screen.getByRole("button", { name: "Create matter" }));
+
+        expect(await screen.findByText("The date range start and end are both required.")).toBeInTheDocument();
+        expect(screen.queryByText("Could not create the matter.")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/escrow/matters" && init?.method === "POST")).toBe(false);
     });
 
     it("creates the matter and redirects to its detail page", async () => {

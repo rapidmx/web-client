@@ -135,7 +135,7 @@ describe("prepareContactPhoto: a picture the server already takes", () => {
         expect(result.type).toBe("image/jpeg");
         expect(rec.encodes[0]).toEqual({ type: "image/jpeg", quality: 0.85 });
         // Even one that says it is a PNG, if it is a JPEG in fact.
-        const mislabeled = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0, 4, 0, 0])], "me.png", { type: "image/png" });
+        const mislabeled = new File([new Uint8Array(HEADERS.jpeg.header(400, 300))], "me.png", { type: "image/png" });
         expect(await prepareContactPhoto(mislabeled)).not.toBe(mislabeled);
     });
 });
@@ -191,17 +191,30 @@ describe("prepareContactPhoto: a picture whose size says it cannot be decoded sa
             bytes("RIFF", 0, 0, 0, 0, "WEBP", "VP8 "), // cut off
             bytes("RIFF", 0, 0, 0, 0, "WEBP", "VP8Q", new Array(20).fill(0)), // a chunk that has no size
             bytes("RIFF", 0, 0, 0, 0, "WAVE", "fmt ", new Array(20).fill(0)),
-            bytes(0xff, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00), // not a marker
-            bytes(0xff, 0xd8, 0xff),
-            bytes(0xff, 0xd8, 0xff, 0xda, be16(4), 0, 0), // the scan starts before any size
-            bytes(0xff, 0xd8, 0xff, 0xd0, 0xff, 0x01, 0xff, 0xe0, be16(2000), 0), // markers without a length, then a segment that runs past the end
-            bytes(0xff, 0xd8, 0xff, 0xc4, be16(4), 0, 0, 0xff, 0xc0, be16(11), 8, be16(30000)), // cut off inside the size
             bytes("GIF8"),
         ];
         for (const head of unknown) {
             await expect(prepareContactPhoto(new File([new Uint8Array(head)], "x.png", { type: "image/png" }))).resolves.toBeInstanceOf(File);
         }
         expect(createImageBitmap).toHaveBeenCalledTimes(unknown.length);
+    });
+
+    it("refuses a JPEG whose size it cannot read, or that gives a height or width of zero, rather than leaving it to the decoder", async () => {
+        const rec = install({ width: 400, height: 300 });
+        const unreadable: number[][] = [
+            bytes(0xff, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00), // not a marker
+            bytes(0xff, 0xd8, 0xff),
+            bytes(0xff, 0xd8, 0xff, 0xda, be16(4), 0, 0), // the scan starts before any size
+            bytes(0xff, 0xd8, 0xff, 0xd0, 0xff, 0x01, 0xff, 0xe0, be16(2000), 0), // markers without a length, then a segment that runs past the end
+            bytes(0xff, 0xd8, 0xff, 0xc4, be16(4), 0, 0, 0xff, 0xc0, be16(11), 8, be16(30000)), // cut off inside the size
+            HEADERS.jpeg.header(4000, 0), // the height is redefined by a later marker
+            HEADERS.jpeg.header(0, 3000),
+        ];
+        for (const head of unreadable) {
+            await expect(prepareContactPhoto(new File([new Uint8Array(head)], "x.jpg", { type: "image/jpeg" }))).rejects.toThrow(CONTACT_PHOTO_UNSUPPORTED_MESSAGE);
+        }
+        expect(createImageBitmap).not.toHaveBeenCalled();
+        expect(rec.sides).toEqual([]);
     });
 });
 
@@ -223,12 +236,13 @@ describe("prepareContactPhoto: a JPEG whose frame header lies past the start of 
         await expect(prepareContactPhoto(jpegFile(bigSegments(), frame(4000, 3000)))).resolves.toBeInstanceOf(File);
     });
 
-    it("gives up on the size, and leaves it to the decoder, after too many segments, a segment that is not one, or the end of the file", async () => {
+    it("refuses one whose size is not found after too many segments, a segment that is not one, or the end of the file", async () => {
         install({ width: 400, height: 300 });
         const tiny = Array.from({ length: 5000 }, () => [0xff, 0xe0, 0, 2]).flat();
-        await expect(prepareContactPhoto(jpegFile(bigSegments(), tiny, frame(30000, 30000)))).resolves.toBeInstanceOf(File);
-        await expect(prepareContactPhoto(jpegFile(bigSegments(), [0, 0, 0, 0, 0], frame(30000, 30000)))).resolves.toBeInstanceOf(File);
-        await expect(prepareContactPhoto(jpegFile(bigSegments(), bytes(0xff, 0xe0, be16(5000), 0)))).resolves.toBeInstanceOf(File);
+        await expect(prepareContactPhoto(jpegFile(bigSegments(), tiny, frame(30000, 30000)))).rejects.toBeInstanceOf(ContactPhotoError);
+        await expect(prepareContactPhoto(jpegFile(bigSegments(), [0, 0, 0, 0, 0], frame(30000, 30000)))).rejects.toBeInstanceOf(ContactPhotoError);
+        await expect(prepareContactPhoto(jpegFile(bigSegments(), bytes(0xff, 0xe0, be16(5000), 0)))).rejects.toBeInstanceOf(ContactPhotoError);
+        expect(createImageBitmap).not.toHaveBeenCalled();
     });
 });
 

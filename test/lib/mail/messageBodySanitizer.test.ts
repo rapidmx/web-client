@@ -81,9 +81,18 @@ describe("srcset remote-content filtering", () => {
         }
     });
 
+    it("drops a srcset whose descriptor has a comma inside parentheses, which the HTML spec does not count as a separator", () => {
+        for (const sanitize of [sanitizeMessageBodyHtml, sanitizeQuotedHtml]) {
+            expect(sanitize(img("cid:x (a,cid:y),http://evil.example/track.png"))).not.toMatch(/evil.example/);
+            expect(sanitize(img("cid:x (a"))).not.toContain("srcset=");
+        }
+    });
+
     it("keeps a srcset made only of cid: candidates", () => {
         expect(sanitizeMessageBodyHtml(img("cid:a@x 1x,cid:b@x 2x,, cid:c@x"))).toContain("srcset=");
         expect(sanitizeMessageBodyHtml(img("cid:a@x"))).toContain("srcset=");
+        // Nothing but separators is no candidate at all, and nothing remote either.
+        expect(sanitizeMessageBodyHtml(img(" , ,"))).not.toContain("https:");
         expect(sanitizeMessageBodyHtml(img(" "))).toContain("<img");
     });
 });

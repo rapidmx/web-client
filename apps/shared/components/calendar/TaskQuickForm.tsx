@@ -20,6 +20,7 @@ import { TaskList, TaskPriority, createTask, listTaskLists } from "../../../../l
 import Button from "../../../../lib/components/buttons/Button.js";
 import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
 import { notify } from "../../notifications/store.js";
+import { dueDateInstant } from "../tasks/dueDate.js";
 import { EventFormController } from "./eventForm.js";
 import { INPUT_CLASS, IconRow, SELECT_CLASS } from "./EventFormParts.js";
 import QuickFaceFrame from "./QuickFaceFrame.js";
@@ -127,8 +128,8 @@ export default function TaskQuickForm({ c, draft, onDraftChange, tabs, expanded,
                     folderUid,
                     title,
                     body: draft.body.trim() || undefined,
-                    // A date-only due date is the local day's midnight, the way the Tasks app writes one.
-                    dueDate: draft.dueDate ? parseISO(draft.allDay ? draft.dueDate : `${draft.dueDate}T${draft.dueTime}`).toISOString() : undefined,
+                    // A date-only due date is that day's UTC midnight, the way the Tasks app writes one.
+                    dueDate: draft.dueDate ? (draft.allDay ? dueDateInstant(draft.dueDate) : parseISO(`${draft.dueDate}T${draft.dueTime}`).toISOString()) : undefined,
                     priority: draft.priority,
                     reminderDate: draft.reminder ? parseISO(draft.reminder).toISOString() : undefined,
                     taskListUid: listUid || undefined,

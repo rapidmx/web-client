@@ -31,14 +31,14 @@ describe("listDistributionLists", () => {
     it("fetches with default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [list]));
         const result = await listDistributionLists();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/distribution-lists?limit=25&page=0", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/distribution-lists?limit=25&page=0&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })), expect.anything());
         expect(result).toEqual([list]);
     });
 
     it("forwards a custom page/limit", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listDistributionLists({ page: 2, limit: 10 });
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/distribution-lists?limit=10&page=2", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/distribution-lists?limit=10&page=2&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })), expect.anything());
     });
 });
 

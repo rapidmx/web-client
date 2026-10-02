@@ -1407,6 +1407,41 @@ describe("Print", () => {
             expect(html).not.toContain("newer");
         });
 
+        it("loads the earlier messages a few at a time, however long the conversation is", async () => {
+            const older = Array.from({ length: 10 }, (_, i) => message({ uid: `o${i}`, receivedDate: `2025-12-${String(10 + i).padStart(2, "0")}T00:00:00.000Z` }));
+            const release: (() => void)[] = [];
+            let running = 0;
+            let peak = 0;
+            serve(
+                (url) => (url.startsWith("/api/mail/messages/conversations/c1") ? jsonResponse(200, [...older, message({ uid: "m1" })]) : undefined),
+                body("m1", "this one"),
+                (url) => {
+                    if (!/^\/api\/mail\/messages\/o\d\/content$/.test(url)) return undefined;
+                    running += 1;
+                    peak = Math.max(peak, running);
+                    return new Promise<Response>((resolve) =>
+                        release.push(() => {
+                            running -= 1;
+                            resolve(new Response("older", { headers: { "content-type": "text/plain" } }));
+                        }),
+                    );
+                },
+            );
+            const user = userEvent.setup();
+            render(<MessageDetailPane message={inThread()} attachments={[]} folders={FOLDERS as never} />);
+            await choose(user, [], "Print");
+
+            for (let round = 0; round < 30 && printDocument.mock.calls.length === 0; round++) {
+                await act(async () => {
+                    release.splice(0).forEach((resolve) => resolve());
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                });
+            }
+
+            expect(printDocument).toHaveBeenCalledTimes(1);
+            expect(peak).toBe(4);
+        });
+
         it("says so, in place, for an earlier message that could not be loaded", async () => {
             serve(thread(), body("m1", "this one"), body("o2", "middle"));
             const user = userEvent.setup();

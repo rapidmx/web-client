@@ -33,7 +33,7 @@ describe("listMailSignatures", () => {
     it("fetches with the mailboxUid filter and default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [signature]));
         const result = await listMailSignatures("mb1");
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mail-signatures?limit=25&page=0&mailboxUid=mb1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mail-signatures?limit=200&page=0&mailboxUid=mb1", expect.anything());
         expect(result).toEqual([signature]);
     });
 

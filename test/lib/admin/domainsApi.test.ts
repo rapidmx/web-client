@@ -34,14 +34,14 @@ describe("listDomains", () => {
     it("fetches with default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [domain]));
         const result = await listDomains();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/domains?limit=25&page=0", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/domains?limit=25&page=0&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })), expect.anything());
         expect(result).toEqual([domain]);
     });
 
     it("forwards a custom page/limit", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listDomains({ page: 2, limit: 10 });
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/domains?limit=10&page=2", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/domains?limit=10&page=2&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })), expect.anything());
     });
 });
 

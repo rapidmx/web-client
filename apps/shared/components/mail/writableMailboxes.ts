@@ -22,6 +22,7 @@ import type { Mailbox } from "../../../../lib/mail/mailApi.js";
 import { getMyMailboxAccess } from "../../../../lib/mail/mailboxAccessApi.js";
 import type { ApiClient } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
+import { onSigningOut } from "./compose/composeFlushRegistry.js";
 
 /** `true` writable, `false` known view-only, `undefined` couldn't tell (treated as writable). */
 export type MailboxWritability = boolean | undefined;
@@ -34,6 +35,7 @@ export function clearMailboxWritabilityCache(): void {
     inFlight.clear();
     settled.clear();
 }
+onSigningOut(clearMailboxWritabilityCache);
 
 function isImplicitlyWritable(mailbox: Mailbox, userUid: string | undefined, trusted: boolean | undefined): boolean {
     return !!trusted || (!!userUid && mailbox.ownerUserUid === userUid);

@@ -25,7 +25,7 @@ describe("listLabels", () => {
     it("fetches with the mailboxUid filter and default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [label]));
         const result = await listLabels("mb1");
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/labels?limit=25&page=0&mailboxUid=mb1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/labels?limit=200&page=0&mailboxUid=mb1", expect.anything());
         expect(result).toEqual([label]);
     });
 

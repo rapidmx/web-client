@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../../testUtils.js";
@@ -98,6 +98,20 @@ describe("NewEscrowScopePage", () => {
         await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
 
         expect(await screen.findByText("At least one holder is required.")).toBeInTheDocument();
+    });
+
+    it("asks for both validity dates when one is cleared", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        const user = userEvent.setup();
+        render(<NewEscrowScopePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByText("New escrow scope");
+
+        await fillMinimalRequiredFields(user);
+        fireEvent.change(screen.getByLabelText("Not after"), { target: { value: "" } });
+        await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
+
+        expect(await screen.findByText("The key's validity dates, not before and not after, are both required.")).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/escrow/scopes" && init?.method === "POST")).toBe(false);
     });
 
     it("validates requiredHolders stays within 1..holderUserUids.length", async () => {

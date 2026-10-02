@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import {
     getTransportRule,
     TransportRule,
@@ -20,9 +19,10 @@ import {
     TRANSPORT_RULE_ACTION_TYPES,
     TRANSPORT_RULE_CONDITION_FIELDS,
 } from "./_transportRuleConfig.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import FormField from "../../../lib/components/forms/FormField.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -63,7 +63,7 @@ function TransportRuleDetailContent({ uid }: { uid: string }) {
                     });
                 }
             })
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this transport rule."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load this transport rule.")))
             .finally(() => setLoading(false));
     }, [uid]);
 
@@ -106,7 +106,7 @@ function TransportRuleDetailContent({ uid }: { uid: string }) {
             setOriginal(updated);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save this transport rule.");
+            setError(actionErrorMessage(err, "Could not save this transport rule."));
         } finally {
             setSaving(false);
         }

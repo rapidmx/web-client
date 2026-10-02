@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { AuditLogEntry, AuditLogFilters, listAuditLog } from "../../../lib/admin/auditLogApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const PAGE_SIZE = 25;
 /** How long typing in a filter box has to pause before the log is re-fetched. */
@@ -71,7 +71,7 @@ function AuditLogContent() {
                 if (!cancelled) setEntries(data);
             })
             .catch((err) => {
-                if (!cancelled) setError(err instanceof ApiRequestError ? err.message : "Could not load the audit log.");
+                if (!cancelled) setError(actionErrorMessage(err, "Could not load the audit log."));
             })
             .finally(() => {
                 if (!cancelled) setLoading(false);

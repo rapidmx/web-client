@@ -3,17 +3,18 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { createEscrowScope, EscrowScope, listEscrowScopes } from "../../../../../lib/admin/escrowScopesApi.js";
 import { generateEscrowKeyPair, GeneratedEscrowKeys } from "../../../../../lib/crypto/escrowKeys.js";
 import { toDatetimeLocal } from "../../../../../lib/util/dateInput.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../../lib/components/forms/FormField.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
+import { actionErrorMessage } from "../elevation.js";
 import EscrowScopeKeyAndHoldersFields, {
     emptyEscrowScopeKeyAndHoldersValue,
     EscrowScopeKeyAndHoldersValue,
+    keyValidityError,
     selfAsHolderError,
 } from "../escrowScopes/EscrowScopeKeyAndHoldersFields.js";
 
@@ -123,6 +124,11 @@ export default function EscrowSetupStep({ adminUid }: { adminUid?: string }) {
             setError("The public key, its type, and its fingerprint are all required.");
             return;
         }
+        const validityError = generated ? null : keyValidityError(keyAndHolders);
+        if (validityError) {
+            setError(validityError);
+            return;
+        }
         if (keyAndHolders.holderUserUids.length === 0) {
             setError("At least one holder is required.");
             return;
@@ -149,7 +155,7 @@ export default function EscrowSetupStep({ adminUid }: { adminUid?: string }) {
             chooseMode("none");
             setName("Escrow");
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not create the escrow scope.");
+            setError(actionErrorMessage(err, "Could not create the escrow scope."));
         } finally {
             setBusy(false);
         }

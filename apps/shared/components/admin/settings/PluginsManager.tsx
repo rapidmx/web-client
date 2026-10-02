@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import {
     addPlugin,
     expectedPlanOf,
@@ -35,11 +34,11 @@ import {
     searchPlugins,
     updatePlugin,
 } from "../../../../../lib/admin/pluginsApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
 import { notify } from "../../../notifications/store.js";
-import { isElevationRequired } from "../elevation.js";
+import { actionErrorMessage, isElevationMessage, isElevationRequired } from "../elevation.js";
 import { getAllowPrerelease, setAllowPrerelease } from "./pluginPreferences.js";
 
 const INPUT_CLASS =
@@ -55,7 +54,7 @@ const AFTER_CHANGE_POLL_MS = 2 * 60 * 1000;
 const MAX_STATUS_RETRY_MS = 60 * 1000;
 
 function errorMessage(err: unknown, fallback: string): string {
-    return err instanceof ApiRequestError ? err.message : fallback;
+    return actionErrorMessage(err, fallback);
 }
 
 /** Runs `action`, resolving why it failed, or `null`. */
@@ -215,6 +214,8 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
     const allowPrereleaseRef = useRef(allowPrerelease);
     /** Identifies the latest update check, so a slower earlier one can't replace what it found. */
     const updatesRequest = useRef(0);
+    // Set while a bulk action runs, which looks for updates once at its end rather than after each plugin it changes.
+    const bulkRunning = useRef(false);
     /** The plugins ticked for a bulk action. */
     const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
     /** Set while a bulk action runs. */
@@ -381,7 +382,9 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
             return [...next].sort((a, b) => a.name.localeCompare(b.name));
         });
         watchRollout();
-        void refreshUpdates();
+        if (!bulkRunning.current) {
+            void refreshUpdates();
+        }
     }
 
     /** Runs an action on a plugin's row (an installed plugin's, or an uninstalled one's), which is busy meanwhile, and
@@ -582,6 +585,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
         setError(null);
         setRetryEnableUid(null);
         setBulkFailure(null);
+        bulkRunning.current = true;
         await track(
             (async () => {
                 for (const [index, plugin] of ordered.entries()) {
@@ -597,7 +601,7 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                     }
                     failed.add(plugin.uid);
                     reasons.push(`${plugin.manifest.displayName}: ${problem}`);
-                    if (problem === ELEVATION_MESSAGE) {
+                    if (isElevationMessage(problem)) {
                         for (const untried of ordered.slice(index + 1)) {
                             failed.add(untried.uid);
                             reasons.push(`${untried.manifest.displayName}: Not attempted.`);
@@ -607,11 +611,15 @@ export default function PluginsManager({ embedded = false }: PluginsManagerProps
                 }
             })(),
         );
+        bulkRunning.current = false;
         setBulk(null);
         setSelected(failed);
         const succeeded: number = ordered.length - failed.size;
         if (kind === "uninstall" && succeeded > 0) {
             watchRollout();
+        }
+        if (kind !== "uninstall" && succeeded > 0) {
+            void refreshUpdates();
         }
         if (succeeded > 0) {
             notify({

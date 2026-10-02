@@ -170,6 +170,84 @@ describe("Send waits for an attachment that is still uploading", () => {
         await waitFor(() => expect(calls(fetchMock, isSend)).toHaveLength(1));
     });
 
+    it("does not send when Close is pressed while it waits: the draft is kept and the message stays unsent", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        let finishUpload!: (response: Response) => void;
+        const fetchMock = mockServer((url, init) =>
+            url.startsWith("/api/mail/attachments/upload") && init?.method === "POST" ? new Promise<Response>((resolve) => (finishUpload = resolve)) : undefined,
+        );
+        const user = userEvent.setup();
+        const { onClose } = await renderReady({ initialTo: "b@example.com" });
+        await user.upload(screen.getByLabelText("Attach files"), new File(["hello"], "notes.txt", { type: "text/plain" }));
+        await waitFor(() => expect(finishUpload).toBeDefined());
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
+        await screen.findByText("Waiting for attachments to finish uploading…");
+
+        fireEvent.click(screen.getByRole("button", { name: "Close" }));
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+        finishUpload(jsonResponse(200, attachment));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        expect(calls(fetchMock, isSend)).toHaveLength(0);
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not send when the draft is discarded while it waits", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        let finishUpload!: (response: Response) => void;
+        const fetchMock = mockServer((url, init) =>
+            url.startsWith("/api/mail/attachments/upload") && init?.method === "POST" ? new Promise<Response>((resolve) => (finishUpload = resolve)) : undefined,
+        );
+        const user = userEvent.setup();
+        const { onClose } = await renderReady({ initialTo: "b@example.com" });
+        await user.upload(screen.getByLabelText("Attach files"), new File(["hello"], "notes.txt", { type: "text/plain" }));
+        await waitFor(() => expect(finishUpload).toBeDefined());
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
+        await screen.findByText("Waiting for attachments to finish uploading…");
+
+        fireEvent.click(screen.getByRole("button", { name: "Discard draft" }));
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+        finishUpload(jsonResponse(200, attachment));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        expect(calls(fetchMock, isSend)).toHaveLength(0);
+    });
+
+    it("does not send without an attachment that failed to upload meanwhile, and says so", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        let failUpload!: (response: Response) => void;
+        const fetchMock = mockServer((url, init) =>
+            url.startsWith("/api/mail/attachments/upload") && init?.method === "POST" ? new Promise<Response>((resolve) => (failUpload = resolve)) : undefined,
+        );
+        const user = userEvent.setup();
+        const { onClose } = await renderReady({ initialTo: "b@example.com" });
+        await user.upload(screen.getByLabelText("Attach files"), new File(["hello"], "notes.txt", { type: "text/plain" }));
+        await waitFor(() => expect(failUpload).toBeDefined());
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
+        await screen.findByText("Waiting for attachments to finish uploading…");
+
+        failUpload(jsonResponse(413, { message: "Too large" }));
+
+        expect(await screen.findByText(/An attachment could not be uploaded, so the message was not sent/)).toBeInTheDocument();
+        expect(onClose).not.toHaveBeenCalled();
+        expect(calls(fetchMock, isSend)).toHaveLength(0);
+        expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled();
+    });
+
+    it("keeps Send disabled until the editor has loaded, so a message cannot go out without its signature or quote", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        let finishSignatures!: (response: Response) => void;
+        const fetchMock = mockServer((url) => (url.startsWith("/api/mail/mail-signatures") ? new Promise<Response>((resolve) => (finishSignatures = resolve)) : undefined));
+        render(<ComposeWindow session={session({ initialTo: "b@example.com" })} onClose={vi.fn()} onToggleMinimize={vi.fn()} autosaveDelayMs={60_000} />);
+        await waitFor(() => expect(calls(fetchMock, (url, method) => url === "/api/mail/messages" && method === "POST")).toHaveLength(1));
+        await waitFor(() => expect(finishSignatures).toBeDefined());
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+        finishSignatures(jsonResponse(200, []));
+        await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+    });
+
     it("waits for a pasted or inserted image too", async () => {
         getUnlockedKeys.mockReturnValue(undefined);
         mockServer();

@@ -6,7 +6,7 @@
  * comment for the shared ACL/authorization model every wrapper file here follows. */
 
 import { ApiClient, withClient } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
 
 export type TaskPriority = "low" | "normal" | "high";
 
@@ -39,7 +39,7 @@ export interface Task {
 
 /** Lists a folder's tasks, soonest due date first (tasks with no due date sort last). */
 export function listTasks(folderUid: string, params: ListParams = {}, client?: ApiClient): Promise<Task[]> {
-    return withClient(client, `/mail/tasks?${buildQuery(params, { folderUid, sort: JSON.stringify({ dueDate: "ASC" }) })}`);
+    return withClient(client, `/mail/tasks?${buildQuery(params, { folderUid, sort: JSON.stringify({ dueDate: "ASC", uid: "ASC" }) })}`);
 }
 
 export interface CreateTaskInput {
@@ -109,7 +109,7 @@ export interface TaskList {
 
 /** Lists a mailbox's task lists (Outlook To-Do-style custom lists), alphabetically by name. */
 export function listTaskLists(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<TaskList[]> {
-    return withClient(client, `/mail/task-lists?${buildQuery(params, { mailboxUid, sort: JSON.stringify({ name: "ASC" }) })}`);
+    return withClient(client, `/mail/task-lists?${buildQuery({ limit: SETTINGS_LIST_LIMIT, ...params }, { mailboxUid, sort: JSON.stringify({ name: "ASC", uid: "ASC" }) })}`);
 }
 
 export function createTaskList(input: { mailboxUid: string; name: string }, client?: ApiClient): Promise<TaskList> {

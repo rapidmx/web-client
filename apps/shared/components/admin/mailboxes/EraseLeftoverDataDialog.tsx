@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { eraseLeftoverMailbox } from "../../../../../lib/admin/leftoverMailboxApi.js";
 import { DataSubjectErasureStatus, getErasureRequest } from "../../../../../lib/mail/erasureRequestApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
 import { notify } from "../../../notifications/store.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -86,7 +86,7 @@ export default function EraseLeftoverDataDialog({
             setPhase("watching");
         } catch (err) {
             // The server's own words: a legal hold names its matter, a mailbox that exists again says so.
-            setError(err instanceof ApiRequestError ? err.message : "Could not start the erasure.");
+            setError(actionErrorMessage(err, "Could not start the erasure."));
             setPhase("confirm");
         }
     }

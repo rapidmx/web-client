@@ -72,7 +72,7 @@ import { setReadStateMany } from "../shared/mail/messageReadState.js";
 import { useMarkMessageRead } from "../shared/mail/useMarkMessageRead.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "../shared/components/mail/unreadStyle.js";
 import { LazyConversationThreadPane, LazyMessageDetailPane, prefetchReadingPane } from "../shared/components/mail/LazyReadingPane.js";
-import { rememberDecrypted } from "../shared/mail/decryptedMessages.js";
+import { decryptFailedBefore, mapWithConcurrency, markDecryptFailed, rememberDecrypted } from "../shared/mail/decryptedMessages.js";
 import ConversationList, { ListedConversation, conversationRowKey } from "../shared/components/mail/ConversationList.js";
 import type { ConversationThreadHead } from "../shared/components/mail/ConversationThreadPane.js";
 import SwipeRow from "../shared/components/mail/SwipeRow.js";
@@ -105,6 +105,8 @@ import { notifyApiError } from "../shared/notifications/apiErrors.js";
 const MESSAGE_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
 const LIST_PREVIEW_MAX_LENGTH = 160;
+/** How many encrypted rows are fetched and decrypted at once. */
+const DECRYPT_CONCURRENCY = 4;
 
 /** The literal outer-envelope `Subject` every encrypted message carries server-side - RFC 9788's
  * `hcp_baseline` policy obscures it to this exact string (see `smimeMessage.ts`'s
@@ -148,11 +150,15 @@ function stripHtmlToText(html: string): string {
  * and `handleUnlockList()`), and a single row's fetch/decrypt failure never blocks the rest.
  */
 async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys): Promise<Record<string, DecryptedRow>> {
-    const encrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER);
+    // A row that already came to nothing since the last unlock is not downloaded again by every refresh of the list.
+    const encrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER && !decryptFailedBefore(m.uid));
     // Imported once for all the rows, by whichever needs it first.
     let securityModule: Promise<typeof import("../../lib/crypto/messageSecurity.js")> | undefined;
-    const entries = await Promise.all(
-        encrypted.map(async (message): Promise<[string, DecryptedRow] | null> => {
+    // A few at a time: each is a download and a public-key decryption.
+    const entries = await mapWithConcurrency(
+        encrypted,
+        DECRYPT_CONCURRENCY,
+        async (message): Promise<[string, DecryptedRow] | null> => {
             try {
                 const rawMime = await getMessageRawContent(message.uid);
                 // Loaded here, on first use: the S/MIME code (PKI.js, ASN.1, X.509) is over half a megabyte and an inbox with
@@ -160,15 +166,17 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
                 const { evaluateMessageSecurity } = await (securityModule ??= import("../../lib/crypto/messageSecurity.js"));
                 const security = await evaluateMessageSecurity(rawMime, unlocked);
                 if (!security.subject && !security.html) {
+                    markDecryptFailed(message.uid);
                     return null;
                 }
                 const preview = security.html ? stripHtmlToText(security.html).slice(0, LIST_PREVIEW_MAX_LENGTH) : undefined;
                 rememberDecrypted(message.uid, message.mailboxUid, { subject: security.subject, preview });
                 return [message.uid, { subject: security.subject, preview }];
             } catch {
+                markDecryptFailed(message.uid);
                 return null;
             }
-        }),
+        },
     );
     const result: Record<string, DecryptedRow> = {};
     for (const entry of entries) {

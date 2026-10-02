@@ -203,6 +203,11 @@ export async function prepareContactPhoto(file: File): Promise<File> {
     if (head.resume !== undefined) {
         head = { ...head, ...(await jpegSizeFrom(file, head.resume)) };
     }
+    if (head.jpeg && (!head.width || !head.height)) {
+        // A JPEG whose size is not found within the segments read (or is given as zero, to be redefined by a later marker) could be of any
+        // size, and would reach the decoder unchecked.
+        throw new ContactPhotoError();
+    }
     if (head.width !== undefined && head.height !== undefined && head.width * head.height > CONTACT_PHOTO_MAX_PIXELS) {
         throw new ContactPhotoError(CONTACT_PHOTO_TOO_LARGE_MESSAGE);
     }

@@ -24,7 +24,7 @@ import {
     withClientRaw,
     withCsrfHeader,
 } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, buildQuery, sortQuery } from "../util/apiQuery.js";
 import { deviceTimeZone } from "../util/timeZone.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
 import { bytesToBinaryString } from "../crypto/mime.js";
@@ -167,7 +167,7 @@ export function safeSendersOf(mailbox: Pick<Mailbox, "safeSenders">): string[] {
 /** Lists the mailboxes the caller owns or has been granted - the same for everyone, an administrator included. With
  * `scope: "admin"` (admin console only) it lists every mailbox as administrative metadata instead. */
 export function listMailboxes(params: ListParams & AdminScopeParams = {}, client?: ApiClient): Promise<Mailbox[]> {
-    return withClient(client, `/mail/mailboxes?${buildQuery(params, scopeQuery(params))}`);
+    return withClient(client, `/mail/mailboxes?${buildQuery(params, { ...scopeQuery(params), ...(params.scope === "admin" ? sortQuery({ uid: "ASC" }) : {}) })}`);
 }
 
 /** One mailbox the caller owns or has been granted; with `scope: "admin"` (admin console only), its administrative metadata. */
@@ -331,7 +331,7 @@ export function listQuarantine(
     params: ListParams & AdminScopeParams = {},
     client?: ApiClient,
 ): Promise<QuarantineEntry[]> {
-    return withClient(client, `/mail/quarantine?${buildQuery(params, { mailboxUid, ...scopeQuery(params) })}`);
+    return withClient(client, `/mail/quarantine?${buildQuery(params, { mailboxUid, ...scopeQuery(params), ...sortQuery({ dateCreated: "DESC", uid: "ASC" }) })}`);
 }
 
 /**
@@ -379,7 +379,7 @@ export function listIngestQueue(
     params: ListParams & AdminScopeParams = {},
     client?: ApiClient,
 ): Promise<IngestQueueEntry[]> {
-    return withClient(client, `/mail/ingest-queue?${buildQuery(params, { mailboxUid, ...scopeQuery(params) })}`);
+    return withClient(client, `/mail/ingest-queue?${buildQuery(params, { mailboxUid, ...scopeQuery(params), ...sortQuery({ dateCreated: "DESC", uid: "ASC" }) })}`);
 }
 
 export interface AclRecord {

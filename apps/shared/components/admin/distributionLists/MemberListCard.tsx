@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { DistributionList, updateDistributionList } from "../../../../../lib/admin/distributionListsApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
+import { actionErrorMessage } from "../elevation.js";
 
 export interface MemberListCardProps {
     list: DistributionList;
@@ -45,7 +45,7 @@ export default function MemberListCard({ list, onUpdate }: MemberListCardProps) 
             setNewAddress("");
             onUpdate(updated);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not add this member.");
+            setError(actionErrorMessage(err, "Could not add this member."));
         } finally {
             setSaving(false);
         }
@@ -62,7 +62,7 @@ export default function MemberListCard({ list, onUpdate }: MemberListCardProps) 
             });
             onUpdate(updated);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not remove this member.");
+            setError(actionErrorMessage(err, "Could not remove this member."));
         } finally {
             setSaving(false);
         }

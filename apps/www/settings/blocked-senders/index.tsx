@@ -93,6 +93,10 @@ function ListSection({ kind, entries, otherEntries, ownAddresses, editable, onAd
             setError("That is one of your own addresses, so it cannot be blocked.");
             return;
         }
+        if (kind === "blocked" && checked.entry.startsWith("@") && ownAddresses.some((address) => address.toLowerCase().endsWith(checked.entry))) {
+            setError("That is your own domain: blocking it would send the mail of everyone at it - yours included - to Junk.");
+            return;
+        }
         setError(null);
         setBusy(true);
         try {

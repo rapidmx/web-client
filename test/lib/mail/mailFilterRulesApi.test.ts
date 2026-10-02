@@ -35,7 +35,7 @@ describe("listMailFilterRules", () => {
     it("fetches with the mailboxUid filter and default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [rule]));
         const result = await listMailFilterRules("mb1");
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mail-filter-rules?limit=25&page=0&mailboxUid=mb1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mail-filter-rules?limit=200&page=0&mailboxUid=mb1", expect.anything());
         expect(result).toEqual([rule]);
     });
 

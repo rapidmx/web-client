@@ -39,7 +39,7 @@ describe("listTasks", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [task]));
         const result = await listTasks("f1");
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/tasks?limit=25&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ dueDate: "ASC" })),
+            "/api/mail/tasks?limit=25&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ dueDate: "ASC", uid: "ASC" })),
             expect.anything(),
         );
         expect(result).toEqual([task]);
@@ -141,7 +141,7 @@ describe("listTaskLists", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [list]));
         const result = await listTaskLists("mb1");
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/task-lists?limit=25&page=0&mailboxUid=mb1&sort=" + encodeURIComponent(JSON.stringify({ name: "ASC" })),
+            "/api/mail/task-lists?limit=200&page=0&mailboxUid=mb1&sort=" + encodeURIComponent(JSON.stringify({ name: "ASC", uid: "ASC" })),
             expect.anything(),
         );
         expect(result).toEqual([list]);
@@ -214,7 +214,7 @@ describe("with an explicit ApiClient", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [task]));
         await listTasks("f1");
         expect(fetchMock.mock.calls[0][0]).toBe(
-            "/api/mail/tasks?limit=25&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ dueDate: "ASC" })),
+            "/api/mail/tasks?limit=25&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ dueDate: "ASC", uid: "ASC" })),
         );
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });

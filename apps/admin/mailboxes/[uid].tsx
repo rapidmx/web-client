@@ -4,7 +4,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { deleteMailbox, getMailbox, impersonateUser, Mailbox } from "../../../lib/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
@@ -12,7 +11,7 @@ import { resetNotifications } from "../../shared/notifications/store.js";
 import ShareAccessCard from "../../shared/components/admin/mailboxes/ShareAccessCard.js";
 import ResourceSettingsCard from "../../shared/components/admin/mailboxes/ResourceSettingsCard.js";
 import EscrowScopeCard from "../../shared/components/admin/mailboxes/EscrowScopeCard.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import { describeTimeZone } from "../../../lib/util/timeZone.js";
 import Modal from "../../../lib/components/overlays/Modal.js";
@@ -70,7 +69,7 @@ function MailboxDetailContent({
             resetNotifications();
             window.location.href = "/";
         } catch (err) {
-            setAccessError(err instanceof ApiRequestError ? err.message : "Could not impersonate this user.");
+            setAccessError(actionErrorMessage(err, "Could not impersonate this user."));
             setImpersonating(false);
         }
     }
@@ -109,7 +108,7 @@ function MailboxDetailContent({
         // The administration scope: administrative metadata only - the console never shows a mailbox's mail or settings.
         getMailbox(uid, { scope: "admin" })
             .then((loaded) => !cancelled && setMailbox(loaded))
-            .catch((err) => !cancelled && setError(err instanceof ApiRequestError ? err.message : "Could not load this mailbox."))
+            .catch((err) => !cancelled && setError(actionErrorMessage(err, "Could not load this mailbox.")))
             .finally(() => !cancelled && setLoading(false));
         return () => {
             cancelled = true;

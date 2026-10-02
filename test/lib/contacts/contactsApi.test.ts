@@ -169,7 +169,7 @@ describe("listContactLists", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [list]));
         const result = await listContactLists("mb1");
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/contact-lists?limit=25&page=0&mailboxUid=mb1&sort=" + encodeURIComponent(JSON.stringify({ name: "ASC" })),
+            "/api/mail/contact-lists?limit=200&page=0&mailboxUid=mb1&sort=" + encodeURIComponent(JSON.stringify({ name: "ASC", uid: "ASC" })),
             expect.anything(),
         );
         expect(result).toEqual([list]);

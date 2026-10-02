@@ -8,6 +8,7 @@ import { CalendarOccurrence } from "../../../../lib/calendar/recurrence.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import useIsMobile from "../../../../lib/util/useIsMobile.js";
+import { useMailboxUpdateAccess } from "../../mail/useMailboxUpdateAccess.js";
 import EventDetails from "./EventDetails.js";
 import EventEditor from "./EventEditor.js";
 import EventMatchNav from "./EventMatchNav.js";
@@ -119,6 +120,10 @@ export default function EventModal({
     const [syncWarning, setSyncWarning] = useState(false);
     // Whether the form holds anything a click on the backdrop would throw away (kept up to date by the editor).
     const dirtyRef = useRef(false);
+    // Escape or the close button on a form that holds something asks before throwing it away.
+    const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+    // An event on a calendar shared with the reader view-only cannot be changed, deleted or answered.
+    const canWrite = useMailboxUpdateAccess(mailboxOptions?.find((option) => option.mailbox.uid === occurrence?.mailboxUid)?.mailbox);
 
     if (!open) {
         return null;
@@ -168,7 +173,7 @@ export default function EventModal({
             focusKey={isForm ? layout : "details"}
             anchor={anchor}
             width={width}
-            onClose={isForm ? leaveForm : onClose}
+            onClose={isForm ? () => (dirtyRef.current ? setConfirmingDiscard(true) : leaveForm()) : onClose}
             onBackdropPress={isForm ? () => !dirtyRef.current && leaveForm() : undefined}
         >
             {isForm ? (
@@ -214,6 +219,7 @@ export default function EventModal({
                         isOwnAddress={isOwnAddress}
                         calendarName={calendars?.find((cal) => cal.uid === occurrence.folderUid)?.name}
                         calendarColor={folderColors?.[occurrence.folderUid]}
+                        canWrite={canWrite}
                         onClose={onClose}
                         onModify={() => setEditing(true)}
                         onSaved={onSaved}
@@ -222,6 +228,24 @@ export default function EventModal({
                 </SlideIn>
             )}
             {!isForm && matchNav && <EventMatchNav onPrevious={matchNav.onPrevious} onNext={matchNav.onNext} canPrevious={matchNav.canPrevious} canNext={matchNav.canNext} noun={matchNav.noun} />}
+            <Modal open={confirmingDiscard} onClose={() => setConfirmingDiscard(false)} title="Discard changes?">
+                <p className="text-sm mb-5">What you entered in this event has not been saved.</p>
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingDiscard(false)}>
+                        Keep editing
+                    </Button>
+                    <Button
+                        type="button"
+                        className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger"
+                        onClick={() => {
+                            setConfirmingDiscard(false);
+                            leaveForm();
+                        }}
+                    >
+                        Discard
+                    </Button>
+                </div>
+            </Modal>
         </EventShell>
     );
 }

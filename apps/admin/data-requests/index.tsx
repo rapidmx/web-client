@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 import {
     DataExportFormat,
@@ -25,7 +24,7 @@ import {
 import { Folder, listFolders } from "../../../lib/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import { LoadMoreButton, usePagedList } from "../../shared/components/admin/usePagedList.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import Modal from "../../../lib/components/overlays/Modal.js";
 
@@ -186,7 +185,11 @@ function ImportRequestsSection() {
         void list.reload();
     }, []);
 
+    // Only the latest lookup's answer is applied: a slower answer for a mailbox typed earlier would otherwise list its folders beside the mailbox now named.
+    const folderLookup = useRef(0);
+
     function handleLoadFolders() {
+        const lookup = ++folderLookup.current;
         const uid = mailboxUid.trim();
         setTargetFolderUid("");
         setFolders([]);
@@ -196,11 +199,18 @@ function ImportRequestsSection() {
         }
         listFolders(uid)
             .then((all) => {
+                if (lookup !== folderLookup.current) {
+                    return;
+                }
                 const mailFolders = all.filter((f) => !NON_MAIL_FOLDER_TYPES.has(f.type));
                 setFolders(mailFolders);
                 setTargetFolderUid(mailFolders[0]?.uid ?? "");
             })
-            .catch((err) => setFolderError(err instanceof ApiRequestError ? err.message : "Could not load this mailbox's folders."));
+            .catch((err) => {
+                if (lookup === folderLookup.current) {
+                    setFolderError(actionErrorMessage(err, "Could not load this mailbox's folders."));
+                }
+            });
     }
 
     function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
@@ -213,7 +223,7 @@ function ImportRequestsSection() {
         setUploading(true);
         uploadMailboxImport(file, { format: importFormatFromFilename(file.name), targetFolderUid, mailboxUid: mailboxUid.trim() })
             .then(() => list.reload())
-            .catch((err) => setUploadError(err instanceof ApiRequestError ? err.message : "Could not upload this file."))
+            .catch((err) => setUploadError(actionErrorMessage(err, "Could not upload this file.")))
             .finally(() => setUploading(false));
     }
 
@@ -371,7 +381,7 @@ function ErasureRequestsSection() {
             closeDenyModal();
             await list.reload();
         } catch (err) {
-            setDenyError(err instanceof ApiRequestError ? err.message : "Could not deny this request.");
+            setDenyError(actionErrorMessage(err, "Could not deny this request."));
         } finally {
             setDenying(false);
         }

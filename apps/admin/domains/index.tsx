@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { Domain, listDomains } from "../../../lib/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const PAGE_SIZE = 25;
 
@@ -30,7 +30,7 @@ function DomainsListContent() {
         setError(null);
         listDomains({ page, limit: PAGE_SIZE })
             .then(setDomains)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load domains."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load domains.")))
             .finally(() => setLoading(false));
     }, [page]);
 

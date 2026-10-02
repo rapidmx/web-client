@@ -380,7 +380,7 @@ export default function ConversationThreadPane({
                         }
                     },
                     track: trackMessageChange,
-                });
+                }, client);
             }
         }
     }, [expandedUids, messages, client]);

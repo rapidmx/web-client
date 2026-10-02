@@ -253,6 +253,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
     // Distinguishes the "Save your new recovery codes" screen's copy for the two different actions that
     // land on it - a plain regeneration only invalidates old recovery codes, while a rotation also
     // invalidates every other unlock method, which the copy needs to say plainly.
+    const [confirmingRotation, setConfirmingRotation] = useState(false);
     const [recoveryCodesReason, setRecoveryCodesReason] = useState<"regenerate" | "rotate">("regenerate");
     const [codesSaved, setCodesSaved] = useState(false);
     const [codesCopied, setCodesCopied] = useState(false);
@@ -745,7 +746,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
      * working the instant this succeeds, since `rekey()` replaces `masterKeyWraps` wholesale - the whole
      * point, for a captured-wrap scenario where it's unclear which method was compromised.
      */
-    async function handleRotateKeys(e: FormEvent) {
+    function handleRotateKeys(e: FormEvent) {
         e.preventDefault();
         if (rotationBlockedBySigning) {
             // The form's controls are disabled in this state too; this also covers an implicit submit.
@@ -759,6 +760,13 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
             setActionError("Passwords do not match.");
             return;
         }
+        setActionError(null);
+        // One press must not end every other unlock method and every other device's password: say so, and wait for a yes.
+        setConfirmingRotation(true);
+    }
+
+    async function rotateKeys() {
+        setConfirmingRotation(false);
         setActionError(null);
         setEscrowError(null);
         setRotating(true);
@@ -1200,6 +1208,20 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                             </Button>
                         </div>
 
+                        <Modal open={confirmingRotation} onClose={() => setConfirmingRotation(false)} title="Rotate your keys?">
+                            <p className="text-sm mb-3">
+                                Every other way of unlocking this mailbox - its password, its recovery codes, and every other device&rsquo;s saved password - stops working
+                                the moment this finishes, and cannot be brought back. You will be shown new recovery codes once.
+                            </p>
+                            <div className="flex gap-3 justify-end">
+                                <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingRotation(false)}>
+                                    Cancel
+                                </Button>
+                                <Button type="button" className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger" onClick={() => void rotateKeys()}>
+                                    Yes, rotate my keys
+                                </Button>
+                            </div>
+                        </Modal>
                         <form onSubmit={handleRotateKeys} className="flex flex-col gap-2 border-t border-border pt-6">
                             <h2 className="text-sm font-semibold">Rotate keys</h2>
                             <p className="text-xs text-text-muted mb-1">

@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { DistributionList, getDistributionList } from "../../../lib/admin/distributionListsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import MemberListCard from "../../shared/components/admin/distributionLists/MemberListCard.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 export default function DistributionListDetailPage(props: Omit<AdminShellProps, "active"> & { params: { uid: string } }) {
     return (
@@ -27,7 +27,7 @@ function DistributionListDetailContent({ uid }: { uid: string }) {
         setError(null);
         getDistributionList(uid)
             .then(setList)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this distribution list."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load this distribution list.")))
             .finally(() => setLoading(false));
     }, [uid]);
 

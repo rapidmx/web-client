@@ -148,11 +148,50 @@ describe("SignatureDetailPage", () => {
         await user.click(screen.getByRole("checkbox", { name: "Use for replies and forwards" }));
         await user.click(screen.getByRole("button", { name: "Save changes" }));
 
-        await vi.waitFor(() => expect(calls.some((c) => c.url === "/api/mail/mail-signatures/sig1" && c.method === "PUT")).toBe(true));
-        // sig2 (a different signature) had its default cleared; sig1 (the one being saved) was never
-        // itself targeted by clearPreviousDefaults, only by its own final save PUT.
+        await vi.waitFor(() => expect(calls.some((c) => c.url === "/api/mail/mail-signatures/sig2" && c.method === "PUT")).toBe(true));
+        // sig2 (a different signature) had its default cleared - after sig1's own save; sig1 (the one being saved) was never
+        // itself targeted by clearPreviousDefaults, only by its own save PUT.
+        expect(calls.findIndex((c) => c.url === "/api/mail/mail-signatures/sig1" && c.method === "PUT")).toBeLessThan(
+            calls.findIndex((c) => c.url === "/api/mail/mail-signatures/sig2" && c.method === "PUT"),
+        );
         const sig2Clear = calls.find((c) => c.url === "/api/mail/mail-signatures/sig2");
         expect(sig2Clear?.body).toEqual({ uid: "sig2", version: 5, isDefaultForReplyForward: false });
+    });
+
+    it("leaves the other signatures' defaults alone when this one's save is refused", async () => {
+        const calls: { url: string; method: string }[] = [];
+        mockShell((url, init) => {
+            calls.push({ url, method: init?.method ?? "GET" });
+            if (url === "/api/mail/mail-signatures/sig1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, { ...signature, isDefaultForReplyForward: false });
+            if (url === "/api/mail/mail-signatures/sig1" && init?.method === "PUT") return jsonResponse(409, { message: "version conflict" });
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<SignatureDetailPage userUid="u1" params={{ uid: "sig1" }} />);
+        await screen.findByLabelText("Name");
+
+        await user.click(screen.getByRole("checkbox", { name: "Use for replies and forwards" }));
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+        expect(await screen.findByText("version conflict")).toBeInTheDocument();
+        expect(calls.some((c) => c.url.startsWith("/api/mail/mail-signatures?") || (c.method === "PUT" && c.url.endsWith("sig2")))).toBe(false);
+    });
+
+    it("looks for the other defaults in the signature's own mailbox", async () => {
+        const urls: string[] = [];
+        mockShell((url, init) => {
+            urls.push(url);
+            if (url === "/api/mail/mail-signatures/sig1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, { ...signature, mailboxUid: "mb9", isDefaultForReplyForward: false });
+            if (url === "/api/mail/mail-signatures/sig1" && init?.method === "PUT") return jsonResponse(200, { ...signature, mailboxUid: "mb9" });
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<SignatureDetailPage userUid="u1" params={{ uid: "sig1" }} />);
+        await screen.findByLabelText("Name");
+
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+        await vi.waitFor(() => expect(urls.some((url) => url.startsWith("/api/mail/mail-signatures?") && url.includes("mailboxUid=mb9"))).toBe(true));
     });
 
     it("shows an error message when saving fails, without discarding the loaded signature", async () => {

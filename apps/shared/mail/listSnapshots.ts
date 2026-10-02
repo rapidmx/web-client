@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import type { ConversationSummary } from "../../../lib/mail/conversationsApi.js";
 import type { Message } from "../../../lib/mail/mailApi.js";
+import { onSigningOut } from "../components/mail/compose/composeFlushRegistry.js";
 
 /**
  * A short-lived, in-memory copy of a folder's listing, so that switching to a folder that was shown a moment ago (or coming back
@@ -85,3 +86,4 @@ export function saveListScroll(key: string, scrollTop: number): void {
 export function clearListSnapshots(): void {
     snapshots.clear();
 }
+onSigningOut(clearListSnapshots);

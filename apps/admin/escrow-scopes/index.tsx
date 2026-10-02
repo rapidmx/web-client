@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { EscrowScope, listEscrowScopes } from "../../../lib/admin/escrowScopesApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const PAGE_SIZE = 25;
 
@@ -30,7 +30,7 @@ function EscrowScopesContent() {
         setError(null);
         listEscrowScopes({ page, limit: PAGE_SIZE })
             .then(setScopes)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load escrow scopes."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load escrow scopes.")))
             .finally(() => setLoading(false));
     }, [page]);
 

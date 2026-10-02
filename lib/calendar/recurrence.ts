@@ -56,6 +56,28 @@ function normalizedInterval(interval: number): number {
     return Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : 1;
 }
 
+/** The most days each month (January first) can ever have, counting February as a leap year's. */
+const MAX_DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * Throws for a rule that can never produce an occurrence: a month outside 1-12, a day of the month outside 1-31 (or -1 to -31), or days
+ * that no listed month has (the 30th of February). `rrule` has no way to know that, so `between()` walks every day up to the year 9999
+ * looking for one, which freezes the tab for seconds each time such an event is drawn.
+ */
+function assertSatisfiable(rule: RecurrenceRule): void {
+    const months = rule.byMonth ?? [];
+    const days = rule.byMonthDay ?? [];
+    if (months.some((m) => !Number.isInteger(m) || m < 1 || m > 12)) {
+        throw new Error("The recurrence rule has a month that does not exist");
+    }
+    if (days.some((d) => !Number.isInteger(d) || d === 0 || Math.abs(d) > 31)) {
+        throw new Error("The recurrence rule has a day of the month that does not exist");
+    }
+    if (months.length > 0 && days.length > 0 && !months.some((m) => days.some((d) => Math.abs(d) <= MAX_DAYS_IN_MONTH[m - 1]))) {
+        throw new Error("The recurrence rule names days that none of its months have");
+    }
+}
+
 function createRRule(rule: RecurrenceRule, dtstart: Date, until: Date | null, tzid: string | null): RRuleNS.RRule {
     return new RRule({
         freq: FREQ_MAP[rule.freq],
@@ -244,6 +266,7 @@ export function expandOccurrences(event: CalendarEvent, rangeStart: Date, rangeE
         return overlaps ? [{ ...event, occurrenceKey: event.uid, isRecurringOccurrence: false }] : [];
     }
 
+    assertSatisfiable(event.recurrenceRule);
     const zone = event.allDay ? UTC_ZONE : resolveZone(event.timezone);
     const startWall = zone.toWall(start.getTime());
     // The duration in wall-clock terms, so an occurrence also keeps its local end time across DST.

@@ -4,7 +4,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { toDatetimeLocal } from "../../../lib/util/dateInput.js";
 import {
     deleteEscrowScope,
@@ -16,12 +15,14 @@ import {
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import EscrowScopeKeyAndHoldersFields, {
     EscrowScopeKeyAndHoldersValue,
+    keyValidityError,
     selfAsHolderError,
 } from "../../shared/components/admin/escrowScopes/EscrowScopeKeyAndHoldersFields.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import FormField from "../../../lib/components/forms/FormField.js";
 import Modal from "../../../lib/components/overlays/Modal.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -145,7 +146,7 @@ function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: s
                     setFields(toFieldsValue(loaded));
                 }
             })
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this escrow scope."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load this escrow scope.")))
             .finally(() => setLoading(false));
     }, [uid]);
 
@@ -163,6 +164,11 @@ function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: s
         }
         if (!fields!.publicKey.trim() || !fields!.keyType.trim() || !fields!.fingerprint.trim()) {
             setError("The public key, its type, and its fingerprint are all required.");
+            return;
+        }
+        const validityError = keyValidityError(fields!);
+        if (validityError) {
+            setError(validityError);
             return;
         }
         if (fields!.holderUserUids.length === 0) {
@@ -208,7 +214,7 @@ function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: s
             setFields(toFieldsValue(updated));
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save this escrow scope.");
+            setError(actionErrorMessage(err, "Could not save this escrow scope."));
         } finally {
             setSaving(false);
         }
@@ -231,7 +237,7 @@ function EscrowScopeDetailContent({ uid, adminUid }: { uid: string; adminUid?: s
         } catch (err) {
             // Most commonly a 409 ("referenced by an existing Matter") — see `deleteEscrowScope()`'s own
             // doc comment - surfaced as-is rather than special-cased.
-            setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this escrow scope.");
+            setDeleteError(actionErrorMessage(err, "Could not delete this escrow scope."));
             setDeleting(false);
         }
     }

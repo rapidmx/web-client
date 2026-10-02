@@ -85,7 +85,7 @@ import LabelMenuButton from "./labelMenu.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import EncryptedBody from "./reading/EncryptedBody.js";
 import { ENCRYPTED_SUBJECT_PLACEHOLDER, displaySubject } from "./reading/EncryptedPreview.js";
-import { rememberDecrypted } from "../../mail/decryptedMessages.js";
+import { mapWithConcurrency, rememberDecrypted } from "../../mail/decryptedMessages.js";
 import MessageBody, { BodySkeleton } from "./reading/MessageBody.js";
 import { BODY_FONT_STYLE, CardShell, SenderAvatar, SubjectCard } from "./reading/MessageCard.js";
 import MessageMoreMenu, { MessageMenuActions } from "./reading/MessageMoreMenu.js";
@@ -423,6 +423,9 @@ function subjectCore(subject: string | undefined): string {
 function sameSubject(subject: string, threadSubject: string | undefined): boolean {
     return subjectCore(subject) === subjectCore(threadSubject);
 }
+
+/** How many earlier messages of a conversation are loaded at once when printing it. */
+const PRINT_CONCURRENCY = 4;
 
 function formatBytes(bytes: number): string {
     if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
@@ -1140,15 +1143,14 @@ function MessageDetailContent({
         try {
             const content = bodyContent ?? (await fetchBodyContent(message.uid, message.version));
             const older = await olderConversationMessages(message, client).catch(() => []);
-            const earlier = await Promise.all(
-                older.map((other) =>
-                    printableOlderMessage(other).catch(
-                        (): PrintableMessage => ({
-                            subject: other.subject || "(no subject)",
-                            headers: printHeaders(other, formatMailAddress(other.from)),
-                            content: { kind: "text", text: "This message could not be loaded, so it is not printed." },
-                        }),
-                    ),
+            // A few at a time: a long conversation is hundreds of messages, each of them several requests.
+            const earlier = await mapWithConcurrency(older, PRINT_CONCURRENCY, (other) =>
+                printableOlderMessage(other).catch(
+                    (): PrintableMessage => ({
+                        subject: other.subject || "(no subject)",
+                        headers: printHeaders(other, formatMailAddress(other.from)),
+                        content: { kind: "text", text: "This message could not be loaded, so it is not printed." },
+                    }),
                 ),
             );
             const printable = buildConversationPrintDocument(shownSubject, [

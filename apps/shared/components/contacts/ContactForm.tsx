@@ -127,8 +127,9 @@ export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes,
                 notes: notes.trim() || cleared,
                 favorite,
                 categories,
-                emails,
-                phones,
+                // A row added with "+ Add" and left empty is not sent: the server refuses a contact with a blank address or number.
+                emails: emails.filter((email) => email.address.trim()).map((email) => ({ ...email, address: email.address.trim() })),
+                phones: phones.filter((phone) => phone.phoneNumber.trim()).map((phone) => ({ ...phone, phoneNumber: phone.phoneNumber.trim() })),
                 addresses,
             };
             const key = JSON.stringify([targetMailboxUid, input]);

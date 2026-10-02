@@ -34,14 +34,14 @@ describe("listTransportRules", () => {
     it("fetches with default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [rule]));
         const result = await listTransportRules();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/transport-rules?limit=25&page=0", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/transport-rules?limit=25&page=0&sort=" + encodeURIComponent(JSON.stringify({ sequence: "ASC", uid: "ASC" })), expect.anything());
         expect(result).toEqual([rule]);
     });
 
     it("forwards a custom page/limit", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listTransportRules({ page: 2, limit: 10 });
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/transport-rules?limit=10&page=2", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/transport-rules?limit=10&page=2&sort=" + encodeURIComponent(JSON.stringify({ sequence: "ASC", uid: "ASC" })), expect.anything());
     });
 });
 

@@ -9,7 +9,7 @@
  */
 
 import { ApiClient, withClient } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, buildQuery, sortQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
 
@@ -37,7 +37,7 @@ export interface Domain {
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
  * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 export function listDomains(params: ListParams = {}, client?: ApiClient): Promise<Domain[]> {
-    return withClient(client, `/mail/domains?${buildQuery(params)}`);
+    return withClient(client, `/mail/domains?${buildQuery(params, sortQuery({ uid: "ASC" }))}`);
 }
 
 export function getDomain(uid: string, client?: ApiClient): Promise<Domain> {

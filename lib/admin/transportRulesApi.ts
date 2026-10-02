@@ -10,7 +10,7 @@
  */
 
 import { ApiClient, withClient } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, buildQuery, sortQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
 
@@ -53,7 +53,7 @@ export interface TransportRule {
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
  * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 export function listTransportRules(params: ListParams = {}, client?: ApiClient): Promise<TransportRule[]> {
-    return withClient(client, `/mail/transport-rules?${buildQuery(params)}`);
+    return withClient(client, `/mail/transport-rules?${buildQuery(params, sortQuery({ sequence: "ASC", uid: "ASC" }))}`);
 }
 
 export function getTransportRule(uid: string, client?: ApiClient): Promise<TransportRule> {

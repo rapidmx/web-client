@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { Mailbox, updateMailbox } from "../../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -65,7 +65,7 @@ export default function ResourceSettingsCard({ mailbox, onUpdate }: ResourceSett
             onUpdate(updated);
             setSaved(true);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save resource settings.");
+            setError(actionErrorMessage(err, "Could not save resource settings."));
         } finally {
             setSaving(false);
         }

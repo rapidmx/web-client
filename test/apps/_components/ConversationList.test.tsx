@@ -13,6 +13,9 @@ import { clearInviteCache } from "../../../apps/shared/components/mail/invite/in
 import { createApiClient } from "../../../lib/util/api.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 
+const { decryptForDisplay } = vi.hoisted(() => ({ decryptForDisplay: vi.fn<(uid: string, mailboxUid: string) => Promise<void>>(async () => undefined) }));
+vi.mock("../../../apps/shared/mail/decryptedMessages.js", async (importOriginal) => ({ ...(await importOriginal<object>()), decryptForDisplay }));
+
 function conversationFixture(overrides: Record<string, unknown> = {}) {
     return {
         conversationId: "c1",
@@ -76,6 +79,8 @@ function renderList(props: Partial<React.ComponentProps<typeof ConversationList>
 afterEach(() => {
     vi.unstubAllGlobals();
     clearInviteCache();
+    decryptForDisplay.mockReset();
+    decryptForDisplay.mockResolvedValue(undefined);
 });
 
 describe("ConversationList", () => {
@@ -371,6 +376,94 @@ describe("ConversationList", () => {
         await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
 
         expect(await screen.findByRole("alert")).toHaveTextContent("Could not load this conversation's messages.");
+    });
+
+    describe("when the list changes under an expanded or cached thread", () => {
+        const threadCalls = (fetchMock: ReturnType<typeof mockFetch>) => fetchMock.mock.calls.filter(([url]: [string]) => String(url).includes("/conversations/c1"));
+        const newMail = conversationFixture({ messageUids: ["m1", "m2", "m3"], messageCount: 3, latestMessageUid: "m3" });
+
+        it("fetches an expanded thread again in place when the list says it has new messages, keeping the rows meanwhile", async () => {
+            const user = userEvent.setup();
+            let thread = [messageFixture({ uid: "m1", bodyPreview: "The opening message" })];
+            const fetchMock = mockFetch(() => jsonResponse(200, thread));
+            const { rerender } = render(<ConversationList conversations={[conversationFixture()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+            await screen.findByText("The opening message");
+
+            // Same messages in a new list array: nothing is fetched again.
+            rerender(<ConversationList conversations={[conversationFixture()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            expect(threadCalls(fetchMock)).toHaveLength(1);
+
+            thread = [thread[0], messageFixture({ uid: "m3", bodyPreview: "Brand new reply" })];
+            rerender(<ConversationList conversations={[newMail]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+
+            expect(await screen.findByText("Brand new reply")).toBeInTheDocument();
+            expect(screen.getByText("The opening message")).toBeInTheDocument();
+            expect(threadCalls(fetchMock)).toHaveLength(2);
+        });
+
+        it("keeps the rows it has when fetching the changed thread again fails", async () => {
+            const user = userEvent.setup();
+            let fail = false;
+            const fetchMock = mockFetch(() => (fail ? jsonResponse(500, { message: "boom" }) : jsonResponse(200, [messageFixture({ uid: "m1", bodyPreview: "The opening message" })])));
+            const { rerender } = render(<ConversationList conversations={[conversationFixture()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+            await screen.findByText("The opening message");
+
+            fail = true;
+            rerender(<ConversationList conversations={[newMail]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await waitFor(() => expect(threadCalls(fetchMock)).toHaveLength(2));
+
+            expect(screen.getByText("The opening message")).toBeInTheDocument();
+            expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        });
+
+        it("forgets a collapsed thread the list has changed, fetching it when next opened, and one that left the list", async () => {
+            const user = userEvent.setup();
+            const fetchMock = mockFetch(() => jsonResponse(200, [messageFixture({ uid: "m1", bodyPreview: "The opening message" })]));
+            const { rerender } = render(<ConversationList conversations={[conversationFixture()]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+            await screen.findByText("The opening message");
+            await user.click(screen.getByRole("button", { name: "Collapse conversation: Hello there" }));
+
+            rerender(<ConversationList conversations={[newMail]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+            await screen.findByText("The opening message");
+            expect(threadCalls(fetchMock)).toHaveLength(2);
+
+            // It leaves the list, and returns: what was fetched of it is gone.
+            await user.click(screen.getByRole("button", { name: "Collapse conversation: Hello there" }));
+            rerender(<ConversationList conversations={[conversationFixture({ conversationId: "c2", subject: "Other" })]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            rerender(<ConversationList conversations={[newMail]} mailboxUid="mb1" selectedUid={null} onOpenMessage={vi.fn()} />);
+            await user.click(screen.getByRole("button", { name: "Expand conversation: Hello there" }));
+            await waitFor(() => expect(threadCalls(fetchMock)).toHaveLength(3));
+        });
+    });
+
+    describe("decrypting encrypted rows", () => {
+        const encrypted = (n: number) =>
+            Array.from({ length: n }, (_, i) => conversationFixture({ conversationId: `c${i}`, subject: "[...]", latestPreview: "", latestMessageUid: `m${i}` }));
+
+        it("decrypts a few at a time, and stops queuing the rest once the list has been replaced", async () => {
+            const pending: (() => void)[] = [];
+            decryptForDisplay.mockImplementation(() => new Promise<void>((resolve) => pending.push(resolve)));
+            const props = { mailboxUid: "mb1", selectedUid: null, onOpenMessage: vi.fn() };
+            const { rerender } = render(<ConversationList conversations={encrypted(6)} {...props} />);
+            await waitFor(() => expect(decryptForDisplay).toHaveBeenCalledTimes(4));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(decryptForDisplay).toHaveBeenCalledTimes(4);
+
+            // A newer list replaces it: the first run's remaining two are never asked for.
+            rerender(<ConversationList conversations={encrypted(6)} {...props} />);
+            await waitFor(() => expect(decryptForDisplay).toHaveBeenCalledTimes(8));
+            for (let round = 0; round < 6; round++) {
+                await act(async () => {
+                    pending.splice(0).forEach((resolve) => resolve());
+                    await new Promise((resolve) => setTimeout(resolve, 5));
+                });
+            }
+            expect(decryptForDisplay).toHaveBeenCalledTimes(10);
+        });
     });
 
     describe("select mode", () => {

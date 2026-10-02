@@ -44,7 +44,7 @@ describe("MailboxesListPage", () => {
         });
         render(<MailboxesListPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         expect(await screen.findByText("u1@example.com")).toBeInTheDocument();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=25&page=0&scope=admin", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=25&page=0&scope=admin&sort=%7B%22uid%22%3A%22ASC%22%7D", expect.anything());
         expect(screen.getByText(/Administrative details only/)).toBeInTheDocument();
         expect(screen.getByText(/impersonate them from their mailbox page/)).toBeInTheDocument();
         expect(screen.getByText("u2@example.com")).toBeInTheDocument();

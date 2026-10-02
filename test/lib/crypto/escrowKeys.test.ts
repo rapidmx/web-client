@@ -5,7 +5,7 @@
 import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
 import { describe, expect, it } from "vitest";
-import { generateEscrowKeyPair } from "../../../lib/crypto/escrowKeys.js";
+import { escrowPublicKeyFingerprint, generateEscrowKeyPair, normalizeFingerprint } from "../../../lib/crypto/escrowKeys.js";
 import { fromBase64 } from "../../../lib/crypto/encoding.js";
 import { buildEscrowWrap } from "../../../lib/crypto/masterKeyWraps.js";
 import { computeCertFingerprint, decryptEnvelopedData } from "../../../lib/crypto/smime.js";
@@ -53,5 +53,23 @@ describe("generateEscrowKeyPair", () => {
         ]);
         const unwrapped = await decryptEnvelopedData(fromBase64(wrap.ciphertext), keys.certificateDer, holderKey);
         expect(unwrapped).toEqual(masterKey);
+    });
+});
+
+describe("escrowPublicKeyFingerprint", () => {
+    it("is the SHA-256 fingerprint of the certificate a pasted public key holds, and null for anything that is not one", async () => {
+        const generated = await generateEscrowKeyPair({ name: "Legal", validDays: 30 });
+        expect(await escrowPublicKeyFingerprint(generated.publicKey.publicKey)).toBe(generated.publicKey.fingerprint);
+        expect(await escrowPublicKeyFingerprint(`  ${generated.publicKey.publicKey}
+`)).toBe(generated.publicKey.fingerprint);
+        expect(await escrowPublicKeyFingerprint("not base64 !!")).toBeNull();
+        expect(await escrowPublicKeyFingerprint("AAAA")).toBeNull();
+        expect(await escrowPublicKeyFingerprint("")).toBeNull();
+    });
+});
+
+describe("normalizeFingerprint", () => {
+    it("keeps only the lower-case hex digits, whatever separators or case it was typed with", () => {
+        expect(normalizeFingerprint("AB:cd 12-EF")).toBe("abcd12ef");
     });
 });

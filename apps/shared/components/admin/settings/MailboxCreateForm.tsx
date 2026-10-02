@@ -3,17 +3,17 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { getMailboxPolicy } from "../../../../../lib/admin/mailboxPolicyApi.js";
 import { LeftoverConflict, leftoverConflictOf } from "../../../../../lib/admin/leftoverMailboxApi.js";
 import { createMailbox, listMailboxDomains, Mailbox, resolveMailboxOwner, ResolvedPrincipal } from "../../../../../lib/mail/mailApi.js";
 import { describeTimeZone, deviceTimeZone, zoneClock } from "../../../../../lib/util/timeZone.js";
 import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../../lib/components/forms/FormField.js";
 import PrincipalResolver, { describePerson } from "../../sharing/PrincipalResolver.js";
 import EraseLeftoverDataDialog from "../mailboxes/EraseLeftoverDataDialog.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -98,6 +98,11 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
             setError("A primary SMTP address is required.");
             return;
         }
+        // With the domain chosen beside it, a local part with an "@" would make `a@b.com@domain`, which the server refuses without saying why.
+        if (constrained && /[@＠﹫]/.test(localPart)) {
+            setError("The part before the domain can't contain \"@\" - choose the domain from the list instead.");
+            return;
+        }
         if (!displayName.trim()) {
             setError("A display name is required.");
             return;
@@ -143,7 +148,7 @@ export default function MailboxCreateForm({ onCreated, defaults, submitLabel = "
                 // Not a plain failure: the address is taken by what a deleted mailbox left, which can be erased right here.
                 setLeftover({ address, conflict });
             } else {
-                setError(err instanceof ApiRequestError ? err.message : "Could not create the mailbox.");
+                setError(actionErrorMessage(err, "Could not create the mailbox."));
             }
         } finally {
             setSaving(false);

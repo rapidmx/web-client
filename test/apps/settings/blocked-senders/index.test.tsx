@@ -231,6 +231,24 @@ describe("SettingsBlockedSendersPage", () => {
         await waitFor(() => expect(safe.getByText("me@example.com")).toBeInTheDocument());
     });
 
+    it("does not let the reader block their own domain, but lets them block another", async () => {
+        const fetchMock = mockShell([mailbox], (url, init) =>
+            url === "/api/mail/mailboxes/mb1/blocked-senders" && init?.method === "POST" ? change(["@junk.example"], [], "@junk.example") : undefined,
+        );
+        const user = userEvent.setup();
+        render(<SettingsBlockedSendersPage userUid="u1" />);
+        const blocked = await section("Blocked senders");
+        await user.type(await blocked.findByLabelText("Add a blocked sender"), "Example.com");
+        await user.click(blocked.getByRole("button", { name: "Block" }));
+        expect(await blocked.findByRole("alert")).toHaveTextContent("That is your own domain");
+        expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes("blocked-senders") && init?.method === "POST")).toBe(false);
+
+        await user.clear(blocked.getByLabelText("Add a blocked sender"));
+        await user.type(blocked.getByLabelText("Add a blocked sender"), "junk.example");
+        await user.click(blocked.getByRole("button", { name: "Block" }));
+        await waitFor(() => expect(blocked.getByText("Everyone at junk.example")).toBeInTheDocument());
+    });
+
     it("knows the addresses of every mailbox the reader has, and copes with one that lists no aliases", async () => {
         const { aliasAddresses, ...bare } = mailbox;
         mockShell([mailbox, { ...bare, uid: "mb2", displayName: "Other", primarySmtpAddress: "other@example.com" }]);

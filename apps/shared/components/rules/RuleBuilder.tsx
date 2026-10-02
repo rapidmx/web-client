@@ -87,6 +87,8 @@ export default function RuleBuilder<C extends object, A extends { type: string }
 }: RuleBuilderProps<C, A>) {
     const [draftText, setDraftText] = useState<Record<string, string>>({});
     const [newActionType, setNewActionType] = useState(actionTypes[0]?.value ?? "");
+    // The sequence field's text while it is being edited (it may be empty, which is no number); `null` shows the rule's own.
+    const [sequenceDraft, setSequenceDraft] = useState<string | null>(null);
     const conditions = value.conditions as Record<string, unknown>;
 
     function patch(next: Partial<RuleBuilderValue<C, A>>) {
@@ -300,8 +302,15 @@ export default function RuleBuilder<C extends object, A extends { type: string }
                         <input
                             type="number"
                             className="w-20 text-sm py-1.5 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary"
-                            value={value.sequence}
-                            onChange={(e) => patch({ sequence: Number(e.target.value) })}
+                            value={sequenceDraft ?? value.sequence}
+                            onChange={(e) => {
+                                // What is typed is kept as typed, so the field can be cleared and typed afresh; the rule only takes a number.
+                                setSequenceDraft(e.target.value);
+                                if (e.target.value !== "") {
+                                    patch({ sequence: Number(e.target.value) });
+                                }
+                            }}
+                            onBlur={() => setSequenceDraft(null)}
                         />
                     </label>
                 </div>

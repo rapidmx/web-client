@@ -357,6 +357,28 @@ describe("hostile and ancient recurrence rules", () => {
         expect(result).toMatchObject([{ uid: "odd", isRecurringOccurrence: false, startDate: "2026-06-01T15:00:00.000Z" }]);
     });
 
+    it.each([
+        ["a month that does not exist", { byMonth: [13] }],
+        ["a month of zero", { byMonth: [0] }],
+        ["a fractional month", { byMonth: [1.5] }],
+        ["a day of the month that does not exist", { byMonthDay: [99] }],
+        ["a day of the month of zero", { byMonthDay: [0] }],
+        ["a negative day of the month that does not exist", { byMonthDay: [-32] }],
+        ["the 30th of February", { byMonth: [2], byMonthDay: [30] }],
+        ["the 31st of the months that lack one", { byMonth: [2, 4, 6], byMonthDay: [31, -31] }],
+    ])("expands a rule with %s at once, as the stored event, instead of walking every day to the year 9999", (_name, extra) => {
+        const broken = event({ uid: "never", recurrenceRule: rule(extra) });
+        const began = Date.now();
+        const result = expandAllOccurrences([broken], RANGE_START, RANGE_END);
+        expect(Date.now() - began).toBeLessThan(1000);
+        expect(result).toMatchObject([{ uid: "never", isRecurringOccurrence: false }]);
+    });
+
+    it("still expands a rule whose days exist in at least one of its months", () => {
+        const leap = event({ startDate: "2028-02-01T15:00:00.000Z", endDate: "2028-02-01T15:30:00.000Z", recurrenceRule: rule({ freq: "yearly", byMonth: [2, 4], byMonthDay: [29, 31] }) });
+        const result = expandOccurrences(leap, new Date("2028-01-01T00:00:00.000Z"), new Date("2028-12-31T00:00:00.000Z"));
+        expect(result.map((o) => o.startDate)).toEqual(["2028-02-29T15:00:00.000Z", "2028-04-29T15:00:00.000Z"]);
+    });
     it("expands a daily series that began centuries ago exactly as it would have from a recent start", () => {
         const ancient = event({ startDate: "1600-01-01T15:00:00.000Z", endDate: "1600-01-01T15:30:00.000Z", recurrenceRule: rule({ interval: 3 }) });
         const result = starts(ancient);

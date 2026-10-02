@@ -128,15 +128,32 @@ export function contactInputFromCard(card: ParsedVCardContact, scope: { mailboxU
     return { ...card, ...scope, ...names, emails: card.emails ?? [], phones: card.phones ?? [], addresses: card.addresses ?? [] };
 }
 
-/** The cards that are not yet in the address book, and how many were: a card is a duplicate when one of its emails is a stored contact's or an earlier card's. */
+/** What a card with no email is told apart by: its name and its first phone number (digits only). */
+function identityKey(person: { displayName: string; phones?: readonly { phoneNumber: string }[] }): string {
+    return `${person.displayName.trim().toLowerCase()}|${(person.phones?.[0]?.phoneNumber ?? "").replace(/\D/g, "")}`;
+}
+
+/**
+ * The cards that are not yet in the address book, and how many were: a card is a duplicate when one of its emails is a stored contact's or an earlier card's,
+ * and a card with no email at all when its name and first phone number are a stored contact's or an earlier card's (so importing the same file twice adds nothing).
+ */
 export function withoutDuplicates(
     cards: readonly ParsedVCardContact[],
     existing: readonly Contact[],
 ): { fresh: ParsedVCardContact[]; skipped: number } {
     const known = new Set(existing.flatMap((contact) => contact.emails.map((email) => normalizeAddress(email.address))));
+    const knownIdentities = new Set(existing.map(identityKey));
     const fresh: ParsedVCardContact[] = [];
     for (const card of cards) {
         const addresses = (card.emails ?? []).map((email) => normalizeAddress(email.address));
+        if (addresses.length === 0) {
+            const identity = identityKey(card);
+            if (!knownIdentities.has(identity)) {
+                knownIdentities.add(identity);
+                fresh.push(card);
+            }
+            continue;
+        }
         if (addresses.some((address) => known.has(address))) {
             continue;
         }

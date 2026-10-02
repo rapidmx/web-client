@@ -57,6 +57,8 @@ export interface EventDetailsProps {
     isOwnAddress?: (address: string) => boolean;
     calendarName?: string;
     calendarColor?: string;
+    /** Whether the reader may change this mailbox's events: `false` for one shared with them view-only, which gets no Modify, Delete or answer. Default `true`. */
+    canWrite?: boolean;
     onClose: () => void;
     /** Modify: switch to the edit form. */
     onModify: () => void;
@@ -81,6 +83,7 @@ export default function EventDetails({
     isOwnAddress,
     calendarName,
     calendarColor,
+    canWrite = true,
     onClose,
     onModify,
     onSaved,
@@ -90,6 +93,8 @@ export default function EventDetails({
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
+    // An answer to one occurrence of a series waits here for the reader to confirm: the server records it for the entire series.
+    const [pendingResponse, setPendingResponse] = useState<AttendeeResponseInput | null>(null);
     const [requesting, setRequesting] = useState(false);
     // The organizer's own join link for the event's video meeting: `undefined` while it is fetched, `null` once known to be none.
     const [organizerJoinUrl, setOrganizerJoinUrl] = useState<string | null | undefined>(undefined);
@@ -136,6 +141,7 @@ export default function EventDetails({
     // `@rapidmx/restapi`'s `respond()` route has no occurrence-vs-series scope of its own (see `calendarApi.ts`'s `respondToEvent` doc
     // comment) - it always acts on `occurrence.uid` as a single event document.
     async function handleRespond(responseStatus: AttendeeResponseInput) {
+        setPendingResponse(null);
         setError(null);
         setBusy(true);
         try {
@@ -349,7 +355,7 @@ export default function EventDetails({
                 </div>
             )}
 
-            {myResponse !== undefined && (
+            {myResponse !== undefined && canWrite && (
                 <div className="flex flex-col gap-2 mx-5 mb-3 p-3 rounded-md bg-surface-alt">
                     <div className="flex items-center justify-between gap-3 flex-wrap">
                         <span className="text-sm font-medium">Your response</span>
@@ -364,7 +370,7 @@ export default function EventDetails({
                                         className={["!w-auto", response === "declined" ? "text-danger" : "", current ? "!bg-primary/10 !border-primary" : ""].join(" ")}
                                         aria-pressed={current}
                                         disabled={busy}
-                                        onClick={() => void handleRespond(response)}
+                                        onClick={() => (occurrence.isRecurringOccurrence ? setPendingResponse(response) : void handleRespond(response))}
                                     >
                                         {current && <HiOutlineCheck size={14} aria-hidden="true" />}
                                         {label}
@@ -373,12 +379,26 @@ export default function EventDetails({
                             })}
                         </div>
                     </div>
+                    {pendingResponse && (
+                        <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
+                            <span className="flex-1 min-w-0">
+                                {pendingResponse === "declined" ? "Declining" : "Your answer"} applies to every event in this series, not just this one
+                                {pendingResponse === "declined" ? ", and removes the series from your calendar" : ""}.
+                            </span>
+                            <Button type="button" variant="secondary" className="!w-auto" disabled={busy} onClick={() => setPendingResponse(null)}>
+                                Cancel
+                            </Button>
+                            <Button type="button" className="!w-auto" disabled={busy} onClick={() => void handleRespond(pendingResponse)}>
+                                {answers.find((a) => a.response === pendingResponse)!.label} the series
+                            </Button>
+                        </div>
+                    )}
                     <p className="text-xs text-text-muted">Other attendees&rsquo; responses may take a few minutes to update.</p>
                 </div>
             )}
 
             <div className="flex flex-wrap items-center gap-3 px-5 pb-4">
-                {!isInvited && (
+                {!isInvited && canWrite && (
                     <Button type="button" className="!w-auto" disabled={busy} onClick={onModify}>
                         Modify
                     </Button>
@@ -388,14 +408,20 @@ export default function EventDetails({
                         {canChange ? "Request a change" : "Add guests"}
                     </Button>
                 )}
-                {!occurrence.isRecurringOccurrence ? (
-                    <Button type="button" variant="secondary" className="!w-auto text-danger" disabled={busy} onClick={() => void handleDelete("series")}>
-                        Delete
-                    </Button>
-                ) : !confirmingDelete ? (
+                {!canWrite ? null : !confirmingDelete ? (
                     <Button type="button" variant="secondary" className="!w-auto text-danger" disabled={busy} onClick={() => setConfirmingDelete(true)}>
                         Delete
                     </Button>
+                ) : !occurrence.isRecurringOccurrence ? (
+                    <div role="alert" className="flex items-center gap-2">
+                        <span className="text-sm">Delete this event?</span>
+                        <Button type="button" variant="secondary" className="!w-auto text-danger" disabled={busy} onClick={() => void handleDelete("series")}>
+                            Yes, delete
+                        </Button>
+                        <Button type="button" variant="secondary" className="!w-auto" disabled={busy} onClick={() => setConfirmingDelete(false)}>
+                            Keep
+                        </Button>
+                    </div>
                 ) : (
                     <div className="flex gap-2">
                         <Button type="button" variant="secondary" className="!w-auto text-danger" disabled={busy} onClick={() => void handleDelete("occurrence")}>

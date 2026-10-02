@@ -291,7 +291,7 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
             return;
         }
         setUploading(true);
-        uploadMailboxImport(file, { format: importFormatFromFilename(file.name), targetFolderUid })
+        uploadMailboxImport(file, { format: importFormatFromFilename(file.name), targetFolderUid, mailboxUid: mailboxUid! }, client)
             .then(() => loadRequests())
             .catch((err) => notifyApiError(err, "Couldn't upload the file"))
             .finally(() => setUploading(false));

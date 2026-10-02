@@ -333,6 +333,7 @@ describe("MatterDetailPage", () => {
 
         expect(await screen.findAllByRole("button", { name: "Deny" })).toHaveLength(2);
         await user.click(screen.getAllByRole("button", { name: "Deny" })[0]);
+        await user.click(await screen.findByRole("button", { name: "Deny request" }));
 
         // ar1 is now denied; ar2 stays pending, still showing its own Approve/Deny actions untouched.
         expect(await screen.findByText("denied")).toBeInTheDocument();
@@ -377,7 +378,43 @@ describe("MatterDetailPage", () => {
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
         await user.click(screen.getByRole("button", { name: "Deny" }));
+        await user.click(await screen.findByRole("button", { name: "Deny request" }));
         expect(await screen.findByText("denied")).toBeInTheDocument();
+    });
+
+    it("asks before denying a request, which cannot be undone, and denies nothing on Cancel", async () => {
+        const fetchMock = mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/deny": () => jsonResponse(200, { ...pendingRequest, status: "denied" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Deny" }));
+        const dialog = await screen.findByRole("dialog", { name: "Deny access request" });
+        expect(within(dialog).getByText(/can.t be approved afterwards/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/deny"))).toBe(false);
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/deny"))).toBe(false);
+        expect(screen.getByText("pending")).toBeInTheDocument();
+    });
+
+    it("closes the deny confirmation on Escape and denies nothing", async () => {
+        const fetchMock = mockMatterFetch({
+            "POST /api/escrow/access-requests/ar1/deny": () => jsonResponse(200, { ...pendingRequest, status: "denied" }),
+        });
+        const user = userEvent.setup();
+        render(<MatterDetailPage userUid="u1" authServerUrl="https://auth.example.com" params={{ uid: "m1" }} />);
+        await screen.findByRole("heading", { name: "Smith v. Acme" });
+
+        await user.click(screen.getByRole("button", { name: "Deny" }));
+        await screen.findByRole("dialog", { name: "Deny access request" });
+        await user.keyboard("{Escape}");
+
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/deny"))).toBe(false);
     });
 
     it("shows an error message when denying fails", async () => {
@@ -389,6 +426,7 @@ describe("MatterDetailPage", () => {
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
         await user.click(screen.getByRole("button", { name: "Deny" }));
+        await user.click(await screen.findByRole("button", { name: "Deny request" }));
         expect(await screen.findByText("not pending")).toBeInTheDocument();
     });
 
@@ -403,6 +441,7 @@ describe("MatterDetailPage", () => {
         await screen.findByRole("heading", { name: "Smith v. Acme" });
 
         await user.click(screen.getByRole("button", { name: "Deny" }));
+        await user.click(await screen.findByRole("button", { name: "Deny request" }));
         expect(await screen.findByText("Could not deny this request.")).toBeInTheDocument();
     });
 

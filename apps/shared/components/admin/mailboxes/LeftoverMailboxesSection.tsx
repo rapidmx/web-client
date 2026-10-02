@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { LeftoverMailbox, listLeftoverMailboxes } from "../../../../../lib/admin/leftoverMailboxApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import EraseLeftoverDataDialog from "./EraseLeftoverDataDialog.js";
+import { actionErrorMessage } from "../elevation.js";
 
 /** How many deleted mailboxes one request asks for. */
 const PAGE_SIZE = 50;
@@ -54,7 +54,7 @@ export default function LeftoverMailboxesSection({ refreshIntervalMs = LEFTOVER_
             setError(null);
         } catch (err) {
             if (current === generation.current) {
-                setError(err instanceof ApiRequestError ? err.message : "Could not check for deleted mailboxes with remaining data.");
+                setError(actionErrorMessage(err, "Could not check for deleted mailboxes with remaining data."));
             }
         }
     }
@@ -69,7 +69,7 @@ export default function LeftoverMailboxesSection({ refreshIntervalMs = LEFTOVER_
             setNext(page.next);
         } catch (err) {
             if (current === generation.current) {
-                setError(err instanceof ApiRequestError ? err.message : "Could not load more deleted mailboxes.");
+                setError(actionErrorMessage(err, "Could not load more deleted mailboxes."));
             }
         } finally {
             setLoadingMore(false);

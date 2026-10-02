@@ -1048,4 +1048,31 @@ describe("under an ApiClientContext.Provider", () => {
         expect(fetchMock.mock.calls[0][0]).toBe("https://acct-a.example.com/api/mail/messages/conversations/c1?mailboxUid=mb1&page=0&limit=100");
         expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
     });
+
+    it("marks an opened unread message read through the provided ApiClient, not the default session", async () => {
+        const unread = { read: false, flagged: false, answered: false, forwarded: false };
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("https://acct-a.example.com/api/mail/messages/conversations/")) return jsonResponse(200, [messageFixture("m3", "Carol", { flags: unread })]);
+            if (url === "https://acct-a.example.com/api/mail/messages/m3" && init?.method === "PUT") return jsonResponse(200, messageFixture("m3", "Carol", { version: 1 }));
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        render(
+            <ApiClientContext.Provider value={client}>
+                <ConversationThreadPane
+                    conversation={conversationFixture()}
+                    mailboxUid="mb1"
+                    selectedUid="m3"
+                    folders={FOLDERS}
+                    onMessagePatched={vi.fn()}
+                    onMessageRemoved={vi.fn()}
+                />
+            </ApiClientContext.Provider>,
+        );
+
+        await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "PUT")).toBe(true));
+        const put = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT")!;
+        expect(put[0]).toBe("https://acct-a.example.com/api/mail/messages/m3");
+        expect(new Headers((put[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+    });
 });

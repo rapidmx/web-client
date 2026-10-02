@@ -41,6 +41,42 @@ describe("GifPicker", () => {
         await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/mail/giphy/search?"), expect.anything()));
     });
 
+    it("ignores a slow answer to an earlier search, whether it succeeds or fails, once a newer query is showing", async () => {
+        const slow: ((response: Response) => void)[] = [];
+        mockFetch((url) =>
+            String(url).includes("q=cat") ? jsonResponse(200, [gif({ id: "new", title: "Newer cat" })]) : new Promise<Response>((resolve) => slow.push(resolve)),
+        );
+        const user = userEvent.setup();
+        render(<GifPicker anchorRef={anchorRef} onSelect={vi.fn()} onClose={vi.fn()} />);
+        await waitFor(() => expect(slow).toHaveLength(1));
+
+        await user.type(screen.getByLabelText("Search GIFs"), "cat");
+        expect(await screen.findByRole("button", { name: "Newer cat" })).toBeInTheDocument();
+
+        slow[0](jsonResponse(200, [gif({ id: "old", title: "Older trending" })]));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(screen.queryByRole("button", { name: "Older trending" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Newer cat" })).toBeInTheDocument();
+    });
+
+    it("does not show the error of an earlier search that failed after a newer query was answered", async () => {
+        const slow: ((response: Response) => void)[] = [];
+        mockFetch((url) =>
+            String(url).includes("q=cat") ? jsonResponse(200, [gif({ id: "new", title: "Newer cat" })]) : new Promise<Response>((resolve) => slow.push(resolve)),
+        );
+        const user = userEvent.setup();
+        render(<GifPicker anchorRef={anchorRef} onSelect={vi.fn()} onClose={vi.fn()} />);
+        await waitFor(() => expect(slow).toHaveLength(1));
+        await user.type(screen.getByLabelText("Search GIFs"), "cat");
+        await screen.findByRole("button", { name: "Newer cat" });
+
+        slow[0](jsonResponse(500, { message: "giphy down" }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(screen.queryByText("giphy down")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Newer cat" })).toBeInTheDocument();
+    });
+
     it("shows a loading state before results arrive.", () => {
         mockFetch(() => new Promise(() => undefined));
         render(<GifPicker anchorRef={anchorRef} onSelect={vi.fn()} onClose={vi.fn()} />);

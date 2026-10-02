@@ -46,6 +46,9 @@ describe("linkFromInput", () => {
         expect(linkFromInput("mailto:jane@example.com")).toBe("mailto:jane@example.com");
         expect(linkFromInput("example.com/page")).toBe("https://example.com/page");
         expect(linkFromInput("jane@example.com")).toBe("mailto:jane@example.com");
+        // A host and a port is an address with no scheme, not a scheme.
+        expect(linkFromInput("example.com:8080/x")).toBe("https://example.com:8080/x");
+        expect(linkFromInput("localhost:3000")).toBe("https://localhost:3000/");
     });
 
     it("refuses any other scheme, and nothing that is not an address", () => {

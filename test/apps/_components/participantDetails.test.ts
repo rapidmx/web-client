@@ -214,6 +214,20 @@ describe("withoutDuplicates", () => {
         expect(fresh.map((card) => card.displayName)).toEqual(["New", "No email", "No lists"]);
         expect(skipped).toBe(2);
     });
+
+    it("tells a card with no email apart by its name and first phone, against stored contacts and earlier cards", () => {
+        const stored = contact({ displayName: "Bob Builder", emails: [], phones: [{ phoneNumber: "+1 (555) 010-0100", type: "mobile" }] });
+        const cards = [
+            { displayName: "bob builder", phones: [{ phoneNumber: "15550100100", type: "mobile" as const }] },
+            { displayName: "Bob Builder", phones: [{ phoneNumber: "555-0000", type: "mobile" as const }] },
+            { displayName: "Bob Builder", phones: [{ phoneNumber: "555 0000", type: "home" as const }] },
+            { displayName: "No phone" },
+            { displayName: "No phone" },
+        ];
+        const { fresh, skipped } = withoutDuplicates(cards, [stored]);
+        expect(fresh.map((card) => card.displayName)).toEqual(["Bob Builder", "No phone"]);
+        expect(skipped).toBe(3);
+    });
 });
 
 describe("ownContactCard", () => {

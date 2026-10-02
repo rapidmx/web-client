@@ -382,7 +382,9 @@ export function notify(input: NotifyInput): string {
         paused: false,
     };
     applyInput(entry, input);
-    if (!getNotificationsEnabled()) {
+    // An error that offers something to do (a failed send's Retry and Open draft, "Sign in again") is shown whatever the switch says: it is
+    // the only way back to what the person typed, and the history has no way to carry out its actions.
+    if (!getNotificationsEnabled() && !(entry.kind === "error" && entry.actions.length > 0)) {
         // The user has pop-ups off: nothing is shown, but it is listed in the history like any other.
         record(entry);
         emit();

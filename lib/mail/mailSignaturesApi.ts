@@ -11,7 +11,7 @@
  */
 
 import { ApiClient, withClient } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
 
@@ -36,7 +36,7 @@ export interface MailSignature {
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
  * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 export function listMailSignatures(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<MailSignature[]> {
-    return withClient(client, `/mail/mail-signatures?${buildQuery(params, { mailboxUid })}`);
+    return withClient(client, `/mail/mail-signatures?${buildQuery({ limit: SETTINGS_LIST_LIMIT, ...params }, { mailboxUid })}`);
 }
 
 export function getMailSignature(uid: string, client?: ApiClient): Promise<MailSignature> {

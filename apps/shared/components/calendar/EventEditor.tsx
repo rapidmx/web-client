@@ -15,6 +15,7 @@ import {
     guestPermissionsOf,
     updateCalendarEvent,
     visibilityOf,
+    WeekdayCode,
 } from "../../../../lib/calendar/calendarApi.js";
 import {
     VideoMeetingInvitee,
@@ -71,19 +72,27 @@ function wallTimeOfDayMs(instantMs: number, timezone: string | undefined): numbe
     return ((wall % MS_PER_DAY) + MS_PER_DAY) % MS_PER_DAY;
 }
 
+/** The calendar date (`YYYY-MM-DD`) an instant falls on in the frame a series expands in: the UTC date for an all-day event, `timezone`'s wall clock otherwise. */
+function seriesDateKey(iso: string, allDay: boolean, timezone: string | undefined): string {
+    return allDay ? allDayDateKey(iso) : new Date(toEventWallClock(new Date(iso).getTime(), timezone, false)).toISOString().slice(0, 10);
+}
+
+const WEEKDAY_ORDER: WeekdayCode[] = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+
 /**
  * Rewrites an edited occurrence's `startDate`/`endDate` for a save to the entire series. The modal only
  * ever shows (and edits) *this occurrence's* dates, but the series is stored as its master record starting
  * at the first occurrence - sending the occurrence's dates as-is would move the whole series' start to
- * this occurrence. So only the change in time-of-day (and the new duration) is applied to the master's own
- * start; the series keeps its original first date. Unchanged times aren't sent at all.
+ * this occurrence. So the change made to the occurrence (its date and its time of day) is applied to the
+ * master's own start, and the new duration is kept: moving a Tuesday occurrence to Thursday moves the series
+ * by two days, never silently dropping the change. Unchanged times aren't sent at all.
  *
- * Times of day are read on the event's own timezone wall clock (the series expands there), not the
- * browser's, and the change is the smallest signed difference modulo 24h - moving 23:00 to 01:00 is two
- * hours later (into the next day), never 22 hours earlier. The master's new start is converted back from
- * that wall clock, so a master on the other side of a DST change keeps the chosen local time.
+ * The change is measured on the event's own timezone wall clock (the series expands there), not the
+ * browser's. The master's new start is converted back from that wall clock, so a master on the other side of
+ * a DST change keeps the chosen local time. A weekly rule that the edit left untouched is rotated by the
+ * same number of days, so its weekdays move with the start (a rule the form already changed is left as it is).
  */
-async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventFields, client?: ApiClient): Promise<EventFields> {
+async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventFields, formZone: string, client?: ApiClient): Promise<EventFields> {
     const { startDate, endDate, ...rest } = fields;
     if (sameMinute(startDate as string, occurrence.startDate) && sameMinute(endDate as string, occurrence.endDate)) {
         // `saveEventSeries()` treats *any* `timezone`/`allDay` in the update as a possible reinterpretation of
@@ -96,22 +105,31 @@ async function toSeriesFields(occurrence: CalendarOccurrence, fields: EventField
     const timezone = fields.timezone as string;
     const newStart = new Date(startDate as string).getTime();
     const durationMs = new Date(endDate as string).getTime() - newStart;
+    // The days the date moved: on the event's own wall clock when both are timed, otherwise on the clock the form showed the timed side on.
+    const frame = fields.allDay || occurrence.allDay ? formZone : timezone;
+    const dayShift = Math.round(
+        (Date.parse(seriesDateKey(startDate as string, !!fields.allDay, frame)) - Date.parse(seriesDateKey(occurrence.startDate, occurrence.allDay, frame))) / MS_PER_DAY,
+    );
     let masterStart: number;
     if (fields.allDay) {
-        // Timed -> all-day keeps the master's own date on its wall clock.
+        // The master's own date (on its wall clock when it was timed), moved by the days the occurrence moved.
         const masterDateKey = master.allDay
             ? allDayDateKey(master.startDate)
             : new Date(toEventWallClock(new Date(master.startDate).getTime(), timezone, false)).toISOString().slice(0, 10);
-        masterStart = new Date(allDayInstant(masterDateKey)).getTime();
+        masterStart = new Date(allDayInstant(addDaysToKey(masterDateKey, dayShift))).getTime();
     } else if (master.allDay) {
-        // All-day -> timed: the master's own date at the newly chosen wall-clock time.
-        const masterDateWall = new Date(allDayInstant(allDayDateKey(master.startDate))).getTime();
+        // All-day -> timed: the master's own date (moved by the days the occurrence moved) at the newly chosen wall-clock time.
+        const masterDateWall = new Date(allDayInstant(addDaysToKey(allDayDateKey(master.startDate), dayShift))).getTime();
         masterStart = fromEventWallClock(masterDateWall + wallTimeOfDayMs(newStart, timezone), timezone, false);
     } else {
-        const rawDelta = wallTimeOfDayMs(newStart, timezone) - wallTimeOfDayMs(new Date(occurrence.startDate).getTime(), timezone);
-        const delta = ((((rawDelta + MS_PER_DAY / 2) % MS_PER_DAY) + MS_PER_DAY) % MS_PER_DAY) - MS_PER_DAY / 2;
+        const delta = toEventWallClock(newStart, timezone, false) - toEventWallClock(new Date(occurrence.startDate).getTime(), timezone, false);
         const masterWall = toEventWallClock(new Date(master.startDate).getTime(), timezone, false);
         masterStart = fromEventWallClock(masterWall + delta, timezone, false);
+    }
+    const rule = rest.recurrenceRule;
+    const original = occurrence.recurrenceRule?.byDay;
+    if (rule?.freq === "weekly" && rule.byDay && original && dayShift % 7 !== 0 && rule.byDay.join() === original.join()) {
+        rest.recurrenceRule = { ...rule, byDay: rule.byDay.map((day) => WEEKDAY_ORDER[(WEEKDAY_ORDER.indexOf(day) + (dayShift % 7) + 7) % 7]) };
     }
     return {
         ...rest,
@@ -220,6 +238,8 @@ export default function EventEditor({
             targetFolderUid: folderUid,
         };
     });
+    // What an existing event's form held when it opened, to tell whether anything was changed since.
+    const [pristine] = useState(() => JSON.stringify(values));
     const { attendees, location, videoEnabled } = values;
     function update(patch: Partial<EventFormValues>) {
         setValues((prev) => ({ ...prev, ...patch }));
@@ -248,6 +268,9 @@ export default function EventEditor({
     // Whether that stored record is a series saved with `toSeriesFields()`: its master's dates are not the form's (the occurrence's), so a retry
     // must not send them - the first save already applied any change of time.
     const savedAsSeries = useRef(false);
+    // A meeting minted for this event whose link onto the event could not be saved. A retry reuses it rather than minting a second one,
+    // which would send the invitees a second set of join links and leave this one orphaned.
+    const mintedMeeting = useRef<{ uid: string; organizerJoinUrl: string | null } | null>(null);
     const [editScope, setEditScope] = useState<EditScope>("occurrence");
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
@@ -280,7 +303,9 @@ export default function EventEditor({
     // "This event only" detaches a standalone, non-repeating copy - the series' rule doesn't apply to it.
     const editingSingleOccurrence = !!occurrence?.isRecurringOccurrence && editScope === "occurrence";
 
-    dirtyRef.current = !!(values.title.trim() || values.location.trim() || values.attendees.length > 0 || values.guestDraft.trim() || values.guestInvalid.length > 0 || hasDescriptionText(values.descriptionHtml));
+    dirtyRef.current = occurrence
+        ? JSON.stringify(values) !== pristine
+        : !!(values.title.trim() || values.location.trim() || values.attendees.length > 0 || values.guestDraft.trim() || values.guestInvalid.length > 0 || hasDescriptionText(values.descriptionHtml));
 
     function updateAttendee(index: number, patch: Partial<Attendee>) {
         setValues((prev) => ({ ...prev, attendees: prev.attendees.map((a, i) => (i === index ? { ...a, ...patch } : a)) }));
@@ -298,6 +323,12 @@ export default function EventEditor({
         }));
     }
 
+    // The weekday the form's start falls on, in the frame the series expands in (`undefined` while the start is not a valid date).
+    function startWeekdayOf(v: Pick<EventFormValues, "start" | "allDay" | "formZone" | "timezone">): WeekdayCode | undefined {
+        const ms = v.allDay ? Number.NaN : wallStringToMs(v.start, v.formZone, deviceZone);
+        return startWeekdayCode(v.allDay ? v.start : Number.isNaN(ms) ? "" : new Date(ms).toISOString(), v.allDay, v.timezone);
+    }
+
     // Moving the start moves the end with it, so the event keeps its length (a Google Calendar habit, and the way to
     // reschedule without touching two fields).
     function setStart(next: string) {
@@ -312,7 +343,13 @@ export default function EventEditor({
                     ? `${new Date(endMs + shift).toISOString().slice(0, 10)}T00:00`
                     : msToWallString(endMs + shift, prev.formZone, deviceZone);
             }
-            return { ...prev, start: next, end: nextEnd };
+            // A weekly rule on just the start's weekday ("Weekly on Wednesday") follows the start to its new weekday - left alone it
+            // would not include the event's own first day, and the series would begin on the next of the old weekday instead.
+            const oldDay = startWeekdayOf(prev);
+            const nextDay = startWeekdayOf({ ...prev, start: next });
+            const rule = prev.recurrenceRule;
+            const followsStart = oldDay && nextDay && rule?.freq === "weekly" && rule.byDay?.length === 1 && rule.byDay[0] === oldDay;
+            return { ...prev, start: next, end: nextEnd, recurrenceRule: followsStart ? { ...rule, byDay: [nextDay] } : rule };
         });
     }
 
@@ -415,29 +452,34 @@ export default function EventEditor({
                     setVideoError("Add at least one attendee other than yourself to add video conferencing.");
                     return { event: saved, failed: true };
                 }
-                const result = await createVideoMeeting(
-                    {
-                        mailboxUid: saved.mailboxUid,
-                        title: saved.title.slice(0, MAX_MEETING_TITLE_LENGTH),
-                        visibility: "private",
-                        calendarEventUid: saved.uid,
-                        startTime: saved.startDate,
-                        endTime: saved.endDate,
-                        invitees,
-                    },
-                    client,
-                );
+                if (!mintedMeeting.current) {
+                    const result = await createVideoMeeting(
+                        {
+                            mailboxUid: saved.mailboxUid,
+                            title: saved.title.slice(0, MAX_MEETING_TITLE_LENGTH),
+                            visibility: "private",
+                            calendarEventUid: saved.uid,
+                            startTime: saved.startDate,
+                            endTime: saved.endDate,
+                            invitees,
+                        },
+                        client,
+                    );
+                    mintedMeeting.current = { uid: result.meeting.uid, organizerJoinUrl: result.organizerJoinUrl ?? null };
+                }
+                const meeting = mintedMeeting.current;
                 const patched = await updateCalendarEvent(
                     {
                         uid: saved.uid,
                         version: saved.version,
                         location: VIDEO_LOCATION_PLACEHOLDER,
-                        videoMeetingUid: result.meeting.uid,
+                        videoMeetingUid: meeting.uid,
                     },
                     client,
                 );
-                setVideoMeetingUid(result.meeting.uid);
-                setOrganizerJoinUrl(result.organizerJoinUrl ?? null);
+                mintedMeeting.current = null;
+                setVideoMeetingUid(meeting.uid);
+                setOrganizerJoinUrl(meeting.organizerJoinUrl);
                 update({ location: VIDEO_LOCATION_PLACEHOLDER });
                 return { event: patched, failed: false };
             }
@@ -576,7 +618,7 @@ export default function EventEditor({
             } else if (occurrence.isRecurringOccurrence) {
                 const series = await saveEventSeries(
                     occurrence,
-                    (await toSeriesFields(occurrence, fields, client)) as Partial<CalendarEventInput>,
+                    (await toSeriesFields(occurrence, fields, values.formZone, client)) as Partial<CalendarEventInput>,
                     client,
                 );
                 saved = series;
@@ -614,7 +656,6 @@ export default function EventEditor({
     const joinUrl = joinMeetingUrl(organizerJoinUrl);
 
     const timeZones = useMemo(() => timeZoneOptions(values.formZone, values.timezone, deviceZone), [values.formZone, values.timezone, deviceZone]);
-    const startMs = values.allDay ? Number.NaN : wallStringToMs(values.start, values.formZone, deviceZone);
     const calendarFolderUid = occurrence ? occurrence.folderUid : values.targetFolderUid;
 
     const controller: EventFormController = {
@@ -628,11 +669,7 @@ export default function EventEditor({
         timeZones,
         organizerAddress: effectiveOrganizerAddress,
         deviceZone,
-        startWeekday: startWeekdayCode(
-            values.allDay ? values.start : Number.isNaN(startMs) ? "" : new Date(startMs).toISOString(),
-            values.allDay,
-            values.timezone,
-        ),
+        startWeekday: startWeekdayOf(values),
         editingSingleOccurrence,
         updateAttendee,
         removeAttendee,

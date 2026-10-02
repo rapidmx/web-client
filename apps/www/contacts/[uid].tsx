@@ -8,12 +8,13 @@ import React, { useEffect, useState } from "react";
 import { ApiRequestError } from "../../../lib/util/api.js";
 import { Contact, deleteContact, getContact } from "../../../lib/contacts/contactsApi.js";
 import { useApiClient } from "../../../lib/util/apiClientContext.js";
-import ContactsShell, { ContactsShellProps } from "../../shared/components/contacts/layout/ContactsShell.js";
+import ContactsShell, { ContactsShellProps, useContactsShell } from "../../shared/components/contacts/layout/ContactsShell.js";
 import ContactDetailPane from "../../shared/components/contacts/ContactDetailPane.js";
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
 import Alert from "../../../lib/components/feedback/Alert.js";
 import { clearPinnedSignerCache } from "../../shared/components/mail/pinnedSigners.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
+import { useMailboxUpdateAccess } from "../../shared/mail/useMailboxUpdateAccess.js";
 
 /**
  * Only reached on mobile (below the `md` breakpoint) — desktop's `apps/www/contacts/index.tsx` keeps its
@@ -38,6 +39,9 @@ function ContactDetailContent({ uid }: { uid: string }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [mode, setMode] = useState<Mode>("view");
+    const { mailboxes } = useContactsShell();
+    // A contact in a mailbox shared with the reader view-only can be read, not changed.
+    const writable = useMailboxUpdateAccess(mailboxes.find((mailbox) => mailbox.uid === contact?.mailboxUid));
 
     useEffect(() => {
         setLoading(true);
@@ -101,6 +105,7 @@ function ContactDetailContent({ uid }: { uid: string }) {
                 contact={contact}
                 onEdit={() => setMode("edit")}
                 onDelete={() => handleDelete(contact)}
+                canWrite={writable}
                 backHref={backHref}
                 onKeysChanged={handleKeysChanged}
                 onChanged={setContact}

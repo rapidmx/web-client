@@ -262,4 +262,12 @@ describe("parseVCards: limits and gaps", () => {
         const [card] = parseVCards("BEGIN:VCARD\r\nNOTE;ENCODING=QUOTED-PRINTABLE:dangling=");
         expect(card.notes).toBe("dangling=");
     });
+
+    it("joins a quoted-printable value of very many soft line breaks in linear time", () => {
+        const softBreaks = 150_000;
+        const began = Date.now();
+        const [card] = parseVCards(`BEGIN:VCARD\r\nFN:A\r\nNOTE;ENCODING=QUOTED-PRINTABLE:${"a=\r\n".repeat(softBreaks)}z\r\nEND:VCARD`);
+        expect(card.notes).toBe(`${"a".repeat(softBreaks)}z`);
+        expect(Date.now() - began).toBeLessThan(3000);
+    });
 });

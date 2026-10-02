@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { DistributionList, listDistributionLists } from "../../../lib/admin/distributionListsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const PAGE_SIZE = 25;
 
@@ -30,7 +30,7 @@ function DistributionListsContent() {
         setError(null);
         listDistributionLists({ page, limit: PAGE_SIZE })
             .then(setLists)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load distribution lists."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load distribution lists.")))
             .finally(() => setLoading(false));
     }, [page]);
 

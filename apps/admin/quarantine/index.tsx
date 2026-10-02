@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { listQuarantine, QuarantineEntry, releaseQuarantineEntry } from "../../../lib/mail/mailApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import Modal from "../../../lib/components/overlays/Modal.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const PAGE_SIZE = 25;
 
@@ -45,7 +45,7 @@ function QuarantineContent({ userUid }: { userUid?: string }) {
         // The administration scope: any mailbox's held mail, recorded in the audit log.
         listQuarantine(uid, { page, limit: PAGE_SIZE, scope: "admin" })
             .then(setEntries)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load quarantine."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load quarantine.")))
             .finally(() => setLoading(false));
     }
 
@@ -74,7 +74,7 @@ function QuarantineContent({ userUid }: { userUid?: string }) {
             closeReleaseModal();
             reload(mailboxUid!);
         } catch (err) {
-            setReleaseError(err instanceof ApiRequestError ? err.message : "Could not mark this message released.");
+            setReleaseError(actionErrorMessage(err, "Could not mark this message released."));
         } finally {
             setReleasing(false);
         }

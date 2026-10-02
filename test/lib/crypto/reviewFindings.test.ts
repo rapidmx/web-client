@@ -99,14 +99,19 @@ describe("H5: a signed-only message's outer Date is compared with the signed one
         expect(await evaluateMessageSecurity(replayed, undefined, pin)).toMatchObject({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
     });
 
-    it("accepts the same instant written another way, and compares nothing it can't read", async () => {
+    it("accepts the same instant written another way", async () => {
         const { raw, pin } = await signed();
         const sameInstant = raw.replace("Date: Wed, 11 Jan 2023 16:08:43 -0500", "Date: Wed, 11 Jan 2023 21:08:43 +0000");
         expect((await evaluateMessageSecurity(sameInstant, undefined, pin)).state).toBe("signed_verified");
+    });
+
+    it("is header_mismatch when the replayed message's outer Date was garbled or dropped", async () => {
+        const { raw, pin } = await signed();
         const unreadable = raw.replace("Date: Wed, 11 Jan 2023 16:08:43 -0500", "Date: sometime last week");
-        expect((await evaluateMessageSecurity(unreadable, undefined, pin)).state).toBe("signed_verified");
+        expect(await evaluateMessageSecurity(unreadable, undefined, pin)).toMatchObject({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
         const absent = raw.replace("Date: Wed, 11 Jan 2023 16:08:43 -0500\r\n", "");
-        expect((await evaluateMessageSecurity(absent, undefined, pin)).state).toBe("signed_verified");
+        expect(absent).not.toBe(raw);
+        expect(await evaluateMessageSecurity(absent, undefined, pin)).toMatchObject({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
     });
 });
 

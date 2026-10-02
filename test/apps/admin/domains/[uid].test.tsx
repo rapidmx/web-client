@@ -540,7 +540,7 @@ describe("DomainDetailPage", () => {
         expect(await screen.findByText(/powerlevel\.gg/)).toBeInTheDocument();
     });
 
-    it("clearing Alias of back to blank sends aliasOf: undefined", async () => {
+    it("clearing Alias of back to blank sends an empty aliasOf, which is how the server clears it (an absent key leaves it unchanged)", async () => {
         let updateBody: any;
         mockFetch((url, init) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
@@ -560,7 +560,7 @@ describe("DomainDetailPage", () => {
         await user.clear(input);
         await user.click(screen.getByRole("button", { name: "Save" }));
 
-        await vi.waitFor(() => expect(updateBody).toEqual({ uid: "example.com", version: 0, aliasOf: undefined }));
+        await vi.waitFor(() => expect(updateBody).toEqual({ uid: "example.com", version: 0, aliasOf: "" }));
     });
 
     it("shows an error message when saving Alias of fails", async () => {

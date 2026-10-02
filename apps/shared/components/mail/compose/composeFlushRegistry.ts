@@ -8,16 +8,29 @@
 export type ComposeFlush = () => Promise<unknown>;
 
 const flushers = new Set<ComposeFlush>();
+const signOutCleanups = new Set<() => void>();
 let signingOut = false;
+
+/**
+ * Registers something to run the moment the app starts signing out (explicitly, or forced by another tab): a cache that holds message content,
+ * which must not outlive the session it was read in. Called once, when the module that owns the cache is loaded.
+ */
+export function onSigningOut(cleanup: () => void): void {
+    signOutCleanups.add(cleanup);
+}
 
 /**
  * Marks the app as signing out (explicitly, or forced by a sign-out in another tab), so compose windows stop
  * asking the browser to confirm leaving the page - the "Leave site?" prompt would otherwise let the user cancel
  * the sign-out's own navigation and stay on a page whose session is being ended. Call it before flushing drafts
- * and navigating. `clearSigningOut()` undoes it (a sign-out that didn't leave the page after all).
+ * and navigating. `clearSigningOut()` undoes it (a sign-out that didn't leave the page after all). It also runs what was registered
+ * with `onSigningOut()`.
  */
 export function markSigningOut(): void {
     signingOut = true;
+    for (const cleanup of signOutCleanups) {
+        cleanup();
+    }
 }
 
 /** Undoes `markSigningOut()`. */

@@ -734,6 +734,39 @@ describe("SettingsPrivacyPage", () => {
         expect(await screen.findByText("Could not load this mailbox's folders.")).toBeInTheDocument();
     });
 
+    it("uploads a mail archive to the selected mailbox through the ApiClient from context", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/")) {
+                throw new Error(`unexpected default-fetch call while an ApiClientContext was provided: ${url}`);
+            }
+            if (url.startsWith("https://account-a.example.com/api/mail/mailbox-import-requests") && init?.method === "POST") return jsonResponse(200, importRequest());
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes/auto-provision")) return jsonResponse(404, { message: "not enabled" });
+            if (url.startsWith("https://account-a.example.com/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.startsWith("https://account-a.example.com/api/mail/folders")) return jsonResponse(200, [folder, secondFolder]);
+            if (url.startsWith("https://account-a.example.com/api/mail/")) return jsonResponse(200, []);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const user = userEvent.setup();
+        render(
+            <ApiClientContext.Provider value={client}>
+                <SettingsPrivacyPage userUid="u1" />
+            </ApiClientContext.Provider>,
+        );
+        await screen.findByLabelText("Destination folder");
+
+        await user.upload(screen.getByLabelText("Upload mail archive"), new File(["From x\n"], "archive.mbox"));
+
+        const postCall = await vi.waitFor(() => {
+            const call = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+            expect(call).toBeDefined();
+            return call!;
+        });
+        expect(postCall[0] as string).toContain("https://account-a.example.com/api/mail/mailbox-import-requests?");
+        expect(postCall[0] as string).toContain("mailboxUid=mb1");
+        expect(new Headers((postCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+    });
+
     it("targets the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
         const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
         const fetchMock = mockFetch((url, init) => {

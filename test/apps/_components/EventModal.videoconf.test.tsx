@@ -389,6 +389,29 @@ describe("EventModal video conferencing toggle", () => {
         });
     });
 
+    it("reuses the meeting it already minted when linking it onto the event failed, instead of minting a second one", async () => {
+        let puts = 0;
+        const fetchMock = mockVideoFetch({
+            updateEvent: () => {
+                puts += 1;
+                // 1: the save itself; 2: linking the meeting (fails); 3: the retry's save; 4: the retry's link.
+                return puts === 2 ? jsonResponse(500, { message: "Could not link the meeting." }) : jsonResponse(200, { ...occurrence(), version: 2 + puts });
+            },
+        });
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(occurrence());
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Could not link the meeting.")).toBeInTheDocument();
+        expect(callsTo(fetchMock, "/api/mail/video-meetings", "POST")).toHaveLength(1);
+
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(callsTo(fetchMock, "/api/mail/video-meetings", "POST")).toHaveLength(1);
+        expect(bodyOf(fetchMock, "/api/mail/calendar-events", "PUT", 3)).toEqual(expect.objectContaining({ videoMeetingUid: "vm1", location: PLACEHOLDER }));
+    });
+
     it("shows a clear message, not the raw 404, when the video-conferencing plugin isn't installed on this server", async () => {
         // videoMeetingsApi.ts's own doc comment: a plugin that isn't mounted at all fails every one of its
         // routes with a plain 404 - a caller offering video conferencing optionally must treat that as

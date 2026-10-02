@@ -77,6 +77,8 @@ function MatterDetailContent({ uid }: { uid: string }) {
     const [closing, setClosing] = useState(false);
     const [closeError, setCloseError] = useState<string | null>(null);
     const [approveTarget, setApproveTarget] = useState<EscrowAccessRequest | null>(null);
+    // Denying cannot be undone - a denied request is never approved afterwards, only asked for again - so it is confirmed first.
+    const [denyTarget, setDenyTarget] = useState<EscrowAccessRequest | null>(null);
 
     const [showNewRequest, setShowNewRequest] = useState(false);
     const [newRequestMailboxUid, setNewRequestMailboxUid] = useState("");
@@ -184,7 +186,10 @@ function MatterDetailContent({ uid }: { uid: string }) {
         }
     }
 
-    async function handleDeny(request: EscrowAccessRequest) {
+    // Only ever invoked from the deny-confirmation modal below, which only renders once `denyTarget` is set.
+    async function handleDeny() {
+        const request = denyTarget!;
+        setDenyTarget(null);
         setActingOn((prev) => ({ ...prev, [request.uid]: true }));
         setActionErrors((prev) => ({ ...prev, [request.uid]: "" }));
         try {
@@ -381,7 +386,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
                                                 className="!w-auto"
                                                 loading={actingOn[request.uid]}
                                                 disabled={actingOn[request.uid]}
-                                                onClick={() => handleDeny(request)}
+                                                onClick={() => setDenyTarget(request)}
                                             >
                                                 Deny
                                             </Button>
@@ -558,6 +563,25 @@ function MatterDetailContent({ uid }: { uid: string }) {
                     </Button>
                     <Button type="button" className="!w-auto" onClick={() => void handleApprove()}>
                         Approve request
+                    </Button>
+                </div>
+            </Modal>
+
+            <Modal open={denyTarget !== null} onClose={() => setDenyTarget(null)} title="Deny access request">
+                <p className="text-sm mb-3">
+                    Denying refuses this request for good: it can&rsquo;t be approved afterwards, and holders can&rsquo;t read the key material for
+                    mailbox <span className="break-all font-semibold">{denyTarget?.mailboxUid}</span> through it. A new request has to be made to ask again.
+                </p>
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setDenyTarget(null)}>
+                        Cancel
+                    </Button>
+                    <Button
+                        type="button"
+                        className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger"
+                        onClick={() => void handleDeny()}
+                    >
+                        Deny request
                     </Button>
                 </div>
             </Modal>

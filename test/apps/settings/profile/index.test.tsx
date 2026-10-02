@@ -90,7 +90,7 @@ describe("SettingsProfilePage", () => {
             render(<SettingsProfilePage userUid="u1" />);
 
             expect(await screen.findByLabelText("Time zone")).toHaveTextContent("Tokyo, Asia (GMT+09:00)");
-            expect(screen.getByText(/Your mailbox has no time zone chosen yet; this device.s is preselected/)).toBeInTheDocument();
+            expect(screen.getByText(/Your mailbox has no time zone chosen yet \(it uses UTC\); this device.s is preselected/)).toBeInTheDocument();
             // Already the device's zone: nothing to offer.
             expect(screen.queryByRole("button", { name: /Use this device/ })).not.toBeInTheDocument();
         });
@@ -108,6 +108,23 @@ describe("SettingsProfilePage", () => {
             expect(await screen.findByText("Saved.")).toBeInTheDocument();
             expect(saves(fetchMock)).toEqual([{ uid: "mb1", version: 0, timezone: "Asia/Tokyo" }]);
             expect(screen.queryByText(/no time zone chosen yet/)).not.toBeInTheDocument();
+        });
+
+        it("keeps a deliberate UTC, and changes nothing about the zone, when Keep UTC is pressed beside the preselection", async () => {
+            const fetchMock = mockShell({ ...mailbox, timezone: "UTC" });
+            const user = userEvent.setup();
+            render(<SettingsProfilePage userUid="u1" />);
+            await screen.findByLabelText("Time zone");
+
+            await user.click(screen.getByRole("button", { name: "Keep UTC" }));
+            expect(screen.getByLabelText("Time zone")).toHaveTextContent("UTC (GMT+00:00)");
+            expect(screen.queryByText(/no time zone chosen yet/)).not.toBeInTheDocument();
+            await user.clear(screen.getByLabelText("Display name"));
+            await user.type(screen.getByLabelText("Display name"), "Renamed");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+
+            expect(await screen.findByText("Saved.")).toBeInTheDocument();
+            expect(saves(fetchMock)).toEqual([{ uid: "mb1", version: 0, displayName: "Renamed" }]);
         });
 
         it("keeps UTC when the device is on UTC too", async () => {

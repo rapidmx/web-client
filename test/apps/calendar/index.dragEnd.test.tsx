@@ -210,6 +210,22 @@ describe("CalendarPage handleDragEnd", () => {
         expect(screen.getByText("Couldn't move the event")).toBeInTheDocument();
     });
 
+    it("loads the events again when the change is refused, so the next drag starts from the current version", async () => {
+        const fetchMock = mockShellAndEvents((url, init) =>
+            url === "/api/mail/calendar-events/e1" && init?.method === "PUT" ? jsonResponse(409, { message: "stale" }) : undefined,
+        );
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByText(/Standup/);
+        const listings = () => fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/mail/calendar-events?")).length;
+        const before = listings();
+
+        await act(async () => {
+            await capturedOnDragEnd!({ active: { id: "e1" }, over: { id: dayDropId(new Date("2026-06-16T00:00:00.000Z")) } });
+        });
+
+        await waitFor(() => expect(listings()).toBeGreaterThan(before));
+    });
+
     it("shows an API error message when resizing fails", async () => {
         mockShellAndEvents((url, init) =>
             url === "/api/mail/calendar-events/e1" && init?.method === "PUT" ? jsonResponse(500, { message: "resize failed" }) : undefined,

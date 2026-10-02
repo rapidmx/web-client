@@ -4,14 +4,14 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "../../../lib/util/api.js";
 import { deleteDomain, Domain, updateDomain } from "../../../lib/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import DomainDnsSetup from "../../shared/components/admin/settings/DomainDnsSetup.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import FormField from "../../../lib/components/forms/FormField.js";
 import Modal from "../../../lib/components/overlays/Modal.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -52,7 +52,7 @@ function DomainDetailContent({ uid }: { uid: string }) {
             await deleteDomain(domain!.uid, domain!.version);
             void navigate("/admin/domains");
         } catch (err) {
-            setDeleteError(err instanceof ApiRequestError ? err.message : "Could not delete this domain.");
+            setDeleteError(actionErrorMessage(err, "Could not delete this domain."));
             setDeleting(false);
         }
     }
@@ -62,18 +62,19 @@ function DomainDetailContent({ uid }: { uid: string }) {
         setAliasInput((current) => (current === null ? d?.aliasOf ?? "" : current));
     }
 
+    // A blank input is sent as "" (the server's way to clear an alias): an absent key (what `undefined` becomes in JSON) leaves the stored alias alone.
     async function handleSaveAlias() {
         setSavingAlias(true);
         setAliasError(null);
         setAliasSaved(false);
         try {
-            const updated = await updateDomain({ uid: domain!.uid, version: domain!.version, aliasOf: aliasInput!.trim() || undefined });
+            const updated = await updateDomain({ uid: domain!.uid, version: domain!.version, aliasOf: aliasInput!.trim() });
             setDomain(updated);
             setAliasInput(updated.aliasOf ?? "");
             setAliasSaved(true);
             setRefreshCount((c) => c + 1);
         } catch (err) {
-            setAliasError(err instanceof ApiRequestError ? err.message : "Could not update this domain.");
+            setAliasError(actionErrorMessage(err, "Could not update this domain."));
         } finally {
             setSavingAlias(false);
         }

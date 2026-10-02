@@ -57,6 +57,15 @@ describe("with notifications off", () => {
         expect(snapshot.unseenErrors).toBe(1);
     });
 
+    it("still shows an error that offers an action, such as a failed send's Retry, as that is the only way back to it", () => {
+        setNotificationsEnabled(false);
+        notify({ kind: "error", title: "Message not sent", actions: [{ label: "Retry", onClick: vi.fn() }] });
+        notify({ kind: "warning", title: "Hidden warning", actions: [{ label: "Undo" }] });
+        const snapshot = getNotificationsSnapshot();
+        expect(snapshot.visible.map((item) => item.title)).toEqual(["Message not sent"]);
+        expect(snapshot.history.map((item) => item.title)).toEqual(["Hidden warning", "Message not sent"]);
+    });
+
     it("shows them again once switched back on", () => {
         setNotificationsEnabled(false);
         notify({ kind: "info", title: "Hidden" });

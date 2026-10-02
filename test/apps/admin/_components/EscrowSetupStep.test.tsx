@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
 
 const { generateEscrowKeyPair } = vi.hoisted(() => ({ generateEscrowKeyPair: vi.fn() }));
-vi.mock("../../../../lib/crypto/escrowKeys.js", () => ({ generateEscrowKeyPair }));
+vi.mock("../../../../lib/crypto/escrowKeys.js", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../../../lib/crypto/escrowKeys.js")>()), generateEscrowKeyPair }));
 
 import EscrowSetupStep, { DOWNLOAD_URL_LIFETIME_MS, downloadTextFile } from "../../../../apps/shared/components/admin/setup/EscrowSetupStep.js";
 
@@ -185,6 +185,19 @@ describe("EscrowSetupStep", () => {
         fail = false;
         await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
         await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Escrow scopes set up: Existing."));
+    });
+
+    it("asks for both validity dates of a pasted certificate when one is cleared", async () => {
+        mockEscrow();
+        const user = userEvent.setup();
+        render(<EscrowSetupStep />);
+        await user.click(await screen.findByLabelText("Use a certificate I already have"));
+        await user.type(screen.getByLabelText("Public key (base64)"), "AQ==");
+        await user.type(screen.getByLabelText("Fingerprint (hex SHA-256)"), "ff");
+        fireEvent.change(screen.getByLabelText("Not before"), { target: { value: "" } });
+        await user.click(screen.getByRole("button", { name: "Create escrow scope" }));
+
+        expect(await screen.findByText("The key's validity dates, not before and not after, are both required.")).toBeInTheDocument();
     });
 
     it("names downloads 'escrow' when the scope name has no file-safe characters", async () => {

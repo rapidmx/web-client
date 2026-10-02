@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ChangeEvent, useEffect, useRef, useState } from "react";
-import { ApiRequestError } from "../../../lib/util/api.js";
+import { actionErrorMessage } from "../../shared/components/admin/elevation.js";
 import {
     AdminSigningEnrollment,
     getSigningEnrollmentInfo,
@@ -15,7 +15,7 @@ import {
     uploadSigningEnrollmentCertificate,
 } from "../../../lib/crypto/signingProviderApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../lib/components/feedback/Alert.js";
+import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import Modal from "../../../lib/components/overlays/Modal.js";
 import { notify } from "../../shared/notifications/store.js";
@@ -24,7 +24,7 @@ const INPUT_CLASS = "text-sm border border-border rounded-sm py-1.5 px-2 bg-surf
 const TEXTAREA_CLASS = `${INPUT_CLASS} font-mono text-xs`;
 
 function errorMessage(err: unknown, fallback: string): string {
-    return err instanceof ApiRequestError ? err.message : fallback;
+    return actionErrorMessage(err, fallback);
 }
 
 function statusBadgeClass(status: AdminSigningEnrollment["status"]): string {

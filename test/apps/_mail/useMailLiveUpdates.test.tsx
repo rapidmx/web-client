@@ -9,6 +9,7 @@ import { resetPushClient } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import {
     LIVE_EVENT_DEBOUNCE_MS,
+    LIVE_EVENT_MIN_INTERVAL_MS,
     LIVE_POLL_INTERVAL_MS,
     MailLiveUpdates,
     pushChannelsFor,
@@ -222,9 +223,36 @@ describe("useMailLiveUpdates", () => {
         act(() => {
             socket().receive({ type: "MessageMongo", action: "create", data: { folderUid: "f2-inbox" } });
         });
-        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        await flushTimers(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(latest.live.tick).toBe(2);
         expect([...latest.live.folderUids!]).toEqual(["f2-inbox"]);
+    });
+
+    it("answers a long run of events with a refresh about once per minimum interval, a trailing one picking up whatever came in between", async () => {
+        mockFolderCounts({});
+        render(<Harness />);
+        socket().greet();
+        const event = (folderUid: string) => act(() => socket().receive({ type: "MessageMongo", action: "create", data: { folderUid } }));
+
+        event("f1-inbox");
+        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        expect(latest.live.tick).toBe(1);
+
+        // Mail keeps arriving every 100 ms for three more seconds: not a refresh per debounce window.
+        for (let i = 0; i < 30; i++) {
+            event(i % 2 === 0 ? "f1-sent" : "f2-inbox");
+            await flushTimers(100);
+        }
+        expect(latest.live.tick).toBe(3);
+        // The trailing refresh carried what came in since the one before it.
+        expect([...latest.live.folderUids!].sort()).toEqual(["f1-sent", "f2-inbox"]);
+
+        // One more soon after a refresh waits out the minimum interval, not just the debounce.
+        event("f1-inbox");
+        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        expect(latest.live.tick).toBe(3);
+        await flushTimers(LIVE_EVENT_MIN_INTERVAL_MS);
+        expect(latest.live.tick).toBe(4);
     });
 
     it("hands the outcome of a message sent in the background to the caller and refreshes everything - a send changes Outbox and Sent Items", async () => {
@@ -258,7 +286,7 @@ describe("useMailLiveUpdates", () => {
         act(() => {
             socket().receive({ type: "MessageMongo", action: "create", data: { uid: "m2" } });
         });
-        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        await flushTimers(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(latest.live.tick).toBe(2);
         expect(latest.live.folderUids).toBeNull();
     });
@@ -390,12 +418,12 @@ describe("useMailLiveUpdates", () => {
 
         // Same counts again: the state object is left alone.
         act(() => socket().receive({ type: "MessageMongo", action: "create", data: { folderUid: "f1-inbox" } }));
-        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        await flushTimers(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(latest.folderCounts.counts).toBe(counts);
 
         fail = true;
         act(() => socket().receive({ type: "MessageMongo", action: "create", data: { folderUid: "f1-inbox" } }));
-        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        await flushTimers(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(latest.live.tick).toBe(3);
         expect(latest.folderCounts.counts).toBe(counts);
     });
@@ -451,7 +479,7 @@ describe("useMailLiveUpdates", () => {
         act(() => {
             window.dispatchEvent(new Event("focus"));
         });
-        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        await flushTimers(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(latest.live.tick).toBe(2);
 
         socket().drop();
@@ -460,7 +488,7 @@ describe("useMailLiveUpdates", () => {
             window.dispatchEvent(new Event("online"));
         });
         expect(FakeWebSocket.instances.length).toBe(beforeOnline + 1);
-        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        await flushTimers(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(latest.live.tick).toBe(3);
     });
 
@@ -544,7 +572,7 @@ describe("useMailLiveUpdates", () => {
         act(() => socket().receive({ type: "MessageMongo", action: "create", data: { folderUid: "f1-inbox" } }));
         await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
         act(() => socket().receive({ type: "MessageMongo", action: "create", data: { folderUid: "f1-inbox" } }));
-        await flushTimers(LIVE_EVENT_DEBOUNCE_MS);
+        await flushTimers(LIVE_EVENT_MIN_INTERVAL_MS);
         expect(resolvers).toHaveLength(2);
 
         // The newer refresh answers first; the older one's late answer must not overwrite it.

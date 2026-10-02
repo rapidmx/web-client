@@ -12,7 +12,7 @@
  */
 
 import { ApiClient, withClient } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, buildQuery, sortQuery } from "../util/apiQuery.js";
 import type { ResolvedPrincipal } from "../mail/mailboxAccessApi.js";
 
 export type { ListParams };
@@ -53,7 +53,7 @@ export interface EscrowScope {
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
  * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 export function listEscrowScopes(params: ListParams = {}, client?: ApiClient): Promise<EscrowScope[]> {
-    return withClient(client, `/escrow/scopes?${buildQuery(params)}`);
+    return withClient(client, `/escrow/scopes?${buildQuery(params, sortQuery({ uid: "ASC" }))}`);
 }
 
 /**

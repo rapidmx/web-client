@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React from "react";
+import React, { KeyboardEvent } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { addMinutes, format, isToday, startOfDay } from "date-fns";
 import { dayDropId, eventDragId, resizeDragId, slotDropId } from "../../../../lib/calendar/calendarDragIds.js";
@@ -148,12 +148,22 @@ function TimeSlot({ start, onSelectSlot }: { start: Date; onSelectSlot: (start: 
         <button
             ref={setNodeRef}
             type="button"
+            // 48 of these a day would be hundreds of tab stops in a week: the New event shortcut is the keyboard's way in.
+            tabIndex={-1}
             onClick={(e) => onSelectSlot(start, addMinutes(start, SLOT_MINUTES), anchorOf(e.currentTarget))}
             style={{ height: HOUR_HEIGHT_PX / 2 }}
             className={["block w-full border-b border-border/50 text-left", isOver ? "bg-primary/10" : ""].join(" ")}
             aria-label={`New event at ${format(start, "h:mm a, MMM d")}`}
         />
     );
+}
+
+/** Enter or Space on a focused event block opens the event, as a click does (the blocks are not `<button>`s: they hold a nested resize handle). */
+function openOnKey(event: KeyboardEvent<HTMLElement>, open: () => void) {
+    if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+        event.preventDefault();
+        open();
+    }
 }
 
 /** A block's position within its day column. A multi-day event is drawn in every day column it
@@ -183,7 +193,10 @@ function ContinuationBlock({
     return (
         <div
             {...marker.attrs}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(occurrence)}
+            onKeyDown={(e) => openOnKey(e, () => onSelect(occurrence))}
             style={{ position: "absolute", top, height, ...laneStyle(lane), ...(isFree ? undefined : { backgroundColor: color, color: "#fff" }) }}
             className={["rounded-sm px-1.5 py-0.5 text-xs text-left overflow-hidden cursor-pointer", isFree ? "bg-surface-alt text-text-muted" : "", marker.className].join(" ")}
         >
@@ -244,6 +257,7 @@ function EventBlock({
             ].join(" ")}
             {...listeners}
             {...attributes}
+            onKeyDown={(e) => openOnKey(e, () => onSelect(occurrence))}
         >
             <div className="font-medium truncate">{occurrence.title}</div>
             <div className="truncate">{format(start, "h:mma")}</div>
@@ -253,6 +267,8 @@ function EventBlock({
                 aria-label={`Resize "${occurrence.title}"`}
                 {...resizeListeners}
                 {...resizeAttributes}
+                // Dragging is the only way to resize: a tab stop here would do nothing.
+                tabIndex={-1}
             />
         </div>
     );

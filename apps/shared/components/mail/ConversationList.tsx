@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { HiChevronDown, HiChevronRight, HiOutlineFlag, HiOutlinePaperClip } from "react-icons/hi2";
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import { Message } from "../../../../lib/mail/mailApi.js";
 import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
 import MailAddress from "./MailAddress.js";
 import { EncryptedPreview, conversationLooksEncrypted, displaySubject } from "./reading/EncryptedPreview.js";
-import { decryptForDisplay, useDecryptedMessages, useUnlockEpoch } from "../../mail/decryptedMessages.js";
+import { decryptForDisplay, mapWithConcurrency, useDecryptedMessages, useUnlockEpoch } from "../../mail/decryptedMessages.js";
 import { ConversationSummary, listConversationMessages } from "../../../../lib/mail/conversationsApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { ROW_FOCUS_CLASS, UnreadBar, UnreadLabel, dateClass, isUnread, rowClass, senderClass, subjectClass } from "./unreadStyle.js";
@@ -120,23 +120,65 @@ export default function ConversationList({
     const unlockEpoch = useUnlockEpoch();
     // An encrypted conversation's row stands for its latest message, whose subject only decrypting can tell. Rows are decrypted as they are listed
     // whenever the mailbox is unlocked (and again once it is), the same way the message list does.
+    // A few at a time (the list can hold hundreds), and none more once the list has been replaced by a newer one.
     useEffect(() => {
-        for (const conversation of conversations) {
-            if (conversationLooksEncrypted(conversation)) {
-                void decryptForDisplay(conversation.latestMessageUid, conversation.mailboxUid ?? mailboxUid);
+        let stale = false;
+        void mapWithConcurrency(conversations.filter(conversationLooksEncrypted), 4, async (conversation) => {
+            if (!stale) {
+                await decryptForDisplay(conversation.latestMessageUid, conversation.mailboxUid ?? mailboxUid);
             }
-        }
+        });
+        return () => {
+            stale = true;
+        };
     }, [conversations, mailboxUid, unlockEpoch]);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     const [messagesById, setMessagesById] = useState<Record<string, Message[]>>({});
     const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
     const [errorsById, setErrorsById] = useState<Record<string, string>>({});
+    // The messages each cached thread was fetched for (its `messageUids`): a list that now says otherwise has the thread fetched again.
+    const fetchedForRef = useRef<Record<string, string>>({});
     // The answers given from a row's RSVP chip, by message uid: a row draws them at once, whichever row (the conversation's, or one of its messages) they were given from.
     const [answers, setAnswers] = useState<Record<string, Message["meetingResponse"]>>({});
 
     function answered(updated: Message) {
         setAnswers((prev) => ({ ...prev, [updated.uid]: updated.meetingResponse }));
     }
+
+    // New mail, a delete or a move changes a conversation's messages: what was fetched of it is out of date. An expanded thread is fetched again
+    // in place (the rows it shows stay until the new ones arrive); a collapsed one is forgotten, to be fetched when next opened. A conversation
+    // that left the list is forgotten too.
+    useEffect(() => {
+        const listed = new Set<string>();
+        const stale: string[] = [];
+        for (const conversation of conversations) {
+            const id = conversationRowKey(conversation);
+            listed.add(id);
+            const fetchedFor = fetchedForRef.current[id];
+            if (fetchedFor === undefined || fetchedFor === conversation.messageUids.join(",")) {
+                continue;
+            }
+            if (expanded.has(id)) {
+                fetchedForRef.current[id] = conversation.messageUids.join(",");
+                listConversationMessages(conversation.mailboxUid ?? mailboxUid, conversation.conversationId, {}, client)
+                    .then((loaded) => setMessagesById((prev) => ({ ...prev, [id]: loaded })))
+                    .catch(() => undefined);
+            } else {
+                stale.push(id);
+            }
+        }
+        for (const id of Object.keys(fetchedForRef.current)) {
+            if (!listed.has(id)) {
+                stale.push(id);
+            }
+        }
+        if (stale.length > 0) {
+            for (const id of stale) {
+                delete fetchedForRef.current[id];
+            }
+            setMessagesById((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !stale.includes(id))));
+        }
+    }, [conversations]);
 
     function toggle(conversation: ListedConversation) {
         const id = conversationRowKey(conversation);
@@ -158,6 +200,7 @@ export default function ConversationList({
             delete next[id];
             return next;
         });
+        fetchedForRef.current[id] = conversation.messageUids.join(",");
         listConversationMessages(conversation.mailboxUid ?? mailboxUid, conversation.conversationId, {}, client)
             .then((loaded) => setMessagesById((prev) => ({ ...prev, [id]: loaded })))
             .catch((err) =>

@@ -87,8 +87,8 @@ describe("TransportRulesPage", () => {
         const firstServerPage = Array.from({ length: 1000 }, (_, i) => rule(i, i + 10));
         const fetchMock = mockFetch((url) => {
             if (url === "/api/admin/release-notes") return jsonResponse(200, {});
-            if (url === "/api/mail/transport-rules?limit=1000&page=0") return jsonResponse(200, firstServerPage);
-            if (url === "/api/mail/transport-rules?limit=1000&page=1") return jsonResponse(200, [rule(2000, 5), { ...rule(1999, 5), name: "A rule" }]);
+            if (url === "/api/mail/transport-rules?limit=1000&page=0&sort=%7B%22sequence%22%3A%22ASC%22%2C%22uid%22%3A%22ASC%22%7D") return jsonResponse(200, firstServerPage);
+            if (url === "/api/mail/transport-rules?limit=1000&page=1&sort=%7B%22sequence%22%3A%22ASC%22%2C%22uid%22%3A%22ASC%22%7D") return jsonResponse(200, [rule(2000, 5), { ...rule(1999, 5), name: "A rule" }]);
             throw new Error(`unexpected ${url}`);
         });
         const user = userEvent.setup();

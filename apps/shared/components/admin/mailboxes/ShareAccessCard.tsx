@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import {
     listMailboxAccess,
     MailboxAccessMember,
@@ -11,10 +10,11 @@ import {
     removeMailboxAccess,
     setMailboxAccess,
 } from "../../../../../lib/mail/mailboxAccessApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
 import PrincipalPicker from "../../sharing/PrincipalPicker.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const ROLE_LABELS: Record<MailboxAccessRole, string> = { viewer: "Read only", manager: "Full access" };
 
@@ -54,7 +54,7 @@ export default function ShareAccessCard({ mailboxUid, ownerUserUid, currentUserU
         setError(null);
         listMailboxAccess(mailboxUid)
             .then(setMembers)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load share settings."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load share settings.")))
             .finally(() => setLoading(false));
     }
 
@@ -67,7 +67,7 @@ export default function ShareAccessCard({ mailboxUid, ownerUserUid, currentUserU
             await setMailboxAccess(mailboxUid, userUid, "manager");
             reload();
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not grant access.");
+            setError(actionErrorMessage(err, "Could not grant access."));
         } finally {
             setSaving(false);
         }
@@ -82,7 +82,7 @@ export default function ShareAccessCard({ mailboxUid, ownerUserUid, currentUserU
             try {
                 await removeMailboxAccess(mailboxUid, stale.userOrRoleId);
             } catch (err) {
-                failure = err instanceof ApiRequestError ? err.message : "Could not remove the old entry.";
+                failure = actionErrorMessage(err, "Could not remove the old entry.");
             }
         }
         reload();
@@ -102,7 +102,7 @@ export default function ShareAccessCard({ mailboxUid, ownerUserUid, currentUserU
             await removeMailboxAccess(mailboxUid, userOrRoleId);
             reload();
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not revoke access.");
+            setError(actionErrorMessage(err, "Could not revoke access."));
         } finally {
             setSaving(false);
         }

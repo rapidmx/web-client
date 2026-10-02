@@ -32,13 +32,19 @@ export default function GifPicker({ anchorRef, onSelect, onClose }: GifPickerPro
     useEffect(() => {
         setLoading(true);
         setError(null);
+        // A search that was still on the wire when the query changed (or the popup closed) is not heard: a slow answer to an earlier query
+        // must not replace the results of the one now shown.
+        let stale = false;
         const handle = setTimeout(() => {
             searchGifs(query)
-                .then(setGifs)
-                .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load GIFs."))
-                .finally(() => setLoading(false));
+                .then((found) => !stale && setGifs(found))
+                .catch((err) => !stale && setError(err instanceof ApiRequestError ? err.message : "Could not load GIFs."))
+                .finally(() => !stale && setLoading(false));
         }, SEARCH_DEBOUNCE_MS);
-        return () => clearTimeout(handle);
+        return () => {
+            stale = true;
+            clearTimeout(handle);
+        };
     }, [query]);
 
     return (

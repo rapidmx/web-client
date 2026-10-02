@@ -5,7 +5,7 @@
 import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
 import { HiCheck } from "react-icons/hi2";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
+import { actionErrorMessage } from "../elevation.js";
 import { getRetentionPolicy } from "../../../../../lib/admin/retentionPolicyApi.js";
 import { getMailboxPolicy } from "../../../../../lib/admin/mailboxPolicyApi.js";
 import { createDomain, Domain, listDomains } from "../../../../../lib/admin/domainsApi.js";
@@ -14,7 +14,8 @@ import { getBranding } from "../../../../../lib/branding/brandingApi.js";
 import { EncryptionPolicy, getEncryptionPolicy } from "../../../../../lib/crypto/keyvaultApi.js";
 import { listMailboxes, Mailbox } from "../../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import { LIST_PAGE_SIZE, listAllPages } from "../../../mail/listAllPages.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../../lib/components/forms/FormField.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
@@ -50,7 +51,7 @@ function isStepId(value: string | undefined): value is SetupStepId {
 }
 
 function errorMessage(err: unknown, fallback: string): string {
-    return err instanceof ApiRequestError ? err.message : fallback;
+    return actionErrorMessage(err, fallback);
 }
 
 export interface SetupWizardProps {
@@ -397,9 +398,10 @@ function MailboxesStep({ userUid, domain }: { userUid: string; domain?: string }
     const [formKey, setFormKey] = useState(0);
 
     useEffect(() => {
-        // The administration scope: every mailbox that exists (administrative metadata), not only the administrator's own.
-        listMailboxes({ limit: 100, scope: "admin" }, client)
-            .then((list) =>
+        // The administration scope: every mailbox that exists (administrative metadata), not only the administrator's own. All pages of them: the
+        // administrator's own mailbox may be past the first, and would then be offered to be created again.
+        listAllPages((page) => listMailboxes({ limit: LIST_PAGE_SIZE, page, scope: "admin" }, client))
+            .then(({ items: list }) =>
                 // Keep any mailbox created here while the list was loading.
                 setMailboxes((prev) => [...list, ...prev.filter((mine) => !list.some((mailbox) => mailbox.uid === mine.uid))]),
             )

@@ -9,7 +9,7 @@ import type { PushEvent } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import CalendarPageBase from "../../../apps/www/calendar/index.js";
 import { withTestRouter } from "../routerTestUtils.js";
-import { redactedEventUidOf } from "../../../apps/shared/calendar/calendarLiveUpdates.js";
+import { changedEventOf } from "../../../apps/shared/calendar/calendarLiveUpdates.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 
@@ -127,23 +127,22 @@ afterEach(() => {
     window.history.pushState(null, "", "/");
 });
 
-describe("redactedEventUidOf", () => {
-    it("is the uid of a created or updated calendar event whose payload is a busy block, on either database", () => {
-        expect(redactedEventUidOf({ type: "CalendarEventMongo", action: "create", data: { uid: "e2", redacted: true } })).toBe("e2");
-        expect(redactedEventUidOf({ type: "CalendarEventSQL", action: "update", data: { uid: "e3", redacted: true } })).toBe("e3");
+describe("changedEventOf", () => {
+    it("is the uid of a created or updated calendar event, a busy block or not, on either database", () => {
+        expect(changedEventOf({ type: "CalendarEventMongo", action: "create", data: { uid: "e2", redacted: true } })).toEqual({ uid: "e2", deleted: false });
+        expect(changedEventOf({ type: "CalendarEventSQL", action: "update", data: { uid: "e3", redacted: true } })).toEqual({ uid: "e3", deleted: false });
+        expect(changedEventOf({ type: "CalendarEventMongo", action: "update", data: { uid: "e2" } })).toEqual({ uid: "e2", deleted: false });
+        expect(changedEventOf({ type: "CalendarEventMongo", action: "delete", data: { uid: "e2" } })).toEqual({ uid: "e2", deleted: true });
     });
 
     it("is nothing for anything else the connection carries", () => {
-        expect(redactedEventUidOf({ type: "CalendarEventMongo", action: "update", data: { uid: "e2", redacted: false } })).toBeUndefined();
-        expect(redactedEventUidOf({ type: "CalendarEventMongo", action: "update", data: { uid: "e2" } })).toBeUndefined();
-        expect(redactedEventUidOf({ type: "CalendarEventMongo", action: "delete", data: { uid: "e2", redacted: true } })).toBeUndefined();
-        expect(redactedEventUidOf({ type: "CalendarEventMongo", data: { uid: "e2", redacted: true } })).toBeUndefined();
-        expect(redactedEventUidOf({ type: "CalendarEventMongo", action: "update", data: { uid: 5, redacted: true } })).toBeUndefined();
-        expect(redactedEventUidOf({ type: "CalendarEventMongo", action: "update", data: null })).toBeUndefined();
-        expect(redactedEventUidOf({ type: "CalendarEventMongo", action: "update" })).toBeUndefined();
+        expect(changedEventOf({ type: "CalendarEventMongo", data: { uid: "e2", redacted: true } })).toBeUndefined();
+        expect(changedEventOf({ type: "CalendarEventMongo", action: "update", data: { uid: 5, redacted: true } })).toBeUndefined();
+        expect(changedEventOf({ type: "CalendarEventMongo", action: "update", data: null })).toBeUndefined();
+        expect(changedEventOf({ type: "CalendarEventMongo", action: "update" })).toBeUndefined();
         // The reminder is the same model's, under its own name and action.
-        expect(redactedEventUidOf({ type: "CalendarEvent", action: "reminder", data: { uid: "e2", redacted: true } })).toBeUndefined();
-        expect(redactedEventUidOf({ type: "MessageMongo", action: "update", data: { uid: "m1", redacted: true } })).toBeUndefined();
+        expect(changedEventOf({ type: "CalendarEvent", action: "reminder", data: { uid: "e2", redacted: true } })).toBeUndefined();
+        expect(changedEventOf({ type: "MessageMongo", action: "update", data: { uid: "m1", redacted: true } })).toBeUndefined();
     });
 });
 
@@ -210,19 +209,34 @@ describe("CalendarPage live updates for a private event", () => {
         expect(screen.queryByText(/Elsewhere/)).not.toBeInTheDocument();
     });
 
-    it("does nothing for a push that is not a busy block, and stops listening when the page goes", async () => {
+    it("does nothing for a push that is not about an event, and stops listening when the page goes", async () => {
         const fetchMock = mockCalendar();
         const { unmount } = render(<CalendarPage userUid="u1" />);
         await screen.findByText(/Standup/);
         // The page's own, and whatever the app frame around it listens for.
         expect(listeners.size).toBeGreaterThanOrEqual(1);
 
-        push({ type: "CalendarEventMongo", action: "update", data: calendarEvent({ uid: "e2" }) });
         push({ type: "MessageMongo", action: "create", data: { uid: "m1" } });
-        expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/calendar-events/e2")).toBe(false);
+        expect(fetchMock.mock.calls.some(([url]) => url === "/api/mail/calendar-events/m1")).toBe(false);
 
         unmount();
         expect(listeners.size).toBe(0);
+    });
+
+    it("shows an ordinary event another device created or changed, and drops one that was deleted", async () => {
+        events = [calendarEvent(), calendarEvent({ uid: "e2", title: "Old title" })];
+        mockCalendar();
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByText(/Old title/);
+
+        single = (uid) => jsonResponse(200, calendarEvent({ uid, title: "Edited elsewhere" }));
+        push({ type: "CalendarEventMongo", action: "update", data: calendarEvent({ uid: "e2", title: "Edited elsewhere" }) });
+        expect(await screen.findByText(/Edited elsewhere/)).toBeInTheDocument();
+        expect(screen.queryByText(/Old title/)).not.toBeInTheDocument();
+
+        push({ type: "CalendarEventMongo", action: "delete", data: { uid: "e2" } });
+        await waitFor(() => expect(screen.queryByText(/Edited elsewhere/)).not.toBeInTheDocument());
+        expect(screen.getByText(/Standup/)).toBeInTheDocument();
     });
 
     it("re-fetches a pushed event through the provided ApiClient from context, not the global fetch", async () => {

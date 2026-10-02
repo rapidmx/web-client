@@ -11,11 +11,13 @@ import {
     createContact,
     deleteContact,
     listContacts,
+    listContactsInFolders,
     listDeletedContacts,
     setContactFavorite,
     updateContact,
 } from "../../../lib/contacts/contactsApi.js";
-import { VCARD_MAX_CHARS, VCARD_MAX_CONTACTS, contactsToVCardFile, contactToVCard, parseVCards } from "../../../lib/contacts/vcard.js";
+import { VCARD_MAX_CHARS, VCARD_MAX_CONTACTS, ParsedVCardContact, contactsToVCardFile, contactToVCard, parseVCards } from "../../../lib/contacts/vcard.js";
+import { withoutDuplicates } from "../../shared/components/contacts/participantDetails.js";
 import useIsMobile from "../../../lib/util/useIsMobile.js";
 import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import { useCompose } from "../../shared/components/mail/compose/ComposeContext.js";
@@ -29,6 +31,7 @@ import ContactDetailPane from "../../shared/components/contacts/ContactDetailPan
 import ContactForm from "../../shared/components/contacts/ContactForm.js";
 import { useWritableMailboxes } from "../../shared/components/mail/writableMailboxes.js";
 import { getMyMailboxAccess } from "../../../lib/mail/mailboxAccessApi.js";
+import { useMailboxUpdateAccess } from "../../shared/mail/useMailboxUpdateAccess.js";
 import Alert from "../../../lib/components/feedback/Alert.js";
 import Button from "../../../lib/components/buttons/Button.js";
 import Modal from "../../../lib/components/overlays/Modal.js";
@@ -80,6 +83,8 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     const { folderUid, mailboxUid, mailboxes } = useContactsShell();
     // The new-contact form's Mailbox choices - view-only shares are left out (see writableMailboxes.ts).
     const writableMailboxes = useWritableMailboxes(mailboxes, userUid, mailboxUid);
+    // A mailbox shared with the reader view-only: its contacts can be read, not changed.
+    const mailboxWritable = useMailboxUpdateAccess(mailboxes.find((mb) => mb.uid === mailboxUid));
     const { openCompose } = useCompose();
     const isMobile = useIsMobile();
     const navigate = useNavigate();
@@ -309,6 +314,22 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     }
 
     // The bulk handlers below try every contact and report each failure: the same failure repeated is one pop-up with a count.
+
+    // A bulk action sends every checked row's own version: pressed again before it finishes, it would send stale ones and raise a stream of 409s.
+    const bulkRunning = useRef(false);
+    function singleFlight(run: () => Promise<void>): () => Promise<void> {
+        return async () => {
+            if (bulkRunning.current) {
+                return;
+            }
+            bulkRunning.current = true;
+            try {
+                await run();
+            } finally {
+                bulkRunning.current = false;
+            }
+        };
+    }
     async function handleBulkDelete() {
         setConfirmingBulkDelete(false);
         for (const contact of checkedContacts) {
@@ -339,7 +360,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         openCompose({ to: addresses.join(", ") });
     }
 
-    async function handleToggleFavorite() {
+    const handleToggleFavorite = singleFlight(async () => {
         const allFavorited = checkedContacts.every((c) => c.favorite);
         for (const contact of checkedContacts) {
             try {
@@ -350,9 +371,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         }
         clearPinnedSignerCache();
         await reload();
-    }
+    });
 
-    async function handleAddCategory() {
+    const handleAddCategory = singleFlight(async () => {
         const category = window.prompt("Category name");
         if (!category?.trim()) {
             return;
@@ -369,7 +390,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         }
         clearPinnedSignerCache();
         await reload();
-    }
+    });
 
     function handleExportVCard() {
         downloadTextFile(
@@ -398,11 +419,17 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         if (parsed.length >= VCARD_MAX_CONTACTS) {
             notify({ kind: "warning", title: "Only part of the file was imported", message: `A file is imported up to its first ${VCARD_MAX_CONTACTS} contacts - import the rest from another file.` });
         }
-        // Importing a file twice must not double every contact: one whose address is already a contact's is left alone.
-        const known = new Set(contacts.flatMap((contact) => contact.emails.map((email) => email.address.trim().toLowerCase())));
-        const fresh = parsed.filter((input) => !input.emails!.some((email) => known.has(email.address.toLowerCase())));
+        // Importing a file twice must not double every contact: one whose address (or, with no address, name and phone) is already a contact's - or an
+        // earlier card's in the file - is left alone. The folder is read in full for that, not just the page of it the list holds.
+        let fresh: ParsedVCardContact[];
+        try {
+            fresh = withoutDuplicates(parsed, await listContactsInFolders([folderUid], client)).fresh;
+        } catch (err) {
+            notifyApiError(err, "Couldn't check the file against your contacts");
+            return;
+        }
         if (fresh.length < parsed.length) {
-            notify({ kind: "info", title: "Some contacts were skipped", message: `${parsed.length - fresh.length} of the contacts in that file already have an address in your contacts.` });
+            notify({ kind: "info", title: "Some contacts were skipped", message: `${parsed.length - fresh.length} of the contacts in that file are already in your contacts.` });
         }
         for (const input of fresh) {
             try {
@@ -589,6 +616,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                             contact={selected}
                             onEdit={() => setMode("edit")}
                             onDelete={() => handleDelete(selected)}
+                            canWrite={mailboxWritable}
                             onKeysChanged={() => void reload()}
                             onChanged={() => void reload()}
                             canResolveKeys={ownsMailbox || delegateCanUpdate}

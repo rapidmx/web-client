@@ -13,7 +13,7 @@
  */
 
 import { ApiClient, withClient } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, buildQuery, sortQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
 
@@ -57,7 +57,7 @@ export interface EscrowAuditLogEntry {
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
  * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 export function listAuditLogEntries(params: ListParams = {}, client?: ApiClient): Promise<EscrowAuditLogEntry[]> {
-    return withClient(client, `/escrow/audit-log?${buildQuery(params)}`);
+    return withClient(client, `/escrow/audit-log?${buildQuery(params, sortQuery({ sequence: "DESC" }))}`);
 }
 
 export function getAuditLogEntry(uid: string, client?: ApiClient): Promise<EscrowAuditLogEntry> {

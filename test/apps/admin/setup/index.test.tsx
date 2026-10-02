@@ -267,7 +267,7 @@ describe("SetupPage", () => {
 
         expect(await screen.findByRole("heading", { name: "Your mailbox" })).toBeInTheDocument();
         // The mailboxes that exist are asked for through the administration scope (metadata), not only the administrator's own.
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=100&page=0&scope=admin", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=500&page=0&scope=admin&sort=%7B%22uid%22%3A%22ASC%22%7D", expect.anything());
         expect(await screen.findByLabelText("Local part")).toHaveValue("admin");
         expect(screen.getByLabelText("Display name")).toHaveValue("Administrator");
         // The admin's own uid is looked up and shown automatically (it's the trusted `defaults` prop, not
@@ -365,6 +365,26 @@ describe("SetupPage", () => {
         expect(await screen.findByRole("heading", { name: "Add another mailbox" })).toBeInTheDocument();
         await waitFor(() => expect(screen.getAllByText(/<ops@example\.com>/)).toHaveLength(1));
         expect(screen.getAllByText(/<admin@example\.com>/)).toHaveLength(1);
+    });
+
+    it("looks through every page of the existing mailboxes for the administrator's own, not only the first", async () => {
+        // A full first page of other people's mailboxes: the administrator's own is on the second.
+        const first = Array.from({ length: 500 }, (_, i) => mailbox(`other${i}`, `user-${i}`));
+        const fetchMock = mockSetup({
+            currentStep: "mailboxes",
+            domains: [domain],
+            extra: (url) => {
+                if (!url.startsWith("/api/mail/mailboxes?")) return undefined;
+                const page = new URL(url, "http://test.invalid").searchParams.get("page");
+                return jsonResponse(200, page === "0" ? first : [mailbox("admin", "admin-1")]);
+            },
+        });
+        renderPage();
+
+        expect(await screen.findByRole("heading", { name: "Add another mailbox" })).toBeInTheDocument();
+        expect(screen.queryByRole("heading", { name: "Your mailbox" })).not.toBeInTheDocument();
+        expect(screen.getByText("(yours)")).toBeInTheDocument();
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=500&page=1&scope=admin&sort=%7B%22uid%22%3A%22ASC%22%7D", expect.anything());
     });
 
     it("says when the existing mailboxes couldn't be loaded", async () => {

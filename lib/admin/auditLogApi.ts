@@ -10,7 +10,7 @@
  */
 
 import { ApiClient, withClient } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, buildQuery, sortQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
 
@@ -44,5 +44,5 @@ export function listAuditLog(filters: AuditLogFilters = {}, params: ListParams =
     if (filters.actorUserUid) extra.actorUserUid = filters.actorUserUid;
     if (filters.action) extra.action = filters.action;
     if (filters.targetType) extra.targetType = filters.targetType;
-    return withClient(client, `/mail/audit-log?${buildQuery(params, extra)}`);
+    return withClient(client, `/mail/audit-log?${buildQuery(params, { ...extra, ...sortQuery({ dateCreated: "DESC", uid: "ASC" }) })}`);
 }

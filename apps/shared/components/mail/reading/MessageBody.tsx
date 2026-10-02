@@ -36,7 +36,8 @@ export interface MessageBodyProps {
     onAdaptable?: (adaptable: boolean) => void;
 }
 
-type Remote = { status: "loading" } | { status: "ready"; content: BodyContent } | { status: "error"; message: string };
+/** `uid` is the message a ready body is of, so a later fetch for the same message (its version moved on) can leave what is shown in place. */
+type Remote = { status: "loading" } | { status: "ready"; content: BodyContent; uid: string } | { status: "error"; message: string };
 
 /** Placeholder lines shown where the body will be, in the body's own place, until it has arrived and been laid out. */
 export function BodySkeleton() {
@@ -73,7 +74,7 @@ const AUTHORED_CANVAS = "rgb(255, 255, 255)";
 export default function MessageBody({ messageUid, messageVersion, title, content, attachments, inlineParts, original = false, onAdaptable }: MessageBodyProps) {
     const [remote, setRemote] = useState<Remote>(() => {
         const cached = cachedBodyContent(messageUid, messageVersion);
-        return cached ? { status: "ready", content: cached } : { status: "loading" };
+        return cached ? { status: "ready", content: cached, uid: messageUid } : { status: "loading" };
     });
     const [attempt, setAttempt] = useState(0);
     const supplied = content !== undefined;
@@ -84,15 +85,20 @@ export default function MessageBody({ messageUid, messageVersion, title, content
         }
         const cached = cachedBodyContent(messageUid, messageVersion);
         if (cached) {
-            setRemote({ status: "ready", content: cached });
+            setRemote({ status: "ready", content: cached, uid: messageUid });
             return;
         }
         const controller = new AbortController();
-        setRemote({ status: "loading" });
+        // The same message under a newer version (opening it marked it read, a flag or a label changed): what is shown stays - no skeleton, and
+        // the frame is not torn down and laid out again - until the fresh copy is here, and a failed read leaves it too.
+        const revalidating = remote.status === "ready" && remote.uid === messageUid;
+        if (!revalidating) {
+            setRemote({ status: "loading" });
+        }
         fetchBodyContent(messageUid, messageVersion, controller.signal).then(
-            (loaded) => setRemote({ status: "ready", content: loaded }),
+            (loaded) => setRemote({ status: "ready", content: loaded, uid: messageUid }),
             (err) => {
-                if (!controller.signal.aborted) {
+                if (!controller.signal.aborted && !revalidating) {
                     setRemote({ status: "error", message: err instanceof ApiRequestError ? err.message : "Could not load this message." });
                 }
             },
@@ -100,7 +106,7 @@ export default function MessageBody({ messageUid, messageVersion, title, content
         return () => controller.abort();
     }, [messageUid, messageVersion, supplied, attempt]);
 
-    const shown: Remote = content ? { status: "ready", content } : remote;
+    const shown: Remote = content ? { status: "ready", content, uid: messageUid } : remote;
     if (shown.status === "loading") {
         return <BodySkeleton />;
     }

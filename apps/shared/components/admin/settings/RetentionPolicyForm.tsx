@@ -4,8 +4,14 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
 import { actionErrorMessage } from "../elevation.js";
-import { MIN_AUDIT_LOG_RETENTION_DAYS, RetentionPolicy, RetentionPolicyUpdate, updateRetentionPolicy } from "../../../../../lib/admin/retentionPolicyApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import {
+    MIN_AUDIT_LOG_RETENTION_DAYS,
+    MIN_MESSAGE_RETENTION_DAYS,
+    RetentionPolicy,
+    RetentionPolicyUpdate,
+    updateRetentionPolicy,
+} from "../../../../../lib/admin/retentionPolicyApi.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
 
@@ -49,14 +55,21 @@ export default function RetentionPolicyForm({
     const [savedMessageDays, setSavedMessageDays] = useState(policy.messageRetentionDays);
     const [savedAuditDays, setSavedAuditDays] = useState(policy.auditLogRetentionDays);
     const [pendingPatch, setPendingPatch] = useState<RetentionPolicyUpdate | null>(null);
+    // A period that is still what is stored is neither sent nor held to the floor: it may have been stored before the floor was set.
+    const messageChanged = messageRetentionDays !== (savedMessageDays?.toString() ?? "");
+    const auditChanged = auditLogRetentionDays !== (savedAuditDays?.toString() ?? "");
 
     function handleSubmit(e: FormEvent) {
         e.preventDefault();
-        // A blank field is sent as `null`, which clears a configured age back to no automatic purge.
-        const patch: RetentionPolicyUpdate = {
-            messageRetentionDays: messageRetentionDays.trim() === "" ? null : Number(messageRetentionDays),
-            auditLogRetentionDays: auditLogRetentionDays.trim() === "" ? null : Number(auditLogRetentionDays),
-        };
+        // A blank field is sent as `null`, which clears a configured age back to no automatic purge. Only a field that was changed is sent: one left as
+        // it is would be refused by a floor that came in after it was stored, and so keep the other from being saved.
+        const patch: RetentionPolicyUpdate = {};
+        if (messageChanged) {
+            patch.messageRetentionDays = messageRetentionDays.trim() === "" ? null : Number(messageRetentionDays);
+        }
+        if (auditChanged) {
+            patch.auditLogRetentionDays = auditLogRetentionDays.trim() === "" ? null : Number(auditLogRetentionDays);
+        }
         if (
             shortensRetention(patch.messageRetentionDays, savedMessageDays) ||
             shortensRetention(patch.auditLogRetentionDays, savedAuditDays)
@@ -109,14 +122,14 @@ export default function RetentionPolicyForm({
                     <input
                         aria-label="Message retention (days)"
                         type="number"
-                        min={1}
+                        min={messageChanged ? MIN_MESSAGE_RETENTION_DAYS : undefined}
                         className={INPUT_CLASS}
                         value={messageRetentionDays}
                         onChange={(e) => setMessageRetentionDays(e.target.value)}
                         placeholder="No automatic purge"
                     />
                     <span className="text-xs text-text-muted">
-                        Applies to any message, in any folder, regardless of age.
+                        Applies to any message, in any folder, regardless of age. Cannot be set below {MIN_MESSAGE_RETENTION_DAYS} days.
                     </span>
                 </label>
                 <label className="flex flex-col gap-1.5 text-sm">
@@ -124,7 +137,7 @@ export default function RetentionPolicyForm({
                     <input
                         aria-label="Audit log retention (days)"
                         type="number"
-                        min={MIN_AUDIT_LOG_RETENTION_DAYS}
+                        min={auditChanged ? MIN_AUDIT_LOG_RETENTION_DAYS : undefined}
                         className={INPUT_CLASS}
                         value={auditLogRetentionDays}
                         onChange={(e) => setAuditLogRetentionDays(e.target.value)}

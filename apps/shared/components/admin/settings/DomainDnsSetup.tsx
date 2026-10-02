@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { DnsRecordCheck, Domain, getDnsSetup, getDomain, verifyDomain } from "../../../../../lib/admin/domainsApi.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import CopyButton from "../../../../../lib/components/buttons/CopyButton.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
     ownership: "Ownership (TXT)",
@@ -88,7 +88,7 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                 setDnsSetup(checks);
                 onLoaded?.(d);
             })
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load this domain."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load this domain.")))
             .finally(() => setLoading(false));
     }
 
@@ -109,7 +109,7 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
             setDnsSetup(checks);
             onLoaded?.(d);
         } catch (err) {
-            setVerifyError(err instanceof ApiRequestError ? err.message : "Could not verify this domain.");
+            setVerifyError(actionErrorMessage(err, "Could not verify this domain."));
         } finally {
             setVerifying(false);
         }

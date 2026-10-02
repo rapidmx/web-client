@@ -45,7 +45,7 @@ describe("QuarantinePage", () => {
         });
         render(<QuarantinePage userUid="admin-1" authServerUrl="https://auth.example.com" />);
         expect(await screen.findByText("Nothing quarantined for this mailbox.")).toBeInTheDocument();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1&scope=admin", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1&scope=admin&sort=%7B%22dateCreated%22%3A%22DESC%22%2C%22uid%22%3A%22ASC%22%7D", expect.anything());
     });
 
     it("lists held entries and marks one released after confirming, showing the server's own stamp", async () => {

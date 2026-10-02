@@ -132,9 +132,14 @@ function joinQuotedPrintableLines(lines: string[]): string[] {
     for (let i = 0; i < lines.length; i++) {
         let line = lines[i];
         if (/^[^:]*QUOTED-PRINTABLE/i.test(line)) {
+            // Collected and joined once: appending to a growing string a line at a time is quadratic in a value of many soft breaks.
+            const parts: string[] = [];
             while (line.endsWith("=") && i + 1 < lines.length) {
-                line = line.slice(0, -1) + lines[++i];
+                parts.push(line.slice(0, -1));
+                line = lines[++i];
             }
+            parts.push(line);
+            line = parts.join("");
         }
         joined.push(line);
     }

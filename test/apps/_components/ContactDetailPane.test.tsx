@@ -77,7 +77,31 @@ describe("ContactDetailPane", () => {
         expect(onEdit).toHaveBeenCalledTimes(1);
 
         await user.click(screen.getByRole("button", { name: "Delete" }));
+        expect(screen.getByText("Delete this contact?")).toBeInTheDocument();
+        expect(onDelete).not.toHaveBeenCalled();
+        await user.click(screen.getByRole("button", { name: "Keep" }));
+        expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+        expect(onDelete).not.toHaveBeenCalled();
+
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+        await user.click(screen.getByRole("button", { name: "Yes, delete" }));
         expect(onDelete).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks again for the next contact, not carrying one's question over to another", async () => {
+        const user = userEvent.setup();
+        const { rerender } = render(<ContactDetailPane contact={contactFixture()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+
+        rerender(<ContactDetailPane contact={contactFixture({ uid: "other" })} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        expect(screen.queryByText("Delete this contact?")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    });
+
+    it("offers no Edit or Delete for a contact the reader may only read", () => {
+        render(<ContactDetailPane contact={contactFixture()} onEdit={vi.fn()} onDelete={vi.fn()} canWrite={false} />);
+        expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     });
 
     it("falls back to the raw string when a fingerprint doesn't match the grouping pattern (defensive - real fingerprints always do)", () => {

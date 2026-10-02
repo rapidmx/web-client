@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { ReactNode, useEffect, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import { actionErrorMessage } from "../elevation.js";
+import Alert from "../ActionAlert.js";
 
 export interface LoadedSettingsFormProps<T> {
     load: () => Promise<T>;
@@ -21,7 +21,7 @@ export default function LoadedSettingsForm<T>({ load, loadErrorMessage, children
     useEffect(() => {
         load()
             .then(setValue)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : loadErrorMessage));
+            .catch((err) => setError(actionErrorMessage(err, loadErrorMessage)));
     }, []);
 
     if (error) {

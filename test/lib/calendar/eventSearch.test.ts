@@ -282,3 +282,23 @@ describe("a long series' nearest occurrences", () => {
         expect(Math.max(...sorted)).toBeLessThanOrEqual(SEARCH_MAX_OCCURRENCES_PER_SERIES);
     });
 });
+
+describe("an event whose recurrence cannot be expanded", () => {
+    const rule = (overrides: Record<string, unknown>) => ({ freq: "daily" as const, interval: 1, exceptions: [], ...overrides });
+
+    it.each([
+        ["an unknown weekday", { byDay: ["XX"] }],
+        ["no list of exceptions", { exceptions: undefined }],
+        ["a month that does not exist", { byMonth: [13] }],
+    ])("keeps the others in a search and in the agenda, and shows it once, with %s", (_name, extra) => {
+        const broken = event({ uid: "odd", title: "Odd standup", recurrenceRule: rule(extra) });
+        const fine = event({ uid: "fine", title: "Fine standup", startDate: "2026-06-02T15:00:00.000Z", endDate: "2026-06-02T15:30:00.000Z" });
+        expect(searchOccurrences([broken, fine], "standup", NOW).map((o) => o.uid)).toEqual(["odd", "fine"]);
+        expect(allOccurrences([broken, fine], NOW).map((o) => o.uid)).toEqual(["odd", "fine"]);
+    });
+
+    it("leaves out one whose dates cannot be read, rather than failing", () => {
+        const broken = event({ uid: "odd", startDate: "garbage", recurrenceRule: rule({}) });
+        expect(allOccurrences([broken, event({ uid: "fine" })], NOW).map((o) => o.uid)).toEqual(["fine"]);
+    });
+});

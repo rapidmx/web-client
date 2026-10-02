@@ -35,6 +35,8 @@ export interface ContactDetailPaneProps {
     contact: Contact;
     onEdit: () => void;
     onDelete: () => void;
+    /** Whether the reader may change this contact: `false` for one in a mailbox shared with them view-only, which gets no Edit or Delete. Default `true`. */
+    canWrite?: boolean;
     /** Present only on the mobile detail route — renders a "back to contacts" link above the header. Absent
      * on the desktop inline pane, which never navigates away (selecting a different contact just swaps
      * `contact` in place). */
@@ -54,7 +56,7 @@ export interface ContactDetailPaneProps {
  * always visible alongside the contact list) and the mobile detail route
  * (`apps/www/contacts/[uid].tsx`, a full page on its own reached by tapping a contact row).
  */
-export default function ContactDetailPane({ contact, onEdit, onDelete, backHref, onKeysChanged, onChanged, canResolveKeys }: ContactDetailPaneProps) {
+export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite = true, backHref, onKeysChanged, onChanged, canResolveKeys }: ContactDetailPaneProps) {
     const client = useApiClient();
     // The outcome of the last key decision, kept per contact so selecting another contact doesn't carry it over.
     const [keyNotice, setKeyNotice] = useState<{ contactUid: string; text: string } | null>(null);
@@ -64,6 +66,9 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, backHref,
 
     // Not while a picture is being changed: that goes against the version the star would replace.
     const [photoBusy, setPhotoBusy] = useState(false);
+    // Delete asks first - it also drops the pinned signing keys this contact vouches with - and the question belongs to the contact it was asked about.
+    const [confirmingDeleteUid, setConfirmingDeleteUid] = useState<string | null>(null);
+    const confirmingDelete = confirmingDeleteUid === contact.uid;
 
     async function handleToggleFavorite() {
         try {
@@ -115,14 +120,32 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, backHref,
                         )}
                     </div>
                 </div>
-                <div className="flex gap-2 shrink-0">
-                    <Button type="button" variant="secondary" className="!w-auto" onClick={onEdit}>
-                        Edit
-                    </Button>
-                    <Button type="button" variant="secondary" className="!w-auto text-danger" onClick={onDelete}>
-                        Delete
-                    </Button>
-                </div>
+                {canWrite && (
+                    <div className="flex flex-wrap justify-end gap-2 shrink-0">
+                        {confirmingDelete ? (
+                            <>
+                                <span role="alert" className="self-center text-sm">
+                                    Delete this contact?
+                                </span>
+                                <Button type="button" variant="secondary" className="!w-auto text-danger" onClick={onDelete}>
+                                    Yes, delete
+                                </Button>
+                                <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingDeleteUid(null)}>
+                                    Keep
+                                </Button>
+                            </>
+                        ) : (
+                            <>
+                                <Button type="button" variant="secondary" className="!w-auto" onClick={onEdit}>
+                                    Edit
+                                </Button>
+                                <Button type="button" variant="secondary" className="!w-auto text-danger" onClick={() => setConfirmingDeleteUid(contact.uid)}>
+                                    Delete
+                                </Button>
+                            </>
+                        )}
+                    </div>
+                )}
             </div>
 
             <div className="bg-surface border border-border rounded-md p-6 flex flex-col gap-4 text-sm">

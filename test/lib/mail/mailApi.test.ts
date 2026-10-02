@@ -101,7 +101,7 @@ describe("listMailboxes", () => {
     it("sends ?scope=admin only when the administration scope is asked for", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listMailboxes({ scope: "admin", limit: 50 });
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=50&page=0&scope=admin", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=50&page=0&scope=admin&sort=" + encodeURIComponent(JSON.stringify({ uid: "ASC" })), expect.anything());
         await listMailboxes({ limit: 50 });
         expect(fetchMock).toHaveBeenLastCalledWith("/api/mail/mailboxes?limit=50&page=0", expect.anything());
     });
@@ -278,13 +278,13 @@ describe("listQuarantine", () => {
     it("fetches with the mailboxUid query param and default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listQuarantine("mb1");
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })), expect.anything());
     });
 
     it("adds the administration scope when asked", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listQuarantine("mb1", { scope: "admin" });
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1&scope=admin", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1&scope=admin&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })), expect.anything());
     });
 });
 
@@ -313,13 +313,13 @@ describe("listIngestQueue", () => {
     it("fetches with the mailboxUid query param and default pagination", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listIngestQueue("mb1");
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })), expect.anything());
     });
 
     it("adds the administration scope when asked", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listIngestQueue("mb1", { scope: "admin" });
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1&scope=admin", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1&scope=admin&sort=" + encodeURIComponent(JSON.stringify({ dateCreated: "DESC", uid: "ASC" })), expect.anything());
     });
 });
 

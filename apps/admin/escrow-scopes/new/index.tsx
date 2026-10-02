@@ -4,16 +4,17 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "../../../../lib/util/api.js";
 import { createEscrowScope } from "../../../../lib/admin/escrowScopesApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
 import EscrowScopeKeyAndHoldersFields, {
     emptyEscrowScopeKeyAndHoldersValue,
+    keyValidityError,
     selfAsHolderError,
 } from "../../../shared/components/admin/escrowScopes/EscrowScopeKeyAndHoldersFields.js";
-import Alert from "../../../../lib/components/feedback/Alert.js";
+import Alert from "../../../shared/components/admin/ActionAlert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../lib/components/forms/FormField.js";
+import { actionErrorMessage } from "../../../shared/components/admin/elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -44,6 +45,11 @@ function NewEscrowScopeForm({ adminUid }: { adminUid?: string }) {
         }
         if (!keyAndHolders.publicKey.trim() || !keyAndHolders.keyType.trim() || !keyAndHolders.fingerprint.trim()) {
             setError("The public key, its type, and its fingerprint are all required.");
+            return;
+        }
+        const validityError = keyValidityError(keyAndHolders);
+        if (validityError) {
+            setError(validityError);
             return;
         }
         if (keyAndHolders.holderUserUids.length === 0) {
@@ -78,7 +84,7 @@ function NewEscrowScopeForm({ adminUid }: { adminUid?: string }) {
             });
             void navigate(`/admin/escrow-scopes/${encodeURIComponent(created.uid)}`);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not create the escrow scope.");
+            setError(actionErrorMessage(err, "Could not create the escrow scope."));
         } finally {
             setSaving(false);
         }

@@ -60,7 +60,7 @@ import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { bookingSettingsHref } from "../../shared/calendar/bookingPlugin.js";
-import { redactedEventUidOf } from "../../shared/calendar/calendarLiveUpdates.js";
+import { changedEventOf } from "../../shared/calendar/calendarLiveUpdates.js";
 
 /** The furthest instants a `Date` can hold: the List's "range" reaches both. */
 const MAX_DATE_MS = 8.64e15;
@@ -295,17 +295,22 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     const checkedFolderUidsKey = Array.from(checkedFolderUids).sort().join(",");
     useEffect(reload, [calendarFolderUidsKey, checkedFolderUidsKey]);
 
-    // A private or confidential event that somebody creates or changes is announced on the push connection as its busy block, whatever the reader may
-    // see (see `redactedEventUidOf()`): that payload is never stored here. The event is fetched again by its uid, which comes back as much as this
-    // reader may see - all of it for the owner - and replaces (or joins) what the calendar holds; one that is gone (a 404) leaves it. A failed fetch
-    // changes nothing: the next load shows the event as it is.
+    // An event that somebody creates, changes or deletes is announced on the push connection - a private or confidential one as its busy block, whatever the
+    // reader may see (see `changedEventOf()`): that payload is never stored here. The event is fetched again by its uid, which comes back as much as this
+    // reader may see - all of it for the owner - and replaces (or joins) what the calendar holds; one that is gone (a 404, or a delete) leaves it. A failed
+    // fetch changes nothing: the next load shows the event as it is.
     const checkedFolderUidsRef = useRef(checkedFolderUids);
     checkedFolderUidsRef.current = checkedFolderUids;
     useEffect(
         () =>
             getPushClient().onEvent((event) => {
-                const uid = redactedEventUidOf(event);
-                if (!uid) {
+                const change = changedEventOf(event);
+                if (!change) {
+                    return;
+                }
+                const { uid } = change;
+                if (change.deleted) {
+                    setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
                     return;
                 }
                 void getCalendarEvent(uid, client).then(
@@ -578,6 +583,8 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
             reload();
         } catch (err) {
             notifyApiError(err, action.type === "move" ? "Couldn't move the event" : "Couldn't resize the event");
+            // A refused change (a 409 most of all) means the page holds a stale version: load again, or every later drag of this event fails the same way.
+            reload();
         }
     }
 

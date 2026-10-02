@@ -4,12 +4,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "../../../../lib/util/api.js";
 import { createDistributionList } from "../../../../lib/admin/distributionListsApi.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
-import Alert from "../../../../lib/components/feedback/Alert.js";
+import Alert from "../../../shared/components/admin/ActionAlert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../lib/components/forms/FormField.js";
+import { actionErrorMessage } from "../../../shared/components/admin/elevation.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -52,7 +52,7 @@ function NewDistributionListForm() {
             });
             void navigate(`/admin/distribution-lists/${encodeURIComponent(list.uid)}`);
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not create the distribution list.");
+            setError(actionErrorMessage(err, "Could not create the distribution list."));
         } finally {
             setSaving(false);
         }

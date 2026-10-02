@@ -339,6 +339,13 @@ export default function ComposeWindow({
     /** Attachment/inline-image uploads on the wire, and who is waiting for them to finish (Send pressed meanwhile). */
     const uploadsInFlightRef = useRef(0);
     const uploadWaitersRef = useRef<(() => void)[]>([]);
+    /** How many uploads have failed so far: a Send that waited on uploads compares it to see whether one of them did. */
+    const uploadFailuresRef = useRef(0);
+    /** Set while a Send waits for uploads: Close and Discard call it to cancel that send. */
+    const cancelUploadWaitRef = useRef<(() => void) | null>(null);
+    /** The draft a plaintext save was last sent for, so a message that turns out to need encryption knows a copy may be on the server. */
+    const plaintextRequestedRef = useRef<string | null>(null);
+    const [uploadsActive, setUploadsActive] = useState(false);
     /** The latest save request, if any - each save is chained after the one before it. Always settles (never
      * rejects), to the saved message, or `undefined` when that save failed. */
     const saveInFlightRef = useRef<Promise<Message | undefined>>(Promise.resolve(undefined));
@@ -664,7 +671,8 @@ export default function ComposeWindow({
      * the old draft is deleted only once the new one has been created. Recipients, subject, and body are
      * kept. */
     function handleFromChange(nextMailboxUid: string) {
-        if (nextMailboxUid === mailboxUid || hasUploads) {
+        // An upload still on the wire counts: it would land on the draft this switch supersedes.
+        if (nextMailboxUid === mailboxUid || hasUploads || uploadsInFlightRef.current > 0) {
             return;
         }
         if (draft) {
@@ -747,6 +755,7 @@ export default function ComposeWindow({
             void refreshDraftVersion(draft.uid);
             return attachmentContentUrl(attachment.uid);
         } catch (err) {
+            uploadFailuresRef.current += 1;
             setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload image.");
             return null;
         } finally {
@@ -757,10 +766,12 @@ export default function ComposeWindow({
     /** Send waits for every upload started before it: see `submit()`. */
     function uploadStarted() {
         uploadsInFlightRef.current += 1;
+        setUploadsActive(true);
     }
     function uploadFinished() {
         uploadsInFlightRef.current -= 1;
         if (uploadsInFlightRef.current === 0) {
+            setUploadsActive(false);
             for (const resolve of uploadWaitersRef.current.splice(0)) {
                 resolve();
             }
@@ -804,6 +815,7 @@ export default function ComposeWindow({
                     void refreshDraftVersion(draft!.uid);
                 } catch (err) {
                     allAttached = false;
+                    uploadFailuresRef.current += 1;
                     setAttachError(err instanceof ApiRequestError ? err.message : "Could not upload attachment.");
                 }
             }
@@ -926,7 +938,25 @@ export default function ComposeWindow({
         try {
             if (uploadsInFlightRef.current > 0) {
                 setWaitingForUploads(true);
-                await new Promise<void>((resolve) => uploadWaitersRef.current.push(resolve));
+                const failuresBefore = uploadFailuresRef.current;
+                let cancelled = false;
+                await new Promise<void>((resolve) => {
+                    uploadWaitersRef.current.push(resolve);
+                    cancelUploadWaitRef.current = () => {
+                        cancelled = true;
+                        resolve();
+                    };
+                });
+                cancelUploadWaitRef.current = null;
+                // Close or Discard was pressed meanwhile: the message is not to be sent.
+                if (cancelled) {
+                    return;
+                }
+                // An attachment the sender asked for did not arrive: say so rather than sending the message without it.
+                if (uploadFailuresRef.current > failuresBefore) {
+                    setSendError("An attachment could not be uploaded, so the message was not sent. Remove it or try again.");
+                    return;
+                }
                 // The editor puts an image it has just uploaded into the message a moment after the upload resolves: let the window catch up.
                 await new Promise((resolve) => setTimeout(resolve, 0));
                 setWaitingForUploads(false);
@@ -1034,6 +1064,7 @@ export default function ComposeWindow({
                 setSaveStatus("saved");
                 return { message: before };
             }
+            plaintextRequestedRef.current = target.uid;
             try {
                 const saved = await assembleDraft(target.uid, {
                     to: parseAddresses(current.to),
@@ -1113,6 +1144,7 @@ export default function ComposeWindow({
      * deleted, and a delete that fails keeps the window open with the error.
      */
     async function discardNow() {
+        cancelUploadWaitRef.current?.();
         finishedRef.current = true;
         pendingSaveRef.current = false;
         setClosePrompt(null);
@@ -1152,6 +1184,7 @@ export default function ComposeWindow({
      * *unknown* (settings loading or failed, a lookup pending) is not a reason to hold the window: it is saved like any
      * other message. A failed save keeps the window open with Discard / Keep editing. */
     async function handleClose() {
+        cancelUploadWaitRef.current?.();
         if (!hasUserContent) {
             void discardNow();
             return;
@@ -1251,10 +1284,13 @@ export default function ComposeWindow({
      * uid, so attachments and the folder are undisturbed), chained after any save still on the wire. Best effort - a failure is reported once. */
     function scrubSavedDraft(target: Message) {
         lastSavedRef.current = null;
+        plaintextRequestedRef.current = null;
         setSaveStatus("idle");
         const previous = saveInFlightRef.current;
         const scrub = (async (): Promise<Message | undefined> => {
             await previous;
+            // A save that was on the wire has landed by now and recorded itself as the last one saved - which the scrub just replaced.
+            lastSavedRef.current = null;
             try {
                 // Its answer (the new version) is what a later delete waits for through `saveInFlightRef`, like any save's.
                 return await assembleDraft(target.uid, { to: [], cc: [], bcc: [], subject: "", html: "" }, client);
@@ -1272,7 +1308,7 @@ export default function ComposeWindow({
     }
     // Only a message that was really saved (`lastSavedRef` names its draft) has a plaintext copy to replace.
     useEffect(() => {
-        if (encryptionDecided && draft && lastSavedRef.current?.startsWith(`${draft.uid}:`)) {
+        if (encryptionDecided && draft && (lastSavedRef.current?.startsWith(`${draft.uid}:`) || plaintextRequestedRef.current === draft.uid)) {
             scrubSavedDraft(draft);
         }
     }, [encryptionDecided, draft?.uid]);
@@ -1432,7 +1468,8 @@ export default function ComposeWindow({
     // Send never waits for the encryption settings to load (fail open, see `encryptionRequirement.ts`); it only needs the draft to exist. Pressed
     // while an earlier press is still being handled it does nothing (`submit()` guards that itself). A reply or forward waits for its quoted original
     // (at most `QUOTE_FETCH_TIMEOUT_MS`): sent sooner it would go without the quote, a forward without its content, a Reply All to the sender alone.
-    const canSend = !!draft && !closing && !waitingForUploads && !quotePending;
+    // Nor before the editor is there (it waits for the signature): sent sooner a reply would go without its quote and signature.
+    const canSend = !!draft && contentReady && !closing && !waitingForUploads && !quotePending;
     useShortcut(SHORTCUTS.compose.send, () => void (canSend && submit(false)), { container: windowRef });
     useShortcut(
         SHORTCUTS.compose.saveDraft,
@@ -1604,8 +1641,8 @@ export default function ComposeWindow({
                             // Two or more options only exist once the mailboxes have loaded, and the same answer that lets them list
                             // (one that isn't known to be view-only) is what picks the default sender, so a sender is always chosen by now.
                             value={mailboxUid}
-                            disabled={hasUploads}
-                            title={hasUploads ? "The sender can't be changed after adding attachments or images." : undefined}
+                            disabled={hasUploads || uploadsActive}
+                            title={hasUploads || uploadsActive ? "The sender can't be changed after adding attachments or images." : undefined}
                             onChange={(e) => handleFromChange(e.target.value)}
                         >
                             {fromOptions.map((mb) => (

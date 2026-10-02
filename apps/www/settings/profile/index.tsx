@@ -197,7 +197,18 @@ function ProfileContent() {
                         </div>
                         {zoneWasPreselected && (
                             <p className="mt-1 text-xs text-text-muted">
-                                Your mailbox has no time zone chosen yet; this device&rsquo;s is preselected. Save to keep it.
+                                Your mailbox has no time zone chosen yet (it uses UTC); this device&rsquo;s is preselected, and Save sets it - whatever else you change.{" "}
+                                <Button
+                                    type="button"
+                                    variant="text"
+                                    className="!w-auto !inline !p-0 !text-xs"
+                                    onClick={() => {
+                                        setTimezone(DEFAULT_TIME_ZONE);
+                                        setSaved(false);
+                                    }}
+                                >
+                                    Keep UTC
+                                </Button>
                             </p>
                         )}
                         <p id="profile-time-zone-help" className="mt-1 text-xs text-text-muted">

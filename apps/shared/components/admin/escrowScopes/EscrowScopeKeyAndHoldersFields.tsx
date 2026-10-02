@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { escrowPublicKeyFingerprint, normalizeFingerprint } from "../../../../../lib/crypto/escrowKeys.js";
 import { toDatetimeLocal } from "../../../../../lib/util/dateInput.js";
 import { resolveEscrowScopeHolder } from "../../../../../lib/admin/escrowScopesApi.js";
 import FormField from "../../../../../lib/components/forms/FormField.js";
@@ -52,6 +53,13 @@ export function emptyEscrowScopeKeyAndHoldersValue(): EscrowScopeKeyAndHoldersVa
     };
 }
 
+/** The message for a key validity date left empty (or not a date), which would otherwise be sent as nothing; `null` when both dates are there. */
+export function keyValidityError(value: Pick<EscrowScopeKeyAndHoldersValue, "notBefore" | "notAfter">): string | null {
+    return Number.isNaN(new Date(value.notBefore).getTime()) || Number.isNaN(new Date(value.notAfter).getTime())
+        ? "The key's validity dates, not before and not after, are both required."
+        : null;
+}
+
 /** The message shown when an administrator tries to make themselves a holder: whoever configures a scope must not
  * also be able to approve access under it (separation of duties - the server refuses it too). Holders who were
  * already on the scope (`existingHolderUserUids`) aren't treated as newly added. */
@@ -70,6 +78,33 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
     function set<K extends keyof EscrowScopeKeyAndHoldersValue>(key: K, next: EscrowScopeKeyAndHoldersValue[K]) {
         onChange({ ...value, [key]: next });
     }
+
+    // What is typed in the required-holders box, which may be empty meanwhile (to be typed over): the value is then 0, which the pages refuse on submit
+    // ("between 1 and the number of holders"), rather than snapping back to 1 under the cursor.
+    const [requiredText, setRequiredText] = useState(String(value.requiredHolders));
+    useEffect(() => {
+        setRequiredText((text) => (Number(text) === value.requiredHolders ? text : String(value.requiredHolders)));
+    }, [value.requiredHolders]);
+
+    // What the pasted key's own SHA-256 fingerprint is (`null`: it is no certificate), so the typed one - which the holders compare out of band -
+    // can be checked against it. `undefined` until worked out.
+    const [actualFingerprint, setActualFingerprint] = useState<string | null | undefined>(undefined);
+    const checking = !keyReadOnly && value.publicKey.trim() !== "";
+    useEffect(() => {
+        if (!checking) {
+            return;
+        }
+        let cancelled = false;
+        setActualFingerprint(undefined);
+        void escrowPublicKeyFingerprint(value.publicKey).then((fingerprint) => {
+            if (!cancelled) {
+                setActualFingerprint(fingerprint);
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [checking, value.publicKey]);
 
     return (
         <>
@@ -115,6 +150,23 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
                         readOnly={keyReadOnly}
                         onChange={(e) => set("fingerprint", e.target.value)}
                     />
+                    {checking && actualFingerprint === null && (
+                        <p role="alert" className="text-xs text-danger mt-1.5">
+                            This is not a base64-encoded certificate, so no fingerprint can be checked against it.
+                        </p>
+                    )}
+                    {checking && actualFingerprint && normalizeFingerprint(value.fingerprint) !== actualFingerprint && (
+                        <p role="alert" className="text-xs text-danger mt-1.5">
+                            This fingerprint is not the one of the public key above, whose SHA-256 fingerprint is{" "}
+                            <code className="font-mono break-all">{actualFingerprint}</code>.{" "}
+                            <button type="button" className="underline font-semibold" disabled={disabled} onClick={() => set("fingerprint", actualFingerprint)}>
+                                Use it
+                            </button>
+                        </p>
+                    )}
+                    {checking && actualFingerprint && normalizeFingerprint(value.fingerprint) === actualFingerprint && (
+                        <p className="text-xs text-text-muted mt-1.5">This is the fingerprint of the public key above.</p>
+                    )}
                 </FormField>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
@@ -171,9 +223,12 @@ export default function EscrowScopeKeyAndHoldersFields({ value, onChange, disabl
                         id="requiredHolders"
                         type="number"
                         className={INPUT_CLASS}
-                        value={value.requiredHolders}
+                        value={requiredText}
                         disabled={disabled}
-                        onChange={(e) => set("requiredHolders", Number(e.target.value) || 1)}
+                        onChange={(e) => {
+                            setRequiredText(e.target.value);
+                            set("requiredHolders", Number(e.target.value) || 0);
+                        }}
                     />
                 </FormField>
 

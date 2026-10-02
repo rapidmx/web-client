@@ -364,6 +364,30 @@ describe("ComposeWindow", () => {
             expect(forgetDraftImages).toHaveBeenCalledWith("m-1");
         });
 
+        it("does not let the sender change while an attachment is still uploading, as it would land on the draft being replaced", async () => {
+            let finishUpload!: (response: Response) => void;
+            const fetchMock = mockTwoMailboxes(((url: string, init?: RequestInit) =>
+                url.startsWith("/api/mail/attachments/upload") && init?.method === "POST"
+                    ? new Promise<Response>((resolve) => (finishUpload = resolve))
+                    : undefined) as never);
+            const user = userEvent.setup();
+            render(<ComposeWindow session={session({ mailboxUid: undefined })} userUid="u1" onClose={vi.fn()} onToggleMinimize={vi.fn()} />);
+            const from = await screen.findByLabelText("From");
+            await waitFor(() => expect(draftCreates(fetchMock)).toHaveLength(1));
+            await user.upload(screen.getByLabelText("Attach files"), new File(["hello"], "notes.txt", { type: "text/plain" }));
+            await waitFor(() => expect(finishUpload).toBeDefined());
+
+            expect(from).toBeDisabled();
+            // Not even by a change that gets through the disabled select.
+            fireEvent.change(from, { target: { value: "mb-shared" } });
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(draftCreates(fetchMock)).toHaveLength(1);
+
+            finishUpload(jsonResponse(200, { uid: "a1", version: 0, messageUid: "m-1", filename: "notes.txt", mimeType: "text/plain", sizeBytes: 5, isInline: false }));
+            await waitFor(() => expect(screen.getByText("notes.txt")).toBeInTheDocument());
+            expect(screen.getByLabelText("From")).toBeDisabled();
+        });
+
         it("keeps the old draft when the replacement draft can't be created", async () => {
             const fetchMock = mockTwoMailboxes((url, init) =>
                 url === "/api/mail/messages" && init?.method === "POST" && String(init.body).includes("mb-shared")
@@ -3209,6 +3233,37 @@ describe("ComposeWindow (round-4 fixes)", () => {
             expect(onClose).not.toHaveBeenCalled();
         });
 
+        it("also replaces the plaintext copy whose first save was still on the wire when the message turned out to need encryption", async () => {
+            getUnlockedKeys.mockReturnValue(undefined);
+            const lookup = deferred<Response>();
+            const firstSave = deferred<Response>();
+            let assembles = 0;
+            const fetchMock = mockRound4(
+                (url, init) => {
+                    if (isLookup(url)) return lookup.promise;
+                    if (url === "/api/mail/compose/m1/assemble" && init?.method === "POST") {
+                        assembles += 1;
+                        return assembles === 1 ? firstSave.promise : jsonResponse(200, { ...draft, version: 2 });
+                    }
+                    return undefined;
+                },
+                { ...mailboxFixture, keys: [encryptKey] },
+            );
+            await renderReady({ session: session({ initialTo: "bob@example.com" }), autosaveDelayMs: 5 });
+
+            await waitFor(() => expect(callsTo(fetchMock, isLookup)).toHaveLength(1));
+            fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Secret plan" } });
+            await waitFor(() => expect(assembles).toBe(1));
+
+            // The answer shows the message must be encrypted while that first save has not come back.
+            lookup.resolve(jsonResponse(200, mutualLookup));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            firstSave.resolve(jsonResponse(200, { ...draft, version: 1 }));
+
+            await waitFor(() => expect(callsTo(fetchMock, isAssemble)).toHaveLength(2));
+            expect(JSON.parse(String((callsTo(fetchMock, isAssemble)[1][1] as RequestInit).body))).toMatchObject({ subject: "", to: [], html: "" });
+        });
+
         it("reports the copy it could not replace, once", async () => {
             getUnlockedKeys.mockReturnValue(undefined);
             const lookup = deferred<Response>();
@@ -3575,9 +3630,11 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 cleanup();
 
                 const signatures = deferred<Response>();
-                mockRound4((url) => (url.startsWith("/api/mail/mail-signatures") ? signatures.promise : undefined), noKeys);
+                const lateFetch = mockRound4((url) => (url.startsWith("/api/mail/mail-signatures") ? signatures.promise : undefined), noKeys);
                 render(<ComposeWindow session={session()} onClose={onClose} onToggleMinimize={vi.fn()} />);
-                await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+                // Send waits for the editor too, so the draft is known to exist by the request that created it having been answered.
+                await waitFor(() => expect(callsTo(lateFetch, (url, method) => url === "/api/mail/messages" && method === "POST")).toHaveLength(1));
+                await pause(20);
                 fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Body not loaded" } });
                 fireEvent.click(screen.getByRole("button", { name: "Close" }));
                 expect(await screen.findByRole("dialog", { name: "Couldn't save this draft" })).toBeInTheDocument();
@@ -3973,7 +4030,8 @@ describe("ComposeWindow (round-4 fixes)", () => {
 
                 first.resolve(jsonResponse(200, { ...draft, version: 1 }));
                 await pause();
-                expect(subjects(fetchMock)).toEqual(["One"]);
+                // "One" was already on the wire as plaintext: it is replaced by an empty draft, and the queued "Two" is skipped.
+                expect(subjects(fetchMock)).toEqual(["One", ""]);
                 expect(screen.getByRole("status")).not.toHaveTextContent("Draft saved");
             });
 
@@ -4027,7 +4085,8 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 first.resolve(jsonResponse(200, { ...draft, version: 1 }));
                 expect(await screen.findByRole("dialog", { name: "Discard this draft?" })).toHaveTextContent(/Encrypted messages aren't saved as drafts/);
                 expect(onClose).not.toHaveBeenCalled();
-                expect(subjects(fetchMock)).toEqual(["One"]);
+                // "One" was already on the wire as plaintext: it is replaced by an empty draft.
+                expect(subjects(fetchMock)).toEqual(["One", ""]);
             });
 
             it("Close does not ask about a recipient still to be checked that was added while its save waited: it saves what is there and closes", async () => {
@@ -4073,7 +4132,8 @@ describe("ComposeWindow (round-4 fixes)", () => {
                 });
                 expect(results).toEqual([true, false]);
                 expect(screen.queryByRole("dialog", { name: "Couldn't save this draft" })).not.toBeInTheDocument();
-                expect(subjects(fetchMock)).toEqual(["One"]);
+                // "One" was already on the wire as plaintext: it is replaced by an empty draft.
+                expect(subjects(fetchMock)).toEqual(["One", ""]);
             });
         });
 

@@ -46,13 +46,19 @@ function srcsetUrls(value: string): string[] {
         if (!token.endsWith(",")) {
             // Skip the descriptors, up to the comma that ends the candidate.
             const comma = value.indexOf(",", position);
+            const descriptors = value.slice(position, comma < 0 ? value.length : comma);
+            if (descriptors.includes("(")) {
+                // The spec's tokenizer ignores commas inside parentheses, so a browser may read the candidates that follow differently from
+                // the way this does. No valid descriptor has one: refuse the whole value.
+                urls.push(descriptors);
+            }
             position = comma < 0 ? value.length : comma + 1;
         }
     }
     return urls;
 }
 
-type Purifier =ReturnType<typeof DOMPurify>;
+type Purifier = ReturnType<typeof DOMPurify>;
 let bodyPurifier: Purifier | undefined;
 
 /** A dedicated DOMPurify instance (hooks registered here never leak into any other DOMPurify caller) that

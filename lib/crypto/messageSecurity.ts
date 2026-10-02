@@ -249,13 +249,13 @@ function hasRepeatedAddressField(fields: MimeHeaderField[] | undefined): boolean
     return SINGLETON_ADDRESS_FIELDS.some((name) => (counts.get(name) ?? 0) > 1);
 }
 
-/** Whether two `Date:` header values name the same instant. Only a pair that both parse can differ: a missing or
- * unreadable date on either side is nothing to compare. */
-function sameInstant(a: string | undefined, b: string | undefined): boolean {
+/** Whether the unsigned (outer) `Date:` header value `outer` names the same instant as the signed one, `signed`. A signed date
+ * that is missing or unreadable leaves nothing to compare, but when there is one the outer must match it: a replayed message
+ * that dropped or garbled its outer Date is as changed as one that carries a new one. */
+function sameInstant(signed: string | undefined, outer: string | undefined): boolean {
     // `String(undefined)` is not a date either.
-    const left = Date.parse(String(a));
-    const right = Date.parse(String(b));
-    return Number.isNaN(left) || Number.isNaN(right) || left === right;
+    const left = Date.parse(String(signed));
+    return Number.isNaN(left) || left === Date.parse(String(outer));
 }
 
 function normalizePins(pins: string | string[] | undefined): string[] {

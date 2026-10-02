@@ -4,15 +4,15 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { ApiRequestError } from "../../lib/util/api.js";
 import { listMailboxes, Mailbox } from "../../lib/mail/mailApi.js";
 import { reopenSetup } from "../../lib/admin/setupApi.js";
 import AdminShell, { AdminShellProps } from "../shared/components/admin/layout/AdminShell.js";
 import LeftoverMailboxesSection from "../shared/components/admin/mailboxes/LeftoverMailboxesSection.js";
 import MailboxTable from "../shared/components/admin/mailboxes/MailboxTable.js";
-import Alert from "../../lib/components/feedback/Alert.js";
+import Alert from "../shared/components/admin/ActionAlert.js";
 import Button from "../../lib/components/buttons/Button.js";
 import Modal from "../../lib/components/overlays/Modal.js";
+import { actionErrorMessage } from "../shared/components/admin/elevation.js";
 
 const PAGE_SIZE = 25;
 
@@ -37,7 +37,7 @@ function MailboxesListContent() {
         // The administration scope: every mailbox as administrative metadata - the console never shows anybody's mail.
         listMailboxes({ page, limit: PAGE_SIZE, scope: "admin" })
             .then(setMailboxes)
-            .catch((err) => setError(err instanceof ApiRequestError ? err.message : "Could not load mailboxes."))
+            .catch((err) => setError(actionErrorMessage(err, "Could not load mailboxes.")))
             .finally(() => setLoading(false));
     }, [page]);
 
@@ -51,7 +51,7 @@ function MailboxesListContent() {
             await reopenSetup();
             void navigate("/admin/setup");
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not reopen setup.");
+            setError(actionErrorMessage(err, "Could not reopen setup."));
             setReopening(false);
             setConfirmingSetup(false);
         }

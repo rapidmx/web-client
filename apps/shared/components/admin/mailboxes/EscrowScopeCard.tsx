@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { FormEvent, useEffect, useState } from "react";
-import { ApiRequestError } from "../../../../../lib/util/api.js";
 import { EscrowScope, listEscrowScopes } from "../../../../../lib/admin/escrowScopesApi.js";
 import { Mailbox, updateMailbox } from "../../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
+import { actionErrorMessage } from "../elevation.js";
 
 const SELECT_CLASS =
     "text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -40,7 +40,7 @@ export default function EscrowScopeCard({ mailbox, onUpdate }: EscrowScopeCardPr
     useEffect(() => {
         listEscrowScopes({ limit: SCOPE_LIST_LIMIT }, client)
             .then(setScopes)
-            .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load escrow scopes."));
+            .catch((err) => setLoadError(actionErrorMessage(err, "Could not load escrow scopes.")));
     }, []);
 
     // Changing the scope changes who can recover this mailbox's encrypted mail, so it's confirmed first.
@@ -59,7 +59,7 @@ export default function EscrowScopeCard({ mailbox, onUpdate }: EscrowScopeCardPr
             onUpdate(updated);
             setSaved(true);
         } catch (err) {
-            setSaveError(err instanceof ApiRequestError ? err.message : "Could not save the escrow scope.");
+            setSaveError(actionErrorMessage(err, "Could not save the escrow scope."));
         } finally {
             setSaving(false);
         }

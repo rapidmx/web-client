@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import Alert from "../../../../../lib/components/feedback/Alert.js";
+import Alert from "../ActionAlert.js";
 import type { DiagnosticsInformation, DiagnosticsVersions } from "./diagnosticsApi.js";
 import type { DiagnosticsResource } from "./useDiagnosticsResource.js";
 import ComponentsTable from "./ComponentsTable.js";

@@ -11,6 +11,7 @@ import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.
 import { clearInviteCache } from "../../apps/shared/components/mail/invite/inviteStore.js";
 import { LONG_PRESS_MS } from "../../apps/shared/gestures/useLongPress.js";
 import InboxPageBase from "../../apps/www/index.js";
+import { clearDecryptedMessages } from "../../apps/shared/mail/decryptedMessages.js";
 import { latestRouter, TestRouter, withTestRouter } from "./routerTestUtils.js";
 import { createApiClient } from "../../lib/util/api.js";
 import { ApiClientContext } from "../../lib/util/apiClientContext.js";
@@ -411,6 +412,8 @@ async function selectRows(user: ReturnType<typeof userEvent.setup>, ...subjects:
 // what the real `searchEncryptedCandidates()` returns when this mailbox has no unlocked keys. Tests
 // that actually exercise Tier 3 override this per-test before rendering.
 beforeEach(() => {
+    // What an earlier test failed to decrypt is not remembered as undecryptable for this one.
+    clearDecryptedMessages();
     searchEncryptedCandidates.mockResolvedValue([]);
     searchLocalIndex.mockResolvedValue({ results: [] });
     // Every test below this line was written against the flat, unfiltered list, which is what an
@@ -5508,6 +5511,38 @@ describe("InboxPage", () => {
             render(<InboxPage userUid="u1" />);
 
             expect(await screen.findByText("Encrypted message")).toBeInTheDocument();
+        });
+
+        it("does not fetch an encrypted row again once it could not be decrypted, when the list grows or refreshes", async () => {
+            const io = mockIntersectionObserver();
+            const rawRequests: string[] = [];
+            const firstPage = [
+                messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined }),
+                ...Array.from({ length: 49 }, (_, i) => messageFixture({ uid: `p0-m${i}`, subject: `Page 0 message ${i}` })),
+            ];
+            mockFetch((url) => {
+                if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [inboxFolder]);
+                if (/^\/api\/mail\/messages\/[^/]+\/raw$/.test(url)) {
+                    rawRequests.push(url);
+                    return new Response("raw-mime-placeholder", { status: 200 });
+                }
+                if (url.startsWith("/api/mail/messages")) {
+                    const page = Number(new URL(url, "http://localhost").searchParams.get("page") ?? "0");
+                    return jsonResponse(200, page === 0 ? firstPage : [messageFixture({ uid: "last", subject: "Last message" })]);
+                }
+                throw new Error(`unexpected ${url}`);
+            });
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+            evaluateMessageSecurity.mockResolvedValue({ state: "encrypted", decryptError: "This device doesn't have the key needed." });
+            render(<InboxPage userUid="u1" />);
+            await waitFor(() => expect(rawRequests).toHaveLength(1));
+
+            io.trigger();
+            expect(await screen.findByText("Last message")).toBeInTheDocument();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            expect(rawRequests).toEqual(["/api/mail/messages/m-enc/raw"]);
         });
 
         it("never shows rows an in-flight auto-decrypt finishes after the keys were locked", async () => {

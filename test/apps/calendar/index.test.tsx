@@ -367,6 +367,7 @@ describe("CalendarPage", () => {
 
         await user.click(await screen.findByRole("button", { name: /Standup/ }));
         await user.click(screen.getByRole("button", { name: "Delete" }));
+        await user.click(screen.getByRole("button", { name: "Yes, delete" }));
 
         await waitFor(() =>
             expect(fetchMock).toHaveBeenCalledWith(
