@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-02
+
+### Added
+- Added a camera button to the avatar of a contact with a menu to upload a file, take a photo or remove the photo, in the contact form, the contact card and the contact details
+- Added only https or server addresses for the logo, icon and style sheet of a company
+- Added only secure or server addresses for the logo, icon and style sheet of a company
+
+### Changed
+- Stop sending the CSRF token header to auth-server, whose CORS rules do not allow it: the browser blocked the silent session refresh and sign-out before they reached the server, so a session could never be renewed
+- Share one session refresh between the wake-up check, a failed request and a page without a session, skip a forced refresh right after a successful one, and retry a refused refresh once before sending the browser to sign-in
+- Keep a log of the last session refresh events in local storage, printed to the console when the browser is sent to sign-in
+- Make Gravatar profile pictures opt-in, with a switch in the Privacy settings, and only look pictures up for the avatars on screen
+- Refuse a link that has a tab or other control character in it before showing it as a plugin's entry in the app rail
+- Leave pictures that are not plain raster images, or are too large, out of a reply when they come from the quoted message, and stop remembering them for the life of the page
+- Keep the quoted pictures that arrive in time when others are too slow, instead of dropping them all
+- Keep a saved contact from being created again when only its picture failed to upload, and let the picture be retried or skipped
+- Render the Calendar's List view a page of days at a time, without redrawing every row for a keystroke, and show events that began over a year ago
+- Update the Calendar's list at midnight, and start new events on the half hour in time zones with a quarter hour offset
+- Keep the arrow keys of the controls inside an open event card from stepping to another event
+- Load the messages of selected conversations five at a time, untick only the ones that failed, and refetch the messages of a ticked conversation that changed
+- Keep the rows of a mailbox that fails to answer when the All mailboxes list refreshes, and name the mailboxes whose folders Empty folder empties, emptying every one of them
+- Stop a session refresh that never answers from holding up every other refresh after 15 seconds
+- Make the phone's More menu a disclosure that closes when focus leaves it
+- Shrink, crop and straighten a picture chosen for a contact on a phone or desktop so any photo fits, and show an error when the browser cannot read its format
+- Upload and show contact pictures and attachments through the explicit API client of the desktop and mobile apps
+- Let a desktop or mobile app save and send a reply that quotes inline pictures, by uploading them through the app's own API client
+- Check the bytes of a quoted picture before attaching it to a reply, attach at most twenty of them, and tell them apart by a SHA-256 of their data
+- Refuse a contact picture that would unpack to more than sixteen megapixels, and re-encode every JPEG so the location in its metadata is not uploaded
+- Never ask Gravatar for a contact who has a picture of their own while it loads, load the pictures of a long contact list lazily and four at a time, and fix the cache of pictures dropping one that was just loaded
+- Use the current version of a contact for a picture change started before a star or a reload, keep the star off while the picture changes, and give the focus back to the camera button
+- Take only one photo when the camera's capture button is pressed twice
+- Do not choose a suggestion that is for what was typed before when pressing Enter or Tab in the recipients
+- Scroll the highlighted option of the time zone list into view and close it on Tab
+- Refresh the contact and retry once when the picture of a saved contact is refused for its version
+- Keep the session refresh running to the end after its fifteen second wait, so the cookies it brings are not lost and cannot sign the browser out
+- Show the tasks of the current mailbox when switching quickly between mailboxes, press a task's checkbox once however many times it is clicked, and move tasks from Today to Overdue at midnight
+- Check the day again when the window gets the focus after a sleep, and keep the List view from failing when its events change while it scrolls
+- Keep a remote image out of a message through a srcset candidate that follows a comma with no space
+- Ask the reader to confirm the fingerprint of the escrow certificate before protecting a key with it
+- Refuse Argon2 parameters sent by the server that are zero or unreasonably large when unlocking
+- Renew an expired session for raw downloads and uploads, and let them take the client of an account
+- Show the protected headers of a message only once its signature verified, and take its sender address from them only then
+- Treat a signed message whose outer date differs from the signed one as having mismatched headers
+- Give no signer identity to a certificate whose alternative names hold no email address
+- Search the next pages of encrypted messages while the results are short, and keep the pages that arrived when a later one fails
+- Stop a message's attachments or its read flag from being overwritten by the answer for another message
+- Refuse a JPEG whose size is hidden behind long metadata, and a decoded picture of too many pixels
+- Keep a quoted phrase in a search from being read as a from: or to: filter
+- Keep a recurring event with a bad interval from breaking the calendar, and start a series without an end near the window shown
+- Count a busy time that cannot be read as busy, and never step through free times by less than a minute
+- Sort contacts and events by their uid after the first key so a page boundary neither skips nor repeats one
+- Ignore an error message or code that is not text when a request fails
+- Say that an encryption format is not supported instead of that the key is missing
+- Stop the camera from handing over a photo after it was cancelled, and from taking two at a double click
+- Clean the signature of a draft the way a quoted message is, and only embed a quoted image that is a data URI
+- Skip empty addresses, decode quoted-printable text and refuse a file that is too large when importing vCards
+- Check the bytes of an inline picture before uploading it, upload at most twenty per message and upload through the client of the account
+- Do not ask Gravatar about a contact whose own picture is still on its way, and fetch the pictures of a long list only as they come into view
+- Keep the cache of a contact's picture from losing an entry another avatar is waiting for, and empty it when signing out
+- Keep the star of a contact from saving over its picture while it is being changed, and save again after a conflict on the picture
+- Choose the address typed in the recipient box on Enter or Tab rather than a suggestion for what was typed before
+- Scroll the time zone list to the highlighted choice and close it when focus leaves
+- Rotate a photo the way it was taken when it is chosen for a booking profile
+- Keep the quote of a reply from being added again after the window is minimized and restored
+- Hold Send until a late quote has arrived
+- Name the address of a recipient whose name looks like one
+- Look through the escapes of a stylesheet before judging its remote addresses
+- Link an address without a scheme with https and a bare email with mailto
+- Keep a series' dates from being replaced by an occurrence's when a failed save is retried
+- Let overlapping events share the width of the week and day views, and place the hours of a day by the wall clock across a time change
+- Limit the contacts file that can be imported, skip contacts already there and say when the file was cut short
+- Keep a plugin's secret settings write-only in the form
+- Ask for confirmation before downloading a private key that is not encrypted
+- Ask for at least twelve characters for the password of an encryption key
+- Clear the notifications when signing out, in another tab, and when impersonation starts or ends
+- Say that a mailbox is not provisioned for a person being impersonated rather than provisioning it
+- Ignore the answer of a mailbox page the reader has already left
+- Disable the contacts that were deleted instead of letting them be selected
+- Require a message and a valid time span for an automatic reply
+- Keep the interval and count of a repeating event within limits
+- Say how many guests beyond the first fifty were not checked for a free time
+- Block a background send whose encryption could not be checked for a sender who has a key
+- Tell the reader to confirm their identity again when an administrator action needs it
+- Show the stored event once instead of freezing the page when a recurrence rule can never match, and when an event's recurrence cannot be expanded
+- Refuse a srcset whose descriptor hides a comma in parentheses
+- Sort tasks, task lists, contact lists and the admin lists by a second unique key so a page neither skips nor repeats a row, and read the settings lists 200 at a time
+- Join the soft line breaks of a quoted-printable vCard value in linear time
+- Refuse a JPEG whose size is not found, and treat a signed message whose outer date is missing or unreadable as having mismatched headers
+- Move a whole series by the days its occurrence was moved when editing the entire series, and follow the weekday of the start in a weekly rule
+- Ask before an answer to one occurrence of a series is sent for the whole series, before an event or a contact is deleted, before keys are rotated, before a form with changes is discarded, before an escrow request is denied and before a tier is set to never encrypt
+- Open the timed events of the week and day views from the keyboard
+- Store a date only due date of a task as the midnight of that day in UTC
+- Show live changes to ordinary events in the calendar, and reload it when a drag is refused
+- Leave out a vCard with no email that is already there, and say when the address book cannot be read
+- Save a signature before the other defaults are cleared
+- Offer to keep UTC on the profile page and refuse to block the reader's own domain
+- Reuse the video meeting already made when a save is tried again
+- Send the mail archive of the privacy page through the client of the account
+- Keep a plugin's secret settings write only, and give the admin pages the means to confirm the identity again when an action needs it
+- Hold the retention of messages to thirty days when it is changed, and show the fingerprint of a pasted escrow key
+- Cancel a send that is waiting for its attachments when the window is closed or discarded, and stop one whose attachment failed to upload
+- Keep Send disabled until the editor has loaded and the sender from changing while an attachment uploads
+- Replace the plaintext copy of a draft that was on its way when encryption became required
+- Decrypt a few messages at a time, and not again a message that could not be decrypted
+- Keep the reading pane in place while a newer version of the message loads
+- Show a failed send with its actions even when pop ups are switched off
+- Refresh from live events no more than once in a second and a half, and empty the mail caches when signing out
+- Page all the mailboxes in the setup wizard and clear an alias of a domain
+- Ask for a message and a valid span of time in an automatic reply, and bound the interval and count of a repeating event
+- Close the question about turning encryption off when Escape is pressed
+
 ## [0.30.0] - 2026-10-01
 
 ### Added
@@ -1217,7 +1328,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/rapidmx/web-client/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/rapidmx/web-client/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/rapidmx/web-client/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/rapidmx/web-client/compare/v0.27.0...v0.28.0
