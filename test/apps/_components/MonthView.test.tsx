@@ -18,8 +18,8 @@ const VIEW_DATE = new Date("2026-06-15T00:00:00.000Z");
 // depending on which local weekday the 1st falls on), so these tests stay correct in any timezone
 // rather than assuming a hardcoded day count/layout for June 2026 specifically.
 const EXPECTED_GRID_DAYS = eachDayOfInterval({
-    start: startOfWeek(startOfMonth(VIEW_DATE), { weekStartsOn: 1 }),
-    end: endOfWeek(endOfMonth(VIEW_DATE), { weekStartsOn: 1 }),
+    start: startOfWeek(startOfMonth(VIEW_DATE), { weekStartsOn: 0 }),
+    end: endOfWeek(endOfMonth(VIEW_DATE), { weekStartsOn: 0 }),
 });
 
 function occurrence(overrides: Partial<CalendarOccurrence> = {}): CalendarOccurrence {
@@ -80,6 +80,14 @@ describe("MonthView", () => {
         renderMonth();
         const grid = screen.getByRole("grid", { name: "Month" });
         expect(within(grid).getAllByRole("button")).toHaveLength(EXPECTED_GRID_DAYS.length);
+    });
+
+    it("heads the columns with the days of the week, Sunday first", () => {
+        renderMonth();
+        const headers = within(screen.getByRole("grid", { name: "Month" })).getAllByRole("columnheader");
+        expect(headers.map((header) => header.textContent)).toEqual(["SSunday", "MMonday", "TTuesday", "WWednesday", "TThursday", "FFriday", "SSaturday"]);
+        // The first cell of the grid is a Sunday: May 31, 2026.
+        expect(EXPECTED_GRID_DAYS[0].getDay()).toBe(0);
     });
 
     it("calling onSelectDay when a day number is clicked", async () => {

@@ -582,7 +582,7 @@ describe("CalendarPage list view", () => {
 
             // Back on the Calendar from elsewhere in the app: the Week it was left on.
             render(<CalendarPage userUid="u1" />);
-            expect(await screen.findByRole("heading", { name: "Jun 15 \u2013 Jun 21, 2026" })).toBeInTheDocument();
+            expect(await screen.findByRole("heading", { name: "Jun 14 \u2013 Jun 20, 2026" })).toBeInTheDocument();
             await user.click(screen.getByRole("button", { name: "Month" }));
             expect(localStorage.getItem("rapidmx:calendar-view")).toBe("month");
         });
@@ -609,7 +609,7 @@ describe("CalendarPage list view", () => {
 
             it("still restores a remembered Week, Work Week, Day, Split or Month", async () => {
                 for (const [stored, shown] of [
-                    ["week", "Jun 15 \u2013 Jun 21, 2026"],
+                    ["week", "Jun 14 \u2013 Jun 20, 2026"],
                     ["day", "Monday, June 15, 2026"],
                 ]) {
                     localStorage.setItem("rapidmx:calendar-view", stored);
@@ -625,7 +625,7 @@ describe("CalendarPage list view", () => {
                 mockShellAndEvents([standup]);
                 const user = userEvent.setup();
                 const first = render(<CalendarPage userUid="u1" />);
-                await screen.findByRole("heading", { name: "Jun 15 \u2013 Jun 21, 2026" });
+                await screen.findByRole("heading", { name: "Jun 14 \u2013 Jun 20, 2026" });
 
                 await user.click(screen.getByRole("button", { name: "List" }));
                 expect(await listRegion()).toBeInTheDocument();

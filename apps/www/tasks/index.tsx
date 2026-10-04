@@ -61,7 +61,7 @@ function bucketFor(task: Task, now: Date): Bucket {
     if (isToday(due)) {
         return "Today";
     }
-    if (!isAfter(due, endOfWeek(now, { weekStartsOn: 1 }))) {
+    if (!isAfter(due, endOfWeek(now, { weekStartsOn: 0 }))) {
         return "This Week";
     }
     return "Later";

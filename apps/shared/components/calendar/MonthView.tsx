@@ -27,15 +27,21 @@ export interface MonthViewProps {
     onSelectSlot?: (start: Date, end: Date, anchor: EventAnchor) => void;
 }
 
-/** A real 6-week month grid (Mon-start), matching Outlook/Gmail's month view. Multi-day and all-day
+/** A real 6-week month grid (Sunday-start), matching Outlook/Gmail's month view. Multi-day and all-day
  * events are shown on every day they cover (see `allDay.ts`'s `occursOnDay`). */
 export default function MonthView({ viewDate, occurrences, folderColors, onSelectDay, onSelectEvent, onSelectSlot }: MonthViewProps) {
-    const gridStart = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 1 });
-    const gridEnd = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 1 });
+    const gridStart = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 0 });
+    const gridEnd = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 0 });
     const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
 
     return (
-        <div className="flex-1 grid grid-cols-7 grid-rows-6 min-h-0" role="grid" aria-label="Month">
+        <div className="flex-1 grid grid-cols-7 grid-rows-[auto_repeat(6,minmax(0,1fr))] min-h-0" role="grid" aria-label="Month">
+            {days.slice(0, 7).map((day) => (
+                <div key={day.getDay()} role="columnheader" className="px-2 py-1 text-xs font-semibold text-text-muted border-b border-border">
+                    <span className="sm:hidden">{format(day, "EEEEE")}</span>
+                    <span className="hidden sm:inline">{format(day, "EEEE")}</span>
+                </div>
+            ))}
             {days.map((day) => (
                 <DayCell
                     key={day.toISOString()}

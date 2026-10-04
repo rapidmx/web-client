@@ -120,7 +120,7 @@ function body(view: View): Element {
 
 const CASES = [
     { view: "month" as const, current: "June 2026", previous: "May 2026", next: "July 2026" },
-    { view: "week" as const, current: "Jun 15 – Jun 21, 2026", previous: "Jun 8 – Jun 14, 2026", next: "Jun 22 – Jun 28, 2026" },
+    { view: "week" as const, current: "Jun 14 – Jun 20, 2026", previous: "Jun 7 – Jun 13, 2026", next: "Jun 21 – Jun 27, 2026" },
     { view: "day" as const, current: "Monday, June 15, 2026", previous: "Sunday, June 14, 2026", next: "Tuesday, June 16, 2026" },
 ];
 
@@ -189,13 +189,13 @@ describe("CalendarPage swipe navigation", () => {
                 throw new Error(`unexpected ${url}`);
             });
             render(<CalendarPage userUid="u1" />);
-            await screen.findByRole("heading", { name: "Jun 15 – Jun 21, 2026" });
+            await screen.findByRole("heading", { name: "Jun 14 – Jun 20, 2026" });
             const loading = await screen.findByText(/Loading/);
             expect(document.querySelector("[data-calendar-scroller]")).toBeNull();
 
             // Nothing inside to scroll yet, so every notch counts towards a step: 100px is one.
             expect(fireEvent.wheel(loading, { deltaY: 100 })).toBe(false);
-            expect(await screen.findByRole("heading", { name: "Jun 22 – Jun 28, 2026" })).toBeInTheDocument();
+            expect(await screen.findByRole("heading", { name: "Jun 21 – Jun 27, 2026" })).toBeInTheDocument();
         });
 
         it("scrolls the hours of a day with the wheel, and only past the last one carries on into the next day", async () => {
@@ -222,10 +222,10 @@ describe("CalendarPage swipe navigation", () => {
         });
 
         it("does the same for the week", async () => {
-            await renderCalendar("week", "Jun 15 – Jun 21, 2026");
+            await renderCalendar("week", "Jun 14 – Jun 20, 2026");
             const hours = scroller(652);
             fireEvent.wheel(hours, { deltaY: 100 });
-            expect(await screen.findByRole("heading", { name: "Jun 22 – Jun 28, 2026" })).toBeInTheDocument();
+            expect(await screen.findByRole("heading", { name: "Jun 21 – Jun 27, 2026" })).toBeInTheDocument();
             expect(hours.scrollTop).toBe(0);
         });
 
@@ -282,7 +282,7 @@ describe("CalendarPage swipe navigation", () => {
 
         it("moves nothing on a desktop, whatever the motion settings", async () => {
             vi.stubGlobal("matchMedia", (query: string) => ({ matches: false, media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
-            await renderCalendar("week", "Jun 15 – Jun 21, 2026");
+            await renderCalendar("week", "Jun 14 – Jun 20, 2026");
             drag(body("week"), dxFor(1));
             expect(content().dataset.swipePhase).toBe("idle");
             expect(content().style.transform).toBe("");

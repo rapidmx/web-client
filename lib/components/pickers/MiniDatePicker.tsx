@@ -11,10 +11,10 @@ export interface MiniDatePickerProps {
     onSelect: (date: Date) => void;
 }
 
-const WEEKDAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
+const WEEKDAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
 
 /** A compact month-grid date picker for the Calendar sidebar, reusing `MonthView`'s own grid-generation
- * approach (`date-fns`'s `startOfWeek`/`endOfWeek`/`eachDayOfInterval`, Monday-start) rather than
+ * approach (`date-fns`'s `startOfWeek`/`endOfWeek`/`eachDayOfInterval`, Sunday-start) rather than
  * re-deriving it — this component just renders that same grid far smaller and without any event data.
  * Its own displayed month tracks `selected` (so navigating the main view keeps this in sync) but can
  * also be paged independently via the arrows without moving the main view until a day is actually
@@ -31,8 +31,8 @@ export default function MiniDatePicker({ selected, onSelect }: MiniDatePickerPro
         setShownMonth(startOfMonth(selected));
     }
 
-    const gridStart = startOfWeek(startOfMonth(shownMonth), { weekStartsOn: 1 });
-    const gridEnd = endOfWeek(endOfMonth(shownMonth), { weekStartsOn: 1 });
+    const gridStart = startOfWeek(startOfMonth(shownMonth), { weekStartsOn: 0 });
+    const gridEnd = endOfWeek(endOfMonth(shownMonth), { weekStartsOn: 0 });
     const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
 
     return (

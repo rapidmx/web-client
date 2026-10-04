@@ -179,7 +179,7 @@ describe("CalendarPage", () => {
         await screen.findByRole("heading", { name: "June 2026" });
 
         await user.click(screen.getByRole("button", { name: "Week" }));
-        expect(screen.getByRole("heading", { name: "Jun 15 – Jun 21, 2026" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Jun 14 – Jun 20, 2026" })).toBeInTheDocument();
         expect(screen.getByText("1AM")).toBeInTheDocument();
 
         await user.click(screen.getByRole("button", { name: "Work Week" }));
@@ -205,7 +205,7 @@ describe("CalendarPage", () => {
 
         await user.click(screen.getByRole("button", { name: "Week" }));
         await user.click(screen.getByRole("button", { name: "Next" }));
-        expect(screen.getByRole("heading", { name: "Jun 22 – Jun 28, 2026" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Jun 21 – Jun 27, 2026" })).toBeInTheDocument();
 
         await user.click(screen.getByRole("button", { name: "Day" }));
         await user.click(screen.getByRole("button", { name: "Next" }));
@@ -695,7 +695,7 @@ describe("CalendarPage keyboard shortcuts", () => {
 
         press("3", CTRL_ALT);
         press("ArrowRight");
-        expect(screen.getByRole("heading", { name: "Jun 22 – Jun 28, 2026" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Jun 21 – Jun 27, 2026" })).toBeInTheDocument();
         press("1", CTRL_ALT);
         press("ArrowRight");
         expect(screen.getByRole("heading", { name: "Tuesday, June 23, 2026" })).toBeInTheDocument();
@@ -719,7 +719,7 @@ describe("CalendarPage keyboard shortcuts", () => {
         expect(press("2", CTRL_ALT)).toBe(false);
         expect(screen.getByRole("heading", { name: "Jun 15 – Jun 19, 2026" })).toBeInTheDocument();
         expect(press("3", CTRL_ALT)).toBe(false);
-        expect(screen.getByRole("heading", { name: "Jun 15 – Jun 21, 2026" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Jun 14 – Jun 20, 2026" })).toBeInTheDocument();
         expect(press("4", CTRL_ALT)).toBe(false);
         expect(screen.getByRole("heading", { name: "June 2026" })).toBeInTheDocument();
         expect(press("5", CTRL_ALT)).toBe(false);

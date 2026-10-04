@@ -217,13 +217,13 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
             return { rangeStart: new Date(-MAX_DATE_MS), rangeEnd: new Date(MAX_DATE_MS), days: [] as Date[] };
         }
         if (view === "month") {
-            const start = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 1 });
-            const end = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 1 });
+            const start = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 0 });
+            const end = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 0 });
             return { rangeStart: start, rangeEnd: end, days: [] as Date[] };
         }
         if (view === "week") {
-            const start = startOfWeek(viewDate, { weekStartsOn: 1 });
-            const end = endOfWeek(viewDate, { weekStartsOn: 1 });
+            const start = startOfWeek(viewDate, { weekStartsOn: 0 });
+            const end = endOfWeek(viewDate, { weekStartsOn: 0 });
             return { rangeStart: start, rangeEnd: end, days: eachDayOfInterval({ start, end }) };
         }
         if (view === "workWeek") {

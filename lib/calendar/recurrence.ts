@@ -324,7 +324,7 @@ export function describeRecurrence(rule: RecurrenceRule): string {
     return rrule.toText();
 }
 
-export const WEEKDAY_CODES: WeekdayCode[] = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+export const WEEKDAY_CODES: WeekdayCode[] = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 export const WEEKDAY_LABELS: Record<WeekdayCode, string> = {
     MO: "Mon",
     TU: "Tue",
