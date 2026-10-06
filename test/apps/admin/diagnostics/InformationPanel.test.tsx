@@ -380,13 +380,29 @@ describe("SettingsTable", () => {
         expect(section.getByText("production")).toBeInTheDocument();
         expect(section.getByText("DB_PASSWORD")).toBeInTheDocument();
         expect(section.getByText(HIDDEN_VALUE)).toBeInTheDocument();
-        expect(section.getByRole("status")).toHaveTextContent("3 settings, 1 with a hidden value");
+        expect(section.getAllByRole("status")[0]).toHaveTextContent("3 settings, 1 with a hidden value");
+    });
+
+    it("has a copy button for the name and for the shown value of each setting, none for a withheld value", async () => {
+        const user = userEvent.setup();
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+        render(<SettingsTable {...props} settings={[{ name: "NODE_ENV", value: "production", redacted: false }, { name: "DB_PASSWORD", redacted: true }, { name: "NO_VALUE", redacted: false }]} />);
+
+        await user.click(screen.getByRole("button", { name: "Copy the name of NODE_ENV" }));
+        expect(writeText).toHaveBeenLastCalledWith("NODE_ENV");
+        await user.click(screen.getByRole("button", { name: "Copy the value of NODE_ENV" }));
+        expect(writeText).toHaveBeenLastCalledWith("production");
+        expect(screen.getByRole("button", { name: "Copy the name of DB_PASSWORD" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Copy the value of DB_PASSWORD" })).not.toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Copy the value of NO_VALUE" }));
+        expect(writeText).toHaveBeenLastCalledWith("");
     });
 
     it("lists a page at a time", async () => {
         const user = userEvent.setup();
         render(<SettingsTable {...props} settings={settings} />);
-        expect(screen.getByRole("status")).toHaveTextContent("250 settings");
+        expect(screen.getAllByRole("status")[0]).toHaveTextContent("250 settings");
         expect(screen.getAllByRole("row")).toHaveLength(SETTINGS_PAGE_SIZE + 1);
         expect(screen.getByText("Showing 100 of 250")).toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Show more" }));
@@ -401,7 +417,7 @@ describe("SettingsTable", () => {
         await user.click(screen.getByRole("button", { name: "Show more" }));
         const filter = screen.getByRole("searchbox", { name: "Filter test settings" });
         await user.type(filter, "VALUE-24");
-        expect(screen.getByRole("status")).toHaveTextContent("11 of 252 settings match, 1 with a hidden value");
+        expect(screen.getAllByRole("status")[0]).toHaveTextContent("11 of 252 settings match, 1 with a hidden value");
         expect(screen.getAllByRole("row")).toHaveLength(12);
         await user.clear(filter);
         await user.type(filter, "no_value");

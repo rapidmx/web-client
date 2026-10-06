@@ -15,7 +15,8 @@ import { ENCRYPTED_SUBJECT_PLACEHOLDER, EncryptedPreview, displaySubject } from 
 import { useDecryptedMessages } from "../../mail/decryptedMessages.js";
 import { CollapsedCard, SkeletonCards, SubjectCard } from "./reading/MessageCard.js";
 import PendingMessageCard from "./reading/PendingMessageCard.js";
-import { InlineComposeSlot, useInlineCompose } from "./compose/ComposeContext.js";
+import { InlineComposeSlot, useCompose, useInlineCompose } from "./compose/ComposeContext.js";
+import { resumeFromDraft } from "./compose/draftResume.js";
 import { useMailShell } from "./layout/MailShell.js";
 import { setReadState } from "../../mail/messageReadState.js";
 import { adoptedOutgoing, belongsToThread, settleOutgoing, useOutgoingReplies } from "../../mail/outbox/outgoingReplies.js";
@@ -206,6 +207,11 @@ export default function ConversationThreadPane({
     // The Reply / Reply all / Forward compose windows of this thread's messages, drawn as cards at the top of the list; the thread's messages are
     // what makes the compose provider open a reply here rather than floating at the bottom right.
     const inlineSessions = useInlineCompose(messages.map((message) => message.uid));
+    const { openCompose } = useCompose();
+    /** The draft this pane has already opened an editor for, so it is opened once per visit - closing the editor leaves the draft as a message to read. */
+    const openedDraftRef = useRef<string | null>(null);
+    const selectedUidRef = useRef(selectedUid);
+    selectedUidRef.current = selectedUid;
 
     // Bumped on every conversation switch - an in-flight load/attachments/mark-read response carrying an
     // older generation belongs to a superseded conversation and is dropped rather than applied.
@@ -291,6 +297,26 @@ export default function ConversationThreadPane({
         setPendingFocusUid([...expanded][expanded.size - 1]);
     }, [conversationId, selectedUid, messages]);
 
+    // A draft the reader opens is edited where it is read: its compose window opens as the card at the top of the thread, with the draft as it was
+    // saved. It is opened once per visit to the draft (an encrypted draft, which only the server holds the ciphertext of, stays a message to read).
+    useEffect(() => {
+        if (openedDraftRef.current !== null && openedDraftRef.current !== selectedUid) {
+            openedDraftRef.current = null;
+        }
+        if (loading || loadedIdRef.current !== conversationId || !selectedUid || openedDraftRef.current === selectedUid) return;
+        const draft = messages.find((message) => message.uid === selectedUid);
+        if (!draft || folders.find((folder) => folder.uid === draft.folderUid)?.type !== "drafts") return;
+        openedDraftRef.current = draft.uid;
+        void resumeFromDraft(draft, client)
+            .then((resume) => {
+                // The reader may have moved on while it loaded.
+                if (resume && selectedUidRef.current === draft.uid) {
+                    openCompose({ mailboxUid: draft.mailboxUid, resume, inlineFor: draft.uid });
+                }
+            })
+            .catch(() => undefined);
+    }, [conversationId, selectedUid, messages, loading, folders]);
+
     useLayoutEffect(() => {
         if (!pendingFocusUid) return;
         // The row is always rendered by now: this runs after the DOM update that added the message it
@@ -301,7 +327,9 @@ export default function ConversationThreadPane({
         // took the app header and the folder rail off the screen - so the adjustment goes on whichever
         // ancestor actually scrolls, exactly as the toggle below already does it. When that is the page
         // itself, nothing inside the pane scrolls and the row is already in view, so it is left alone.
-        const row = rowRefs.current[pendingFocusUid]!;
+        const row = rowRefs.current[pendingFocusUid];
+        // None for a draft opened as the editor card (see the effect above): the card takes the view when it is placed.
+        if (!row) return;
         const scroller = scrollingAncestor(row);
         if (scroller !== document.documentElement) {
             const rect = row.getBoundingClientRect();
@@ -571,6 +599,10 @@ export default function ConversationThreadPane({
                 ))}
                 {messages.map((message) => {
                     const uid = message.uid;
+                    // A draft being edited here is the editor card above, not a message to read as well.
+                    if (inlineSessions.some((session) => session.draftUid === uid)) {
+                        return null;
+                    }
                     const expanded = expandedUids.has(uid);
                     const bodyId = `thread-message-${uid}`;
                     const messageUnread = isUnread(message);

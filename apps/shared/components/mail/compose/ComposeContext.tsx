@@ -198,6 +198,8 @@ export interface InlineComposeSession {
     id: string;
     /** The uid of the message the window answers. */
     inlineFor: string;
+    /** The uid of the draft the window continues, when it was opened to edit one: the draft is then the card, not a message beside it. */
+    draftUid?: string;
 }
 
 interface InlineComposeValue {
@@ -258,6 +260,9 @@ export function useCompose(): ComposeContextValue {
  */
 export default function ComposeProvider({ children, userUid, trusted }: PropsWithChildren<{ userUid?: string; trusted?: boolean }>) {
     const [sessions, setSessions] = useState<ComposeSession[]>([]);
+    // The sessions as of the last render, for `openCompose()` to read at the click.
+    const sessionsRef = useRef(sessions);
+    sessionsRef.current = sessions;
     const client = useApiClient();
     const isMobile = useIsMobile();
     const { Component: ComposeWindow, failed, retry: retryLoad } = useComposeWindowComponent(sessions.length > 0);
@@ -283,7 +288,7 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
     const isInline = (session: ComposeSession) => !!session.inlineFor && !parked.has(session.id) && hosted.has(session.inlineFor);
     const inlineKey = sessions.filter(isInline).map((session) => `${session.id}:${session.inlineFor}`).join("|");
     const inlineSessions = useMemo<InlineComposeSession[]>(
-        () => sessions.filter(isInline).map((session) => ({ id: session.id, inlineFor: session.inlineFor! })),
+        () => sessions.filter(isInline).map((session) => ({ id: session.id, inlineFor: session.inlineFor!, draftUid: session.resume?.draft.uid })),
         [inlineKey],
     );
     const inlineValue = useMemo<InlineComposeValue>(
@@ -354,6 +359,19 @@ export default function ComposeProvider({ children, userUid, trusted }: PropsWit
         resume,
         inlineFor,
     }: OpenComposeInput) {
+        // A draft already being edited has its window: it is brought back to the pane that was holding it rather than opened a second time.
+        const editing = resume && sessionsRef.current.find((session) => session.resume?.draft.uid === resume.draft.uid);
+        if (editing) {
+            setParked((prev) => {
+                if (!prev.has(editing.id)) {
+                    return prev;
+                }
+                const next = new Set(prev);
+                next.delete(editing.id);
+                return next;
+            });
+            return;
+        }
         const id = crypto.randomUUID();
         markComposePhase(id, "click");
         // The window's own element, attached to the page from the start (it is moved to its slot or the stack as soon as that is drawn).

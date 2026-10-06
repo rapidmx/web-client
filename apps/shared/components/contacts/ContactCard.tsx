@@ -22,6 +22,7 @@ import { useMailboxUpdateAccess } from "../../mail/useMailboxUpdateAccess.js";
 import { notify } from "../../notifications/store.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import { APP_HREFS } from "../../navigation/appHrefs.js";
+import { closeAllOverlays } from "../../../../lib/components/overlays/overlayStack.js";
 import { useCompose } from "../mail/compose/ComposeContext.js";
 import { formatInviteWhen } from "../mail/invite/inviteFormat.js";
 import {
@@ -234,6 +235,8 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
     }
 
     function handleEmail() {
+        // Every card open, not just this one: it may have been reached from another (a guest of an event), which would stay on screen behind the new window.
+        closeAllOverlays();
         openCompose({ to: formatMailAddress(participant) });
         onClose();
     }
@@ -261,9 +264,8 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
                 {stored && <FavoriteStarButton favorite={!!stored.favorite} disabled={photoBusy} onToggle={() => void handleToggleFavorite(stored)} className="shrink-0 self-start" />}
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button type="button" variant="secondary" className={`${ACTION_CLASS} inline-flex items-center gap-1.5`} onClick={handleEmail}>
+                <Button type="button" variant="secondary" aria-label="Email" title="Email" className={`${ACTION_CLASS} inline-flex items-center`} onClick={handleEmail}>
                     <HiOutlineEnvelope aria-hidden="true" className="size-4" />
-                    Email
                 </Button>
                 {stored ? (
                     <a

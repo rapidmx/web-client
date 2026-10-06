@@ -4,7 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import MailboxTable from "../../../../apps/shared/components/admin/mailboxes/MailboxTable.js";
 import { Mailbox } from "../../../../lib/mail/mailApi.js";
 
@@ -36,6 +37,25 @@ describe("MailboxTable", () => {
     it("shows an empty-state message when there are no mailboxes", () => {
         render(<MailboxTable mailboxes={[]} />);
         expect(screen.getByText("No mailboxes found.")).toBeInTheDocument();
+    });
+
+    it("has a copy button for each value of a row (address, name, owner, quota), none for a shared mailbox's missing owner", async () => {
+        const user = userEvent.setup();
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+        render(<MailboxTable mailboxes={[owned, shared]} />);
+
+        for (const [label, value] of [
+            ["Copy the address of u1@example.com", "u1@example.com"],
+            ["Copy the display name of u1@example.com", "User One"],
+            ["Copy the owner of u1@example.com", "u1"],
+            ["Copy the quota used of u1@example.com", "2.5 GB / 5.0 GB"],
+        ]) {
+            await user.click(screen.getByRole("button", { name: label }));
+            expect(writeText).toHaveBeenLastCalledWith(value);
+        }
+        expect(screen.queryByRole("button", { name: "Copy the owner of support@example.com" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Copy the address of support@example.com" })).toBeInTheDocument();
     });
 
     it("renders a row per mailbox with a link to its detail page", () => {

@@ -25,6 +25,7 @@ import { getVideoMeeting } from "../../../../lib/videoconf/videoMeetingsApi.js";
 import { describeTimeZone, deviceTimeZone } from "../../../../lib/util/timeZone.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
+import CopyIconButton from "../../../../lib/components/buttons/CopyIconButton.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
 import ParticipantLink from "../contacts/ParticipantLink.js";
 import EventDescriptionView from "./EventDescriptionView.js";
@@ -273,6 +274,15 @@ export default function EventDetails({
                                 </span>
                             )}
                         </div>
+                        {joinUrl && (
+                            // The link itself, for when the button is not enough (a blocked pop-up, a link to open in another browser or share).
+                            <div className="mt-1.5 flex items-center gap-1 min-w-0 text-xs text-text-muted">
+                                <a href={joinUrl} target="_blank" rel="noopener noreferrer" className="break-all underline hover:text-text">
+                                    {joinUrl}
+                                </a>
+                                <CopyIconButton value={joinUrl} label="Copy the video call link" className="shrink-0" />
+                            </div>
+                        )}
                     </DetailRow>
                 )}
 

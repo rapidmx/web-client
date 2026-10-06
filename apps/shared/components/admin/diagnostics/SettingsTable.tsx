@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useMemo, useState } from "react";
 import Button from "../../../../../lib/components/buttons/Button.js";
+import CopyIconButton from "../../../../../lib/components/buttons/CopyIconButton.js";
 import type { DiagnosticsSetting } from "./diagnosticsApi.js";
 
 /** How many settings are listed at first, and how many more each "Show more" adds: an environment can be a hundred long. */
@@ -83,9 +84,19 @@ export default function SettingsTable({ title, description, id, settings }: Sett
                         <tbody>
                             {shown.map((item) => (
                                 <tr key={item.name}>
-                                    <td className="py-2 px-2.5 border-b border-border font-mono break-all">{item.name}</td>
                                     <td className="py-2 px-2.5 border-b border-border font-mono break-all">
-                                        {item.redacted ? <span className="text-text-muted">{HIDDEN_VALUE}</span> : item.value}
+                                        {item.name}
+                                        <CopyIconButton value={item.name} label={`Copy the name of ${item.name}`} />
+                                    </td>
+                                    <td className="py-2 px-2.5 border-b border-border font-mono break-all">
+                                        {item.redacted ? (
+                                            <span className="text-text-muted">{HIDDEN_VALUE}</span>
+                                        ) : (
+                                            <>
+                                                {item.value}
+                                                <CopyIconButton value={item.value ?? ""} label={`Copy the value of ${item.name}`} />
+                                            </>
+                                        )}
                                     </td>
                                 </tr>
                             ))}

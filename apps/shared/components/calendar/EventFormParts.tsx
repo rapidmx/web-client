@@ -6,6 +6,7 @@ import React, { ReactNode, useRef, useState } from "react";
 import { HiOutlineBars3BottomLeft, HiOutlineBell, HiOutlineMapPin, HiOutlineUserGroup, HiOutlineVideoCamera, HiOutlineXMark } from "react-icons/hi2";
 import { AttendeeRole, EventVisibility, RecurrenceRule, WeekdayCode } from "../../../../lib/calendar/calendarApi.js";
 import Button from "../../../../lib/components/buttons/Button.js";
+import CopyIconButton from "../../../../lib/components/buttons/CopyIconButton.js";
 import GuestInput from "./GuestInput.js";
 import LazyDescriptionEditor from "./LazyDescriptionEditor.js";
 import RecurrenceEditor from "./RecurrenceEditor.js";
@@ -101,6 +102,15 @@ export function VideoConferencingRow({ c }: { c: EventFormController }) {
                             {c.organizerJoinUrl === undefined ? "Loading the join link…" : "This meeting’s join link isn’t available."}
                         </span>
                     )}
+                </div>
+            )}
+            {c.videoMeetingUid && c.joinUrl && (
+                // The link itself, for when the button is not enough (a blocked pop-up, a link to open in another browser or share).
+                <div className="mb-1 flex items-center gap-1 min-w-0 text-xs text-text-muted">
+                    <a href={c.joinUrl} target="_blank" rel="noopener noreferrer" className="break-all underline hover:text-text">
+                        {c.joinUrl}
+                    </a>
+                    <CopyIconButton value={c.joinUrl} label="Copy the video call link" className="shrink-0" />
                 </div>
             )}
         </IconRow>

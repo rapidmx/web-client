@@ -4,12 +4,23 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
 import { Mailbox } from "../../../../../lib/mail/mailApi.js";
+import CopyIconButton from "../../../../../lib/components/buttons/CopyIconButton.js";
 
 function formatBytes(bytes: number): string {
     if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
     if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
     if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
     return `${bytes} B`;
+}
+
+/** A cell's value with the icon button that copies it. */
+function Copyable({ value, label }: { value: string; label: string }) {
+    return (
+        <span className="inline-flex items-center gap-1">
+            {value}
+            <CopyIconButton value={value} label={label} />
+        </span>
+    );
 }
 
 export interface MailboxTableProps {
@@ -44,17 +55,26 @@ export default function MailboxTable({ mailboxes }: MailboxTableProps) {
                 <tbody>
                     {mailboxes.map((mailbox) => (
                         <tr key={mailbox.uid}>
-                            <td className="py-2.5 px-2.5 border-b border-border align-middle">{mailbox.primarySmtpAddress}</td>
-                            <td className="py-2.5 px-2.5 border-b border-border align-middle">{mailbox.displayName}</td>
                             <td className="py-2.5 px-2.5 border-b border-border align-middle">
-                                {mailbox.ownerUserUid ?? (
+                                <Copyable value={mailbox.primarySmtpAddress} label={`Copy the address of ${mailbox.primarySmtpAddress}`} />
+                            </td>
+                            <td className="py-2.5 px-2.5 border-b border-border align-middle">
+                                <Copyable value={mailbox.displayName} label={`Copy the display name of ${mailbox.primarySmtpAddress}`} />
+                            </td>
+                            <td className="py-2.5 px-2.5 border-b border-border align-middle">
+                                {mailbox.ownerUserUid ? (
+                                    <Copyable value={mailbox.ownerUserUid} label={`Copy the owner of ${mailbox.primarySmtpAddress}`} />
+                                ) : (
                                     <span className="inline-block text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill bg-surface-alt text-text-muted">
                                         Shared
                                     </span>
                                 )}
                             </td>
                             <td className="py-2.5 px-2.5 border-b border-border align-middle">
-                                {formatBytes(mailbox.usedBytes)} / {formatBytes(mailbox.quotaBytes)}
+                                <Copyable
+                                    value={`${formatBytes(mailbox.usedBytes)} / ${formatBytes(mailbox.quotaBytes)}`}
+                                    label={`Copy the quota used of ${mailbox.primarySmtpAddress}`}
+                                />
                             </td>
                             <td className="py-2.5 px-2.5 border-b border-border align-middle text-right">
                                 <a

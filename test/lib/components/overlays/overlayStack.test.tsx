@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import Drawer from "../../../../lib/components/overlays/Drawer.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
-import { useOverlayDialog } from "../../../../lib/components/overlays/overlayStack.js";
+import { closeAllOverlays, useOverlayDialog } from "../../../../lib/components/overlays/overlayStack.js";
 
 /** Fires a Tab keydown on whatever has focus, returning whether the trap prevented the default move. */
 function pressTab(shiftKey = false): boolean {
@@ -17,6 +17,29 @@ function pressTab(shiftKey = false): boolean {
     fireEvent(target, event);
     return event.defaultPrevented;
 }
+
+describe("closeAllOverlays()", () => {
+    it("closes every open overlay, the ones underneath as well as the top one", () => {
+        const outer = vi.fn();
+        const inner = vi.fn();
+        render(
+            <Modal open onClose={outer} title="Outer">
+                <Modal open onClose={inner} title="Inner">
+                    <p>body</p>
+                </Modal>
+            </Modal>,
+        );
+
+        closeAllOverlays();
+
+        expect(outer).toHaveBeenCalledTimes(1);
+        expect(inner).toHaveBeenCalledTimes(1);
+    });
+
+    it("does nothing when no overlay is open", () => {
+        expect(() => closeAllOverlays()).not.toThrow();
+    });
+});
 
 describe("overlay focus trap", () => {
     function Form() {

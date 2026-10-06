@@ -198,6 +198,22 @@ describe("EventModal video conferencing toggle", () => {
         expect(openSpy).toHaveBeenCalledWith(JOIN_URL, "_blank", "noopener,noreferrer");
     });
 
+    it("also shows the join link itself, with a button to copy it, for when the join button is not enough", async () => {
+        mockVideoFetch();
+        const user = userEvent.setup();
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+        renderModal(occurrence({ attendees: [{ address: "bob@example.com", role: "required", responseStatus: "needsAction", isOrganizer: false }] }));
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(screen.getByRole("button", { name: "Join video call" })).toBeEnabled());
+        const link = await screen.findByRole("link", { name: JOIN_URL });
+        expect(link).toHaveAttribute("href", JOIN_URL);
+        await user.click(screen.getByRole("button", { name: "Copy the video call link" }));
+        expect(writeText).toHaveBeenCalledWith(JOIN_URL);
+    });
+
     it("offers no link to open when the new meeting came back without an organizer link", async () => {
         const fetchMock = mockVideoFetch({ createMeeting: () => jsonResponse(200, { meeting: meetingFixture }) });
         const user = userEvent.setup();
@@ -501,6 +517,9 @@ describe("EventModal join video call affordance", () => {
         expect(screen.getByText("Loading the join link…")).toBeInTheDocument();
         await waitFor(() => expect(join).toBeEnabled());
         expect(String(callsTo(fetchMock, "/api/mail/video-meetings", "GET")[0][0])).toBe("/api/mail/video-meetings/vm1");
+        // The event's card shows the link itself too, with a button to copy it.
+        expect(screen.getByRole("link", { name: JOIN_URL })).toHaveAttribute("href", JOIN_URL);
+        expect(screen.getByRole("button", { name: "Copy the video call link" })).toBeInTheDocument();
 
         await user.click(join);
         expect(openSpy).toHaveBeenCalledWith(JOIN_URL, "_blank", "noopener,noreferrer");

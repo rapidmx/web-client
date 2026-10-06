@@ -6,7 +6,7 @@ import React, { useEffect, useState } from "react";
 import { DnsRecordCheck, Domain, getDnsSetup, getDomain, verifyDomain } from "../../../../../lib/admin/domainsApi.js";
 import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
-import CopyButton from "../../../../../lib/components/buttons/CopyButton.js";
+import CopyIconButton from "../../../../../lib/components/buttons/CopyIconButton.js";
 import { actionErrorMessage } from "../elevation.js";
 
 const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
@@ -51,12 +51,12 @@ function splitSrvValue(value: string): { priority: string; weight: string; port:
     return match ? { priority: match[1], weight: match[2], port: match[3], target: match[4] } : null;
 }
 
-/** A value to type into a DNS provider's form, shown in full (long DKIM keys wrap) with a Copy button beside it. */
+/** A value to type into a DNS provider's form, shown in full (long DKIM keys wrap) with a copy icon button beside it. */
 function CopyableValue({ value, copyLabel }: { value: string; copyLabel: string }) {
     return (
         <div className="flex items-start gap-2">
             <code className="flex-1 min-w-0 text-xs break-all">{value}</code>
-            <CopyButton value={value} label={copyLabel} />
+            <CopyIconButton value={value} label={copyLabel} className="shrink-0" />
         </div>
     );
 }

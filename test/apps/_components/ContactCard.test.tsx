@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
 import type { Attachment, Mailbox, Message } from "../../../lib/mail/mailApi.js";
 import ContactCardProvider, { useContactCard } from "../../../apps/shared/components/contacts/ContactCardProvider.js";
+import Modal from "../../../lib/components/overlays/Modal.js";
 import ParticipantLink from "../../../apps/shared/components/contacts/ParticipantLink.js";
 import type { ContactCardContext } from "../../../apps/shared/components/contacts/contactCardData.js";
 import { MailConnectionContext, type MailConnection } from "../../../apps/shared/mail/useMailConnection.js";
@@ -49,12 +50,15 @@ interface Server {
     photo?: (init: RequestInit) => Response;
 }
 
+// 14:00 UTC tomorrow or later, so the event stays "upcoming" whenever the tests run.
+const EVENT_START = new Date(Math.ceil(Date.now() / 86_400_000 + 1) * 86_400_000 + 14 * 3_600_000);
+
 const JANE_EVENT = {
     uid: "ev1",
     folderUid: "cal1",
     title: "Design review",
-    startDate: "2026-10-05T14:00:00.000Z",
-    endDate: "2026-10-05T15:00:00.000Z",
+    startDate: EVENT_START.toISOString(),
+    endDate: new Date(EVENT_START.getTime() + 3_600_000).toISOString(),
     allDay: false,
     timezone: "UTC",
     organizer: { address: "boss@example.com", type: "to" },
@@ -370,6 +374,20 @@ describe("ContactCard actions", () => {
         await user.click(within(dialog).getByRole("button", { name: "Email" }));
         expect(openCompose).toHaveBeenCalledWith({ to: "Jane Doe <jane@other.org>" });
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("closes the card underneath it too, when it was opened from another card", async () => {
+        serve();
+        const user = userEvent.setup();
+        const onCloseUnder = vi.fn();
+        renderCard(
+            <Modal open onClose={onCloseUnder} title="Event">
+                <Trigger />
+            </Modal>,
+        );
+        const dialog = await openCard(user);
+        await user.click(within(dialog).getByRole("button", { name: "Email" }));
+        expect(onCloseUnder).toHaveBeenCalled();
     });
 
     it("offers to copy the address", async () => {

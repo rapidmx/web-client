@@ -115,6 +115,17 @@ function push(entry: OverlayEntry) {
     stack.splice(index, 0, entry);
 }
 
+/**
+ * Closes every open overlay at once - what a caller does when it hands the reader over to something outside them (a compose window opened from a
+ * contact card, which sits on top of the event card it was reached from): leaving the cards underneath open would leave the reader a dialog they
+ * never asked to keep, in front of the window they just opened. Each overlay's own `onClose` runs, as for Escape.
+ */
+export function closeAllOverlays(): void {
+    for (const entry of [...stack]) {
+        entry.onEscape();
+    }
+}
+
 function remove(entry: OverlayEntry) {
     stack.splice(stack.indexOf(entry), 1);
     if (stack.length === 0) {
