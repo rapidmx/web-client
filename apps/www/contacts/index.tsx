@@ -151,11 +151,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     // Asks the server to turn the people this mailbox has corresponded with into suggested contacts (it does so once for each person, so this is cheap when
     // nothing is new), then lists them. An older server, or one that refuses, simply has no such view.
     useEffect(() => {
-        if (!mailboxUid) {
-            return;
-        }
         let cancelled = false;
-        void ensureSuggestedContacts(mailboxUid, client)
+        // `ContactsShell` only renders this with a resolved mailbox (see the Deleted view's comment above).
+        void ensureSuggestedContacts(mailboxUid!, client)
             .then(async (result) => {
                 if (!cancelled) {
                     setSuggestedFolderUid(result.folderUid);
