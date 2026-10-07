@@ -30,6 +30,8 @@ export interface ContactsToolbarProps {
     onToggleFavorite: () => void;
     onAddCategory: () => void;
     onExportVCard: () => void;
+    /** Turns the selected suggested contacts into contacts of the mailbox. Given only in the Suggested contacts view, which is also the only place the button is offered. */
+    onAddToContacts?: () => void;
     /** A `.vcf` file the user picked via the toolbar's own hidden file input — parsing/import is the
      * page's responsibility (it has the mailbox/folder context and the actual `createContact` calls). */
     onImportFile: (file: File) => void;
@@ -58,6 +60,7 @@ export default function ContactsToolbar({
     onToggleFavorite,
     onAddCategory,
     onExportVCard,
+    onAddToContacts,
     onImportFile,
     shortcuts,
     hideNew,
@@ -91,6 +94,9 @@ export default function ContactsToolbar({
             rank: 3,
         },
         { id: "category", label: "Add category", icon: HiOutlineTag, onClick: onAddCategory, disabled: !hasSelection, group: 2, rank: 2 },
+        ...(onAddToContacts
+            ? [{ id: "addToContacts", label: "Add to contacts", icon: HiOutlineUserPlus, onClick: onAddToContacts, disabled: !hasSelection, group: 1, rank: 7 }]
+            : []),
         { id: "export", label: "Export", icon: HiOutlineArrowUpTray, onClick: onExportVCard, disabled: !hasSelection, group: 3, rank: 1 },
         { id: "import", label: "Import", icon: HiOutlineArrowDownTray, onClick: () => importInputRef.current?.click(), group: 3, rank: 0 },
     ];

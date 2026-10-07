@@ -13,6 +13,7 @@ import { notifyApiError } from "../../notifications/apiErrors.js";
 export type ContactsView =
     | { type: "all" }
     | { type: "favorites" }
+    | { type: "suggested" }
     | { type: "list"; uid: string; name: string }
     | { type: "deleted" }
     | { type: "category"; name: string };
@@ -49,6 +50,8 @@ export interface ContactsSidebarProps {
     contacts: Contact[];
     active: ContactsView;
     onSelect: (view: ContactsView) => void;
+    /** How many contacts the mailbox's Suggested Contacts folder holds; `undefined` when it has none to show (the folder isn't known), which hides the view. */
+    suggestedCount?: number;
     /** Whether to offer the "Deleted" view - restapi only honors `deleted=true` for a caller with delete and
      * update rights on the mailbox (anyone else silently gets the live contacts), so the parent hides it
      * otherwise. Defaults to `true`. */
@@ -91,13 +94,13 @@ function NavItem({
 }
 
 /**
- * Contacts' Outlook-style left sidebar: "Your contacts" (all, with count), "Favorites", "Your contact
+ * Contacts' Outlook-style left sidebar: "Your contacts" (all, with count), "Favorites", "Suggested contacts" (the people the mailbox has corresponded with, when there are any), "Your contact
  * lists" (real `ContactList` records, fetched here), "Deleted", and "Categories" (derived from the
  * distinct `categories` values across the loaded contacts — no separate category registry exists
  * server-side). Owns its own contact-list data-fetching, per this app's convention of keeping
  * `ContactsShellContext` itself minimal (mailbox/folder resolution only).
  */
-export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect, refreshToken, showDeleted = true }: ContactsSidebarProps) {
+export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect, refreshToken, showDeleted = true, suggestedCount }: ContactsSidebarProps) {
     const client = useApiClient();
     const [lists, setLists] = useState<ContactList[]>([]);
     const [listsError, setListsError] = useState<string | null>(null);
@@ -165,6 +168,9 @@ export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect
             <div className="flex flex-col gap-0.5">
                 <NavItem label="Your contacts" count={contacts.length} active={active.type === "all"} onClick={() => handleSelect({ type: "all" })} />
                 <NavItem label="Favorites" count={favoriteCount} active={active.type === "favorites"} onClick={() => handleSelect({ type: "favorites" })} />
+                {suggestedCount !== undefined && (
+                    <NavItem label="Suggested contacts" count={suggestedCount} active={active.type === "suggested"} onClick={() => handleSelect({ type: "suggested" })} />
+                )}
                 {showDeleted && <NavItem label="Deleted" active={active.type === "deleted"} onClick={() => handleSelect({ type: "deleted" })} />}
             </div>
 

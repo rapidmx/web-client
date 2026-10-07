@@ -1843,9 +1843,94 @@ describe("ContactsPage — explicit ApiClient (tauri-client-style host apps)", (
         await user.type(screen.getByLabelText("Display name"), "New Person");
         await user.click(screen.getByRole("button", { name: "Save" }));
 
-        await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toBe(true));
-        const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
+        const isCreate = ([url, init]: unknown[]) => (init as RequestInit | undefined)?.method === "POST" && String(url).endsWith("/mail/contacts");
+        await waitFor(() => expect(fetchMock.mock.calls.some(isCreate)).toBe(true));
+        const postCall = fetchMock.mock.calls.find(isCreate)!;
         expect(postCall[0]).toBe("https://acct-a.example.com/api/mail/contacts");
         expect(new Headers((postCall[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+    });
+});
+
+describe("ContactsPage suggested contacts", () => {
+    const SUGGESTED = { ...bob, uid: "s1", folderUid: "f-suggested", displayName: "Sam Suggested", emails: [{ address: "sam@example.com", type: "other" as const }] };
+
+    function mockWithSuggested(extra?: (url: string, init?: RequestInit) => Response | undefined) {
+        return mockShellAndContacts([jane], (url, init) => {
+            const custom = extra?.(url, init);
+            if (custom) return custom;
+            if (url.startsWith("/api/mail/directory/suggested-contacts") && init?.method === "POST") {
+                return jsonResponse(200, { folderUid: "f-suggested", created: 1, remaining: 0 });
+            }
+            if (url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET" && url.includes("folderUid=f-suggested")) {
+                return jsonResponse(200, [SUGGESTED]);
+            }
+            if (url === "/api/mail/contacts" && init?.method === "POST") return jsonResponse(200, { ...SUGGESTED, uid: "new1", folderUid: "f-contacts" });
+            if (url.startsWith("/api/mail/contacts/") && init?.method === "DELETE") return emptyResponse(204);
+            return undefined;
+        });
+    }
+
+    it("lists the suggested contacts in a view of their own, apart from the mailbox's contacts", async () => {
+        const fetchMock = mockWithSuggested();
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        const nav = await screen.findByRole("button", { name: /Suggested contacts/ });
+        expect(nav).toHaveTextContent("1");
+        expect(String(fetchMock.mock.calls.find(([url]) => String(url).startsWith("/api/mail/directory/suggested-contacts"))![0])).toContain("mailboxUid=mb1");
+
+        await user.click(nav);
+        expect(await screen.findByText("Sam Suggested")).toBeInTheDocument();
+        expect(screen.queryByText("Jane Doe")).not.toBeInTheDocument();
+    });
+
+    it("adds a suggested contact to the mailbox's contacts: a copy in its contacts folder, and the suggestion removed", async () => {
+        const fetchMock = mockWithSuggested();
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("button", { name: /Suggested contacts/ }));
+        await screen.findByText("Sam Suggested");
+        expect(within(screen.getByRole("toolbar")).getByText("Add to contacts").closest("button")).toBeDisabled();
+        await user.click(screen.getByLabelText("Select Sam Suggested"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Add to contacts"));
+
+        await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).startsWith("/api/mail/contacts/s1") && (init as RequestInit)?.method === "DELETE")).toBe(true));
+        const created = fetchMock.mock.calls.find(([url, init]) => url === "/api/mail/contacts" && (init as RequestInit)?.method === "POST")!;
+        expect(JSON.parse((created[1] as RequestInit).body as string)).toMatchObject({
+            mailboxUid: "mb1",
+            folderUid: "f-contacts",
+            displayName: "Sam Suggested",
+            emails: [{ address: "sam@example.com", type: "other" }],
+        });
+    });
+
+    it("says so when a suggested contact can't be added", async () => {
+        mockWithSuggested((url, init) => (url === "/api/mail/contacts" && init?.method === "POST" ? jsonResponse(500, { message: "nope" }) : undefined));
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("button", { name: /Suggested contacts/ }));
+        await screen.findByText("Sam Suggested");
+        await user.click(screen.getByLabelText("Select Sam Suggested"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Add to contacts"));
+
+        expect(await screen.findByText("Couldn't add some of the contacts")).toBeInTheDocument();
+    });
+
+    it("offers no suggested view when the server can't make one", async () => {
+        mockShellAndContacts([jane]);
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        expect(screen.queryByRole("button", { name: /Suggested contacts/ })).not.toBeInTheDocument();
+    });
+
+    it("keeps the view, empty, when the suggested contacts can't be read", async () => {
+        mockWithSuggested((url) => (url.startsWith("/api/mail/contacts") && url.includes("folderUid=f-suggested") ? jsonResponse(500, { message: "down" }) : undefined));
+        render(<ContactsPage userUid="u1" />);
+
+        expect(await screen.findByRole("button", { name: /Suggested contacts/ })).toHaveTextContent("0");
     });
 });

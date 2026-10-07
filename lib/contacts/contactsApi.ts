@@ -203,6 +203,22 @@ export function listDeletedContacts(folderUid: string, params: ListParams = {}, 
     );
 }
 
+/** What `ensureSuggestedContacts()` did: the mailbox's Suggested Contacts folder, how many contacts it just added, and how many people are still waiting for the next call. */
+export interface SuggestedContactsResult {
+    folderUid: string;
+    created: number;
+    remaining: number;
+}
+
+/**
+ * Makes the people `mailboxUid` has exchanged mail or invitations with into contacts of its Suggested Contacts folder (a folder of their own, kept apart
+ * from the mailbox's contacts), and returns that folder. Idempotent: a person already a contact, or already suggested once, is never added again, so it
+ * is called whenever the contacts are shown.
+ */
+export function ensureSuggestedContacts(mailboxUid: string, client?: ApiClient): Promise<SuggestedContactsResult> {
+    return withClient(client, `/mail/directory/suggested-contacts?${buildQuery({}, { mailboxUid })}`, { method: "POST" });
+}
+
 export function getContact(uid: string, client?: ApiClient): Promise<Contact> {
     return withClient(client, `/mail/contacts/${encodeURIComponent(uid)}`);
 }

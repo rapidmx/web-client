@@ -11,6 +11,7 @@ import {
     createContact,
     deleteContact,
     listContacts,
+    ensureSuggestedContacts,
     listContactsInFolders,
     listDeletedContacts,
     setContactFavorite,
@@ -91,6 +92,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     const client = useApiClient();
     const [contacts, setContacts] = useState<Contact[]>([]);
     const [deletedContacts, setDeletedContacts] = useState<Contact[]>([]);
+    // The mailbox's Suggested Contacts folder - the people it has corresponded with - once the server has made it; `null` while unknown (an older server has none).
+    const [suggestedFolderUid, setSuggestedFolderUid] = useState<string | null>(null);
+    const [suggestedContacts, setSuggestedContacts] = useState<Contact[]>([]);
     const [deletedLoading, setDeletedLoading] = useState(false);
     const [deletedError, setDeletedError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
@@ -121,6 +125,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         }
         setLoading(true);
         setError(null);
+        if (suggestedFolderUid) {
+            void loadSuggested(suggestedFolderUid);
+        }
         return listAllPages((page) => listContacts(folderUid, { limit: LIST_PAGE_SIZE, page }, client))
             .then((result) => {
                 setContacts(result.items);
@@ -133,6 +140,33 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     useEffect(() => {
         void reload();
     }, [folderUid]);
+
+    /** Reads the Suggested Contacts folder's contacts. A failure leaves the list as it was. */
+    function loadSuggested(suggestedUid: string): Promise<void> {
+        return listAllPages((page) => listContacts(suggestedUid, { limit: LIST_PAGE_SIZE, page }, client))
+            .then((result) => setSuggestedContacts(result.items))
+            .catch(() => undefined);
+    }
+
+    // Asks the server to turn the people this mailbox has corresponded with into suggested contacts (it does so once for each person, so this is cheap when
+    // nothing is new), then lists them. An older server, or one that refuses, simply has no such view.
+    useEffect(() => {
+        if (!mailboxUid) {
+            return;
+        }
+        let cancelled = false;
+        void ensureSuggestedContacts(mailboxUid, client)
+            .then(async (result) => {
+                if (!cancelled) {
+                    setSuggestedFolderUid(result.folderUid);
+                    await loadSuggested(result.folderUid);
+                }
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [mailboxUid]);
 
     // restapi only honors `?deleted=true` for a caller with both delete and update rights on the contacts *folder*
     // (its ACL, which inherits the mailbox's but can carry its own records) - anyone else silently gets the *live*
@@ -196,6 +230,8 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 return contacts;
             case "favorites":
                 return contacts.filter((c) => c.favorite);
+            case "suggested":
+                return suggestedContacts;
             case "list":
                 return contacts.filter((c) => c.contactListUid === view.uid);
             case "category":
@@ -203,7 +239,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             case "deleted":
                 return deletedContacts;
         }
-    }, [contacts, deletedContacts, view]);
+    }, [contacts, deletedContacts, suggestedContacts, view]);
 
     const filtered = useMemo(() => {
         const q = query.trim().toLowerCase();
@@ -226,7 +262,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         return arr;
     }, [filtered, sortColumn, sortDesc]);
 
-    const selected = contacts.find((c) => c.uid === selectedUid) ?? null;
+    const selected = contacts.find((c) => c.uid === selectedUid) ?? suggestedContacts.find((c) => c.uid === selectedUid) ?? null;
     const isDeletedView = view.type === "deleted";
     const checkedContacts = sorted.filter((c) => checkedUids.has(c.uid));
     const allChecked = sorted.length > 0 && sorted.every((c) => checkedUids.has(c.uid));
@@ -392,6 +428,36 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         await reload();
     });
 
+    // A suggested contact becomes one of the mailbox's own: a copy in its contacts folder, and the suggestion removed (the person is not suggested again).
+    const handleAddToContacts = singleFlight(async () => {
+        for (const contact of checkedContacts) {
+            try {
+                await createContact(
+                    {
+                        mailboxUid: contact.mailboxUid,
+                        folderUid: folderUid!,
+                        displayName: contact.displayName,
+                        givenName: contact.givenName,
+                        surname: contact.surname,
+                        emails: contact.emails,
+                        phones: contact.phones,
+                        addresses: contact.addresses,
+                        company: contact.company,
+                        jobTitle: contact.jobTitle,
+                        notes: contact.notes,
+                        categories: contact.categories,
+                    },
+                    client,
+                );
+                await deleteContact(contact.uid, contact.version, client);
+            } catch (err) {
+                notifyApiError(err, "Couldn't add some of the contacts");
+            }
+        }
+        setCheckedUids(new Set());
+        await reload();
+    });
+
     function handleExportVCard() {
         downloadTextFile(
             checkedContacts.length === 1 ? `${checkedContacts[0].displayName}.vcf` : "contacts.vcf",
@@ -447,7 +513,14 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         // open-ended, so a column's `overflow` would otherwise never apply); on a phone the whole page scrolls, as it always did. Below `lg` the
         // contacts menu is a drawer (a button above the columns), so the list and the detail pane keep a usable width.
         <div className="flex-1 min-w-0 min-h-0 flex flex-col lg:flex-row md:flex-none md:h-[calc(100dvh_-_var(--rr-header-h,4rem))] md:overflow-hidden">
-            <ContactsSidebar mailboxUid={mailboxUid} contacts={contacts} active={view} onSelect={handleSelectView} showDeleted={canViewDeleted} />
+            <ContactsSidebar
+                mailboxUid={mailboxUid}
+                contacts={contacts}
+                active={view}
+                onSelect={handleSelectView}
+                showDeleted={canViewDeleted}
+                suggestedCount={suggestedFolderUid ? suggestedContacts.length : undefined}
+            />
             <div className="flex-1 min-w-0 min-h-0 flex">
             {/* Hidden on mobile while the "new contact" form (the one form-pane state mobile keeps
                 in-place — see the pane's own comment below) is showing, so the two never compete for the
@@ -469,6 +542,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                     onToggleFavorite={handleToggleFavorite}
                     onAddCategory={handleAddCategory}
                     onExportVCard={handleExportVCard}
+                    onAddToContacts={view.type === "suggested" ? handleAddToContacts : undefined}
                     onImportFile={handleImportFile}
                     shortcuts
                     hideNew={isMobile}
