@@ -7,7 +7,7 @@
 
 import type { PushEvent } from "../../../lib/mail/pushClient.js";
 
-/** How long "Snooze" waits before the reminder reappears - or less, if the meeting starts sooner (`snoozeDelayMs()`). */
+/** How long "Snooze" waits before the alarm comes back. */
 export const SNOOZE_MS = 5 * 60_000;
 
 /** The payload restapi's `CalendarReminderJob` publishes (`{ eventUid, title, startDate, location }`) as a `"CalendarEvent"`/`"reminder"` push event. */
@@ -49,15 +49,24 @@ export function joinMeetingUrl(location: string | null | undefined): string | un
     return url.protocol === "http:" || url.protocol === "https:" ? trimmed : undefined;
 }
 
+/** What the alarm's button that opens an event's location URL is called: "Join" for a video meeting (a conferencing service's link, or any link that says
+ * it is one to join), "Open" for any other web address. */
+export function locationActionLabel(url: string): "Join" | "Open" {
+    const { hostname, pathname } = new URL(url);
+    const host = hostname.toLowerCase();
+    const conferencing = /(^|\.)(zoom\.us|zoom\.com|zoomgov\.com|webex\.com|gotomeeting\.com|goto\.com|whereby\.com|bluejeans\.com|chime\.aws|meet\.jit\.si)$/;
+    const known = conferencing.test(host) || host === "meet.google.com" || host === "teams.microsoft.com" || host === "teams.live.com";
+    return known || /\/(join|meet|meeting|room|call)(\/|$)/i.test(pathname) || /^(meet|video|call|conference)\./.test(host) ? "Join" : "Open";
+}
+
+/** Where an alarm's View button leads: the Calendar, with the event (and the occurrence due) open. */
+export function calendarEventHref(eventUid: string, startDate: string): string {
+    return `/calendar?event=${encodeURIComponent(eventUid)}&start=${encodeURIComponent(startDate)}`;
+}
+
 /** The reminder `event` carries, or `undefined` for anything else the shared push connection delivers (mail, folders, appearance, ...). */
 export function calendarReminderOf(event: PushEvent): CalendarReminderNotice | undefined {
     return event.type === "CalendarEvent" && event.action === "reminder" && isReminderNotice(event.data) ? event.data : undefined;
-}
-
-/** How long "Snooze" waits before showing the reminder again: `SNOOZE_MS`, or less if the meeting starts first - never negative (snoozing a
- * reminder for a meeting that has already started shows it again at once rather than waiting a further five minutes). */
-export function snoozeDelayMs(startDate: string, now: number = Date.now()): number {
-    return Math.max(0, Math.min(SNOOZE_MS, new Date(startDate).getTime() - now));
 }
 
 /** The pop-up's message line: when the meeting starts, relative to `now`. */

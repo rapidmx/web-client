@@ -4,12 +4,12 @@
 import { describe, expect, it } from "vitest";
 import type { PushEvent } from "../../../lib/mail/pushClient.js";
 import {
-    SNOOZE_MS,
+    calendarEventHref,
     calendarReminderOf,
     joinMeetingUrl,
+    locationActionLabel,
     reminderMessage,
     reminderNotificationId,
-    snoozeDelayMs,
 } from "../../../apps/shared/calendar/calendarReminders.js";
 
 const NOTICE = { eventUid: "evt1", title: "Team sync", startDate: "2026-09-22T15:00:00.000Z" };
@@ -73,20 +73,27 @@ describe("joinMeetingUrl", () => {
     });
 });
 
-describe("snoozeDelayMs", () => {
-    const start = "2026-09-22T15:00:00.000Z";
-    const startMs = new Date(start).getTime();
-
-    it("is SNOOZE_MS when the meeting is far in the future", () => {
-        expect(snoozeDelayMs(start, startMs - 60 * 60_000)).toBe(SNOOZE_MS);
+describe("locationActionLabel", () => {
+    it.each([
+        "https://us06web.zoom.us/j/86056299697?pwd=abc",
+        "https://meet.google.com/abc-defg-hij",
+        "https://teams.microsoft.com/l/meetup-join/xyz",
+        "https://acme.webex.com/meet/room",
+        "https://meet.example.com/room/abc",
+        "https://example.com/join/12345",
+        "https://video.example.org/x",
+    ])("calls %s a meeting to Join", (url) => {
+        expect(locationActionLabel(url)).toBe("Join");
     });
 
-    it("is cut to the time left before the meeting starts", () => {
-        expect(snoozeDelayMs(start, startMs - 2 * 60_000)).toBe(2 * 60_000);
+    it.each(["https://www.example.com/", "https://maps.example.com/place/12", "http://intranet.local/rooms"])("calls %s a page to Open", (url) => {
+        expect(locationActionLabel(url)).toBe("Open");
     });
+});
 
-    it("is never negative - a meeting already under way snoozes to zero", () => {
-        expect(snoozeDelayMs(start, startMs + 5 * 60_000)).toBe(0);
+describe("calendarEventHref", () => {
+    it("leads to the Calendar with the event and the occurrence named, encoded", () => {
+        expect(calendarEventHref("evt 1", "2026-09-22T15:00:00.000Z")).toBe("/calendar?event=evt%201&start=2026-09-22T15%3A00%3A00.000Z");
     });
 });
 
