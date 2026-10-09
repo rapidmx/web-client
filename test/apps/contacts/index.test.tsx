@@ -1919,6 +1919,48 @@ describe("ContactsPage suggested contacts", () => {
         expect(await screen.findByText("Couldn't add some of the contacts")).toBeInTheDocument();
     });
 
+    it("has an All contacts view that lists the mailbox's contacts and the suggested ones together, with the count of both", async () => {
+        mockWithSuggested();
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        const nav = await screen.findByRole("button", { name: /All contacts/ });
+        expect(nav).toHaveTextContent("2");
+        expect(screen.getByRole("button", { name: /Your contacts/ })).toHaveTextContent("1");
+
+        await user.click(nav);
+        expect(await screen.findByText("Sam Suggested")).toBeInTheDocument();
+        expect(screen.getByText("Jane Doe")).toBeInTheDocument();
+    });
+
+    it("adds only the suggested contacts of the selection to the mailbox's contacts, from the All contacts view", async () => {
+        const fetchMock = mockWithSuggested();
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("button", { name: /All contacts/ }));
+        await screen.findByText("Sam Suggested");
+        await user.click(screen.getByLabelText("Select Jane Doe"));
+        await user.click(screen.getByLabelText("Select Sam Suggested"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Add to contacts"));
+
+        await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).startsWith("/api/mail/contacts/s1") && (init as RequestInit)?.method === "DELETE")).toBe(true));
+        const created = fetchMock.mock.calls.filter(([url, init]) => url === "/api/mail/contacts" && (init as RequestInit)?.method === "POST");
+        expect(created).toHaveLength(1);
+        expect(JSON.parse((created[0][1] as RequestInit).body as string)).toMatchObject({ displayName: "Sam Suggested" });
+        // Jane, already one of the mailbox's own, is neither copied nor deleted.
+        expect(fetchMock.mock.calls.some(([url, init]) => String(url).startsWith("/api/mail/contacts/c1") && (init as RequestInit)?.method === "DELETE")).toBe(false);
+    });
+
+    it("offers no All contacts view when the server can't make a suggested one", async () => {
+        mockShellAndContacts([jane]);
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        expect(screen.queryByRole("button", { name: /All contacts/ })).not.toBeInTheDocument();
+    });
+
     it("offers no suggested view when the server can't make one", async () => {
         mockShellAndContacts([jane]);
         render(<ContactsPage userUid="u1" />);
