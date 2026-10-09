@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-10-09
+
+### Added
+- Added an attachment-download path for an explicit client, saving through fetchBlob and an object URL instead of a cookie-bearing href, revoked after 60s or on unmount
+- Added tests for every new explicit-client path, including attachment download failure and object URL revocation
+- Added a test for conversationPrint's "(no subject)" fallback when a decrypted older message's own subject is empty
+- Added an All contacts view to the Contacts app, listing the mailbox's own contacts and its suggested ones together, from which the suggested ones can be added to the mailbox's contacts
+- Added useFolderLiveUpdates and changedItemOf for pages that keep a folder's items live over the push connection
+- Added getTask to fetch one task by uid
+
+### Changed
+- Thread an optional explicit ApiClient through body, quote, vCard and attachment reads so tauri-client's per-account clients reach the same reading-pane code paths the cookie-based web app uses
+- Close the apps/** coverage gate: add tests for the download-revocation timer, the download-error path and the print "(no subject)" fallback in MessageDetailPane
+- Let PushClient.setChannels take a channel group so a page can subscribe its own folders alongside Mail's, a page's channels ahead of Mail's under the cap
+- Subscribe the calendar page to its calendars' channels, which nothing subscribed to, so events created, changed or deleted elsewhere show without a reload
+- Keep the contacts page's contacts and suggested contacts live from their folders' push channels
+- Keep the tasks page's tasks live from its folder's push channel
+
+### Fixed
+- Fixed sendOutcomes.ts's openFailedDraft to pass its own client into loadOriginalMessage, removing a stale out-of-scope comment
+
+
 ## [0.34.0] - 2026-10-09
 
 ### Changed
@@ -1362,7 +1384,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/rapidmx/web-client/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/rapidmx/web-client/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/rapidmx/web-client/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/rapidmx/web-client/compare/v0.31.0...v0.32.0
