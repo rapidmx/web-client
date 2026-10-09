@@ -64,9 +64,7 @@ async function openFailedDraft(event: SendEvent, client: ApiClient | undefined):
             });
             return;
         }
-        // loadOriginalMessage() (quotedBody.ts) does not yet accept an explicit ApiClient itself - out of scope here (that module is not one of
-        // this task's files); it still falls back to the default global session even under an ApiClientContext.Provider.
-        const original = await loadOriginalMessage(moved, null);
+        const original = await loadOriginalMessage(moved, null, {}, client);
         const attachments = await listAttachments(moved.folderUid, moved.uid, client).catch(() => []);
         const byType = (type: "to" | "cc" | "bcc") => moved.recipients.filter((recipient) => recipient.type === type).map(formatRecipient).join(", ");
         openComposeFromOutside({

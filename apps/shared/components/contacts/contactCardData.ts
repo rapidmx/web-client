@@ -104,8 +104,11 @@ export async function loadUpcomingEvents(folders: readonly Folder[], address: st
         .slice(0, CARD_LIST_SIZE);
 }
 
-/** A vCard attachment's text. */
-export async function fetchVCardText(attachmentUid: string): Promise<string> {
+/** A vCard attachment's text - through `client` (its origin and token) when given, else the cookie request it always was. */
+export async function fetchVCardText(attachmentUid: string, client?: ApiClient): Promise<string> {
+    if (client) {
+        return (await client.fetchBlob(`/mail/attachments/${encodeURIComponent(attachmentUid)}/content`)).text();
+    }
     const res = await fetch(attachmentContentUrl(attachmentUid), { credentials: "include" });
     if (!res.ok) {
         throw new ApiRequestError(res.statusText || "Could not load this contact card.", res.status);
@@ -130,7 +133,7 @@ export async function loadParticipantCard(participant: Participant, context: Con
         const isSender = !!context.message && normalizeAddress(context.message.from.address) === normalizeAddress(participant.address);
         let fallback: ParsedVCardContact | undefined;
         for (const attachment of await vCardAttachments(context, client)) {
-            const cards = parseVCards(await fetchVCardText(attachment.uid));
+            const cards = parseVCards(await fetchVCardText(attachment.uid, client));
             const match = cardForAddress(cards, participant.address, false);
             if (match) {
                 return match;

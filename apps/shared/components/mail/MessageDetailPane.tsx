@@ -16,7 +16,7 @@ import {
     HiOutlineNoSymbol,
     HiOutlineSun,
 } from "react-icons/hi2";
-import { ApiRequestError } from "../../../../lib/util/api.js";
+import { ApiRequestError, type ApiClient } from "../../../../lib/util/api.js";
 import {
     Attachment,
     Folder,
@@ -198,6 +198,23 @@ function downloadFromUrl(url: string, filename: string): void {
     document.body.appendChild(a);
     a.click();
     a.remove();
+}
+
+/** How long an attachment saved through an explicit client keeps its object URL: the download has started well before this. */
+const DOWNLOAD_URL_LIFETIME_MS = 60_000;
+
+/**
+ * Saves the file at `path` through `client` (its origin and token, which a link's `href` cannot carry): its bytes become an object URL handed to
+ * `downloadFromUrl()`. The URL stays in `urls` until it is revoked - after `DOWNLOAD_URL_LIFETIME_MS`, or when the pane unmounts.
+ */
+async function downloadThroughClient(client: ApiClient, path: string, filename: string, urls: Set<string>): Promise<void> {
+    const url = URL.createObjectURL(await client.fetchBlob(path));
+    urls.add(url);
+    downloadFromUrl(url, filename);
+    setTimeout(() => {
+        urls.delete(url);
+        URL.revokeObjectURL(url);
+    }, DOWNLOAD_URL_LIFETIME_MS);
 }
 
 /** Saves one attachment recovered from inside a signed/encrypted entity. Always handed to the browser as an
@@ -529,6 +546,17 @@ function MessageDetailContent({
     const { mailboxes, trackMessageChange } = useMailShell();
     const { requestUnlock } = useUnlockPrompt();
     const client = useApiClient();
+    // Object URLs of attachments saved through `client`, revoked when they have been left to lapse or when this pane unmounts.
+    const downloadUrls = useRef(new Set<string>());
+    useEffect(() => {
+        const urls = downloadUrls.current;
+        return () => {
+            for (const url of urls) {
+                URL.revokeObjectURL(url);
+            }
+            urls.clear();
+        };
+    }, []);
     // Bumped after a successful on-demand unlock to re-run the effect below - it's not a dependency the
     // effect could read reactively otherwise (getUnlockedKeys() is a plain module-level read, not React
     // state; see keySession.ts's own doc comment).
@@ -783,11 +811,23 @@ function MessageDetailContent({
         return mailbox ? [mailbox.primarySmtpAddress, ...(mailbox.aliasAddresses ?? [])] : [];
     }
 
+    /** Saves a listed attachment: through the explicit client when there is one (failures are reported, the file is an object URL), else as the
+     * cookie link always did. */
+    function saveAttachment(attachment: Attachment) {
+        if (client) {
+            downloadThroughClient(client, `/mail/attachments/${encodeURIComponent(attachment.uid)}/content`, attachment.filename, downloadUrls.current).catch(
+                (err) => notifyApiError(err, "Couldn't download this attachment"),
+            );
+            return;
+        }
+        downloadFromUrl(attachmentContentUrl(attachment.uid), attachment.filename);
+    }
+
     /** Starts fetching what Reply/Reply All/Forward will need (the compose window's code, the original's body) as the
      * pointer or keyboard reaches one of their buttons, so the click itself finds it already on its way or here. */
     function prefetchReply() {
         prefetchComposeWindow();
-        prefetchOriginalMessage(message);
+        prefetchOriginalMessage(message, client);
     }
 
     /**
@@ -812,7 +852,7 @@ function MessageDetailContent({
             // Never rejects: loadOriginalMessage() and ownAddresses() don't, and the rest is pure.
             const late = (async (): Promise<ComposeLateInput> => {
                 const [original, own] = await Promise.all([
-                    loadOriginalMessage(message, security, { recipients: kind === "replyAll" }),
+                    loadOriginalMessage(message, security, { recipients: kind === "replyAll" }, client),
                     kind === "forward" ? [] : (knownOwn ?? ownAddresses()),
                 ]);
                 if (kind === "forward") {
@@ -1141,11 +1181,11 @@ function MessageDetailContent({
      * sanitized body - in a frame of its own; see `printMessage.ts`. */
     async function handlePrint() {
         try {
-            const content = bodyContent ?? (await fetchBodyContent(message.uid, message.version));
+            const content = bodyContent ?? (await fetchBodyContent(message.uid, message.version, undefined, client));
             const older = await olderConversationMessages(message, client).catch(() => []);
             // A few at a time: a long conversation is hundreds of messages, each of them several requests.
             const earlier = await mapWithConcurrency(older, PRINT_CONCURRENCY, (other) =>
-                printableOlderMessage(other).catch(
+                printableOlderMessage(other, client).catch(
                     (): PrintableMessage => ({
                         subject: other.subject || "(no subject)",
                         headers: printHeaders(other, formatMailAddress(other.from)),
@@ -1643,9 +1683,18 @@ function MessageDetailContent({
                                           <VCardAttachmentChip
                                               label={`${attachment.filename} (${formatBytes(attachment.sizeBytes)})`}
                                               message={message}
-                                              loadText={() => fetchVCardText(attachment.uid)}
-                                              onDownload={() => downloadFromUrl(attachmentContentUrl(attachment.uid), attachment.filename)}
+                                              loadText={() => fetchVCardText(attachment.uid, client)}
+                                              onDownload={() => saveAttachment(attachment)}
                                           />
+                                      ) : client ? (
+                                          // Through the explicit client a link cannot carry the token, so the file is fetched and saved from a button.
+                                          <button
+                                              type="button"
+                                              onClick={() => saveAttachment(attachment)}
+                                              className="text-xs font-medium py-1 px-2.5 rounded-pill bg-surface-alt text-text-muted hover:text-primary-dark"
+                                          >
+                                              {attachment.filename} ({formatBytes(attachment.sizeBytes)})
+                                          </button>
                                       ) : (
                                           <a
                                               href={attachmentContentUrl(attachment.uid)}

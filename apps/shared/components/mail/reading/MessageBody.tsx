@@ -9,6 +9,7 @@ import type { MimeAttachment } from "../../../../../lib/crypto/mime.js";
 import Alert from "../../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import Skeleton from "../../../../../lib/components/feedback/Skeleton.js";
+import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
 import { useResolvedTheme } from "../../../appearance/resolvedTheme.js";
 import { BodyContent, attachmentSource, cachedBodyContent, fetchBodyContent, makeCidResolver } from "./bodyContent.js";
 import { prepareBodyHtml } from "./bodyHtml.js";
@@ -78,6 +79,8 @@ export default function MessageBody({ messageUid, messageVersion, title, content
     });
     const [attempt, setAttempt] = useState(0);
     const supplied = content !== undefined;
+    // The explicit ApiClient this body is rendered under, if any - undefined for the cookie-based web app.
+    const client = useApiClient();
 
     useEffect(() => {
         if (supplied) {
@@ -95,7 +98,7 @@ export default function MessageBody({ messageUid, messageVersion, title, content
         if (!revalidating) {
             setRemote({ status: "loading" });
         }
-        fetchBodyContent(messageUid, messageVersion, controller.signal).then(
+        fetchBodyContent(messageUid, messageVersion, controller.signal, client).then(
             (loaded) => setRemote({ status: "ready", content: loaded, uid: messageUid }),
             (err) => {
                 if (!controller.signal.aborted && !revalidating) {

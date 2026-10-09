@@ -7,6 +7,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../../lib/util/api.js";
+import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 
 const { adaptDocument } = vi.hoisted(() => ({ adaptDocument: vi.fn() }));
 vi.mock("../../../apps/shared/components/mail/reading/themeAdaptation.js", () => ({ adaptDocument }));
@@ -389,5 +391,23 @@ describe("MessageBody frame", () => {
             expect(link).toHaveAttribute("target", "_blank");
             expect(link).toHaveAttribute("rel", "noopener noreferrer");
         });
+    });
+});
+
+describe("MessageBody under an explicit ApiClient", () => {
+    it("asks for the content through the client - its own origin and token, no cookie - and shows it", async () => {
+        const fetchMock = mockFetch(() => html("<p>Via client</p>"));
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        render(
+            <ApiClientContext.Provider value={client}>
+                <MessageBody messageUid="m9" messageVersion={2} title="Client body" />
+            </ApiClientContext.Provider>,
+        );
+        expect(await screen.findByTitle("Client body")).toHaveAttribute("srcdoc", expect.stringContaining("<p>Via client</p>"));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe("https://acct-a.example.com/api/mail/messages/m9/content");
+        expect(new Headers(init.headers).get("Authorization")).toBe("jwt tok-a");
+        expect(init.credentials).not.toBe("include");
     });
 });

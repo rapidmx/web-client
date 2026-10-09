@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createApiClient } from "../../../lib/util/api.js";
 
 const { getUnlockedKeys, listConversationMessages, getMessageRawContent, listAttachments, fetchBodyContent, evaluateMessageSecurity } = vi.hoisted(() => ({
     getUnlockedKeys: vi.fn(),
@@ -103,6 +104,24 @@ describe("printableOlderMessage", () => {
         evaluateMessageSecurity.mockResolvedValue({ subject: "Inner", text: "secret text" });
         const printable = await printableOlderMessage(message({ encrypted: true, subject: "Outer" }));
         expect(printable).toMatchObject({ subject: "Outer", content: { kind: "text", text: "secret text" } });
+    });
+
+    it("falls back to \"(no subject)\" for a decrypted message whose own subject is empty", async () => {
+        getUnlockedKeys.mockReturnValue({ k: 1 });
+        evaluateMessageSecurity.mockResolvedValue({ text: "secret text" });
+        const printable = await printableOlderMessage(message({ encrypted: true, subject: "" }));
+        expect(printable.subject).toBe("(no subject)");
+    });
+
+    it("asks for its attachments, body and raw source through an explicit client", async () => {
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        await printableOlderMessage(message(), client);
+        expect(listAttachments).toHaveBeenCalledWith("f1", "m1", client);
+        expect(fetchBodyContent).toHaveBeenCalledWith("m1", 3, undefined, client);
+        getUnlockedKeys.mockReturnValue({ k: 1 });
+        evaluateMessageSecurity.mockResolvedValue({ text: "secret" });
+        await printableOlderMessage(message({ encrypted: true, subject: "[...]" }), client);
+        expect(getMessageRawContent).toHaveBeenCalledWith("m1", client);
     });
 
     it("says so when an encrypted message is locked or cannot be opened", async () => {

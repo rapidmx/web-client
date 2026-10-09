@@ -21,6 +21,7 @@ import {
     loadUpcomingEvents,
     scopeMailboxes,
 } from "../../../apps/shared/components/contacts/contactCardData.js";
+import { createApiClient } from "../../../lib/util/api.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 
 afterEach(() => {
@@ -189,6 +190,18 @@ describe("fetchVCardText", () => {
     it("has a message of its own when the server says nothing", async () => {
         mockFetch(() => new Response(null, { status: 500 }));
         await expect(fetchVCardText("a1")).rejects.toThrow("Could not load this contact card.");
+    });
+});
+
+describe("fetchVCardText under an explicit ApiClient", () => {
+    it("reads the attachment through the client's own origin and token, with no cookie request", async () => {
+        const fetchMock = mockFetch(() => new Response("BEGIN:VCARD", { status: 200 }));
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        expect(await fetchVCardText("a1", client)).toBe("BEGIN:VCARD");
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe("https://acct-a.example.com/api/mail/attachments/a1/content");
+        expect(new Headers(init.headers).get("Authorization")).toBe("jwt tok-a");
+        expect(init.credentials).not.toBe("include");
     });
 });
 

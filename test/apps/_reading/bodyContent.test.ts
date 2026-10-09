@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { configureApiBaseUrl } from "../../../lib/util/api.js";
+import { configureApiBaseUrl, createApiClient } from "../../../lib/util/api.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import {
     ACCEPT,
@@ -146,5 +146,27 @@ describe("makeCidResolver", () => {
 
     it("looks only inside the decrypted content for a decrypted message, never at the server's attachments", () => {
         expect(makeCidResolver(attachments, [])("logo@x")).toBeUndefined();
+    });
+});
+
+describe("fetchBodyContent under an explicit ApiClient", () => {
+    const accountClient = () => createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+
+    it("fetches through the client's own origin with its token, and sends no cookie request", async () => {
+        const fetchMock = mockFetch(() => new Response("<p>x</p>", { headers: { "content-type": "text/html; charset=utf-8" } }));
+        await expect(fetchBodyContent("c1", 1, undefined, accountClient())).resolves.toEqual({ kind: "html", html: "<p>x</p>" });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe("https://acct-a.example.com/api/mail/messages/c1/content");
+        expect(new Headers(init.headers).get("Authorization")).toBe("jwt tok-a");
+        expect(new Headers(init.headers).get("Accept")).toBe(ACCEPT);
+        expect(init.credentials).not.toBe("include");
+    });
+
+    it("reads plain text through the client, and rejects with the server's own message", async () => {
+        mockFetch(() => new Response("hello", { headers: { "content-type": "text/plain" } }));
+        await expect(fetchBodyContent("c2", 1, undefined, accountClient())).resolves.toEqual({ kind: "text", text: "hello" });
+        mockFetch(() => jsonResponse(404, { message: "Gone for good" }));
+        await expect(fetchBodyContent("c3", 1, undefined, accountClient())).rejects.toThrow("Gone for good");
     });
 });

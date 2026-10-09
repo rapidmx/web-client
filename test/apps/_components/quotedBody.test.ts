@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockFetch } from "../testUtils.js";
 import { buildReplyQuote } from "../../../lib/mail/compose/composeQuoting.js";
+import { createApiClient } from "../../../lib/util/api.js";
 import {
     QUOTE_CACHE_MS,
     QUOTE_FETCH_TIMEOUT_MS,
@@ -356,5 +357,60 @@ describe("a quoted original's embedded images", () => {
         });
         const result = await loadOriginalMessage(original, null);
         expect(result.body.html).toContain(`src="${PNG_URI}"`);
+    });
+});
+
+describe("loadOriginalMessage under an explicit ApiClient", () => {
+    const client = () => createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+    const original = { uid: "img1", folderUid: "f1", mailboxUid: "mb1", bodyPreview: "" } as never;
+    const logo = { uid: "a2", filename: "logo.png", mimeType: "image/png; name=logo.png", sizeBytes: 4, isInline: true, contentId: "Logo@x" };
+
+    afterEach(() => {
+        clearOriginalMessageCache();
+    });
+
+    it("fetches the body and its pictures through the client - its own origin and token, never a cookie request", async () => {
+        const fetchMock = mockFetch((url) => {
+            if (url.endsWith("/img1/content")) return new Response('<p>Look</p><img src="cid:logo@x" alt="logo">', { headers: { "content-type": "text/html" } });
+            if (url.startsWith("https://acct-a.example.com/api/mail/attachments?")) {
+                return new Response(JSON.stringify([logo]), { headers: { "content-type": "application/json" } });
+            }
+            if (url.endsWith("/a2/content")) return new Response(new Uint8Array([137, 80, 78, 71]));
+            return new Response("no", { status: 404 });
+        });
+
+        expect(await loadOriginalMessage(original, null, {}, client())).toEqual({
+            body: { html: '<p>Look</p><img src="data:image/png;base64,iVBORw==" alt="logo">' },
+        });
+
+        const calls = fetchMock.mock.calls as [string, RequestInit][];
+        expect(calls.map(([url]) => url)).toEqual(
+            expect.arrayContaining([
+                "https://acct-a.example.com/api/mail/messages/img1/content",
+                expect.stringMatching(/^https:\/\/acct-a\.example\.com\/api\/mail\/attachments\?/),
+                "https://acct-a.example.com/api/mail/attachments/a2/content",
+            ]),
+        );
+        for (const [, init] of calls) {
+            expect(new Headers(init.headers).get("Authorization")).toBe("jwt tok-a");
+            expect(init.credentials).not.toBe("include");
+        }
+    });
+});
+
+describe("loadOriginalMessage with an explicit ApiClient, for a body that is not HTML", () => {
+    afterEach(() => {
+        clearOriginalMessageCache();
+    });
+
+    it("keeps no HTML body when the message's content is plain text", async () => {
+        mockFetch((url) => {
+            if (url.endsWith("/plain1/content")) return new Response("just text", { headers: { "content-type": "text/plain" } });
+            return new Response("no", { status: 404 });
+        });
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        const original = { uid: "plain1", folderUid: "f1", mailboxUid: "mb1", bodyPreview: "" } as never;
+        const result = await loadOriginalMessage(original, null, {}, client);
+        expect(result.body?.html).toBeUndefined();
     });
 });

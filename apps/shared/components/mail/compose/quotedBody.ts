@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { apiUrl } from "../../../../../lib/util/api.js";
+import { type ApiClient, apiUrl } from "../../../../../lib/util/api.js";
 import { Message, Recipient, attachmentContentUrl, getMessageRawContent, listAttachments } from "../../../../../lib/mail/mailApi.js";
 import type { QuotedBody } from "../../../../../lib/mail/compose/composeQuoting.js";
 import { MAX_QUOTED_IMAGE_BYTES, QuotedImageReference, embedQuotedImages } from "../../../../../lib/mail/compose/quotedImages.js";
@@ -44,9 +44,9 @@ const contentCache = new Map<string, { at: number; promise: Promise<string | und
 /**
  * The server's sanitized HTML body of a message (`GET /mail/messages/:id/content`), or `undefined` when it has none (a
  * `text/plain` message is answered with its preview instead) or the request failed or timed out. Never rejects. Remembered
- * for `QUOTE_CACHE_MS` - except a failure, which is asked again the next time.
+ * for `QUOTE_CACHE_MS` - except a failure, which is asked again the next time. Through `client` when given, else the cookie request.
  */
-function fetchContentHtml(uid: string): Promise<string | undefined> {
+function fetchContentHtml(uid: string, client?: ApiClient): Promise<string | undefined> {
     const cached = contentCache.get(uid);
     if (cached && Date.now() - cached.at < QUOTE_CACHE_MS) {
         return cached.promise;
@@ -55,6 +55,10 @@ function fetchContentHtml(uid: string): Promise<string | undefined> {
     const timer = setTimeout(() => controller.abort(), QUOTE_FETCH_TIMEOUT_MS);
     const promise = (async (): Promise<string | undefined> => {
         try {
+            if (client) {
+                const blob = await client.fetchBlob(`/mail/messages/${encodeURIComponent(uid)}/content`, { signal: controller.signal });
+                return blob.type.toLowerCase().includes("text/html") ? await blob.text() : undefined;
+            }
             const res = await fetch(apiUrl(`/mail/messages/${encodeURIComponent(uid)}/content`), { credentials: "include", signal: controller.signal });
             return res.ok && (res.headers.get("content-type") ?? "").includes("text/html") ? await res.text() : undefined;
         } catch {
@@ -92,9 +96,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * keyboard reaches a Reply/Reply All/Forward button - so the request is usually already answered when it is clicked.
  * Nothing to fetch for an encrypted message (`loadOriginalMessage()` never asks the server for one's body).
  */
-export function prefetchOriginalMessage(message: Message): void {
+export function prefetchOriginalMessage(message: Message, client?: ApiClient): void {
     if (!message.encrypted) {
-        void fetchContentHtml(message.uid);
+        void fetchContentHtml(message.uid, client);
     }
 }
 
@@ -116,18 +120,28 @@ function headerRecipients(value: string | undefined, type: "to" | "cc"): Recipie
 
 /** The `data:` URI of the picture a quoted image of `message` stands for - one of the message's own attachments, fetched with the session -
  * or `undefined` when there is none, it is not a raster image, it is too large or it could not be had. Never rejects. */
-function serverImageResolver(message: Message): (reference: QuotedImageReference, signal?: AbortSignal) => Promise<string | undefined> {
+function serverImageResolver(
+    message: Message,
+    client?: ApiClient,
+): (reference: QuotedImageReference, signal?: AbortSignal) => Promise<string | undefined> {
     let attachments: Promise<Awaited<ReturnType<typeof listAttachments>>> | undefined;
     return async (reference, signal) => {
         try {
-            attachments ??= listAttachments(message.folderUid, message.uid);
+            attachments ??= listAttachments(message.folderUid, message.uid, client);
             const attachment = findInlineAttachment(await attachments, reference);
             const type = attachment?.mimeType.split(";")[0].trim().toLowerCase();
             if (!attachment || !type || !EMBEDDED_IMAGE_TYPES.test(type) || attachment.sizeBytes > MAX_QUOTED_IMAGE_BYTES) {
                 return undefined;
             }
-            const res = await fetch(attachmentContentUrl(attachment.uid), { credentials: "include", signal });
-            const bytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : undefined;
+            let bytes: Uint8Array | undefined;
+            if (client) {
+                // A failed response rejects here, which the catch below turns into no picture - as an `!res.ok` answer always was.
+                const blob = await client.fetchBlob(`/mail/attachments/${encodeURIComponent(attachment.uid)}/content`, { signal });
+                bytes = new Uint8Array(await blob.arrayBuffer());
+            } else {
+                const res = await fetch(attachmentContentUrl(attachment.uid), { credentials: "include", signal });
+                bytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : undefined;
+            }
             return bytes && bytes.length <= MAX_QUOTED_IMAGE_BYTES ? toDataUri(type, bytes) : undefined;
         } catch {
             return undefined;
@@ -176,6 +190,7 @@ export async function loadOriginalMessage(
     message: Message,
     security: MessageSecurityResult | null,
     options: { recipients?: boolean } = {},
+    client?: ApiClient,
 ): Promise<OriginalMessage> {
     const recovered: QuotedBody | undefined =
         security?.text !== undefined ? { text: security.text } : security?.html !== undefined ? { html: security.html } : undefined;
@@ -193,7 +208,7 @@ export async function loadOriginalMessage(
     if (!recovered) {
         // Never rejects; nothing (a plain-text message, a failure, a timeout) leaves the raw message below as the other way
         // to the body.
-        const html = await fetchContentHtml(message.uid);
+        const html = await fetchContentHtml(message.uid, client);
         if (html !== undefined) {
             result.body = { html };
         } else {
@@ -202,7 +217,7 @@ export async function loadOriginalMessage(
     }
     try {
         if (needsRaw) {
-            const entity = parseMimeEntity(await withTimeout(getMessageRawContent(message.uid), QUOTE_FETCH_TIMEOUT_MS));
+            const entity = parseMimeEntity(await withTimeout(getMessageRawContent(message.uid, client), QUOTE_FETCH_TIMEOUT_MS));
             if (!recovered && result.body.html === undefined) {
                 const body = extractDisplayBody(entity);
                 result.body = body.html !== undefined ? { html: body.html } : body.text !== undefined ? { text: body.text } : {};
@@ -217,7 +232,7 @@ export async function loadOriginalMessage(
         // message's own recipients.
     }
     if (result.body.html !== undefined) {
-        const resolver = recovered ? partImageResolver(security?.attachments ?? []) : serverImageResolver(message);
+        const resolver = recovered ? partImageResolver(security?.attachments ?? []) : serverImageResolver(message, client);
         const html = result.body.html;
         // Bounded like the body's own request: a picture that has not arrived by then is cancelled and left out of the quote, not waited for -
         // the ones that have arrived stay.

@@ -73,6 +73,23 @@ vi.mock("../../../apps/shared/components/mail/layout/MailShell.js", async (impor
     };
 });
 
+// Print is driven through the real `conversationPrint.js`/`printMessage.js` for everything except the
+// two calls below: `olderConversationMessages`/`printableOlderMessage` so one test can make an older
+// message fail to load, and `printDocument`/`buildConversationPrintDocument` so the test never drives a
+// real print iframe (no other test exercises Print, so overriding both unconditionally is safe).
+const { olderConversationMessagesMock, printableOlderMessageMock } = vi.hoisted(() => ({
+    olderConversationMessagesMock: vi.fn(),
+    printableOlderMessageMock: vi.fn(),
+}));
+vi.mock("../../../apps/shared/components/mail/reading/conversationPrint.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../apps/shared/components/mail/reading/conversationPrint.js")>();
+    return { ...actual, olderConversationMessages: olderConversationMessagesMock, printableOlderMessage: printableOlderMessageMock };
+});
+vi.mock("../../../apps/shared/components/mail/reading/printMessage.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../apps/shared/components/mail/reading/printMessage.js")>();
+    return { ...actual, printDocument: vi.fn(), buildConversationPrintDocument: vi.fn(() => "<html></html>") };
+});
+
 // `ComposeWindow`'s own exhaustive rendering (draft lifecycle, send, attachments...) is tested in its
 // own file — mocked here (`RichTextEditor` only, matching every other compose-adjacent test file's
 // convention) so the "reply/forward" tests below only exercise the values `MessageDetailPane` itself
@@ -2862,5 +2879,166 @@ describe("under an ApiClientContext.Provider", () => {
         );
         const call = fetchMock.mock.calls.find(([url]) => String(url) === "https://acct-a.example.com/api/mail/messages/m1/recall")!;
         expect(new Headers((call[1] as RequestInit).headers).get("Authorization")).toBe("jwt tok-a");
+    });
+});
+
+describe("attachments under an explicit ApiClient", () => {
+    it("saves a listed file through the client - its own origin and token, from a button - and revokes its object URL when the pane goes", async () => {
+        const attachment = {
+            uid: "a1",
+            version: 0,
+            dateCreated: "2026-01-01T00:00:00.000Z",
+            dateModified: "2026-01-01T00:00:00.000Z",
+            messageUid: "m1",
+            folderUid: "f1",
+            mailboxUid: "mb1",
+            filename: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 8,
+            isInline: false,
+        };
+        const originalCreate = URL.createObjectURL;
+        const originalRevoke = URL.revokeObjectURL;
+        const revokeObjectURL = vi.fn();
+        URL.createObjectURL = vi.fn(() => "blob:report");
+        URL.revokeObjectURL = revokeObjectURL;
+        const saved: { href: string; download: string }[] = [];
+        // jsdom does not start downloads: record what the pane asked the browser to save instead.
+        const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+            saved.push({ href: this.href, download: this.download });
+        });
+        const client = createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => new Response("%PDF-1.7", { headers: { "content-type": "application/pdf" } }));
+        const user = userEvent.setup();
+        try {
+            const { unmount } = render(
+                <ApiClientContext.Provider value={client}>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[attachment]} />
+                </ApiClientContext.Provider>,
+            );
+            expect(screen.queryByRole("link", { name: /report\.pdf/ })).not.toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: /report\.pdf/ }));
+            await waitFor(() => expect(click).toHaveBeenCalled());
+
+            const download = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/attachments/a1/content")) as [string, RequestInit];
+            expect(download[0]).toBe("https://acct-a.example.com/api/mail/attachments/a1/content");
+            expect(new Headers(download[1].headers).get("Authorization")).toBe("jwt tok-a");
+            expect(download[1].credentials).not.toBe("include");
+            expect(saved).toEqual([{ href: "blob:report", download: "report.pdf" }]);
+            expect(revokeObjectURL).not.toHaveBeenCalled();
+
+            unmount();
+            expect(revokeObjectURL).toHaveBeenCalledWith("blob:report");
+        } finally {
+            URL.createObjectURL = originalCreate;
+            URL.revokeObjectURL = originalRevoke;
+            click.mockRestore();
+        }
+    });
+});
+
+describe("attachment downloads through an explicit ApiClient, failures and lifetime", () => {
+    const attachment = {
+        uid: "a9",
+        version: 0,
+        dateCreated: "2026-01-01T00:00:00.000Z",
+        dateModified: "2026-01-01T00:00:00.000Z",
+        messageUid: "m1",
+        folderUid: "f1",
+        mailboxUid: "mb1",
+        filename: "data.csv",
+        mimeType: "text/csv",
+        sizeBytes: 3,
+        isInline: false,
+    };
+    const client = () => createApiClient({ baseUrl: "https://acct-a.example.com", getAccessToken: async () => "tok-a" });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it("reports a failed download instead of saving anything", async () => {
+        const originalCreate = URL.createObjectURL;
+        const createObjectURL = vi.fn(() => "blob:never");
+        URL.createObjectURL = createObjectURL;
+        const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+        const fetchMock = mockFetch(() => new Response("gone", { status: 404 }));
+        const user = userEvent.setup();
+        try {
+            render(
+                <ApiClientContext.Provider value={client()}>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[attachment]} />
+                </ApiClientContext.Provider>,
+            );
+            await user.click(screen.getByRole("button", { name: /data\.csv/ }));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+            await act(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            });
+            expect(createObjectURL).not.toHaveBeenCalled();
+            expect(click).not.toHaveBeenCalled();
+        } finally {
+            URL.createObjectURL = originalCreate;
+        }
+    });
+
+    it("revokes a saved file's object URL once its lifetime has passed, even with the pane still open", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const originalCreate = URL.createObjectURL;
+        const originalRevoke = URL.revokeObjectURL;
+        const revokeObjectURL = vi.fn();
+        URL.createObjectURL = vi.fn(() => "blob:timed");
+        URL.revokeObjectURL = revokeObjectURL;
+        const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+        mockFetch(() => new Response("a,b,c", { headers: { "content-type": "text/csv" } }));
+        try {
+            render(
+                <ApiClientContext.Provider value={client()}>
+                    <MessageDetailPane message={messageFixture() as any} attachments={[attachment]} />
+                </ApiClientContext.Provider>,
+            );
+            await act(async () => {
+                screen.getByRole("button", { name: /data\.csv/ }).click();
+            });
+            await waitFor(() => expect(click).toHaveBeenCalled());
+            expect(revokeObjectURL).not.toHaveBeenCalled();
+            await act(async () => {
+                vi.advanceTimersByTime(60_000);
+            });
+            expect(revokeObjectURL).toHaveBeenCalledWith("blob:timed");
+        } finally {
+            URL.createObjectURL = originalCreate;
+            URL.revokeObjectURL = originalRevoke;
+        }
+    });
+});
+
+describe("printing a conversation whose older messages fail to load", () => {
+    afterEach(() => {
+        olderConversationMessagesMock.mockReset();
+        printableOlderMessageMock.mockReset();
+    });
+
+    it("falls back to \"(no subject)\" for an older message with no subject that could not be loaded", async () => {
+        const older = messageFixture({ uid: "m0", subject: "", from: { address: "old@example.com", displayName: "Old Sender", type: "to" as const } });
+        olderConversationMessagesMock.mockResolvedValue([older]);
+        printableOlderMessageMock.mockRejectedValue(new Error("gone"));
+        mockFetch(() => jsonResponse({}));
+        const user = userEvent.setup();
+
+        render(<MessageDetailPane message={messageFixture() as any} attachments={[]} />);
+        await user.click(screen.getByRole("button", { name: "More actions" }));
+        await user.click(await screen.findByText("Print"));
+
+        await waitFor(() => expect(printableOlderMessageMock).toHaveBeenCalled());
+        const { buildConversationPrintDocument } = await import("../../../apps/shared/components/mail/reading/printMessage.js");
+        await waitFor(() =>
+            expect(buildConversationPrintDocument).toHaveBeenCalledWith(
+                "Hello there",
+                expect.arrayContaining([expect.objectContaining({ subject: "(no subject)" })]),
+            ),
+        );
     });
 });

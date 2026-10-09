@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ApiRequestError, apiUrl } from "../../../../../lib/util/api.js";
+import { ApiRequestError, type ApiClient, apiUrl } from "../../../../../lib/util/api.js";
 import { Attachment, attachmentContentUrl } from "../../../../../lib/mail/mailApi.js";
 import type { MimeAttachment } from "../../../../../lib/crypto/mime.js";
 import { bytesToBase64, findInlineAttachment, toDataUri } from "../../../../../lib/mail/inlineImages.js";
@@ -31,28 +31,38 @@ export function cachedBodyContent(uid: string, version: number): BodyContent | u
 /**
  * The message's body from the server's `GET /mail/messages/:id/content`: the HTML the server sanitized when it ingested the message
  * (`sanitizedHtmlBlobKey`), or - for a message with none - the plain-text preview. A request that fails throws an `ApiRequestError`.
- * Successful answers are remembered per uid and version.
+ * Successful answers are remembered per uid and version. With an explicit `client` the request goes through it (its origin and token) instead of
+ * the `jwt` cookie; without one it is the cookie request it always was.
  */
-export async function fetchBodyContent(uid: string, version: number, signal?: AbortSignal): Promise<BodyContent> {
+export async function fetchBodyContent(uid: string, version: number, signal?: AbortSignal, client?: ApiClient): Promise<BodyContent> {
     const cached = cachedBodyContent(uid, version);
     if (cached) {
         return cached;
     }
-    // Says what it can show, as a document request would: the server answers with the sanitized HTML, or its plain-text fallback.
-    const res = await fetch(apiUrl(`/mail/messages/${encodeURIComponent(uid)}/content`), {
-        credentials: "include",
-        headers: { Accept: ACCEPT },
-        signal,
-    });
-    if (!res.ok) {
-        const contentType = res.headers.get("content-type") ?? "";
-        const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
-        throw new ApiRequestError((body && (body.message || body.error)) || res.statusText || "Could not load this message.", res.status, body?.code, body);
+    const path = `/mail/messages/${encodeURIComponent(uid)}/content`;
+    let text: string;
+    let contentType: string;
+    if (client) {
+        // `fetchBlob()` rejects with the same `ApiRequestError` a failed response gives, and its blob carries the response's own type.
+        const blob = await client.fetchBlob(path, { headers: { Accept: ACCEPT }, signal });
+        text = await blob.text();
+        contentType = blob.type;
+    } else {
+        // Says what it can show, as a document request would: the server answers with the sanitized HTML, or its plain-text fallback.
+        const res = await fetch(apiUrl(path), {
+            credentials: "include",
+            headers: { Accept: ACCEPT },
+            signal,
+        });
+        if (!res.ok) {
+            const resType = res.headers.get("content-type") ?? "";
+            const body = resType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
+            throw new ApiRequestError((body && (body.message || body.error)) || res.statusText || "Could not load this message.", res.status, body?.code, body);
+        }
+        text = await res.text();
+        contentType = res.headers.get("content-type") ?? "";
     }
-    const text = await res.text();
-    const content: BodyContent = (res.headers.get("content-type") ?? "").toLowerCase().includes("text/html")
-        ? { kind: "html", html: text }
-        : { kind: "text", text };
+    const content: BodyContent = contentType.toLowerCase().includes("text/html") ? { kind: "html", html: text } : { kind: "text", text };
     if (cache.size >= CACHE_LIMIT) {
         cache.delete(cache.keys().next().value as string);
     }

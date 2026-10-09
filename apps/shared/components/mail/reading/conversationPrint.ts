@@ -40,15 +40,16 @@ export async function olderConversationMessages(message: Message, client?: ApiCl
 
 /**
  * One earlier message of a conversation as it prints: the body the reading pane would show. An encrypted one is decrypted here when this device has
- * its mailbox's keys unlocked; when it can't be, it prints a line saying so rather than the ciphertext.
+ * its mailbox's keys unlocked; when it can't be, it prints a line saying so rather than the ciphertext. `client` is the explicit `ApiClient` every
+ * request goes through when given (see `useApiClient()`); without one they are the cookie requests they always were.
  */
-export async function printableOlderMessage(message: Message): Promise<PrintableMessage> {
-    const attachments = await listAttachments(message.folderUid, message.uid).catch(() => []);
+export async function printableOlderMessage(message: Message, client?: ApiClient): Promise<PrintableMessage> {
+    const attachments = await listAttachments(message.folderUid, message.uid, client).catch(() => []);
     if (message.encrypted) {
         const unlocked = getUnlockedKeys(message.mailboxUid);
         if (unlocked) {
             const { evaluateMessageSecurity } = await import("../../../../../lib/crypto/messageSecurity.js");
-            const security = await evaluateMessageSecurity(await getMessageRawContent(message.uid), unlocked);
+            const security = await evaluateMessageSecurity(await getMessageRawContent(message.uid, client), unlocked);
             const content =
                 security.text !== undefined ? ({ kind: "text", text: security.text } as const) : security.html !== undefined ? ({ kind: "html", html: security.html } as const) : undefined;
             if (content) {
@@ -70,7 +71,8 @@ export async function printableOlderMessage(message: Message): Promise<Printable
     return {
         subject: message.subject || "(no subject)",
         headers: printHeaders(message, formatMailAddress(message.from)),
-        content: await fetchBodyContent(message.uid, message.version),
+        // Without a client this is exactly the cookie request it always was.
+        content: await (client ? fetchBodyContent(message.uid, message.version, undefined, client) : fetchBodyContent(message.uid, message.version)),
         attachments,
     };
 }
