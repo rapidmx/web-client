@@ -42,6 +42,10 @@ export function listTasks(folderUid: string, params: ListParams = {}, client?: A
     return withClient(client, `/mail/tasks?${buildQuery(params, { folderUid, sort: JSON.stringify({ dueDate: "ASC", uid: "ASC" }) })}`);
 }
 
+export function getTask(uid: string, client?: ApiClient): Promise<Task> {
+    return withClient(client, `/mail/tasks/${encodeURIComponent(uid)}`);
+}
+
 export interface CreateTaskInput {
     mailboxUid: string;
     folderUid: string;

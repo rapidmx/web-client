@@ -10,6 +10,7 @@ import {
     Contact,
     createContact,
     deleteContact,
+    getContact,
     listContacts,
     ensureSuggestedContacts,
     listContactsInFolders,
@@ -42,6 +43,18 @@ import { SHORTCUTS } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { notify } from "../../shared/notifications/store.js";
+import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
+
+/** The published model class name of a contact on either database (`ContactMongo`, `ContactSQL`) - not a `ContactList`'s. */
+const CONTACT_MODEL = /^Contact(Mongo|SQL)$/;
+
+/** The push client channel group (`PushClient.setChannels()`) the page's contacts folders are subscribed under. */
+const CONTACTS_CHANNEL_GROUP = "contacts";
+
+/** `list` with `contact` in place of the one with its uid, or added when it has none. */
+function upsertContact(list: Contact[], contact: Contact): Contact[] {
+    return list.some((existing) => existing.uid === contact.uid) ? list.map((existing) => (existing.uid === contact.uid ? contact : existing)) : [...list, contact];
+}
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -167,6 +180,45 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             cancelled = true;
         };
     }, [mailboxUid]);
+
+    // A contact created, changed or deleted anywhere - another tab, a phone over ActiveSync - is announced on its folder's channel. It is fetched again by
+    // its uid and filed in the list of the folder it is in now (the mailbox's contacts, or its suggested contacts), and taken out of the other; one that is
+    // gone (a delete, or a 404) leaves both. A failed fetch changes nothing: the next load shows it as it is.
+    useFolderLiveUpdates(
+        CONTACTS_CHANNEL_GROUP,
+        [folderUid, suggestedFolderUid].filter((uid): uid is string => !!uid),
+        (event) => changedItemOf(event, CONTACT_MODEL),
+        (change) => {
+            const remove = (uid: string) => {
+                setContacts((previous) => previous.filter((existing) => existing.uid !== uid));
+                setSuggestedContacts((previous) => previous.filter((existing) => existing.uid !== uid));
+            };
+            if (change.deleted) {
+                remove(change.uid);
+                return;
+            }
+            void getContact(change.uid, client).then(
+                (fresh) => {
+                    if (fresh.deleted === true) {
+                        remove(fresh.uid);
+                    } else if (fresh.folderUid === folderUid) {
+                        setContacts((previous) => upsertContact(previous, fresh));
+                        setSuggestedContacts((previous) => previous.filter((existing) => existing.uid !== fresh.uid));
+                    } else if (fresh.folderUid === suggestedFolderUid) {
+                        setSuggestedContacts((previous) => upsertContact(previous, fresh));
+                        setContacts((previous) => previous.filter((existing) => existing.uid !== fresh.uid));
+                    } else {
+                        remove(fresh.uid);
+                    }
+                },
+                (err: unknown) => {
+                    if (err instanceof ApiRequestError && err.status === 404) {
+                        remove(change.uid);
+                    }
+                },
+            );
+        },
+    );
 
     // restapi only honors `?deleted=true` for a caller with both delete and update rights on the contacts *folder*
     // (its ACL, which inherits the mailbox's but can carry its own records) - anyone else silently gets the *live*

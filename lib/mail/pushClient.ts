@@ -66,6 +66,9 @@ const SOCKET_OPEN = 1;
  */
 export const PUSH_MAX_CHANNELS = 40;
 
+/** The group `setChannels()` sets when no other is named: Mail's. */
+export const DEFAULT_CHANNEL_GROUP = "mail";
+
 /** The first reconnect waits about this long, and each further failure doubles it ... */
 export const PUSH_BACKOFF_BASE_MS = 1_000;
 /** ... up to this. */
@@ -102,6 +105,8 @@ export class PushClient {
     private current: PushStatus = "idle";
     /** What the caller wants to hear about, most important first. */
     private desired: string[] = [];
+    /** The channels each caller asked for (`setChannels()`'s `group`), merged into `desired`. */
+    private groups = new Map<string, string[]>();
     /** What this socket is subscribed to (including whatever the server put it on at connect). */
     private subscribed = new Set<string>();
     /** The channels this client itself asked for and was granted - the only ones it may unsubscribe. */
@@ -152,11 +157,20 @@ export class PushClient {
     }
 
     /**
-     * Sets the channels (folder and mailbox uids) to receive events for. Deduplicated and cut to `PUSH_MAX_CHANNELS`; on
-     * an open socket the difference is subscribed/unsubscribed at once, otherwise it is sent when the socket opens.
+     * Sets the channels (folder and mailbox uids) one caller wants events for: Mail's, in the default group, or a page's
+     * own (the Calendar's calendars - Mail subscribes to mail folders only). Every group's channels are wanted together,
+     * each page's own group ahead of the default one, since a page's are what is on screen; deduplicated and cut to
+     * `PUSH_MAX_CHANNELS`. An empty list drops the group. On an open socket the difference is subscribed/unsubscribed at
+     * once, otherwise it is sent when the socket opens.
      */
-    setChannels(channels: readonly string[]): void {
-        this.desired = [...new Set(channels)].slice(0, PUSH_MAX_CHANNELS);
+    setChannels(channels: readonly string[], group = DEFAULT_CHANNEL_GROUP): void {
+        if (channels.length > 0) {
+            this.groups.set(group, [...channels]);
+        } else {
+            this.groups.delete(group);
+        }
+        const ordered = [...this.groups.entries()].sort(([a], [b]) => Number(a === DEFAULT_CHANNEL_GROUP) - Number(b === DEFAULT_CHANNEL_GROUP));
+        this.desired = [...new Set(ordered.flatMap(([, list]) => list))].slice(0, PUSH_MAX_CHANNELS);
         if (this.ready) {
             this.syncSubscriptions();
         }

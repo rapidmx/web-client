@@ -24,7 +24,7 @@ import { ApiRequestError } from "../../../lib/util/api.js";
 import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import useIsMobile from "../../../lib/util/useIsMobile.js";
 import { CalendarEvent, getCalendarEvent, listCalendarEvents } from "../../../lib/calendar/calendarApi.js";
-import { getPushClient } from "../../../lib/mail/pushClient.js";
+import { useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
 import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calendarMutations.js";
 import { resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
 import { createFolder } from "../../../lib/mail/mailApi.js";
@@ -61,6 +61,9 @@ import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { bookingSettingsHref } from "../../shared/calendar/bookingPlugin.js";
 import { changedEventOf } from "../../shared/calendar/calendarLiveUpdates.js";
+
+/** The push client channel group (`PushClient.setChannels()`) the page's calendars are subscribed under. */
+const CALENDAR_CHANNEL_GROUP = "calendar";
 
 /** The furthest instants a `Date` can hold: the List's "range" reaches both. */
 const MAX_DATE_MS = 8.64e15;
@@ -301,36 +304,35 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     // fetch changes nothing: the next load shows the event as it is.
     const checkedFolderUidsRef = useRef(checkedFolderUids);
     checkedFolderUidsRef.current = checkedFolderUids;
-    useEffect(
-        () =>
-            getPushClient().onEvent((event) => {
-                const change = changedEventOf(event);
-                if (!change) {
-                    return;
-                }
-                const { uid } = change;
-                if (change.deleted) {
-                    setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
-                    return;
-                }
-                void getCalendarEvent(uid, client).then(
-                    (fresh) => {
-                        if (checkedFolderUidsRef.current.has(fresh.folderUid)) {
-                            setEvents((previous) =>
-                                previous.some((existing) => existing.uid === fresh.uid)
-                                    ? previous.map((existing) => (existing.uid === fresh.uid ? fresh : existing))
-                                    : [...previous, fresh],
-                            );
-                        }
-                    },
-                    (err: unknown) => {
-                        if (err instanceof ApiRequestError && err.status === 404) {
-                            setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
-                        }
-                    },
-                );
-            }),
-        [client],
+    // Those events are published on the calendar's own channel, so the page subscribes to every calendar it lists - checked or not, so checking
+    // one needs no new subscription - while it is open.
+    useFolderLiveUpdates(
+        CALENDAR_CHANNEL_GROUP,
+        calendarFolders.map((f) => f.uid),
+        changedEventOf,
+        (change) => {
+            const { uid } = change;
+            if (change.deleted) {
+                setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
+                return;
+            }
+            void getCalendarEvent(uid, client).then(
+                (fresh) => {
+                    if (checkedFolderUidsRef.current.has(fresh.folderUid)) {
+                        setEvents((previous) =>
+                            previous.some((existing) => existing.uid === fresh.uid)
+                                ? previous.map((existing) => (existing.uid === fresh.uid ? fresh : existing))
+                                : [...previous, fresh],
+                        );
+                    }
+                },
+                (err: unknown) => {
+                    if (err instanceof ApiRequestError && err.status === 404) {
+                        setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
+                    }
+                },
+            );
+        },
     );
 
     // Search: `searchText` is the box, `query` what it held once typing paused (or Enter was pressed) and is what is searched for. A search covers every

@@ -11,6 +11,7 @@ import {
     TaskPriority,
     createTask,
     deleteTask,
+    getTask,
     listTasks,
     setTaskCompleted,
     setTaskMyDay,
@@ -34,6 +35,13 @@ import { SHORTCUTS } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
+import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
+
+/** The published model class name of a task on either database (`TaskMongo`, `TaskSQL`) - not a `TaskList`'s. */
+const TASK_MODEL = /^Task(Mongo|SQL)$/;
+
+/** The push client channel group (`PushClient.setChannels()`) the page's tasks folder is subscribed under. */
+const TASKS_CHANNEL_GROUP = "tasks";
 
 const INPUT_CLASS =
     "text-sm py-1.5 px-2 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -145,6 +153,40 @@ function TasksContent() {
     useEffect(() => {
         void reload();
     }, [folderUid]);
+
+    // A task created, changed or deleted anywhere - another tab, a phone over ActiveSync - is announced on its folder's channel. It is fetched again by its
+    // uid and replaces (or joins) the list while it is still in this folder; one that is gone (a delete, a 404, or moved to another folder) leaves it. A
+    // failed fetch changes nothing: the next load shows it as it is.
+    useFolderLiveUpdates(
+        TASKS_CHANNEL_GROUP,
+        folderUid ? [folderUid] : [],
+        (event) => changedItemOf(event, TASK_MODEL),
+        (change) => {
+            const remove = () => setTasks((previous) => previous.filter((existing) => existing.uid !== change.uid));
+            if (change.deleted) {
+                remove();
+                return;
+            }
+            void getTask(change.uid, client).then(
+                (fresh) => {
+                    if (fresh.folderUid !== folderUid) {
+                        remove();
+                        return;
+                    }
+                    setTasks((previous) =>
+                        previous.some((existing) => existing.uid === fresh.uid)
+                            ? previous.map((existing) => (existing.uid === fresh.uid ? fresh : existing))
+                            : [...previous, fresh],
+                    );
+                },
+                (err: unknown) => {
+                    if (err instanceof ApiRequestError && err.status === 404) {
+                        remove();
+                    }
+                },
+            );
+        },
+    );
 
     useEffect(() => {
         setTargetMailboxUid(undefined);

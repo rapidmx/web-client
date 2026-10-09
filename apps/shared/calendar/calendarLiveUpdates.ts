@@ -5,6 +5,7 @@
 /** Pure helper behind the calendar page's live updates: which push events say "an event changed". */
 
 import type { PushEvent } from "../../../lib/mail/pushClient.js";
+import { changedItemOf } from "../live/useFolderLiveUpdates.js";
 
 /** The published model name of a calendar event on either database (`CalendarEventMongo`, `CalendarEventSQL`) - and not the reminder's `"CalendarEvent"`,
  * which has its own action. */
@@ -20,9 +21,5 @@ const EVENT_MODEL = /^CalendarEvent(Mongo|SQL)$/;
  * changed event is handled that way, an ordinary one (an invitation arriving, an edit on another device) included.
  */
 export function changedEventOf(event: PushEvent): { uid: string; deleted: boolean } | undefined {
-    if (!EVENT_MODEL.test(event.type) || (event.action !== "create" && event.action !== "update" && event.action !== "delete")) {
-        return undefined;
-    }
-    const data = event.data as { uid?: unknown } | null | undefined;
-    return typeof data?.uid === "string" ? { uid: data.uid, deleted: event.action === "delete" } : undefined;
+    return changedItemOf(event, EVENT_MODEL);
 }

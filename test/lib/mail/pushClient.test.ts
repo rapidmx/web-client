@@ -163,6 +163,37 @@ describe("PushClient connecting", () => {
         expect(latest().sent[0].data).toEqual(many.slice(0, PUSH_MAX_CHANNELS));
     });
 
+    it("wants every group's channels together, a page's own ahead of Mail's default ones, and drops a group set to nothing", () => {
+        const client = newClient();
+        client.setChannels(["inbox", "mb1"]);
+        client.setChannels(["cal1", "inbox"], "calendar");
+        client.start();
+        latest().greet();
+        // The page's own first, then Mail's; a channel in both is asked for once.
+        expect(latest().sent).toEqual([{ id: 1, type: "SUBSCRIBE", data: ["cal1", "inbox", "mb1"] }]);
+        latest().receive({ id: 1, type: "SUBSCRIBED", data: ["cal1", "inbox", "mb1"] });
+
+        // Mail changing its channels leaves the page's alone, ...
+        client.setChannels(["inbox"]);
+        expect(latest().sent.slice(1)).toEqual([{ id: 2, type: "UNSUBSCRIBE", data: ["mb1"] }]);
+        latest().receive({ id: 2, type: "UNSUBSCRIBED", data: ["mb1"] });
+        // ... and the page going drops only what nothing else still wants.
+        client.setChannels(["inbox"], "calendar");
+        expect(latest().sent.slice(2)).toEqual([{ id: 3, type: "UNSUBSCRIBE", data: ["cal1"] }]);
+        latest().receive({ id: 3, type: "UNSUBSCRIBED", data: ["cal1"] });
+        client.setChannels([], "calendar");
+        expect(latest().sent).toHaveLength(3);
+    });
+
+    it("keeps a page's own channels when Mail's alone would fill PUSH_MAX_CHANNELS", () => {
+        const client = newClient();
+        client.setChannels(Array.from({ length: PUSH_MAX_CHANNELS }, (_, i) => `mail${i}`));
+        client.setChannels(["cal1"], "calendar");
+        client.start();
+        latest().greet();
+        expect(latest().sent[0].data).toEqual(["cal1", ...Array.from({ length: PUSH_MAX_CHANNELS - 1 }, (_, i) => `mail${i}`)]);
+    });
+
     it("does nothing where there is nothing to connect with", () => {
         const noUrl = new PushClient({ url: () => undefined, createSocket: (url) => new FakeSocket(url) });
         noUrl.start();

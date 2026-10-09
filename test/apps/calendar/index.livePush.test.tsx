@@ -27,12 +27,22 @@ const CalendarPage = withTestRouter(CalendarPageBase);
 
 // The shared push connection: the page adds a listener, and the tests are the server.
 const listeners = new Set<(event: PushEvent) => void>();
+// The channels each group asked for, as `PushClient.setChannels()` keeps them.
+const channelGroups = new Map<string, readonly string[]>();
 vi.mock("../../../lib/mail/pushClient.js", () => ({
     getPushClient: () => ({
         onEvent: (listener: (event: PushEvent) => void) => {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
+        setChannels: (channels: readonly string[], group: string) => {
+            if (channels.length > 0) {
+                channelGroups.set(group, channels);
+            } else {
+                channelGroups.delete(group);
+            }
+        },
+        start: () => undefined,
     }),
 }));
 function push(event: PushEvent) {
@@ -117,6 +127,7 @@ function mockCalendar() {
 
 beforeEach(() => {
     listeners.clear();
+    channelGroups.clear();
     events = [calendarEvent()];
     single = () => jsonResponse(404, { message: "not found" });
     window.history.pushState(null, "", "/calendar?date=2026-06-15&view=month");
@@ -221,6 +232,17 @@ describe("CalendarPage live updates for a private event", () => {
 
         unmount();
         expect(listeners.size).toBe(0);
+    });
+
+    it("subscribes to every calendar it lists while it is open, under its own channel group, and lets them go when the page goes", async () => {
+        mockCalendar();
+        const { unmount } = render(<CalendarPage userUid="u1" />);
+        await screen.findByText(/Standup/);
+        // Mail's connection subscribes to mail folders only - nothing else asks for a calendar's channel.
+        await waitFor(() => expect(channelGroups.get("calendar")).toEqual(["f-cal"]));
+
+        unmount();
+        expect(channelGroups.has("calendar")).toBe(false);
     });
 
     it("shows an ordinary event another device created or changed, and drops one that was deleted", async () => {
