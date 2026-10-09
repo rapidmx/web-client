@@ -164,11 +164,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     // Asks the server to turn the people this mailbox has corresponded with into suggested contacts (it does so once for each person, so this is cheap when
     // nothing is new), then lists them. An older server, or one that refuses, simply has no such view.
     useEffect(() => {
-        if (!mailboxUid) {
-            return;
-        }
         let cancelled = false;
-        void ensureSuggestedContacts(mailboxUid, client)
+        // `ContactsShell` only renders this with a resolved mailbox (see the Deleted view's comment above).
+        void ensureSuggestedContacts(mailboxUid!, client)
             .then(async (result) => {
                 if (!cancelled) {
                     setSuggestedFolderUid(result.folderUid);
@@ -282,6 +280,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 return contacts;
             case "favorites":
                 return contacts.filter((c) => c.favorite);
+            case "everyone":
+                // The mailbox's own contacts and its suggested ones in one list (a person is in only one of them: a suggestion that is accepted is moved).
+                return [...contacts, ...suggestedContacts];
             case "suggested":
                 return suggestedContacts;
             case "list":
@@ -482,7 +483,8 @@ function ContactsContent({ userUid }: { userUid?: string }) {
 
     // A suggested contact becomes one of the mailbox's own: a copy in its contacts folder, and the suggestion removed (the person is not suggested again).
     const handleAddToContacts = singleFlight(async () => {
-        for (const contact of checkedContacts) {
+        // In the All contacts view the selection can hold contacts that already are the mailbox's own: only the suggested ones are added.
+        for (const contact of checkedContacts.filter((checked) => checked.folderUid === suggestedFolderUid)) {
             try {
                 await createContact(
                     {
@@ -594,7 +596,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                     onToggleFavorite={handleToggleFavorite}
                     onAddCategory={handleAddCategory}
                     onExportVCard={handleExportVCard}
-                    onAddToContacts={view.type === "suggested" ? handleAddToContacts : undefined}
+                    onAddToContacts={view.type === "suggested" || view.type === "everyone" ? handleAddToContacts : undefined}
                     onImportFile={handleImportFile}
                     shortcuts
                     hideNew={isMobile}

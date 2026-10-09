@@ -50,6 +50,7 @@ import { MailConnectionContext, useMailConnection } from "../../mail/useMailConn
 import { useUnreadTitle } from "../../mail/useUnreadTitle.js";
 import UnlockBridge from "../../mail/outbox/UnlockBridge.js";
 import NotificationCenter from "../../notifications/NotificationCenter.js";
+import CalendarAlarmDialog from "../calendar/CalendarAlarmDialog.js";
 import { useHeaderHeightRef } from "../../notifications/headerOffset.js";
 import NotificationHistoryDialog from "../../notifications/NotificationHistoryDialog.js";
 import { notifySessionExpired, setSignInUrl } from "../../notifications/apiErrors.js";
@@ -210,8 +211,8 @@ export function AppChrome({
     const mail = useMailConnection({ userUid, enabled: inFrame, open: navigate });
     // A signing certificate the user asked for is announced when it is issued (or fails), on whichever page they are - see the hook.
     useSigningEnrollmentWatcher({ userUid, mailboxes: mail.mailboxes, enabled: inFrame });
-    // A meeting reminder pops up on whichever page they are - see the hook.
-    useCalendarReminders({ userUid, enabled: inFrame });
+    // An event's alarm raises a modal (drawn by `CalendarAlarmDialog`, below) on whichever page they are - see the hook.
+    const calendarAlarms = useCalendarReminders({ userUid, enabled: inFrame });
 
     // A refused refresh means the sign-in has ended: open compose windows save what they hold (the access token still works for a while) and the
     // browser goes to sign-in. Not while viewing as another user - the refresh cookie is the admin's own, and refreshing would end the impersonation.
@@ -459,6 +460,7 @@ export function AppChrome({
                         )}
                         {/* The one pop-up stack for the whole app: right under the header row, so it never covers the account menu. */}
                         <NotificationCenter />
+                        <CalendarAlarmDialog alarms={calendarAlarms} />
                         <div
                             id="app-content"
                             tabIndex={-1}

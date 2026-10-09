@@ -132,6 +132,36 @@ describe("UserMenu", () => {
             expect(localStorage.getItem("rapidmx-new-mail-popups")).toBeNull();
         });
 
+        it("switch the notification sounds on and off, separately from the pop-ups, remembering the choice", async () => {
+            stubNotification("granted");
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            const toggle = screen.getByRole("menuitemcheckbox", { name: /Notification sounds/ });
+            expect(toggle).toHaveAttribute("aria-checked", "true");
+            expect(toggle).toHaveTextContent("On");
+
+            await user.click(toggle);
+            expect(toggle).toHaveAttribute("aria-checked", "false");
+            expect(toggle).toHaveTextContent("Off");
+            expect(localStorage.getItem("rapidmx-notification-sounds")).toBe("off");
+            // The pop-ups themselves are untouched.
+            expect(screen.getByRole("menuitemcheckbox", { name: /Notifications/ })).toHaveAttribute("aria-checked", "true");
+
+            await user.click(toggle);
+            expect(toggle).toHaveAttribute("aria-checked", "true");
+            expect(localStorage.getItem("rapidmx-notification-sounds")).toBeNull();
+        });
+
+        it("read the saved sounds choice each time the menu opens", async () => {
+            stubNotification("granted");
+            localStorage.setItem("rapidmx-notification-sounds", "off");
+            const user = userEvent.setup();
+            render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            expect(screen.getByRole("menuitemcheckbox", { name: /Notification sounds/ })).toHaveAttribute("aria-checked", "false");
+        });
+
         it("take away the pop-ups on screen when switched off", async () => {
             stubNotification("granted");
             notify({ kind: "info", title: "Something happened" });
@@ -183,7 +213,7 @@ describe("UserMenu", () => {
                 stubNotification(permission);
                 const { unmount } = render(<UserMenu userUid="jane" onSignOut={vi.fn()} showNotificationSettings />);
                 await user.click(screen.getByRole("button", { name: "Account menu" }));
-                expect(screen.getByRole("menuitemcheckbox")).toBeInTheDocument();
+                expect(screen.getByRole("menuitemcheckbox", { name: /Notifications/ })).toBeInTheDocument();
                 expect(screen.queryByRole("menuitem", { name: "Turn on desktop notifications" })).not.toBeInTheDocument();
                 unmount();
             }
@@ -201,6 +231,7 @@ describe("UserMenu", () => {
             const items = [...screen.getByRole("menu").querySelectorAll('[role^="menuitem"]')];
             expect(items.map((item) => item.textContent)).toEqual([
                 expect.stringContaining("Notifications"),
+                expect.stringContaining("Notification sounds"),
                 "Turn on desktop notifications",
                 "Admin Console",
                 "Sign Out",

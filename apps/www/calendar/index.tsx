@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { pageTitle } from "../../shared/navigation/pageTitle.js";
+import { useLocation, useNavigate } from "../../shared/navigation/index.js";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { HiOutlineBars3, HiOutlinePlus } from "react-icons/hi2";
@@ -28,7 +29,7 @@ import { useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js"
 import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calendarMutations.js";
 import { resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
 import { createFolder } from "../../../lib/mail/mailApi.js";
-import { CalendarOccurrence, expandAllOccurrences } from "../../../lib/calendar/recurrence.js";
+import { CalendarOccurrence, expandAllOccurrences, expandOccurrences } from "../../../lib/calendar/recurrence.js";
 import { useDayKey } from "../../../lib/calendar/useDayKey.js";
 import { allOccurrences, initialMatchIndex, occurrencesInRange, searchOccurrences, searchTerms, stepSequenceIndex } from "../../../lib/calendar/eventSearch.js";
 import Drawer from "../../../lib/components/overlays/Drawer.js";
@@ -539,6 +540,35 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     function closeModal() {
         setModal(null);
     }
+
+    // `?event=<uid>&start=<iso>` opens that event's card on the day it is on - where a calendar alarm's View button leads. `start` names which occurrence
+    // of a recurring event. Read from the page's own location, so it also works from the Calendar itself (a shallow navigation), and then taken off the
+    // address so a reload doesn't open it again.
+    const { search: locationSearch } = useLocation();
+    const navigateTo = useNavigate();
+    const openedFromAddressRef = useRef("");
+    useEffect(() => {
+        const params = new URLSearchParams(locationSearch);
+        const eventUid = params.get("event");
+        const wanted = `${eventUid}|${params.get("start")}`;
+        if (!eventUid || openedFromAddressRef.current === wanted) {
+            return;
+        }
+        openedFromAddressRef.current = wanted;
+        const requestedStart = new Date(params.get("start") ?? "");
+        navigateTo("/calendar", { replace: true });
+        getCalendarEvent(eventUid, client)
+            .then((event) => {
+                const from = isNaN(requestedStart.getTime()) ? new Date(event.startDate) : requestedStart;
+                const candidates = expandOccurrences(event, new Date(from.getTime() - 86_400_000), new Date(from.getTime() + 86_400_000));
+                const match = candidates.find((occurrence) => new Date(occurrence.startDate).getTime() === from.getTime()) ?? candidates[0];
+                if (match) {
+                    setViewDate(occurrenceDay(match));
+                    openEvent(match);
+                }
+            })
+            .catch((err) => notifyApiError(err, "Couldn't open the event"));
+    }, [locationSearch]);
 
     // Keyboard shortcuts - the toolbar's own actions. (A dialog open - the event editor - silences them.)
     useShortcut(SHORTCUTS.calendar.create, () => openNewEvent(), { enabled: !!mailboxUid && !!folderUid });

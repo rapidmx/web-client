@@ -6,8 +6,10 @@ import React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getPushClient, resetPushClient } from "../../../lib/mail/pushClient.js";
-import { dismiss, getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
-import { useCalendarReminders } from "../../../apps/shared/calendar/useCalendarReminders.js";
+import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
+import { setNotificationsEnabled } from "../../../apps/shared/notifications/preferences.js";
+import { resetNotificationSounds } from "../../../apps/shared/notifications/sounds.js";
+import { CalendarAlarms, useCalendarReminders } from "../../../apps/shared/calendar/useCalendarReminders.js";
 
 /** A stand-in for the browser's WebSocket, driven by hand - the same shape `useMailLiveUpdates.test.tsx` uses. */
 class FakeWebSocket {
@@ -45,31 +47,53 @@ function connect(): void {
     socket().greet();
 }
 
+/** What the hook last returned. */
+let latest: CalendarAlarms;
+
 function Harness(props: { userUid?: string; enabled?: boolean }) {
-    useCalendarReminders({ userUid: "userUid" in props ? props.userUid : "u1", enabled: props.enabled ?? true });
+    latest = useCalendarReminders({ userUid: "userUid" in props ? props.userUid : "u1", enabled: props.enabled ?? true });
     return null;
 }
 
+/** A stand-in for `AudioContext` that counts the oscillators the sounds are made of (the bell is eight). */
+const audio = { oscillators: 0 };
+class FakeAudioContext {
+    state = "running";
+    currentTime = 0;
+    destination = {};
+    createOscillator() {
+        audio.oscillators += 1;
+        return { type: "", frequency: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() }, connect: vi.fn(), start: vi.fn(), stop: vi.fn() };
+    }
+    createGain() {
+        return { gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() }, connect: vi.fn() };
+    }
+}
+const BELL_OSCILLATORS = 8;
+
 const NOW = new Date("2026-09-22T14:50:00.000Z");
-/** Ten minutes out - longer than the five-minute snooze, so a snooze of this one waits the full `SNOOZE_MS`. */
 const NOTICE = { eventUid: "evt1", title: "Team sync", startDate: "2026-09-22T15:00:00.000Z" };
-/** Three minutes out - shorter than the snooze, so a snooze of this one is cut to the time left before it starts. */
-const NOTICE_SOON = { eventUid: "evt2", title: "Standup", startDate: "2026-09-22T14:53:00.000Z" };
+const OTHER = { eventUid: "evt2", title: "Standup", startDate: "2026-09-22T14:53:00.000Z", location: "https://meet.example.com/room/abc" };
 
 beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
+    localStorage.clear();
     FakeWebSocket.instances = [];
+    audio.oscillators = 0;
+    resetNotificationSounds();
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
 });
 
 afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     resetPushClient();
+    resetNotificationSounds();
 });
 
-async function fireReminder(notice: typeof NOTICE) {
+async function fireReminder(notice: typeof NOTICE | typeof OTHER) {
     await act(async () => {
         socket().receive({ type: "CalendarEvent", action: "reminder", data: notice });
     });
@@ -82,51 +106,50 @@ async function advance(ms: number) {
 }
 
 describe("useCalendarReminders", () => {
-    it("shows a sticky calendar pop-up with Dismiss and Snooze when a reminder push event arrives", async () => {
+    it("raises an alarm, with a bell, when a reminder push event arrives", async () => {
+        render(<Harness />);
+        connect();
+        expect(latest.current).toBeUndefined();
+
+        await fireReminder(NOTICE);
+
+        expect(latest.current).toEqual(NOTICE);
+        expect(latest.waiting).toBe(0);
+        expect(audio.oscillators).toBe(BELL_OSCILLATORS);
+        // It is a dialog, not a pop-up: nothing in the notification stack.
+        expect(getNotificationsSnapshot().visible).toHaveLength(0);
+    });
+
+    it("carries the event's location through to the alarm", async () => {
+        render(<Harness />);
+        connect();
+        await fireReminder(OTHER);
+        expect(latest.current?.location).toBe("https://meet.example.com/room/abc");
+    });
+
+    it("queues alarms that arrive together, showing one at a time, oldest first", async () => {
         render(<Harness />);
         connect();
         await fireReminder(NOTICE);
+        await fireReminder(OTHER);
 
-        const visible = getNotificationsSnapshot().visible;
-        expect(visible).toHaveLength(1);
-        expect(visible[0]).toMatchObject({ kind: "calendar", title: "Team sync", sticky: true, href: "/calendar" });
-        expect(visible[0].actions.map((action) => action.label)).toEqual(["Dismiss", "Snooze"]);
+        expect(latest.current).toEqual(NOTICE);
+        expect(latest.waiting).toBe(1);
+
+        await act(async () => latest.dismiss());
+        expect(latest.current).toEqual(OTHER);
+        expect(latest.waiting).toBe(0);
+
+        await act(async () => latest.dismiss());
+        expect(latest.current).toBeUndefined();
     });
 
-    it("adds a leading Join Meeting action when the event's location is a URL, opening it in a new tab without resolving the pop-up", async () => {
-        const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-        render(<Harness />);
-        connect();
-        await fireReminder({ ...NOTICE, location: "https://meet.example.com/room/abc" } as typeof NOTICE);
-
-        const toast = getNotificationsSnapshot().visible[0];
-        // The destination is named, so an invitation's location can't send someone to a page they did not expect unseen.
-        expect(toast.hint).toBe("Join Meeting opens meet.example.com");
-        expect(toast.actions.map((action) => action.label)).toEqual(["Join Meeting", "Dismiss", "Snooze"]);
-        const joinAction = toast.actions[0];
-        expect(joinAction.keepOpen).toBe(true);
-
-        joinAction.onClick?.();
-        expect(openSpy).toHaveBeenCalledWith("https://meet.example.com/room/abc", "_blank", "noopener,noreferrer");
-        // keepOpen: true - the pop-up is still there for Dismiss/Snooze afterward.
-        expect(getNotificationsSnapshot().visible).toHaveLength(1);
-    });
-
-    it("has no Join Meeting action when the location is a room name, address or other non-URL text", async () => {
-        render(<Harness />);
-        connect();
-        await fireReminder({ ...NOTICE, location: "Room 12" } as typeof NOTICE);
-
-        expect(getNotificationsSnapshot().visible[0].actions.map((action) => action.label)).toEqual(["Dismiss", "Snooze"]);
-        expect(getNotificationsSnapshot().visible[0].hint).toBeUndefined();
-    });
-
-    it("has no Join Meeting action when the event has no location", async () => {
+    it("shows the same alarm once when its push event arrives twice", async () => {
         render(<Harness />);
         connect();
         await fireReminder(NOTICE);
-
-        expect(getNotificationsSnapshot().visible[0].actions.map((action) => action.label)).toEqual(["Dismiss", "Snooze"]);
+        await fireReminder(NOTICE);
+        expect(latest.waiting).toBe(0);
     });
 
     it("ignores push events that are not a CalendarEvent reminder", async () => {
@@ -135,93 +158,110 @@ describe("useCalendarReminders", () => {
         await act(async () => {
             socket().receive({ type: "MessageMongo", action: "create", data: { uid: "m1" } });
         });
-        expect(getNotificationsSnapshot().visible).toHaveLength(0);
+        expect(latest.current).toBeUndefined();
+        expect(audio.oscillators).toBe(0);
     });
 
-    it("does nothing extra when Dismiss is used - just the pop-up closing", async () => {
+    it("Dismiss closes the alarm for good", async () => {
         render(<Harness />);
         connect();
         await fireReminder(NOTICE);
-        const toast = getNotificationsSnapshot().visible[0];
-        const dismissAction = toast.actions.find((action) => action.label === "Dismiss")!;
-        expect(dismissAction.onClick).toBeUndefined();
-        dismiss(toast.id);
+        await act(async () => latest.dismiss());
         await advance(10 * 60_000);
-        expect(getNotificationsSnapshot().visible).toHaveLength(0);
-        expect(getNotificationsSnapshot().history.some((entry) => entry.title === "Team sync")).toBe(true);
+        expect(latest.current).toBeUndefined();
     });
 
-    it("Snooze reschedules the same reminder after five minutes when the meeting is far off", async () => {
+    it("Snooze closes the alarm and brings it back, with the bell again, after exactly five minutes", async () => {
         render(<Harness />);
         connect();
         await fireReminder(NOTICE);
-        const toast = getNotificationsSnapshot().visible[0];
-        const snoozeAction = toast.actions.find((action) => action.label === "Snooze")!;
+        audio.oscillators = 0;
+        resetNotificationSounds();
 
-        // Mirrors what NotificationCenter's ActionButton does on a click: run the action, then dismiss (no keepOpen).
-        await act(async () => {
-            snoozeAction.onClick?.();
-            dismiss(toast.id);
-        });
-        expect(getNotificationsSnapshot().visible).toHaveLength(0);
+        await act(async () => latest.snooze());
+        expect(latest.current).toBeUndefined();
 
         await advance(5 * 60_000 - 1);
-        expect(getNotificationsSnapshot().visible).toHaveLength(0);
+        expect(latest.current).toBeUndefined();
+        expect(audio.oscillators).toBe(0);
 
         await advance(1);
-        const reshown = getNotificationsSnapshot().visible;
-        expect(reshown).toHaveLength(1);
-        expect(reshown[0].id).toBe(toast.id);
-        expect(reshown[0].title).toBe("Team sync");
+        expect(latest.current).toEqual(NOTICE);
+        expect(audio.oscillators).toBe(BELL_OSCILLATORS);
     });
 
-    it("Snooze fires at the meeting's start instead of five minutes out when less than five minutes remain", async () => {
+    it("snoozes five minutes even when the meeting has already started", async () => {
         render(<Harness />);
         connect();
-        await fireReminder(NOTICE_SOON);
-        const toast = getNotificationsSnapshot().visible[0];
-        const snoozeAction = toast.actions.find((action) => action.label === "Snooze")!;
+        await fireReminder({ ...NOTICE, startDate: "2026-09-22T14:40:00.000Z" });
+        await act(async () => latest.snooze());
 
-        await act(async () => {
-            snoozeAction.onClick?.();
-            dismiss(toast.id);
-        });
-
-        // NOTICE_SOON starts three minutes after NOW - short of the five-minute snooze.
-        await advance(3 * 60_000 - 1);
-        expect(getNotificationsSnapshot().visible).toHaveLength(0);
-
-        await advance(1);
-        expect(getNotificationsSnapshot().visible).toHaveLength(1);
+        await advance(60_000);
+        expect(latest.current).toBeUndefined();
+        await advance(4 * 60_000);
+        expect(latest.current).toBeDefined();
     });
 
-    it("clears a pending snooze timer on unmount, so it never fires after the frame is gone", async () => {
+    it("snoozes only the alarm on screen, the next one taking its place", async () => {
+        render(<Harness />);
+        connect();
+        await fireReminder(NOTICE);
+        await fireReminder(OTHER);
+        await act(async () => latest.snooze());
+        expect(latest.current).toEqual(OTHER);
+        await advance(5 * 60_000);
+        expect(latest.current).toEqual(OTHER);
+        expect(latest.waiting).toBe(1);
+    });
+
+    it("does nothing when there is no alarm to snooze", async () => {
+        render(<Harness />);
+        connect();
+        await act(async () => latest.snooze());
+        await advance(10 * 60_000);
+        expect(latest.current).toBeUndefined();
+    });
+
+    it("clears a pending snooze on unmount, so it never fires after the frame is gone", async () => {
         const { unmount } = render(<Harness />);
         connect();
         await fireReminder(NOTICE);
-        const toast = getNotificationsSnapshot().visible[0];
-        const snoozeAction = toast.actions.find((action) => action.label === "Snooze")!;
-        await act(async () => {
-            snoozeAction.onClick?.();
-            dismiss(toast.id);
-        });
-
+        await act(async () => latest.snooze());
         unmount();
         await advance(10 * 60_000);
-        expect(getNotificationsSnapshot().visible).toHaveLength(0);
+        expect(audio.oscillators).toBe(BELL_OSCILLATORS);
+    });
+
+    it("forgets the queue when the user signs out", async () => {
+        const view = render(<Harness />);
+        connect();
+        await fireReminder(NOTICE);
+        view.rerender(<Harness userUid={undefined} />);
+        expect(latest.current).toBeUndefined();
+    });
+
+    it("with pop-ups turned off shows no dialog and makes no sound, only recording the alarm in the history", async () => {
+        setNotificationsEnabled(false);
+        render(<Harness />);
+        connect();
+        await fireReminder(NOTICE);
+
+        expect(latest.current).toBeUndefined();
+        expect(audio.oscillators).toBe(0);
+        expect(getNotificationsSnapshot().history.some((entry) => entry.title === "Team sync")).toBe(true);
     });
 
     it("does nothing without a signed-in user", async () => {
         render(<Harness userUid={undefined} />);
         connect();
         await fireReminder(NOTICE);
-        expect(getNotificationsSnapshot().visible).toHaveLength(0);
+        expect(latest.current).toBeUndefined();
     });
 
     it("does nothing while disabled (outside the persistent app frame)", async () => {
         render(<Harness enabled={false} />);
         connect();
         await fireReminder(NOTICE);
-        expect(getNotificationsSnapshot().visible).toHaveLength(0);
+        expect(latest.current).toBeUndefined();
     });
 });

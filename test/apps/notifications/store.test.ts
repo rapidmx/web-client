@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetNotificationSounds } from "../../../apps/shared/notifications/sounds.js";
 import {
     DEFAULT_TIMEOUT_MS,
     HISTORY_LIMIT,
@@ -387,5 +388,61 @@ describe("dismissAll", () => {
         dismissAll();
         expect(getNotificationsSnapshot()).toMatchObject({ visible: [], queued: 0 });
         vi.advanceTimersByTime(60_000);
+    });
+});
+
+
+/** A stand-in for `AudioContext` that counts the oscillators the sounds are made of (a chime and a buzz are two, a bell is eight). */
+function installFakeAudio(): { oscillators: number } {
+    const made = { oscillators: 0 };
+    class FakeAudioContext {
+        state = "running";
+        currentTime = 0;
+        destination = {};
+        createOscillator() {
+            made.oscillators += 1;
+            return { type: "", frequency: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() }, connect: vi.fn(), start: vi.fn(), stop: vi.fn() };
+        }
+        createGain() {
+            return { gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() }, connect: vi.fn() };
+        }
+    }
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    return made;
+}
+
+describe("notification sounds", () => {
+    let audio: { oscillators: number };
+
+    beforeEach(() => {
+        resetNotificationSounds();
+        audio = installFakeAudio();
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        resetNotificationSounds();
+    });
+
+    it("plays the chime for new mail, the bell for a calendar notice and the buzz for an error", () => {
+        notify({ kind: "mail", title: "New mail" });
+        expect(audio.oscillators).toBe(2);
+        notify({ kind: "calendar", title: "Meeting" });
+        expect(audio.oscillators).toBe(2 + 8);
+        notify({ kind: "error", title: "Failed" });
+        expect(audio.oscillators).toBe(2 + 8 + 2);
+    });
+
+    it("is silent for the kinds that have no sound", () => {
+        for (const kind of ["info", "success", "warning"] as const) {
+            notify({ kind, title: kind });
+        }
+        expect(audio.oscillators).toBe(0);
+    });
+
+    it("sounds once for a new notification, not again when the same one is replaced", () => {
+        notify({ id: "n1", kind: "error", title: "Failed" });
+        notify({ id: "n1", kind: "error", title: "Failed again" });
+        expect(audio.oscillators).toBe(2);
     });
 });

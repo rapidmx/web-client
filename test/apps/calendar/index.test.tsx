@@ -830,3 +830,60 @@ describe("CalendarPage floating New event button", () => {
         expect(screen.queryByRole("button", { name: "New event" })).not.toBeInTheDocument();
     });
 });
+
+describe("CalendarPage opening an event from the address (a calendar alarm's View button)", () => {
+    const offsite = calendarEvent({ uid: "e9", title: "Offsite", startDate: "2026-07-20T10:00:00.000Z", endDate: "2026-07-20T11:00:00.000Z" });
+
+    function serve(event: unknown = offsite, status = 200) {
+        return mockShellAndEvents([], (url) =>
+            url.startsWith("/api/mail/calendar-events/e9") ? (status === 200 ? jsonResponse(200, event) : jsonResponse(status, { message: "gone" })) : undefined,
+        );
+    }
+
+    it("opens the event's card and shows the month it is in, then takes ?event= off the address", async () => {
+        window.history.pushState(null, "", "/calendar?event=e9&start=2026-07-20T10%3A00%3A00.000Z");
+        serve();
+        render(<CalendarPage userUid="u1" />);
+
+        expect(await screen.findByRole("dialog", { name: "Event details" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "July 2026" })).toBeInTheDocument();
+        expect(window.location.search).not.toContain("event=");
+    });
+
+    it("opens the occurrence a recurring event's alarm named", async () => {
+        window.history.pushState(null, "", "/calendar?event=e9&start=2026-07-27T10%3A00%3A00.000Z");
+        serve(calendarEvent({ ...offsite, recurrenceRule: { freq: "weekly", interval: 1, byDay: ["MO"], exceptions: [] } }));
+        render(<CalendarPage userUid="u1" />);
+
+        const dialog = await screen.findByRole("dialog", { name: "Event details" });
+        expect(dialog).toHaveTextContent(/Offsite/);
+        expect(dialog).toHaveTextContent(/July 27/);
+    });
+
+    it("falls back to the event's own start when the address names no valid start", async () => {
+        window.history.pushState(null, "", "/calendar?event=e9");
+        serve();
+        render(<CalendarPage userUid="u1" />);
+
+        expect(await screen.findByRole("dialog", { name: "Event details" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "July 2026" })).toBeInTheDocument();
+    });
+
+    it("opens nothing when the start named is not an occurrence of the event and the event has none near it", async () => {
+        window.history.pushState(null, "", "/calendar?event=e9&start=2027-01-01T00%3A00%3A00.000Z");
+        serve(calendarEvent({ ...offsite, startDate: "2026-07-20T10:00:00.000Z", endDate: "2026-07-20T11:00:00.000Z" }));
+        render(<CalendarPage userUid="u1" />);
+
+        await screen.findByRole("heading", { name: format(new Date(), "MMMM yyyy") });
+        await waitFor(() => expect(window.location.search).not.toContain("event="));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("says so when the event can't be loaded", async () => {
+        window.history.pushState(null, "", "/calendar?event=e9&start=2026-07-20T10%3A00%3A00.000Z");
+        serve(undefined, 404);
+        render(<CalendarPage userUid="u1" />);
+
+        expect(await screen.findByText("Couldn't open the event")).toBeInTheDocument();
+    });
+});

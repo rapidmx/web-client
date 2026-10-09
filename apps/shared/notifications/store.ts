@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { getNotificationsEnabled } from "./preferences.js";
+import { playNotificationSound } from "./sounds.js";
 
 /**
  * The app's one notification store: every pop-up - new mail, a failed send, an API error, an expired session - goes through
@@ -389,6 +390,14 @@ export function notify(input: NotifyInput): string {
         record(entry);
         emit();
         return id;
+    }
+    // What is shown is heard: a chime for new mail, a bell for a calendar notice, a buzz for an error.
+    if (entry.kind === "mail") {
+        playNotificationSound("mail");
+    } else if (entry.kind === "calendar") {
+        playNotificationSound("calendar");
+    } else if (entry.kind === "error") {
+        playNotificationSound("error");
     }
     const room = visibleCount() < MAX_VISIBLE;
     entries.push(entry);

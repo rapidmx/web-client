@@ -34,3 +34,30 @@ export function setNotificationsEnabled(enabled: boolean): void {
         // Storage blocked or full: the choice lasts until the page is reloaded, no longer.
     }
 }
+
+/**
+ * `localStorage` key of the switch for the sounds that go with notifications (a chime for new mail, a bell for a calendar alarm, a buzz for an
+ * error). Absent means on; `"off"` means the user turned them off. Independent of the pop-ups themselves.
+ */
+export const NOTIFICATION_SOUNDS_KEY = "rapidmx-notification-sounds";
+
+/** Whether notification sounds are on (the default). */
+export function getNotificationSoundsEnabled(): boolean {
+    try {
+        return localStorage.getItem(NOTIFICATION_SOUNDS_KEY) !== "off";
+    } catch {
+        return true;
+    }
+}
+
+export function setNotificationSoundsEnabled(enabled: boolean): void {
+    try {
+        if (enabled) {
+            localStorage.removeItem(NOTIFICATION_SOUNDS_KEY);
+        } else {
+            localStorage.setItem(NOTIFICATION_SOUNDS_KEY, "off");
+        }
+    } catch {
+        // Storage blocked or full: the choice lasts until the page is reloaded, no longer.
+    }
+}

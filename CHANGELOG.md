@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-10-09
+
+### Changed
+- Play a sound with each notification: a chime for new mail, a bell for a calendar alarm and a buzz for an error, made with Web Audio, with a Notification sounds switch in the account menu
+- Raise a calendar alarm as a modal with View, Join or Open, and Snooze actions, the bell sounding again when a snoozed alarm returns after five minutes
+- Open the event named by ?event= and ?start= in the Calendar, which is where the alarm's View button leads
+
+## [0.33.0] - 2026-10-07
+
+### Added
+- Added a copy-to-clipboard button to each value of the mailboxes table and to each name and value of the environment and configuration on the diagnostics page
+- Added a Suggested contacts view to the Contacts app, listing the people the mailbox has corresponded with, with an Add to contacts action
+
+### Changed
+- Publish a prerelease version to npm under the next tag, which npm requires, and a release under latest
+- Start the calendar's Month and Week views, the date picker, the Tasks due this week bucket and the recurrence day buttons on Sunday Add the days of the week as headers above the Month view
+- Close the cards underneath a contact card when its Email button opens a compose window
+- Open a draft from the Drafts folder as the inline editor card of its thread rather than as a message to read
+- Show the video call link of an event next to its Join button, with a copy button
+- Make the contact card's Email button an icon
+- Use the copy icon button for the DNS records of a domain
+- Ask the server to make the suggested contacts whenever the Contacts app opens a mailbox
+- Ask for the suggested contacts of the mailbox the Contacts app is showing without a guard for a missing mailbox, which the shell never renders it without
+
+
 ## [0.32.0] - 2026-10-02
 
 ### Changed
@@ -1337,7 +1362,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/rapidmx/web-client/compare/v0.33.0...v0.34.0
+[0.33.0]: https://github.com/rapidmx/web-client/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/rapidmx/web-client/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/rapidmx/web-client/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/rapidmx/web-client/compare/v0.29.0...v0.30.0

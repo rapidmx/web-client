@@ -10,6 +10,7 @@ import {
     HiOutlineArrowUturnLeft,
     HiOutlineBell,
     HiOutlineBellAlert,
+    HiOutlineSpeakerWave,
     HiOutlineClock,
     HiOutlineCog6Tooth,
     HiOutlineCommandLine,
@@ -34,7 +35,12 @@ import {
     requestDesktopPermission,
     setDesktopOfferDismissed,
 } from "../../mail/newMailNotifications.js";
-import { getNotificationsEnabled, setNotificationsEnabled } from "../../notifications/preferences.js";
+import {
+    getNotificationSoundsEnabled,
+    getNotificationsEnabled,
+    setNotificationSoundsEnabled,
+    setNotificationsEnabled,
+} from "../../notifications/preferences.js";
 import { dismissAll } from "../../notifications/store.js";
 
 export interface UserMenuProps {
@@ -134,6 +140,7 @@ export default function UserMenu({
     const menuRef = useRef<HTMLDivElement>(null);
     const [detectedAdmin, setDetectedAdmin] = useState(false);
     const [popups, setPopups] = useState(true);
+    const [sounds, setSounds] = useState(true);
     const [permission, setPermission] = useState<DesktopPermission>("unsupported");
     const [profile, setProfile] = useState<Profile | undefined>(undefined);
     // Whether the profile lookup has answered, with a profile or without: the fallback names are only worth asking for after that.
@@ -230,9 +237,15 @@ export default function UserMenu({
     useEffect(() => {
         if (open && showNotificationSettings) {
             setPopups(getNotificationsEnabled());
+            setSounds(getNotificationSoundsEnabled());
             setPermission(desktopPermission());
         }
     }, [open, showNotificationSettings]);
+
+    function toggleSounds() {
+        setNotificationSoundsEnabled(!sounds);
+        setSounds(!sounds);
+    }
 
     function togglePopups() {
         setNotificationsEnabled(!popups);
@@ -384,6 +397,21 @@ export default function UserMenu({
                                 Notifications
                             </span>
                             <span className="text-xs font-semibold text-text-muted">{popups ? "On" : "Off"}</span>
+                        </button>
+                    )}
+                    {showNotificationSettings && (
+                        <button
+                            role="menuitemcheckbox"
+                            aria-checked={sounds}
+                            type="button"
+                            onClick={toggleSounds}
+                            className="flex w-full items-center justify-between gap-2 px-3.5 py-2 text-left text-sm text-text hover:bg-surface-alt"
+                        >
+                            <span className="flex items-center gap-2">
+                                <HiOutlineSpeakerWave size={16} aria-hidden="true" className="shrink-0 text-text-muted" />
+                                Notification sounds
+                            </span>
+                            <span className="text-xs font-semibold text-text-muted">{sounds ? "On" : "Off"}</span>
                         </button>
                     )}
                     {showNotificationSettings && permission === "default" && (

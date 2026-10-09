@@ -12,6 +12,7 @@ import { notifyApiError } from "../../notifications/apiErrors.js";
 
 export type ContactsView =
     | { type: "all" }
+    | { type: "everyone" }
     | { type: "favorites" }
     | { type: "suggested" }
     | { type: "list"; uid: string; name: string }
@@ -94,7 +95,7 @@ function NavItem({
 }
 
 /**
- * Contacts' Outlook-style left sidebar: "Your contacts" (all, with count), "Favorites", "Suggested contacts" (the people the mailbox has corresponded with, when there are any), "Your contact
+ * Contacts' Outlook-style left sidebar: "All contacts" (the mailbox's own and its suggested ones together, when there are suggested ones), "Your contacts" (the mailbox's own, with count), "Favorites", "Suggested contacts" (the people the mailbox has corresponded with, when there are any), "Your contact
  * lists" (real `ContactList` records, fetched here), "Deleted", and "Categories" (derived from the
  * distinct `categories` values across the loaded contacts — no separate category registry exists
  * server-side). Owns its own contact-list data-fetching, per this app's convention of keeping
@@ -166,6 +167,9 @@ export default function ContactsSidebar({ mailboxUid, contacts, active, onSelect
     const navContent = (idPrefix: string) => (
         <>
             <div className="flex flex-col gap-0.5">
+                {suggestedCount !== undefined && (
+                    <NavItem label="All contacts" count={contacts.length + suggestedCount} active={active.type === "everyone"} onClick={() => handleSelect({ type: "everyone" })} />
+                )}
                 <NavItem label="Your contacts" count={contacts.length} active={active.type === "all"} onClick={() => handleSelect({ type: "all" })} />
                 <NavItem label="Favorites" count={favoriteCount} active={active.type === "favorites"} onClick={() => handleSelect({ type: "favorites" })} />
                 {suggestedCount !== undefined && (
