@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-10-09
+
+### Changed
+- Play a sound with each notification: a chime for new mail, a bell for a calendar alarm and a buzz for an error, made with Web Audio, with a Notification sounds switch in the account menu
+- Raise a calendar alarm as a modal with View, Join or Open, and Snooze actions, the bell sounding again when a snoozed alarm returns after five minutes
+- Open the event named by ?event= and ?start= in the Calendar, which is where the alarm's View button leads
+
 ## [0.33.0] - 2026-10-07
 
 ### Added
@@ -1355,7 +1362,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/rapidmx/web-client/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/rapidmx/web-client/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/rapidmx/web-client/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/rapidmx/web-client/compare/v0.30.0...v0.31.0
