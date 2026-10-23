@@ -18,6 +18,7 @@ import { ROW_EXIT_MS } from "../../apps/shared/mail/rowExit.js";
 const InboxPage = withTestRouter(InboxPageBase);
 
 vi.mock("../../lib/crypto/keySession.js", () => ({
+    personallyUnlockedKeys: () => [],
     getUnlockedKeys: vi.fn().mockReturnValue(undefined),
     unlockWithPassword: vi.fn(),
     subscribeKeySession: vi.fn(() => () => undefined),

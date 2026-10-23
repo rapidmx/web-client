@@ -30,7 +30,7 @@ import { exportPrivateKeyPkcs8, generateKeyPairWithCsr, importPrivateKeyPkcs8 } 
 import {
     getUnlockedKeys,
     installSharedSession,
-    personallyUnlockedKeys,
+    personalSessions,
     type RetainedEncryptionKey,
     sharedUnlockGeneration,
     type UnlockedKeys,
@@ -65,19 +65,23 @@ async function sessionSecret(pkcs8: Uint8Array): Promise<Uint8Array> {
     }
 }
 
+/** One of the user's own zero-access keys, with the mailbox it belongs to. */
+type OwnKey = RetainedEncryptionKey & { mailboxUid: string };
+
 /** The zero-access keys of the mailboxes this user has unlocked themselves - what their member wraps are addressed to. */
-function ownZeroAccessKeys(): RetainedEncryptionKey[] {
-    return personallyUnlockedKeys().flatMap((unlocked) => unlocked.zeroAccessKeys ?? []);
+function ownZeroAccessKeys(): OwnKey[] {
+    return personalSessions().flatMap(({ mailboxUid, unlocked }) => (unlocked.zeroAccessKeys ?? []).map((key) => ({ ...key, mailboxUid })));
 }
 
-/** Opens `wrap` with the user's own keys: the wrapped PKCS#8, or `undefined` when no own key opens it. The caller zeroes it. */
-async function openWrap(wrap: MemberKeyWrap, own: RetainedEncryptionKey[]): Promise<Uint8Array | undefined> {
+/** Opens `wrap` with the user's own keys: the wrapped PKCS#8 (the caller zeroes it) and the own mailbox whose key opened it, or `undefined`
+ * when no own key opens it. */
+async function openWrap(wrap: MemberKeyWrap, own: OwnKey[]): Promise<{ pkcs8: Uint8Array; openedWith: string } | undefined> {
     const recipient = own.find((key) => key.fingerprint === wrap.recipientFingerprint);
     if (!recipient) {
         return undefined;
     }
     try {
-        return await decryptEnvelopedDataWithKeys(fromBase64(wrap.cms), [recipient]);
+        return { pkcs8: await decryptEnvelopedDataWithKeys(fromBase64(wrap.cms), [recipient]), openedWith: recipient.mailboxUid };
     } catch {
         return undefined;
     }
@@ -121,17 +125,20 @@ export async function unlockSharedMailbox(mailboxUid: string, client?: ApiClient
     const own = ownZeroAccessKeys();
     const rank = keyOrder(status);
     const opened: RetainedEncryptionKey[] = [];
+    const openedWith: Set<string> = new Set();
     let secret: Uint8Array | undefined;
     for (const wrap of [...wraps].sort((a, b) => rank(a.zeroAccessKeyFingerprint) - rank(b.zeroAccessKeyFingerprint))) {
         const certificate: ZeroAccessKey | undefined = status.zeroAccessKeys.find((key) => key.fingerprint === wrap.zeroAccessKeyFingerprint);
-        const pkcs8 = certificate ? await openWrap(wrap, own) : undefined;
-        if (!certificate || !pkcs8) {
+        const unwrapped = certificate ? await openWrap(wrap, own) : undefined;
+        if (!certificate || !unwrapped) {
             continue;
         }
+        const pkcs8 = unwrapped.pkcs8;
         try {
             secret ??= await sessionSecret(pkcs8);
             const privateKey = await importPrivateKeyPkcs8(pkcs8, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
             opened.push({ fingerprint: wrap.zeroAccessKeyFingerprint, certDer: fromBase64(certificate.publicKey), privateKey });
+            openedWith.add(unwrapped.openedWith);
         } catch {
             // A wrap that doesn't hold a usable key is skipped; the others still open the mailbox.
         } finally {
@@ -141,7 +148,7 @@ export async function unlockSharedMailbox(mailboxUid: string, client?: ApiClient
     if (!secret || opened.length === 0) {
         return "own_keys_locked";
     }
-    const unlocked: UnlockedKeys = { masterKey: secret, zeroAccessKeys: opened };
+    const unlocked: UnlockedKeys = { masterKey: secret, zeroAccessKeys: opened, openedWith: [...openedWith] };
     installSharedSession(mailboxUid, unlocked, generation);
     return "unlocked";
 }
@@ -172,9 +179,9 @@ async function openPrivateKeys(
     }
     const own = ownZeroAccessKeys();
     for (const wrap of await getMyMemberKeyWraps(mailboxUid, client)) {
-        const pkcs8 = await openWrap(wrap, own);
-        if (pkcs8) {
-            keys.set(wrap.zeroAccessKeyFingerprint, pkcs8);
+        const unwrapped = await openWrap(wrap, own);
+        if (unwrapped) {
+            keys.set(wrap.zeroAccessKeyFingerprint, unwrapped.pkcs8);
         }
     }
     return keys;

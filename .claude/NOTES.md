@@ -3865,4 +3865,5 @@ Not committed. Every new `client` is an optional trailing parameter; without one
 - **Known gaps:**
   - tauri-client needs no change for this; it uses web-client's TS.
   - There is no escrow wrap for an ownerless mailbox's zero-access key.
-  - A personal-mailbox lock doesn't lock the shared sessions opened through it (the idle and logout lock-all does).
+  - (Fixed 2026-10-23) Locking a personal mailbox now also locks the shared sessions opened through it: `UnlockedKeys.openedWith` names the own mailboxes whose keys opened a shared session's wraps, and `destroyUnlockedKeys(uid)` destroys every shared session listing `uid`. `personalSessions()` returns `{ mailboxUid, unlocked }` for the non-shared sessions.
+  - Every test that mocks `keySession.js` under `MailShell` must export `personallyUnlockedKeys` (`SharedMailboxKeyManager` calls it); its absence showed only as unhandled errors, which fail the run.

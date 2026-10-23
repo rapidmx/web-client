@@ -23,6 +23,7 @@ vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({
     findActivePublicKey: vi.fn().mockReturnValue(undefined),
 }));
 vi.mock("../../../lib/crypto/keySession.js", () => ({
+    personallyUnlockedKeys: () => [],
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     getUnlockedKeys: vi.fn().mockReturnValue({ masterKey: new Uint8Array(32) }),

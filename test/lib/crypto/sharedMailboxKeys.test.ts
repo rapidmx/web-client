@@ -24,7 +24,7 @@ const api = vi.hoisted(() => ({
     getKeyVault: vi.fn(),
 }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
-const session = vi.hoisted(() => ({ getUnlockedKeys: vi.fn(), installSharedSession: vi.fn(), personallyUnlockedKeys: vi.fn(), sharedUnlockGeneration: vi.fn() }));
+const session = vi.hoisted(() => ({ getUnlockedKeys: vi.fn(), installSharedSession: vi.fn(), personalSessions: vi.fn(), sharedUnlockGeneration: vi.fn() }));
 vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({ ...(await importOriginal<object>()), ...session }));
 const { provisionZeroAccessKey } = vi.hoisted(() => ({ provisionZeroAccessKey: vi.fn() }));
 vi.mock("../../../lib/crypto/zeroAccessKey.js", () => ({ provisionZeroAccessKey }));
@@ -84,7 +84,7 @@ beforeEach(async () => {
     older ??= await identity("fp-older", 1);
     session.getUnlockedKeys.mockReturnValue(undefined);
     session.sharedUnlockGeneration.mockReturnValue("g1");
-    session.personallyUnlockedKeys.mockReturnValue([{ masterKey: new Uint8Array(32), zeroAccessKeys: [me] }]);
+    session.personalSessions.mockReturnValue([{ mailboxUid: "own", unlocked: { masterKey: new Uint8Array(32), zeroAccessKeys: [me] } }]);
     api.putMemberKeyWraps.mockImplementation(async () => status());
     api.removeMemberKeyWraps.mockImplementation(async () => status());
 });
@@ -104,6 +104,7 @@ describe("unlockSharedMailbox", () => {
         const [uid, unlocked, generation] = session.installSharedSession.mock.calls[0];
         expect([uid, generation]).toEqual(["shared", "g1"]);
         expect(unlocked.zeroAccessKeys.map((k: any) => k.fingerprint)).toEqual(["fp-active", "fp-older", "fp-oldest"]);
+        expect(unlocked.openedWith).toEqual(["own"]);
         expect(unlocked.masterKey).toHaveLength(32);
         // The opened key really opens what is sealed to the shared mailbox's key.
         const sealed = await encryptForRecipients(new TextEncoder().encode("hello"), [active.certDer]);
@@ -129,7 +130,7 @@ describe("unlockSharedMailbox", () => {
         api.getMyMemberKeyWraps.mockResolvedValueOnce([]);
         expect(await unlockSharedMailbox("shared")).toBe("pending");
 
-        session.personallyUnlockedKeys.mockReturnValueOnce([{ masterKey: new Uint8Array(32) }]);
+        session.personalSessions.mockReturnValueOnce([{ mailboxUid: "own", unlocked: { masterKey: new Uint8Array(32) } }]);
         api.getMyMemberKeyWraps.mockResolvedValueOnce([await wrap("u", me, active)]);
         expect(await unlockSharedMailbox("shared")).toBe("own_keys_locked");
 
@@ -170,7 +171,7 @@ describe("maintainSharedMailbox", () => {
         api.getEncryptionPolicy.mockResolvedValueOnce({ allowZeroAccess: false });
         expect((await maintainSharedMailbox("support", "support@example.com")).provisioned).toBe(false);
 
-        session.personallyUnlockedKeys.mockReturnValueOnce([{ masterKey: new Uint8Array(32) }]);
+        session.personalSessions.mockReturnValueOnce([{ mailboxUid: "own", unlocked: { masterKey: new Uint8Array(32) } }]);
         api.getEncryptionPolicy.mockRejectedValueOnce(new Error("offline"));
         expect((await maintainSharedMailbox("support", "support@example.com")).provisioned).toBe(false);
 

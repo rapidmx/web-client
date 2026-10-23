@@ -19,6 +19,7 @@ import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.
 const InboxPage = withTestRouter(InboxPageBase);
 
 vi.mock("../../lib/crypto/keySession.js", () => ({
+    personallyUnlockedKeys: () => [],
     getUnlockedKeys: vi.fn().mockReturnValue(undefined),
     unlockWithPassword: vi.fn(),
     subscribeKeySession: vi.fn(() => () => undefined),

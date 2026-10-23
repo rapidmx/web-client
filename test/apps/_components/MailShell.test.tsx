@@ -47,6 +47,7 @@ vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({
 // so these tests never hit its "Unlock your mailbox" password prompt - that flow is this component's own
 // concern, covered by KeyEnrollmentGate.test.tsx.
 vi.mock("../../../lib/crypto/keySession.js", () => ({
+    personallyUnlockedKeys: () => [],
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     getUnlockedKeys: vi.fn().mockReturnValue({ masterKey: new Uint8Array(32) }),

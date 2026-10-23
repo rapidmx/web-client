@@ -57,7 +57,7 @@ vi.mock("../../apps/shared/search/searchTier2.js", () => ({ searchLocalIndex }))
 // unlockWithPassword is real UnlockPromptProvider's own dependency (mounted for real by the real
 // AppShell this file renders through, via MailShell/KeyEnrollmentGate) - needed so the "unlock" tests
 // below (list/search banners) can actually complete a real unlock, not just getUnlockedKeys' read side.
-vi.mock("../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
+vi.mock("../../lib/crypto/keySession.js", () => ({ personallyUnlockedKeys: () => [], getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
 
 // evaluateMessageSecurity() does real WebCrypto decryption against real unlocked keys - already
 // exercised end to end in react-shared's own test suite (see the Tier 3 comment above for the identical

@@ -37,7 +37,7 @@ const { searchEncryptedCandidates, getUnlockedKeys, unlockWithPassword, subscrib
     });
 vi.mock("../../lib/search/searchTier3.js", () => ({ searchEncryptedCandidates }));
 vi.mock("../../apps/shared/search/searchTier2.js", () => ({ searchLocalIndex }));
-vi.mock("../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
+vi.mock("../../lib/crypto/keySession.js", () => ({ personallyUnlockedKeys: () => [], getUnlockedKeys, unlockWithPassword, subscribeKeySession }));
 vi.mock("../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
 
 // The reading panes are stand-ins that say what the page handed them: which message or thread, whose mailbox, whose folders.

@@ -960,6 +960,19 @@ describe("shared sessions (member key wraps)", () => {
         unsubscribe();
     });
 
+    it("locks the shared mailboxes opened with an own mailbox's keys when that mailbox locks, and only those", () => {
+        const opened = { masterKey: new Uint8Array(32).fill(1), openedWith: ["own-a"] };
+        const other = { masterKey: new Uint8Array(32).fill(2), openedWith: ["own-b"] };
+        installSharedSession("shared-1", opened, sharedUnlockGeneration("shared-1"));
+        installSharedSession("shared-2", other, sharedUnlockGeneration("shared-2"));
+
+        destroyUnlockedKeys("own-a");
+
+        expect(getUnlockedKeys("shared-1")).toBeUndefined();
+        expect(getUnlockedKeys("shared-2")).toBe(other);
+        destroyUnlockedKeys("shared-2");
+    });
+
     it("discards a shared unlock that a lock overtook", () => {
         const generation = sharedUnlockGeneration("shared-mb");
         destroyUnlockedKeys("shared-mb");

@@ -83,6 +83,9 @@ export interface UnlockedKeys {
      * only `zeroAccessKeys`, and `masterKey` is a per-key secret derived from its zero-access private key (what the local search
      * index's key is derived from), never a key that opens the mailbox's vault. */
     shared?: boolean;
+    /** A shared session only: the user's own mailboxes whose zero-access keys opened its member key wraps. Locking any of them locks it too -
+     * it was opened with their keys, so it doesn't outlive them. */
+    openedWith?: string[];
 }
 
 const sessions = new Map<string, UnlockedKeys>();
@@ -194,7 +197,12 @@ export function sharedUnlockGeneration(mailboxUid: string): string {
 
 /** Every mailbox unlocked this session with its own keys (not a shared one opened through member key wraps). */
 export function personallyUnlockedKeys(): UnlockedKeys[] {
-    return [...sessions.values()].filter((unlocked) => !unlocked.shared);
+    return personalSessions().map((session) => session.unlocked);
+}
+
+/** `personallyUnlockedKeys()` with each mailbox's uid. */
+export function personalSessions(): { mailboxUid: string; unlocked: UnlockedKeys }[] {
+    return [...sessions].filter(([, unlocked]) => !unlocked.shared).map(([mailboxUid, unlocked]) => ({ mailboxUid, unlocked }));
 }
 
 /** Reads back a mailbox's already-unlocked keys this session, or `undefined` if it hasn't been
@@ -239,6 +247,14 @@ export function destroyUnlockedKeys(mailboxUid?: string): void {
         issued.delete(uid);
         sessions.delete(uid);
         notify({ mailboxUid: uid, state: "locked" });
+    }
+    // The shared mailboxes opened with this mailbox's keys go with it.
+    if (mailboxUid) {
+        for (const [uid, unlocked] of [...sessions]) {
+            if (unlocked.shared && unlocked.openedWith?.includes(mailboxUid)) {
+                destroyUnlockedKeys(uid);
+            }
+        }
     }
 }
 
