@@ -929,7 +929,7 @@ __metadata:
     "@emoji-mart/data": "npm:^1.2.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidrest/react": "npm:^2.1.0"
+    "@rapidrest/react": "npm:^2.2.0"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"
     "@testing-library/jest-dom": "npm:^7.0.1"
@@ -982,9 +982,9 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@rapidrest/react@npm:^2.1.0":
-  version: 2.1.0
-  resolution: "@rapidrest/react@npm:2.1.0"
+"@rapidrest/react@npm:^2.2.0":
+  version: 2.2.0
+  resolution: "@rapidrest/react@npm:2.2.0"
   dependencies:
     cross-spawn: "npm:^7.0.6"
   peerDependencies:
@@ -1007,7 +1007,7 @@ __metadata:
       optional: true
   bin:
     rapidreact: dist/cli/cli.js
-  checksum: 10c0/f23d52c30dbcf5922760b142c2e5eefbf95cb65ee3a6d735406adf8ca827f77ab1f40ff0812bd9680a8667ad1296b04f5095abb952693399808ad9eadb63e6ef
+  checksum: 10c0/961784c0ff84513ed64a33089794cd53d6c60b855c128c0ecf0f04cf019dff9db02ccf50fcb99d77e15d61d35ff4035ccf2e28a59b5974efed3ff6808f306376
   languageName: node
   linkType: hard
 
