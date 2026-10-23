@@ -37,7 +37,7 @@
     "trailingComma": "es5"
   },
   "peerDependencies": {
-    "@rapidrest/react": ">=2.1.0 <3",
+    "@rapidrest/react": "2.x",
     "react": "19.x",
     "react-dom": "19.x"
   },

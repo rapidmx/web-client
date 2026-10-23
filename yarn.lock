@@ -976,7 +976,7 @@ __metadata:
     vite: "npm:^8.2.2"
     vitest: "npm:^5.0.0"
   peerDependencies:
-    "@rapidrest/react": ">=2.1.0 <3"
+    "@rapidrest/react": 2.x
     react: 19.x
     react-dom: 19.x
   languageName: unknown
