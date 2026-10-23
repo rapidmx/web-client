@@ -22,6 +22,8 @@ const api = vi.hoisted(() => ({
     enrollSharedZeroAccessKey: vi.fn(),
     getEncryptionPolicy: vi.fn(),
     getKeyVault: vi.fn(),
+    getEscrowInfo: vi.fn(),
+    putZeroAccessEscrowWraps: vi.fn(),
 }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
 const session = vi.hoisted(() => ({ getUnlockedKeys: vi.fn(), installSharedSession: vi.fn(), personalSessions: vi.fn(), sharedUnlockGeneration: vi.fn() }));
@@ -270,6 +272,60 @@ describe("maintainSharedMailbox", () => {
         api.enrollSharedZeroAccessKey.mockResolvedValue(status({ ownerless: true, manager: true, zeroAccessKeys: [], departed: ["gone"], rotationPending: true, members: [] }));
         expect((await maintainSharedMailbox("support", "support@example.com")).removed).toBe(0);
         expect(api.removeMemberKeyWraps).not.toHaveBeenCalled();
+    });
+
+    it("escrows a new key of a mailbox without an owner to its escrow scope in the same write", async () => {
+        const scope = await identity("fp-scope");
+        api.getSharedKeyStatus.mockResolvedValue(status({ ownerless: true, manager: true, escrowScopeId: "scope", members: [member("me", me, [], true)] }));
+        api.getEncryptionPolicy.mockResolvedValue({ allowZeroAccess: true });
+        api.getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope", publicKey: { publicKey: toBase64(scope.certDer) } });
+        api.enrollSharedZeroAccessKey.mockResolvedValue(status({ ownerless: true, manager: true, escrowScopeId: "scope", escrowPending: [] }));
+
+        expect((await maintainSharedMailbox("support", "support@example.com")).provisioned).toBe(true);
+
+        const [, input] = api.enrollSharedZeroAccessKey.mock.calls[0];
+        expect(input.escrowWrap.escrowScopeId).toBe("scope");
+        expect(await decryptEnvelopedDataWithKeys(fromBase64(input.escrowWrap.cms), [scope])).toEqual(
+            await decryptEnvelopedDataWithKeys(fromBase64(input.wraps[0].cms), [me]),
+        );
+        expect(api.putZeroAccessEscrowWraps).not.toHaveBeenCalled();
+    });
+
+    it("wraps the keys its escrow scope is missing, only those it holds, and none after the mailbox moved to another scope", async () => {
+        const scope = await identity("fp-scope");
+        const pendingStatus = status({
+            ownerless: true,
+            manager: true,
+            activeKeyFingerprint: "fp-active",
+            zeroAccessKeys: [active.key, older.key],
+            members: [member("me", me, ["fp-active", "fp-older"], true)],
+            escrowScopeId: "scope",
+            escrowPending: ["fp-active", "fp-older", "fp-gone"],
+        });
+        api.getSharedKeyStatus.mockResolvedValue(pendingStatus);
+        api.getMyMemberKeyWraps.mockResolvedValue([await wrap("me", me, active), await wrap("me", me, older)]);
+        api.getEscrowInfo.mockResolvedValue({ escrowScopeId: "scope", publicKey: { publicKey: toBase64(scope.certDer) } });
+
+        const result = await maintainSharedMailbox("support", "support@example.com");
+
+        expect(result).toMatchObject({ escrowed: 2, wrapped: 0 });
+        const [uid, wraps] = api.putZeroAccessEscrowWraps.mock.calls[0];
+        expect(uid).toBe("support");
+        expect(wraps.map((w: any) => [w.escrowScopeId, w.zeroAccessKeyFingerprint])).toEqual([
+            ["scope", "fp-active"],
+            ["scope", "fp-older"],
+        ]);
+        expect(await decryptEnvelopedDataWithKeys(fromBase64(wraps[0].cms), [scope])).toEqual(active.pkcs8);
+
+        api.putZeroAccessEscrowWraps.mockClear();
+        api.getEscrowInfo.mockResolvedValue({ escrowScopeId: "elsewhere", publicKey: { publicKey: toBase64(scope.certDer) } });
+        expect((await maintainSharedMailbox("support", "support@example.com")).escrowed).toBe(0);
+        // An owned mailbox is escrowed through its master key; an older server reports nothing.
+        api.getSharedKeyStatus.mockResolvedValue({ ...pendingStatus, ownerless: false });
+        expect((await maintainSharedMailbox("support", "support@example.com")).escrowed).toBe(0);
+        api.getSharedKeyStatus.mockResolvedValue({ ...pendingStatus, escrowPending: undefined });
+        expect((await maintainSharedMailbox("support", "support@example.com")).escrowed).toBe(0);
+        expect(api.putZeroAccessEscrowWraps).not.toHaveBeenCalled();
     });
 
     it("rotates an owned mailbox with the owner's master key, then wraps the new key for the members", async () => {

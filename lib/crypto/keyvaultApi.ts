@@ -557,6 +557,19 @@ export interface SharedKeyStatus {
     rotationPending: boolean;
     /** The caller may change the wraps. */
     manager: boolean;
+    /** A mailbox without an owner assigned to an escrow scope: that scope. */
+    escrowScopeId?: string;
+    /** Its zero-access keys (fingerprints) with no escrow copy for `escrowScopeId` yet. Absent from servers that predate it. */
+    escrowPending?: string[];
+}
+
+/** An escrow copy of a mailbox-without-an-owner's zero-access private key, as `putZeroAccessEscrowWraps()` sends it: CMS of its PKCS#8 to
+ * the escrow scope's certificate (`getEscrowInfo()`). */
+export interface ZeroAccessEscrowWrapInput {
+    escrowScopeId: string;
+    zeroAccessKeyFingerprint: string;
+    /** Base64 DER CMS `EnvelopedData`. */
+    cms: string;
 }
 
 const vaultPath = (mailboxUid: string): string => `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`;
@@ -579,13 +592,23 @@ export function removeMemberKeyWraps(mailboxUid: string, memberUserUid: string, 
     return withClient(client, `${vaultPath(mailboxUid)}/member-wraps/${encodeURIComponent(memberUserUid)}`, { method: "DELETE" });
 }
 
-/** Provisions (or rotates) a mailbox-without-an-owner's zero-access key with its member wraps, in one write. */
+/** Provisions (or rotates) a mailbox-without-an-owner's zero-access key with its member wraps, in one write - and, for a mailbox assigned to
+ * an escrow scope, its escrow copy (required then). */
 export function enrollSharedZeroAccessKey(
     mailboxUid: string,
-    input: { csr: string; wraps: Omit<MemberKeyWrap, "zeroAccessKeyFingerprint">[] },
+    input: {
+        csr: string;
+        wraps: Omit<MemberKeyWrap, "zeroAccessKeyFingerprint">[];
+        escrowWrap?: Omit<ZeroAccessEscrowWrapInput, "zeroAccessKeyFingerprint">;
+    },
     client?: ApiClient,
 ): Promise<SharedKeyStatus> {
     return withClient(client, `${vaultPath(mailboxUid)}/shared-zero-access-key`, { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Adds the escrow copies of a mailbox-without-an-owner's zero-access keys its escrow scope is missing (`SharedKeyStatus.escrowPending`). */
+export function putZeroAccessEscrowWraps(mailboxUid: string, wraps: ZeroAccessEscrowWrapInput[], client?: ApiClient): Promise<SharedKeyStatus> {
+    return withClient(client, `${vaultPath(mailboxUid)}/escrow-wraps`, { method: "PUT", body: JSON.stringify({ wraps }) });
 }
 
 /** One key a "Export keys for Outlook/phone" file held, as `recordKeyExport()` reports it. */

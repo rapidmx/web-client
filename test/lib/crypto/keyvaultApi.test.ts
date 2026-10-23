@@ -24,6 +24,7 @@ import {
     getMyMemberKeyWraps,
     getSharedKeyStatus,
     putMemberKeyWraps,
+    putZeroAccessEscrowWraps,
     removeMemberKeyWraps,
     removeMasterKeyWrap,
     resolveKeyConflict,
@@ -524,6 +525,7 @@ describe("shared mailbox key wraps", () => {
         await putMemberKeyWraps("m/1", [wrap]);
         await removeMemberKeyWraps("m/1", "u/2");
         await enrollSharedZeroAccessKey("m/1", { csr: "CSR", wraps: [{ memberUserUid: "u", recipientFingerprint: "r", cms: "c" }] });
+        await putZeroAccessEscrowWraps("m/1", [{ escrowScopeId: "s", zeroAccessKeyFingerprint: "z", cms: "c" }]);
 
         expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method ?? "GET"])).toEqual([
             ["/api/mail/mailboxes/m%2F1/keyvault/members", "GET"],
@@ -531,7 +533,9 @@ describe("shared mailbox key wraps", () => {
             ["/api/mail/mailboxes/m%2F1/keyvault/member-wraps", "PUT"],
             ["/api/mail/mailboxes/m%2F1/keyvault/member-wraps/u%2F2", "DELETE"],
             ["/api/mail/mailboxes/m%2F1/keyvault/shared-zero-access-key", "POST"],
+            ["/api/mail/mailboxes/m%2F1/keyvault/escrow-wraps", "PUT"],
         ]);
+        expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({ wraps: [{ escrowScopeId: "s", zeroAccessKeyFingerprint: "z", cms: "c" }] });
         expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ wraps: [wrap] });
     });
 });

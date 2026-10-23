@@ -10,20 +10,26 @@
  *
  * `unlockSharedMailbox()` opens a shared mailbox for its member. `maintainSharedMailbox()` is what the client of the owner, or of a member
  * with full access, does in the background: provisions a key for a mailbox without an owner, wraps the keys for members still waiting,
- * and - once someone who held the key has left - rotates it, so new mail is encrypted to a key they never had.
+ * and - once someone who held the key has left - rotates it, so new mail is encrypted to a key they never had. A mailbox without an owner
+ * has no master key for escrow to open, so when it is assigned to an escrow scope each of its keys is also wrapped to the scope's
+ * certificate: with a new key in the same write, and for keys the scope is still missing (`escrowPending`) in the background.
  */
 import { type ApiClient, ApiRequestError } from "../util/api.js";
 import { fromBase64, toBase64 } from "./encoding.js";
 import {
     enrollSharedZeroAccessKey,
+    type EscrowInfo,
     getEncryptionPolicy,
+    getEscrowInfo,
     getKeyVault,
     getMyMemberKeyWraps,
     getSharedKeyStatus,
     type MemberKeyWrap,
     putMemberKeyWraps,
+    putZeroAccessEscrowWraps,
     removeMemberKeyWraps,
     type SharedKeyStatus,
+    type ZeroAccessEscrowWrapInput,
     type ZeroAccessKey,
 } from "./keyvaultApi.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr, importPrivateKeyPkcs8 } from "./keys.js";
@@ -200,13 +206,21 @@ function wrappable(status: SharedKeyStatus): { userUid: string; certificate: Zer
     return status.members.filter((member): member is typeof member & { certificate: ZeroAccessKey } => !!member.certificate);
 }
 
-/** A new keypair for a mailbox without an owner, enrolled together with a wrap of it for every member who can receive one. */
+/** `pkcs8` wrapped to the certificate of the escrow scope `escrow` describes. */
+async function escrowWrapFor(escrow: EscrowInfo, pkcs8: Uint8Array): Promise<Omit<ZeroAccessEscrowWrapInput, "zeroAccessKeyFingerprint">> {
+    return { escrowScopeId: escrow.escrowScopeId, cms: toBase64(await encryptForRecipients(pkcs8, [fromBase64(escrow.publicKey.publicKey)])) };
+}
+
+/** A new keypair for a mailbox without an owner, enrolled together with a wrap of it for every member who can receive one, and for its
+ * escrow scope when it has one. */
 async function enrollNewSharedKey(mailboxUid: string, mailboxAddress: string, status: SharedKeyStatus, client?: ApiClient): Promise<SharedKeyStatus> {
+    const escrow: EscrowInfo | undefined = status.escrowScopeId ? await getEscrowInfo(mailboxUid, client) : undefined;
     const { keyPair, csrPem } = await generateKeyPairWithCsr(mailboxAddress, "encrypt");
     const pkcs8 = await exportPrivateKeyPkcs8(keyPair.privateKey);
     try {
         const wraps = await Promise.all(wrappable(status).map((member) => wrapFor(member, pkcs8)));
-        return await enrollSharedZeroAccessKey(mailboxUid, { csr: csrPem, wraps }, client);
+        const escrowWrap = escrow ? await escrowWrapFor(escrow, pkcs8) : undefined;
+        return await enrollSharedZeroAccessKey(mailboxUid, { csr: csrPem, wraps, ...(escrowWrap ? { escrowWrap } : {}) }, client);
     } finally {
         pkcs8.fill(0);
     }
@@ -220,6 +234,8 @@ export interface SharedMaintenance {
     wrapped: number;
     /** Departed users whose wraps were removed. */
     removed: number;
+    /** Keys wrapped for the mailbox's escrow scope. */
+    escrowed: number;
 }
 
 /**
@@ -229,10 +245,11 @@ export interface SharedMaintenance {
  * A mailbox without an owner and without a key gets one (unless the administrator disallows zero-access), wrapped for every member who has a
  * certificate. Once a user who held the active key has left (`rotationPending`), a new key replaces it - enrolled by the owner with their
  * master key (`provisionZeroAccessKey()`), or for a mailbox without an owner with the members' wraps - and then the departed users' wraps
- * are removed. Members still waiting (`pending`) get wraps of every key this client can open.
+ * are removed. Members still waiting (`pending`) get wraps of every key this client can open, and the escrow scope of a mailbox without an
+ * owner gets copies of the keys it is missing (`escrowPending`).
  */
 export async function maintainSharedMailbox(mailboxUid: string, mailboxAddress: string, client?: ApiClient): Promise<SharedMaintenance> {
-    const result: SharedMaintenance = { provisioned: false, rotated: false, wrapped: 0, removed: 0 };
+    const result: SharedMaintenance = { provisioned: false, rotated: false, wrapped: 0, removed: 0, escrowed: 0 };
     let status: SharedKeyStatus = await getSharedKeyStatus(mailboxUid, client);
     if (!status.manager || (status.members.length === 0 && status.departed.length === 0)) {
         return result;
@@ -268,7 +285,8 @@ export async function maintainSharedMailbox(mailboxUid: string, mailboxAddress: 
     }
 
     const missing = wrappable(status).filter((member) => status.zeroAccessKeys.some((key) => !member.wrapped.includes(key.fingerprint)));
-    if (missing.length > 0) {
+    const escrowPending: string[] = status.ownerless && status.escrowScopeId ? (status.escrowPending ?? []) : [];
+    if (missing.length > 0 || escrowPending.length > 0) {
         const keys = await openPrivateKeys(mailboxUid, status, ownerUnlocked, client);
         try {
             const wraps: MemberKeyWrap[] = [];
@@ -282,6 +300,19 @@ export async function maintainSharedMailbox(mailboxUid: string, mailboxAddress: 
             if (wraps.length > 0) {
                 await putMemberKeyWraps(mailboxUid, wraps, client);
                 result.wrapped = wraps.length;
+            }
+            const held: string[] = escrowPending.filter((fingerprint) => keys.has(fingerprint));
+            if (held.length > 0) {
+                const escrow: EscrowInfo = await getEscrowInfo(mailboxUid, client);
+                // Assigned to another scope since the status was read: the next pass sees it.
+                if (escrow.escrowScopeId === status.escrowScopeId) {
+                    const escrowWraps: ZeroAccessEscrowWrapInput[] = [];
+                    for (const fingerprint of held) {
+                        escrowWraps.push({ ...(await escrowWrapFor(escrow, keys.get(fingerprint)!)), zeroAccessKeyFingerprint: fingerprint });
+                    }
+                    await putZeroAccessEscrowWraps(mailboxUid, escrowWraps, client);
+                    result.escrowed = escrowWraps.length;
+                }
             }
         } finally {
             for (const pkcs8 of keys.values()) {
