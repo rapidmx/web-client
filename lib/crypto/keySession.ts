@@ -34,6 +34,7 @@ import { RECOVERY_KDF_LABEL, deriveFromRecoveryCode } from "./recoveryCode.js";
 export const MASTER_KEY_AAD_PURPOSE = "master-key";
 export const SIGNING_PRIVATE_KEY_AAD_PURPOSE = "sign-private-key";
 export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
+export const ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE = "zero-access-private-key";
 
 export { KeysLockedError };
 
@@ -73,6 +74,10 @@ export interface UnlockedKeys {
      * that). A compromised key is kept because reading one's own mail encrypted to it is still needed. Absent when there
      * are none. */
     retainedEncryptionKeys?: RetainedEncryptionKey[];
+    /** The mailbox's zero-access private keys (restapi `specs/search.md` §3) - the keys the server encrypts mail at rest,
+     * index entries and sealed summaries to - the active one first, then retained ones newest first, at most
+     * `MAX_RETAINED_ENCRYPTION_KEYS + 1`. Decryption only. Absent when the mailbox has none (or none opened). */
+    zeroAccessKeys?: RetainedEncryptionKey[];
 }
 
 const sessions = new Map<string, UnlockedKeys>();
@@ -146,6 +151,19 @@ export function subscribeKeySession(listener: KeySessionListener): () => void {
     };
 }
 
+/**
+ * Makes a zero-access key this device has just enrolled (`zeroAccessKey.ts`'s `provisionZeroAccessKey()`) the active one
+ * of `unlocked` - the session object the key's private half was sealed under - so zero-access mail encrypted to it reads
+ * without another unlock. Does nothing when `unlocked` is no longer this mailbox's session (it was locked or replaced
+ * meanwhile; the next unlock opens the key from the vault anyway).
+ */
+export function addZeroAccessKey(mailboxUid: string, unlocked: UnlockedKeys, key: RetainedEncryptionKey): void {
+    if (unlocked.destroyed || sessions.get(mailboxUid) !== unlocked) {
+        return;
+    }
+    unlocked.zeroAccessKeys = [key, ...(unlocked.zeroAccessKeys ?? []).filter((k) => k.fingerprint !== key.fingerprint)];
+}
+
 /** Reads back a mailbox's already-unlocked keys this session, or `undefined` if it hasn't been
  * unlocked yet (or was destroyed). Never triggers an unlock itself. */
 export function getUnlockedKeys(mailboxUid: string): UnlockedKeys | undefined {
@@ -200,6 +218,10 @@ function destroyObject(unlocked: UnlockedKeys): void {
         // Emptied in place as well as removed, so a consumer that captured the array itself loses the handles too.
         unlocked.retainedEncryptionKeys.length = 0;
         delete unlocked.retainedEncryptionKeys;
+    }
+    if (unlocked.zeroAccessKeys) {
+        unlocked.zeroAccessKeys.length = 0;
+        delete unlocked.zeroAccessKeys;
     }
 }
 
@@ -293,6 +315,35 @@ async function openRetainedEncryptionKeys(
             (unlocked.retainedEncryptionKeys ??= []).push({ fingerprint: publicKey.fingerprint, certDer, privateKey });
         } catch {
             unopenableKeys.push(publicKey.fingerprint);
+        }
+    }
+}
+
+/**
+ * Opens the mailbox's zero-access private keys into `unlocked.zeroAccessKeys`: the vault's `zeroAccessKeys` that have a
+ * wrapped private key, the unrevoked one with the latest `notBefore` first, then the rest newest first, at most
+ * `MAX_RETAINED_ENCRYPTION_KEYS + 1`. A key that won't open is listed in `unopenableKeys` and skipped - zero-access mail
+ * encrypted to it doesn't decrypt on this device, but nothing else about the unlock depends on it.
+ */
+async function openZeroAccessKeys(mailboxUid: string, vault: KeyVault, unlocked: UnlockedKeys, unopenableKeys: string[]): Promise<void> {
+    const ordered = [...(vault.zeroAccessKeys ?? [])].sort(
+        (a, b) => Number(!!a.revokedAt) - Number(!!b.revokedAt) || b.notBefore - a.notBefore,
+    );
+    const aad = buildAad(mailboxUid, ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE);
+    let opened = 0;
+    for (const publicKey of ordered) {
+        const wrapped = findWrappedPrivateKey(vault, publicKey.fingerprint);
+        if (!wrapped || wrapped.useType !== "zero-access") {
+            continue;
+        }
+        try {
+            const privateKey = await openPrivateKey(unlocked.masterKey, wrapped, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], false);
+            (unlocked.zeroAccessKeys ??= []).push({ fingerprint: publicKey.fingerprint, certDer: fromBase64(publicKey.publicKey), privateKey });
+        } catch {
+            unopenableKeys.push(publicKey.fingerprint);
+        }
+        if (++opened === MAX_RETAINED_ENCRYPTION_KEYS + 1) {
+            break;
         }
     }
 }
@@ -453,6 +504,7 @@ async function openSession(
         }
 
         await openRetainedEncryptionKeys(mailboxUid, mailboxKeys, vault, unlocked, encryptionPublicKey?.fingerprint, unopenableKeys);
+        await openZeroAccessKeys(mailboxUid, vault, unlocked, unopenableKeys);
         if (lockGeneration(mailboxUid) !== generation) {
             // Locked (e.g. logout) while this unlock was awaiting - never restore keys after that.
             throw new KeysLockedError();

@@ -47,7 +47,18 @@ export interface WrappedPrivateKey {
     /** AEAD algorithm identifier (e.g. `AES-256-GCM`). */
     algorithm: string;
     fingerprint: string;
-    useType: "sign" | "encrypt";
+    useType: KeyUseType;
+}
+
+/** What a mailbox's own key is used for. `sign`/`encrypt` keys are published (`Mailbox.keys`); `zero-access` keys never are.
+ * Mirrors `@rapidmx/restapi`'s `KeyUseType`. */
+export type KeyUseType = "sign" | "encrypt" | "zero-access";
+
+/** A mailbox's zero-access key (restapi `specs/search.md` §3): the certificate the server encrypts mail at rest to on
+ * arrival. Same shape as `PublicKey`, but never published - only the vault's reader gets it (`KeyVault.zeroAccessKeys`).
+ * Mirrors `@rapidmx/restapi`'s `ZeroAccessKey`. */
+export interface ZeroAccessKey extends Omit<PublicKey, "useType" | "issuerCertificate"> {
+    useType: "zero-access";
 }
 
 /** One wrapped copy of the mailbox master key (MK), per unlock method. Mirrors `@rapidmx/restapi`'s
@@ -114,6 +125,9 @@ export interface KeyVault {
      * (`enrollKey()`, `startSignEnrollment()`, `addMasterKeyWrap()`, `rekey()`), so restapi refuses it with `409` if
      * another device rotated the master key meanwhile. Absent from servers that don't track it yet. */
     masterKeyGeneration?: number;
+    /** The mailbox's zero-access certificates, newest last - returned with the vault because they are never published and
+     * an unlock needs them to decrypt zero-access mail. Absent from servers without zero-access encryption. */
+    zeroAccessKeys?: ZeroAccessKey[];
 }
 
 /** The optional optimistic check restapi applies to vault writes carrying key material sealed under the master key. */
@@ -179,8 +193,8 @@ export function signingKeyFingerprints(keys: PublicKey[] | undefined, previousKe
 }
 
 export interface EnrollKeyInput extends ExpectedMasterKeyGeneration {
-    useType: "sign" | "encrypt";
-    /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
+    useType: KeyUseType;
+    /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"` and `"zero-access"`; the server
      * calls its own internal CA against this CSR. */
     csr?: string;
     /** An already-issued PEM certificate — required (and only meaningful) for `useType: "sign"`. */
@@ -657,6 +671,10 @@ export interface EncryptionPolicy {
     encryptSameOrg: PolicyState;
     encryptFederated: PolicyState;
     encryptExternal: PolicyState;
+    /** "Allow zero-access encryption": whether mailboxes may store mail encrypted at rest. Always present from a server that
+     * supports zero-access encryption (its stored value or the server default); absent from one that doesn't, which a
+     * caller treats as not allowed. */
+    allowZeroAccess?: boolean;
 }
 
 /** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption

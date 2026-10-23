@@ -5,7 +5,7 @@
 import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError } from "../../../lib/util/api.js";
 import KeyEnrollmentGate from "../../../apps/shared/components/layout/KeyEnrollmentGate.js";
 
@@ -16,13 +16,26 @@ function mockClipboard(writeText: ReturnType<typeof vi.fn>): void {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
 }
 
-const { getKeyVault, enrollKey, getUnlockedKeys, unlockWithPassword, unlockWithRecoveryCode, consumeRecoveryCode } = vi.hoisted(() => ({
+const {
+    getKeyVault,
+    enrollKey,
+    getUnlockedKeys,
+    unlockWithPassword,
+    unlockWithRecoveryCode,
+    consumeRecoveryCode,
+    subscribeKeySession,
+    ensureZeroAccessKey,
+    provisionZeroAccessKey,
+} = vi.hoisted(() => ({
     getKeyVault: vi.fn(),
     enrollKey: vi.fn(),
     getUnlockedKeys: vi.fn(),
     unlockWithPassword: vi.fn(),
     unlockWithRecoveryCode: vi.fn(),
     consumeRecoveryCode: vi.fn(),
+    subscribeKeySession: vi.fn(),
+    ensureZeroAccessKey: vi.fn(),
+    provisionZeroAccessKey: vi.fn(),
 }));
 
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
@@ -36,9 +49,11 @@ vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     UnopenableEncryptionKeyError: (await importOriginal<typeof import("../../../lib/crypto/keySession.js")>()).UnopenableEncryptionKeyError,
     getUnlockedKeys,
+    subscribeKeySession,
     unlockWithPassword,
     unlockWithRecoveryCode,
 }));
+vi.mock("../../../lib/crypto/zeroAccessKey.js", () => ({ ensureZeroAccessKey, provisionZeroAccessKey }));
 
 // The real crypto primitives are exercised end to end by react-shared's own test suite (real WebCrypto/
 // Argon2id) - this component's own tests care about its orchestration/UI logic, not re-proving those
@@ -81,6 +96,12 @@ vi.mock("../../../lib/crypto/keys.js", () => ({
     generateKeyPairWithCsr: async () => ({ keyPair: { privateKey: {}, publicKey: {} }, csrPem: "csr-pem" }),
     exportPrivateKeyPkcs8: async () => new Uint8Array(10),
 }));
+
+beforeEach(() => {
+    subscribeKeySession.mockReturnValue(() => undefined);
+    ensureZeroAccessKey.mockResolvedValue(false);
+    provisionZeroAccessKey.mockResolvedValue(undefined);
+});
 
 afterEach(() => {
     // resetAllMocks (not clearAllMocks) - this file's "already unlocked" test sets a persistent
@@ -637,5 +658,88 @@ describe("KeyEnrollmentGate", () => {
             expect(enrollKey).not.toHaveBeenCalled();
             expect(screen.getByText("Protect your mailbox")).toBeInTheDocument();
         });
+    });
+});
+
+describe("KeyEnrollmentGate - zero-access key", () => {
+    it("provisions the zero-access key under the new master key during first-time setup, after the encryption key", async () => {
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        enrollKey.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [], masterKeyGeneration: 0 });
+        const user = userEvent.setup();
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        await screen.findByText("Protect your mailbox");
+        await user.type(screen.getByLabelText("Encryption password"), "a good password");
+        await user.type(screen.getByLabelText("Confirm password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        await screen.findByText("Save your recovery codes");
+
+        expect(provisionZeroAccessKey).toHaveBeenCalledWith("mb1", "alice@example.com", expect.any(Uint8Array), 0);
+        expect(enrollKey.mock.invocationCallOrder[0]).toBeLessThan(provisionZeroAccessKey.mock.invocationCallOrder[0]);
+    });
+
+    it("finishes first-time setup even when the zero-access key can't be provisioned", async () => {
+        getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [] });
+        enrollKey.mockResolvedValue({ wrappedKeys: [{ fingerprint: "a" }], masterKeyWraps: [] });
+        provisionZeroAccessKey.mockRejectedValue(new Error("offline"));
+        const user = userEvent.setup();
+        render(
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        await screen.findByText("Protect your mailbox");
+        await user.type(screen.getByLabelText("Encryption password"), "a good password");
+        await user.type(screen.getByLabelText("Confirm password"), "a good password");
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+
+        expect(await screen.findByText("Save your recovery codes")).toBeInTheDocument();
+    });
+
+    it("gives an owner's mailbox a zero-access key now and on every later unlock of that mailbox, ignoring other mailboxes and locks", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        let listener: ((event: { mailboxUid: string; state: string }) => void) | undefined;
+        const unsubscribe = vi.fn();
+        subscribeKeySession.mockImplementation((fn) => {
+            listener = fn;
+            return unsubscribe;
+        });
+        ensureZeroAccessKey.mockRejectedValue(new Error("best effort"));
+        const { unmount } = render(
+            <KeyEnrollmentGate mailboxUid="mb1" canProvision mailboxAddress="alice@example.com">
+                <div>Mail content</div>
+            </KeyEnrollmentGate>,
+        );
+        await screen.findByText("Mail content");
+        expect(ensureZeroAccessKey).toHaveBeenCalledTimes(1);
+        expect(ensureZeroAccessKey).toHaveBeenCalledWith("mb1", "alice@example.com");
+
+        act(() => listener!({ mailboxUid: "mb1", state: "unlocked" }));
+        act(() => listener!({ mailboxUid: "mb1", state: "locked" }));
+        act(() => listener!({ mailboxUid: "mb-other", state: "unlocked" }));
+        expect(ensureZeroAccessKey).toHaveBeenCalledTimes(2);
+
+        unmount();
+        expect(unsubscribe).toHaveBeenCalled();
+    });
+
+    it("never provisions a zero-access key for a mailbox the caller can't provision, or without an address", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        render(
+            <>
+                <KeyEnrollmentGate mailboxUid="mb-shared" mailboxAddress="team@example.com">
+                    <div>Shared content</div>
+                </KeyEnrollmentGate>
+                <KeyEnrollmentGate mailboxUid="mb1" canProvision>
+                    <div>Mail content</div>
+                </KeyEnrollmentGate>
+            </>,
+        );
+        await screen.findByText("Shared content");
+        expect(ensureZeroAccessKey).not.toHaveBeenCalled();
+        expect(subscribeKeySession).not.toHaveBeenCalled();
     });
 });

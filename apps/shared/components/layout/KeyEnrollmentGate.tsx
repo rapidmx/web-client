@@ -20,9 +20,11 @@ import {
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
     getUnlockedKeys,
+    subscribeKeySession,
     unlockWithPassword,
     type UnlockResult,
 } from "../../../../lib/crypto/keySession.js";
+import { ensureZeroAccessKey, provisionZeroAccessKey } from "../../../../lib/crypto/zeroAccessKey.js";
 import { buildAad, generateMasterKey, sealWithKey } from "../../../../lib/crypto/masterKey.js";
 import { buildPasswordWrap, buildRecoveryWraps } from "../../../../lib/crypto/masterKeyWraps.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "../../../../lib/crypto/keys.js";
@@ -46,12 +48,16 @@ async function provisionEncryptionKey(
     const privateKeyRaw = await exportPrivateKeyPkcs8(keyPair.privateKey);
     const wrappedKeySealed = await sealWithKey(mk, privateKeyRaw, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
 
-    await enrollKey(mailboxUid, {
+    const vault = await enrollKey(mailboxUid, {
         useType: "encrypt",
         csr: csrPem,
         wrappedKey: { ciphertext: wrappedKeySealed.ciphertext, nonce: wrappedKeySealed.nonce, algorithm: "AES-256-GCM" },
         masterKeyWraps: [passwordWrap, ...recoveryWraps],
     });
+
+    // The zero-access key (restapi specs/search.md §3), under the same master key. Not fatal: setup is done once the
+    // encryption key is in, and a mailbox without a zero-access key gets one on its next unlock (`ensureZeroAccessKey()`).
+    await provisionZeroAccessKey(mailboxUid, mailboxAddress, mk, vault.masterKeyGeneration).catch(() => undefined);
 
     return { recoveryCodes };
 }
@@ -153,6 +159,22 @@ export default function KeyEnrollmentGate({
             cancelled = true;
         };
     }, [mailboxUid, canProvision]);
+
+    // A mailbox set up before zero-access encryption existed has no zero-access key: give it one whenever its owner has
+    // it unlocked - now, or on a later unlock from anywhere (this gate, an unlock prompt, recovery). Best effort: a
+    // failure is retried on the next unlock.
+    useEffect(() => {
+        if (!mailboxUid || !mailboxAddress || !canProvision) {
+            return;
+        }
+        const ensure = () => void ensureZeroAccessKey(mailboxUid, mailboxAddress).catch(() => undefined);
+        ensure();
+        return subscribeKeySession((event) => {
+            if (event.mailboxUid === mailboxUid && event.state === "unlocked") {
+                ensure();
+            }
+        });
+    }, [mailboxUid, mailboxAddress, canProvision]);
 
     async function handleUnlock(e: React.FormEvent) {
         e.preventDefault();

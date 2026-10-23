@@ -146,3 +146,98 @@ describe("EncryptionPolicyPage", () => {
         expect(isEncryptionEnabled({ encryptSameOrg: "prohibited", encryptFederated: "optional", encryptExternal: "prohibited" })).toBe(true);
     });
 });
+
+describe("EncryptionPolicyPage - zero-access encryption", () => {
+    const withZeroAccess = (allowZeroAccess: boolean) => jsonResponse(200, { ...optional, allowZeroAccess });
+
+    it("doesn't offer the setting on a server without zero-access encryption", async () => {
+        mockPolicy(undefined);
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        await screen.findByLabelText("Mail within this server");
+        expect(screen.queryByRole("checkbox", { name: /Allow zero-access encryption/ })).not.toBeInTheDocument();
+    });
+
+    it("asks before turning it off, saves nothing on Cancel, and saves it off once confirmed", async () => {
+        const saved: any[] = [];
+        mockPolicy((body) => {
+            saved.push(body);
+            return jsonResponse(200, body);
+        }, withZeroAccess(true));
+        const user = userEvent.setup();
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        const checkbox = await screen.findByRole("checkbox", { name: /Allow zero-access encryption/ });
+        expect(checkbox).toBeChecked();
+        await user.click(checkbox);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Turn off zero-access encryption?")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+        expect(saved).toEqual([]);
+
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await user.click(await screen.findByRole("button", { name: "Save and turn off zero-access encryption" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(saved).toEqual([{ ...optional, allowZeroAccess: false }]);
+    });
+
+    it("turns it back on without asking", async () => {
+        const saved: any[] = [];
+        mockPolicy((body) => {
+            saved.push(body);
+            return jsonResponse(200, body);
+        }, withZeroAccess(false));
+        const user = userEvent.setup();
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        const checkbox = await screen.findByRole("checkbox", { name: /Allow zero-access encryption/ });
+        expect(checkbox).not.toBeChecked();
+        await user.click(checkbox);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(saved).toEqual([{ ...optional, allowZeroAccess: true }]);
+    });
+
+    it("asks about a newly prohibited tier first, then about zero-access, when one save does both", async () => {
+        const saved: any[] = [];
+        mockPolicy((body) => {
+            saved.push(body);
+            return jsonResponse(200, body);
+        }, withZeroAccess(true));
+        const user = userEvent.setup();
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        await user.selectOptions(await screen.findByLabelText("Mail to everyone else"), "prohibited");
+        await user.click(screen.getByRole("checkbox", { name: /Allow zero-access encryption/ }));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await user.click(await screen.findByRole("button", { name: "Save and turn off encryption" }));
+        await user.click(await screen.findByRole("button", { name: "Save and turn off zero-access encryption" }));
+
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(saved).toEqual([{ ...optional, encryptExternal: "prohibited", allowZeroAccess: false }]);
+    });
+});
+
+describe("EncryptionPolicyPage - zero-access confirmation", () => {
+    it("closes the question about turning zero-access encryption off on Escape and saves nothing", async () => {
+        const saved: any[] = [];
+        mockPolicy(
+            (body) => {
+                saved.push(body);
+                return jsonResponse(200, body);
+            },
+            jsonResponse(200, { ...optional, allowZeroAccess: true }),
+        );
+        const user = userEvent.setup();
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        await user.click(await screen.findByRole("checkbox", { name: /Allow zero-access encryption/ }));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await screen.findByText("Turn off zero-access encryption?");
+        await user.keyboard("{Escape}");
+
+        expect(screen.queryByText("Turn off zero-access encryption?")).not.toBeInTheDocument();
+        expect(saved).toEqual([]);
+    });
+});

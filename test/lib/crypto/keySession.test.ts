@@ -12,6 +12,9 @@ import {
     MASTER_KEY_AAD_PURPOSE,
     SIGNING_PRIVATE_KEY_AAD_PURPOSE,
     UnopenableEncryptionKeyError,
+    ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE,
+    MAX_RETAINED_ENCRYPTION_KEYS,
+    addZeroAccessKey,
     destroyUnlockedKeys,
     getUnlockedKeys,
     subscribeKeySession,
@@ -778,5 +781,156 @@ describe("unlockWithRecoveryCode", () => {
     it("leaves unlockWithPassword working on the same vault", async () => {
         const { mailboxKeys } = await enrollWithRecovery(["encrypt"], 1);
         await expect(unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD)).resolves.toEqual({ unopenableKeys: [] });
+    });
+});
+
+describe("zero-access keys", () => {
+    /** Adds zero-access keys to an enrollment: each entry is `{ fingerprint, notBefore, revokedAt?, wrap? }`, where `wrap` is
+     * `"ok"` (default, sealed under `mk` with the zero-access purpose), `"corrupt"`, `"none"` (no wrapped key) or `"wrong-type"`. */
+    async function addZeroAccessKeys(
+        vault: KeyVault,
+        mk: Uint8Array,
+        entries: { fingerprint: string; notBefore: number; revokedAt?: number; wrap?: "ok" | "corrupt" | "none" | "wrong-type" }[],
+    ): Promise<void> {
+        const { keyPair } = await generateKeyPairWithCsr("alice@example.com", "encrypt");
+        const raw = await exportPrivateKeyPkcs8(keyPair.privateKey);
+        const sealed = await sealWithKey(mk, raw, buildAad(MAILBOX_UID, ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE));
+        vault.zeroAccessKeys = [];
+        for (const entry of entries) {
+            vault.zeroAccessKeys.push({
+                publicKey: toBase64(new Uint8Array([4, 5, 6])),
+                type: "x509",
+                useType: "zero-access",
+                fingerprint: entry.fingerprint,
+                notBefore: entry.notBefore,
+                notAfter: entry.notBefore + 1_000_000,
+                ...(entry.revokedAt !== undefined ? { revokedAt: entry.revokedAt } : {}),
+            });
+            const wrap = entry.wrap ?? "ok";
+            if (wrap !== "none") {
+                vault.wrappedKeys.push({
+                    ciphertext: wrap === "corrupt" ? toBase64(new Uint8Array(48)) : sealed.ciphertext,
+                    nonce: sealed.nonce,
+                    algorithm: "AES-256-GCM",
+                    fingerprint: entry.fingerprint,
+                    useType: wrap === "wrong-type" ? "encrypt" : "zero-access",
+                });
+            }
+        }
+    }
+
+    it("opens the active zero-access key first, then retained ones newest first, skipping unwrapped and mistyped entries", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addZeroAccessKeys(vault, mk, [
+            { fingerprint: "za-old", notBefore: 1, revokedAt: 5 },
+            { fingerprint: "za-newer-retired", notBefore: 3, revokedAt: 6 },
+            { fingerprint: "za-active", notBefore: 2 },
+            { fingerprint: "za-unwrapped", notBefore: 4, wrap: "none" },
+            { fingerprint: "za-mistyped", notBefore: 4, wrap: "wrong-type" },
+        ]);
+        getKeyVault.mockResolvedValue(vault);
+
+        const result = await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(result.unopenableKeys).toEqual([]);
+        expect(getUnlockedKeys(MAILBOX_UID)?.zeroAccessKeys?.map((k) => k.fingerprint)).toEqual(["za-active", "za-newer-retired", "za-old"]);
+        const key = getUnlockedKeys(MAILBOX_UID)!.zeroAccessKeys![0];
+        expect(key.privateKey.extractable).toBe(false);
+        expect(key.privateKey.algorithm.name).toBe("ECDH");
+        expect(Array.from(key.certDer)).toEqual([4, 5, 6]);
+    });
+
+    it("reports a zero-access key that does not open in unopenableKeys and still unlocks", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addZeroAccessKeys(vault, mk, [{ fingerprint: "za-bad", notBefore: 1, wrap: "corrupt" }]);
+        getKeyVault.mockResolvedValue(vault);
+
+        const result = await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(result.unopenableKeys).toEqual(["za-bad"]);
+        expect(getUnlockedKeys(MAILBOX_UID)?.zeroAccessKeys).toBeUndefined();
+    });
+
+    it("opens at most MAX_RETAINED_ENCRYPTION_KEYS + 1 zero-access keys", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addZeroAccessKeys(
+            vault,
+            mk,
+            Array.from({ length: MAX_RETAINED_ENCRYPTION_KEYS + 3 }, (_, i) => ({ fingerprint: `za-${i}`, notBefore: i, revokedAt: 100 + i })),
+        );
+        getKeyVault.mockResolvedValue(vault);
+
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        const opened = getUnlockedKeys(MAILBOX_UID)!.zeroAccessKeys!;
+        expect(opened).toHaveLength(MAX_RETAINED_ENCRYPTION_KEYS + 1);
+        expect(opened[0].fingerprint).toBe(`za-${MAX_RETAINED_ENCRYPTION_KEYS + 2}`);
+    });
+
+    it("leaves zeroAccessKeys unset for a vault from a server without zero-access keys", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(getUnlockedKeys(MAILBOX_UID)?.zeroAccessKeys).toBeUndefined();
+    });
+
+    it("drops the zero-access key handles, in place, when the session is destroyed", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addZeroAccessKeys(vault, mk, [{ fingerprint: "za-active", notBefore: 1 }]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+        const captured = unlocked.zeroAccessKeys!;
+
+        destroyUnlockedKeys(MAILBOX_UID);
+
+        expect(unlocked.zeroAccessKeys).toBeUndefined();
+        expect(captured).toHaveLength(0);
+    });
+
+    describe("addZeroAccessKey", () => {
+        const newKey = (fingerprint: string) => ({ fingerprint, certDer: new Uint8Array([9]), privateKey: {} as CryptoKey });
+
+        it("makes the key the active one of the current session, replacing an entry with the same fingerprint", async () => {
+            const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+            await addZeroAccessKeys(vault, mk, [{ fingerprint: "za-old", notBefore: 1 }]);
+            getKeyVault.mockResolvedValue(vault);
+            await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+            const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+
+            addZeroAccessKey(MAILBOX_UID, unlocked, newKey("za-new"));
+            addZeroAccessKey(MAILBOX_UID, unlocked, newKey("za-new"));
+
+            expect(unlocked.zeroAccessKeys!.map((k) => k.fingerprint)).toEqual(["za-new", "za-old"]);
+        });
+
+        it("starts the list for a session that had none", async () => {
+            const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+            getKeyVault.mockResolvedValue(vault);
+            await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+            const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+
+            addZeroAccessKey(MAILBOX_UID, unlocked, newKey("za-new"));
+
+            expect(unlocked.zeroAccessKeys!.map((k) => k.fingerprint)).toEqual(["za-new"]);
+        });
+
+        it("does nothing to a session that was destroyed or replaced meanwhile", async () => {
+            const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+            getKeyVault.mockResolvedValue(vault);
+            await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+            const first = getUnlockedKeys(MAILBOX_UID)!;
+            await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+            const second = getUnlockedKeys(MAILBOX_UID)!;
+
+            addZeroAccessKey(MAILBOX_UID, first, newKey("za-replaced"));
+            destroyUnlockedKeys(MAILBOX_UID);
+            addZeroAccessKey(MAILBOX_UID, second, newKey("za-destroyed"));
+
+            expect(first.zeroAccessKeys).toBeUndefined();
+            expect(second.zeroAccessKeys).toBeUndefined();
+        });
     });
 });

@@ -26,7 +26,7 @@ import {
 } from "../util/api.js";
 import { ListParams, buildQuery, sortQuery } from "../util/apiQuery.js";
 import { deviceTimeZone } from "../util/timeZone.js";
-import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
+import type { EncryptionPreference, PublicKey, ZeroAccessKey } from "../crypto/keyvaultApi.js";
 import { bytesToBinaryString } from "../crypto/mime.js";
 import { EMBEDDED_IMAGE_TYPES, newContentId, parseDataImage } from "./inlineImages.js";
 import { MAX_QUOTED_IMAGE_BYTES } from "./compose/quotedImages.js";
@@ -129,6 +129,12 @@ export interface Mailbox {
      * per the spec's own `PublicKey` doc comment. Absent/empty means no keys enrolled yet
      * (`KeyEnrollmentGate` handles that state). */
     keys?: PublicKey[];
+    /** The mailbox's zero-access certificates, managed by the server (never written by a client). Read them from
+     * `KeyVault.zeroAccessKeys` to unlock; here only so a settings page can tell whether one is enrolled. */
+    zeroAccessKeys?: ZeroAccessKey[];
+    /** "Enable zero-access encryption": unset means on. Only the mailbox's owner can change it - restapi drops anybody
+     * else's value. Has no effect while the server's `EncryptionPolicy.allowZeroAccess` is off. */
+    zeroAccessEnabled?: boolean;
     /** How the caller reaches this mailbox: `"owner"` (theirs) or `"delegate"` (shared with them). Set by the plain list and read of
      * mailboxes - not in an administration-scope answer - so a client can label the shared ones; see `isSharedWithMe()`. */
     accessRole?: "owner" | "delegate";
@@ -281,6 +287,8 @@ export interface UpdateMailboxInput {
     autoSendReceiptsInternal?: boolean;
     autoSendReceiptsFederated?: boolean;
     autoSendReceiptsExternal?: boolean;
+    /** Owner-only server-side (anybody else's value is dropped) - see `Mailbox.zeroAccessEnabled`. */
+    zeroAccessEnabled?: boolean;
     /** Trusted-caller-only server-side. `null` (or `""`) unassigns the mailbox's escrow scope; the
      * referenced `EscrowScope` must exist otherwise. See `Mailbox.escrowScopeId`. */
     escrowScopeId?: string | null;

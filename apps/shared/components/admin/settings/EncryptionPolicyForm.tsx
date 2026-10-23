@@ -12,7 +12,9 @@ import { actionErrorMessage } from "../elevation.js";
 const SELECT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
-const TIERS: { key: keyof EncryptionPolicy; label: string; help: string }[] = [
+type TierKey = "encryptSameOrg" | "encryptFederated" | "encryptExternal";
+
+const TIERS: { key: TierKey; label: string; help: string }[] = [
     { key: "encryptSameOrg", label: "Mail within this server", help: "Messages between mailboxes hosted on this server." },
     {
         key: "encryptFederated",
@@ -52,11 +54,16 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
 
     // Edits are unsaved until they match what was loaded or last saved.
     const [savedValues, setSavedValues] = useState<EncryptionPolicy>(policy);
-    const dirty: boolean = TIERS.some((tier) => values[tier.key] !== savedValues[tier.key]);
+    // A server without zero-access encryption sends no `allowZeroAccess`; the checkbox is then not shown at all.
+    const zeroAccessSupported: boolean = policy.allowZeroAccess !== undefined;
+    const dirty: boolean =
+        TIERS.some((tier) => values[tier.key] !== savedValues[tier.key]) || (zeroAccessSupported && values.allowZeroAccess !== savedValues.allowZeroAccess);
     useEffect(() => onDirtyChange?.(dirty), [dirty]);
 
     // Tiers this save would newly set to "Never encrypt", which switches encryption off for everyone's mail of that kind: confirmed first.
     const [confirmingProhibit, setConfirmingProhibit] = useState<string[] | null>(null);
+    // Turning zero-access encryption off makes new mail readable by this server again for every mailbox: confirmed first.
+    const [confirmingZeroAccessOff, setConfirmingZeroAccessOff] = useState(false);
 
     function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -65,11 +72,21 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
             setConfirmingProhibit(newlyProhibited.map((tier) => tier.label));
             return;
         }
+        confirmZeroAccessThenSave();
+    }
+
+    function confirmZeroAccessThenSave() {
+        setConfirmingProhibit(null);
+        if (zeroAccessSupported && values.allowZeroAccess === false && savedValues.allowZeroAccess !== false) {
+            setConfirmingZeroAccessOff(true);
+            return;
+        }
         void save();
     }
 
     async function save() {
         setConfirmingProhibit(null);
+        setConfirmingZeroAccessOff(false);
         setError(null);
         setSaved(false);
         setSaving(true);
@@ -122,6 +139,31 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
                         <span className="text-xs text-text-muted">{tier.help}</span>
                     </label>
                 ))}
+                {zeroAccessSupported && (
+                    <div className="mt-2 pt-4 border-t border-border">
+                        <span className="font-semibold text-sm block mb-1">Zero-access encryption</span>
+                        <label className="flex items-start gap-2 text-sm">
+                            <input
+                                type="checkbox"
+                                className="mt-1"
+                                checked={values.allowZeroAccess !== false}
+                                onChange={(e) => {
+                                    setSaved(false);
+                                    setValues({ ...values, allowZeroAccess: e.target.checked });
+                                }}
+                            />
+                            <span>
+                                <span className="font-semibold block">Allow zero-access encryption</span>
+                                <span className="text-xs text-text-muted">
+                                    Mail that arrives unencrypted is encrypted the moment it is received, to a key only the mailbox&rsquo;s
+                                    owner can unlock, and this server keeps no readable copy - administrators can&rsquo;t read it either,
+                                    except through an escrow scope. People can still turn it off for their own mailbox. Search of message
+                                    contents then happens in the app instead of on the server.
+                                </span>
+                            </span>
+                        </label>
+                    </div>
+                )}
                 <div>
                     <Button type="submit" loading={saving} disabled={saving} className="!w-auto">
                         Save
@@ -138,8 +180,24 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
                     <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingProhibit(null)}>
                         Cancel
                     </Button>
-                    <Button type="button" className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger" onClick={() => void save()}>
+                    <Button type="button" className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger" onClick={confirmZeroAccessThenSave}>
                         Save and turn off encryption
+                    </Button>
+                </div>
+            </Modal>
+
+            <Modal open={confirmingZeroAccessOff} onClose={() => setConfirmingZeroAccessOff(false)} title="Turn off zero-access encryption?">
+                <p className="text-sm mb-3">
+                    Mail that arrives from now on will be stored in a form this server can read, for every mailbox. Mail that is already
+                    encrypted stays encrypted - this server can&rsquo;t decrypt it. Everyone sees in their settings that an administrator
+                    turned it off.
+                </p>
+                <div className="flex gap-3 justify-end">
+                    <Button type="button" variant="secondary" className="!w-auto" onClick={() => setConfirmingZeroAccessOff(false)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" className="!w-auto !bg-none !bg-danger !border-danger hover:!bg-danger" onClick={() => void save()}>
+                        Save and turn off zero-access encryption
                     </Button>
                 </div>
             </Modal>

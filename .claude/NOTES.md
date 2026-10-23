@@ -3748,3 +3748,20 @@ Not committed. Every new `client` is an optional trailing parameter; without one
 - **Tests**: appended explicit-client blocks to `_reading/bodyContent.test.ts`, `_components/contactCardData.test.ts`, `_components/quotedBody.test.ts`, `_reading/MessageBody.test.tsx`, `_reading/conversationPrint.test.ts` and `_components/MessageDetailPane.test.tsx` (the attachment download, revocation on unmount included). Each asserts the request goes to the client's `baseUrl` with `Authorization: jwt <token>` and no `credentials: "include"`.
 - Note: `printableOlderMessage` keeps the no-client `fetchBodyContent(uid, version)` call shape so the existing `toHaveBeenCalledWith("m1", 3)` assertion stays valid.
 - **Coverage gap-closing pass** (2026-10-08): `quotedBody.ts` branch (non-HTML blob content-type), `MessageDetailPane.tsx` statements/functions (the download-revocation timer, the download-error catch path) and branch (the "(no subject)" fallback when an older conversation message fails to print), and `conversationPrint.ts` branch (same fallback, for a decrypted older message whose own subject is empty) were all uncovered; added targeted tests for each to restore the 100%/99% `apps/**` gate.
+
+## 2026-10-22 - Zero-access encryption, Phase 1 (keys and settings)
+
+- **Types.** `keyvaultApi.ts` gained `KeyUseType` (adds `"zero-access"`), `ZeroAccessKey`, `KeyVault.zeroAccessKeys` (restapi returns them with the vault, never on discovery) and `EncryptionPolicy.allowZeroAccess`. `Mailbox` and `UpdateMailboxInput` gained `zeroAccessEnabled`.
+- **`lib/crypto/zeroAccessKey.ts`:**
+  - `provisionZeroAccessKey()`: P-256 keypair plus CSR via `generateKeyPairWithCsr(addr, "encrypt")`, PKCS#8 sealed under MK with AAD purpose `"zero-access-private-key"`, then `enrollKey({ useType: "zero-access" })`. It returns the key imported as non-extractable ECDH.
+  - `ensureZeroAccessKey()`: the upgrade path for vaults made before zero-access existed. It does nothing unless the mailbox is unlocked and its vault has keys but no unrevoked zero-access key. Concurrent calls are de-duplicated per mailbox.
+- **`keySession.ts`:**
+  - `UnlockedKeys.zeroAccessKeys` holds the active key first, then retained ones newest first, capped at `MAX_RETAINED_ENCRYPTION_KEYS + 1`. They are opened from `vault.zeroAccessKeys` in `openSession`. One that won't open goes to `unopenableKeys` and is not fatal.
+  - `destroyObject` empties the list in place.
+  - `addZeroAccessKey()` installs a freshly provisioned key into the live session, and only into that exact object.
+- **`KeyEnrollmentGate`.** First-time setup also provisions the zero-access key after the encryption key; a failure there is non-fatal. With `canProvision`, it also calls `ensureZeroAccessKey` on mount and on every `subscribeKeySession` "unlocked" event for its mailbox.
+  - **Test-mock gotcha.** Any test that mocks `keySession.js` wholesale and mounts the gate with `canProvision` must now provide `subscribeKeySession`, or mock `zeroAccessKey.js`.
+- **Admin.** `EncryptionPolicyForm` has an "Allow zero-access encryption" checkbox, shown only when the server returns `allowZeroAccess`. Turning it off asks for confirmation, chained after the existing "Never encrypt" one.
+- **User settings.** `ZeroAccessSetting` sits on the Encryption settings page, using the new reusable `PolicyLockedNotice` for a control a policy disables.
+  - It is disabled and explained for each of: admin off, server unsupported, ownerless mailbox, delegates (from `listMailboxAccess`), and a viewer who isn't the owner.
+  - It retries once on a 409, because provisioning a key bumps the mailbox version that the settings shell's copy carries.

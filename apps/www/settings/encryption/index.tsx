@@ -51,6 +51,7 @@ import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
+import ZeroAccessSetting from "../../../shared/components/settings/ZeroAccessSetting.js";
 import SigningCertificateCard, { SigningCertificateMode } from "../../../shared/components/settings/SigningCertificateCard.js";
 import { readStoredSignEnrollment, storeSignEnrollment } from "../../../shared/signing/enrollmentStorage.js";
 import {
@@ -974,6 +975,8 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                         <p className="text-sm text-text-muted">No keys enrolled yet.</p>
                     )}
                 </div>
+
+                <ZeroAccessSetting mailbox={mailbox} canManage={canManageKeys} />
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">Digital signatures</h2>
