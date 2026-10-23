@@ -213,7 +213,7 @@ function MatterDetailContent({ uid }: { uid: string }) {
         setLoadingMaterial(true);
         try {
             const material = await getAccessRequestMaterial(request.uid);
-            if (seq === materialSeq.current) setMaterialText(JSON.stringify(material.masterKeyWraps, null, 2));
+            if (seq === materialSeq.current) setMaterialText(JSON.stringify(material, null, 2));
         } catch (err) {
             if (seq === materialSeq.current) {
                 setMaterialError(err instanceof ApiRequestError ? err.message : "Could not read this request's material.");
@@ -631,8 +631,9 @@ function MatterDetailContent({ uid }: { uid: string }) {
                 ) : (
                     <>
                         <p className="text-sm text-text-muted mb-3">
-                            Still-encrypted master key wraps for <strong>{materialFor?.mailboxUid}</strong> — this
-                            server cannot decrypt these either. Copy the JSON below into your own offline tooling.
+                            Still-encrypted key material for <strong>{materialFor?.mailboxUid}</strong>: the escrow master key wrap,
+                            and the private keys that read its mail, sealed under that master key. This server cannot decrypt any of it
+                            either. Copy the JSON below into your own offline tooling.
                         </p>
                         <pre className="text-xs font-mono bg-surface-alt border border-border rounded-sm p-3 overflow-x-auto whitespace-pre-wrap break-all">
                             {materialText}

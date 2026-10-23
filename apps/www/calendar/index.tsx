@@ -25,15 +25,26 @@ import { ApiRequestError } from "../../../lib/util/api.js";
 import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import useIsMobile from "../../../lib/util/useIsMobile.js";
 import { CalendarEvent, getCalendarEvent, listCalendarEvents } from "../../../lib/calendar/calendarApi.js";
+import { openSealedEvent, openSealedEvents } from "../../shared/calendar/sealedEvents.js";
 import { useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
 import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calendarMutations.js";
 import { resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
 import { createFolder } from "../../../lib/mail/mailApi.js";
 import { CalendarOccurrence, expandAllOccurrences, expandOccurrences } from "../../../lib/calendar/recurrence.js";
 import { useDayKey } from "../../../lib/calendar/useDayKey.js";
-import { allOccurrences, initialMatchIndex, occurrencesInRange, searchOccurrences, searchTerms, stepSequenceIndex } from "../../../lib/calendar/eventSearch.js";
+import {
+    allOccurrences,
+    initialMatchIndex,
+    occurrencesInRange,
+    searchOccurrences,
+    searchTerms,
+    stepSequenceIndex,
+} from "../../../lib/calendar/eventSearch.js";
 import Drawer from "../../../lib/components/overlays/Drawer.js";
-import CalendarShell, { CalendarShellProps, useCalendarShell } from "../../shared/components/calendar/layout/CalendarShell.js";
+import CalendarShell, {
+    CalendarShellProps,
+    useCalendarShell,
+} from "../../shared/components/calendar/layout/CalendarShell.js";
 import CalendarListSidebar from "../../shared/components/calendar/CalendarListSidebar.js";
 import CalendarSearchBox from "../../shared/components/calendar/CalendarSearchBox.js";
 import { ActiveOccurrenceContext } from "../../shared/components/calendar/activeOccurrence.js";
@@ -49,7 +60,13 @@ import SplitDayView from "../../shared/components/calendar/SplitDayView.js";
 import TimeGridView from "../../shared/components/calendar/TimeGridView.js";
 import Alert from "../../../lib/components/feedback/Alert.js";
 import Button from "../../../lib/components/buttons/Button.js";
-import { CALENDAR_VIEWS, CalendarView, getStoredCalendarView, isCalendarView, storeCalendarView } from "../../shared/components/calendar/calendarView.js";
+import {
+    CALENDAR_VIEWS,
+    CalendarView,
+    getStoredCalendarView,
+    isCalendarView,
+    storeCalendarView,
+} from "../../shared/components/calendar/calendarView.js";
 import { SlideFrom } from "../../shared/components/calendar/SlideIn.js";
 import { SWIPE_PERIOD_SHIFT } from "../../shared/components/calendar/swipeNavigation.js";
 import { nextHalfHour } from "../../shared/components/calendar/timePicker.js";
@@ -78,7 +95,14 @@ function CalendarPage(props: CalendarShellProps) {
 }
 
 type ViewType = CalendarView;
-const VIEW_LABELS: Record<ViewType, string> = { list: "List", month: "Month", week: "Week", workWeek: "Work Week", day: "Day", split: "Split" };
+const VIEW_LABELS: Record<ViewType, string> = {
+    list: "List",
+    month: "Month",
+    week: "Week",
+    workWeek: "Work Week",
+    day: "Day",
+    split: "Split",
+};
 /** The shortcut that switches to a view (Outlook's Ctrl+Alt+1-4, the List one more); the split view has none. */
 const VIEW_SHORTCUTS: Partial<Record<ViewType, ShortcutDef>> = {
     list: SHORTCUTS.calendar.list,
@@ -89,7 +113,15 @@ const VIEW_SHORTCUTS: Partial<Record<ViewType, ShortcutDef>> = {
 };
 
 /** One of the view switcher's buttons, with its shortcut in the tooltip. */
-function ViewButton({ view, current, onSelect }: { view: ViewType; current: ViewType; onSelect: (view: ViewType) => void }) {
+function ViewButton({
+    view,
+    current,
+    onSelect,
+}: {
+    view: ViewType;
+    current: ViewType;
+    onSelect: (view: ViewType) => void;
+}) {
     const shortcut = VIEW_SHORTCUTS[view];
     const hint = useShortcutProps(VIEW_LABELS[view], shortcut ?? SHORTCUTS.calendar.day, !!shortcut);
     return (
@@ -124,7 +156,8 @@ interface ModalState {
 }
 
 function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHref?: string }) {
-    const { mailboxUid, folderUid, calendarFolders, mailboxCalendars, mailboxes, reloadFolders, colorFor } = useCalendarShell();
+    const { mailboxUid, folderUid, calendarFolders, mailboxCalendars, mailboxes, reloadFolders, colorFor } =
+        useCalendarShell();
     const client = useApiClient();
     // `PointerSensor` alone activates a drag on the very first touch-move, indistinguishable from a
     // scroll gesture on a touch device. `MouseSensor` (a small `distance` — desktop drags still start
@@ -133,7 +166,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     // dnd-kit's own documented pattern for this exact conflict.
     const sensors = useSensors(
         useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
-        useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+        useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } })
     );
 
     const [drawerOpen, setDrawerOpen] = useState(false);
@@ -194,7 +227,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     const checkedFolderUids = checkedFolderUidsState ?? new Set(calendarFolders.map((f) => f.uid));
     const folderColors = useMemo(
         () => Object.fromEntries(calendarFolders.map((f) => [f.uid, colorFor(f)])),
-        [calendarFolders, colorFor],
+        [calendarFolders, colorFor]
     );
 
     function toggleCalendar(toggledUid: string) {
@@ -257,7 +290,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         }
         setLoading(true);
         setError(null);
-        void Promise.allSettled(targets.map((f) => listCalendarEvents(f.uid, client)))
+        void Promise.allSettled(targets.map((f) => listCalendarEvents(f.uid, client).then(openSealedEvents)))
             .then((results) => {
                 if (seq !== reloadSeqRef.current) {
                     return;
@@ -295,7 +328,10 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
 
     // Keyed on stable string summaries (not the array/set objects themselves, which are new references
     // every render) so this only re-fires when the actual set of folders to fetch changes.
-    const calendarFolderUidsKey = calendarFolders.map((f) => f.uid).sort().join(",");
+    const calendarFolderUidsKey = calendarFolders
+        .map((f) => f.uid)
+        .sort()
+        .join(",");
     const checkedFolderUidsKey = Array.from(checkedFolderUids).sort().join(",");
     useEffect(reload, [calendarFolderUidsKey, checkedFolderUidsKey]);
 
@@ -317,23 +353,25 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                 setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
                 return;
             }
-            void getCalendarEvent(uid, client).then(
-                (fresh) => {
-                    if (checkedFolderUidsRef.current.has(fresh.folderUid)) {
-                        setEvents((previous) =>
-                            previous.some((existing) => existing.uid === fresh.uid)
-                                ? previous.map((existing) => (existing.uid === fresh.uid ? fresh : existing))
-                                : [...previous, fresh],
-                        );
+            void getCalendarEvent(uid, client)
+                .then(openSealedEvent)
+                .then(
+                    (fresh) => {
+                        if (checkedFolderUidsRef.current.has(fresh.folderUid)) {
+                            setEvents((previous) =>
+                                previous.some((existing) => existing.uid === fresh.uid)
+                                    ? previous.map((existing) => (existing.uid === fresh.uid ? fresh : existing))
+                                    : [...previous, fresh]
+                            );
+                        }
+                    },
+                    (err: unknown) => {
+                        if (err instanceof ApiRequestError && err.status === 404) {
+                            setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
+                        }
                     }
-                },
-                (err: unknown) => {
-                    if (err instanceof ApiRequestError && err.status === 404) {
-                        setEvents((previous) => previous.filter((existing) => existing.uid !== uid));
-                    }
-                },
-            );
-        },
+                );
+        }
     );
 
     // Search: `searchText` is the box, `query` what it held once typing paused (or Enter was pressed) and is what is searched for. A search covers every
@@ -361,7 +399,10 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
 
     // What an open event card steps through, in order: the matches while a search runs, else every event of the checked calendars (bounded as a
     // search is). The List holds only what is from today on, so that is all its card steps through. Worked out only when something needs it.
-    const everything = useMemo(() => (view === "list" || modal?.occurrence ? allOccurrences(events) : []), [events, view, !!modal?.occurrence]);
+    const everything = useMemo(
+        () => (view === "list" || modal?.occurrence ? allOccurrences(events) : []),
+        [events, view, !!modal?.occurrence]
+    );
     const sequence = useMemo(() => {
         if (searching) {
             return matches;
@@ -377,7 +418,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         if (view === "list") {
             return sequence;
         }
-        return searching ? occurrencesInRange(matches, rangeStart, rangeEnd) : expandAllOccurrences(events, rangeStart, rangeEnd);
+        return searching
+            ? occurrencesInRange(matches, rangeStart, rangeEnd)
+            : expandAllOccurrences(events, rangeStart, rangeEnd);
     }, [events, matches, searching, view, sequence, rangeStart, rangeEnd]);
 
     /** Points at `match`, moving the view to the day it is on unless the view already shows it. */
@@ -397,7 +440,13 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     // calendar do not.
     const stepFrom = modal?.occurrence;
     const stepIndex = (direction: 1 | -1) =>
-        stepSequenceIndex(sequence, stepFrom?.occurrenceKey ?? activeKey, stepFrom ? new Date(stepFrom.startDate) : undefined, direction, searching);
+        stepSequenceIndex(
+            sequence,
+            stepFrom?.occurrenceKey ?? activeKey,
+            stepFrom ? new Date(stepFrom.startDate) : undefined,
+            direction,
+            searching
+        );
 
     function stepMatch(direction: 1 | -1) {
         const next = sequence[stepIndex(direction)];
@@ -433,17 +482,22 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
             searchedQueryRef.current = query;
             // The List holds every match: it starts at the first from the day being viewed on rather than the first of all.
             const from = startOfDay(viewDate);
-            showMatch(matches[view === "list" ? initialMatchIndex(matches, from, rangeEnd, from) : initialMatchIndex(matches, rangeStart, rangeEnd, from)]);
+            showMatch(
+                matches[
+                    view === "list"
+                        ? initialMatchIndex(matches, from, rangeEnd, from)
+                        : initialMatchIndex(matches, rangeStart, rangeEnd, from)
+                ]
+            );
         }
     }, [matches, query, searching]);
-
 
     const splitColumns = useMemo(
         () =>
             calendarFolders
                 .filter((f) => checkedFolderUids.has(f.uid))
                 .map((f) => ({ folderUid: f.uid, name: f.name, color: colorFor(f) })),
-        [calendarFolders, checkedFolderUidsKey, colorFor],
+        [calendarFolders, checkedFolderUidsKey, colorFor]
     );
 
     function shiftView(direction: 1 | -1) {
@@ -457,7 +511,7 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                 ? addMonths(d, direction)
                 : view === "week" || view === "workWeek"
                   ? addWeeks(d, direction)
-                  : addDays(d, direction),
+                  : addDays(d, direction)
         );
     }
 
@@ -476,7 +530,8 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     const wheelSlide = useEnterSlide();
     /** Where the scroller of the page a wheel step arrived at starts: its top after going on, its bottom after going back. */
     const arrivalEdge = useRef<WheelEdge | null>(null);
-    const scrollerOf = (): HTMLElement | null => swipe.ref.current?.querySelector<HTMLElement>("[data-calendar-scroller]") ?? null;
+    const scrollerOf = (): HTMLElement | null =>
+        swipe.ref.current?.querySelector<HTMLElement>("[data-calendar-scroller]") ?? null;
     useWheelPaging(swipe.ref, {
         enabled: !isMobile && !dragging && !modal && view !== "list",
         getScroller: () => (view === "month" ? null : scrollerOf()),
@@ -498,7 +553,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     // Brings the match being pointed at into sight (the views scroll their own hours; the page may too).
     useEffect(() => {
         const marked = Array.from(swipe.ref.current!.querySelectorAll<HTMLElement>("[data-occurrence-key]"));
-        marked.find((el) => el.dataset.occurrenceKey === activeKey)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        marked
+            .find((el) => el.dataset.occurrenceKey === activeKey)
+            ?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }, [activeKey, view === "list" ? null : viewDate, view, loading]);
 
     // The List scrolls to `viewDate` when this changes (Today, a day picked in the mini calendar), even when it is the date it already has.
@@ -514,7 +571,13 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         setViewDate(startOfDay(date));
     }
 
-    function openNewEvent(start?: Date, end?: Date, targetFolderUid?: string, anchor?: EventAnchor, initialAllDay?: boolean) {
+    function openNewEvent(
+        start?: Date,
+        end?: Date,
+        targetFolderUid?: string,
+        anchor?: EventAnchor,
+        initialAllDay?: boolean
+    ) {
         if (!mailboxUid || !folderUid) {
             return;
         }
@@ -558,10 +621,17 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         const requestedStart = new Date(params.get("start") ?? "");
         navigateTo("/calendar", { replace: true });
         getCalendarEvent(eventUid, client)
+            .then(openSealedEvent)
             .then((event) => {
                 const from = isNaN(requestedStart.getTime()) ? new Date(event.startDate) : requestedStart;
-                const candidates = expandOccurrences(event, new Date(from.getTime() - 86_400_000), new Date(from.getTime() + 86_400_000));
-                const match = candidates.find((occurrence) => new Date(occurrence.startDate).getTime() === from.getTime()) ?? candidates[0];
+                const candidates = expandOccurrences(
+                    event,
+                    new Date(from.getTime() - 86_400_000),
+                    new Date(from.getTime() + 86_400_000)
+                );
+                const match =
+                    candidates.find((occurrence) => new Date(occurrence.startDate).getTime() === from.getTime()) ??
+                    candidates[0];
                 if (match) {
                     setViewDate(occurrenceDay(match));
                     openEvent(match);
@@ -625,9 +695,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
             ? "Upcoming events"
             : view === "month"
               ? format(viewDate, "MMMM yyyy")
-            : view === "week" || view === "workWeek"
-              ? `${format(rangeStart, "MMM d")} – ${format(rangeEnd, "MMM d, yyyy")}`
-              : format(viewDate, "EEEE, MMMM d, yyyy");
+              : view === "week" || view === "workWeek"
+                ? `${format(rangeStart, "MMM d")} – ${format(rangeEnd, "MMM d, yyyy")}`
+                : format(viewDate, "EEEE, MMMM d, yyyy");
 
     const modalFolderUid = modal ? (modal.targetFolderUid ?? modal.occurrence?.folderUid ?? folderUid) : undefined;
     const modalMailboxUid = calendarFolders.find((f) => f.uid === modalFolderUid)?.mailboxUid ?? mailboxUid;
@@ -638,9 +708,14 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     const mailboxOptions = useMemo(
         () =>
             mailboxCalendars
-                .filter((mc) => mc.calendarFolders.length > 0 && writableMailboxes.some((mb) => mb.uid === mc.mailbox.uid))
-                .map((mc) => ({ mailbox: mc.mailbox, calendars: mc.calendarFolders.map((f) => ({ uid: f.uid, name: f.name })) })),
-        [mailboxCalendars, writableMailboxes],
+                .filter(
+                    (mc) => mc.calendarFolders.length > 0 && writableMailboxes.some((mb) => mb.uid === mc.mailbox.uid)
+                )
+                .map((mc) => ({
+                    mailbox: mc.mailbox,
+                    calendars: mc.calendarFolders.map((f) => ({ uid: f.uid, name: f.name })),
+                })),
+        [mailboxCalendars, writableMailboxes]
     );
 
     const sidebarContent = (
@@ -664,7 +739,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
 
     return (
         <div className="flex-1 min-w-0 flex min-h-0">
-            <div className="hidden lg:flex w-56 shrink-0 border-r border-border flex-col overflow-y-auto">{sidebarContent}</div>
+            <div className="hidden lg:flex w-56 shrink-0 border-r border-border flex-col overflow-y-auto">
+                {sidebarContent}
+            </div>
             <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Calendars" fullScreen>
                 <div className="flex flex-col">{sidebarContent}</div>
             </Drawer>
@@ -681,18 +758,42 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                     </button>
                     {/* On a phone New event is the floating button at the bottom of the page instead, as in Mail. */}
                     {!isMobile && (
-                        <Button type="button" onClick={(e) => openNewEvent(undefined, undefined, undefined, anchorOf(e.currentTarget, "below"))} className="!w-auto shrink-0" {...newEventHint}>
+                        <Button
+                            type="button"
+                            onClick={(e) =>
+                                openNewEvent(undefined, undefined, undefined, anchorOf(e.currentTarget, "below"))
+                            }
+                            className="!w-auto shrink-0"
+                            {...newEventHint}
+                        >
                             + New event
                         </Button>
                     )}
                     <div className="flex items-center gap-1">
-                        <button type="button" onClick={() => shiftView(-1)} aria-label="Previous" {...previousHint} className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt">
+                        <button
+                            type="button"
+                            onClick={() => shiftView(-1)}
+                            aria-label="Previous"
+                            {...previousHint}
+                            className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt"
+                        >
                             &lsaquo;
                         </button>
-                        <button type="button" onClick={goToday} {...todayHint} className="px-2 h-7 text-sm rounded-sm hover:bg-surface-alt">
+                        <button
+                            type="button"
+                            onClick={goToday}
+                            {...todayHint}
+                            className="px-2 h-7 text-sm rounded-sm hover:bg-surface-alt"
+                        >
                             Today
                         </button>
-                        <button type="button" onClick={() => shiftView(1)} aria-label="Next" {...nextHint} className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt">
+                        <button
+                            type="button"
+                            onClick={() => shiftView(1)}
+                            aria-label="Next"
+                            {...nextHint}
+                            className="w-7 h-7 text-sm rounded-sm hover:bg-surface-alt"
+                        >
                             &rsaquo;
                         </button>
                     </div>
@@ -722,8 +823,17 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                     </div>
                 )}
 
-                <div ref={swipe.ref} className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden" {...swipe.handlers} style={swipe.style}>
-                    <div data-swipe-phase={swipe.phase} className="flex-1 min-w-0 flex flex-col min-h-0" style={swipe.contentStyle}>
+                <div
+                    ref={swipe.ref}
+                    className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden"
+                    {...swipe.handlers}
+                    style={swipe.style}
+                >
+                    <div
+                        data-swipe-phase={swipe.phase}
+                        className="flex-1 min-w-0 flex flex-col min-h-0"
+                        style={swipe.contentStyle}
+                    >
                         <div className="flex-1 min-w-0 flex flex-col min-h-0" style={wheelSlide.style}>
                             {loading ? (
                                 <p className="p-4 text-sm text-text-muted">Loading&hellip;</p>
@@ -751,7 +861,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                                                 folderColors={folderColors}
                                                 onSelectDay={handleSelectDay}
                                                 onSelectEvent={openEvent}
-                                                onSelectSlot={(start, end, anchor) => openNewEvent(start, end, undefined, anchor, true)}
+                                                onSelectSlot={(start, end, anchor) =>
+                                                    openNewEvent(start, end, undefined, anchor, true)
+                                                }
                                             />
                                         ) : view === "split" ? (
                                             <SplitDayView
@@ -759,7 +871,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                                                 columns={splitColumns}
                                                 occurrences={occurrences}
                                                 onSelectEvent={openEvent}
-                                                onSelectSlot={(start, end, targetFolderUid, anchor) => openNewEvent(start, end, targetFolderUid, anchor)}
+                                                onSelectSlot={(start, end, targetFolderUid, anchor) =>
+                                                    openNewEvent(start, end, targetFolderUid, anchor)
+                                                }
                                             />
                                         ) : (
                                             <TimeGridView
@@ -767,7 +881,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                                                 occurrences={occurrences}
                                                 folderColors={folderColors}
                                                 onSelectEvent={openEvent}
-                                                onSelectSlot={(start, end, anchor) => openNewEvent(start, end, undefined, anchor)}
+                                                onSelectSlot={(start, end, anchor) =>
+                                                    openNewEvent(start, end, undefined, anchor)
+                                                }
                                             />
                                         )}
                                     </DndContext>
@@ -787,7 +903,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                         onClose={closeModal}
                         mailboxUid={modalMailbox.uid}
                         folderUid={modalFolderUid!}
-                        calendars={calendarFolders.filter((f) => f.mailboxUid === modalMailbox.uid).map((f) => ({ uid: f.uid, name: f.name }))}
+                        calendars={calendarFolders
+                            .filter((f) => f.mailboxUid === modalMailbox.uid)
+                            .map((f) => ({ uid: f.uid, name: f.name }))}
                         mailboxOptions={mailboxOptions}
                         folderColors={folderColors}
                         organizerAddress={modalMailbox.primarySmtpAddress}
@@ -816,7 +934,9 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
                 )}
                 {/* The phone layout's New event: the old toolbar button's action (its quick form is a bottom sheet there, so no anchor), offered
                     only where that button could act - a calendar to put the event in - and not while the editor or its sheet is open. */}
-                {isMobile && mailboxUid && folderUid && !modal && <FloatingActionButton label="New event" icon={HiOutlinePlus} onClick={() => openNewEvent()} />}
+                {isMobile && mailboxUid && folderUid && !modal && (
+                    <FloatingActionButton label="New event" icon={HiOutlinePlus} onClick={() => openNewEvent()} />
+                )}
             </div>
         </div>
     );

@@ -1,0 +1,80 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+/**
+ * Calendar events the server made from invitations that reached a zero-access mailbox keep their title, location and description only
+ * sealed to the mailbox's zero-access key (`CalendarEvent.sealedContent`; the row's `title` is `[...]`). These are opened here with the
+ * mailbox's unlocked keys so the calendar shows the real ones; while the mailbox is locked the event keeps its placeholder. The
+ * decryption code is loaded only when a sealed event is actually seen.
+ */
+import type { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
+import { getUnlockedKeys } from "../../../lib/crypto/keySession.js";
+import { fromBase64 } from "../../../lib/crypto/encoding.js";
+import { onSigningOut } from "../components/mail/compose/composeFlushRegistry.js";
+
+/** What `sealedContent.sealed` decrypts to. */
+interface SealedEventFields {
+    title?: unknown;
+    location?: unknown;
+    description?: unknown;
+    descriptionHtml?: unknown;
+}
+
+/** Opened fields by sealed text - the same sealed content always opens to the same fields. Cleared with `clearSealedEvents()`. */
+const opened: Map<string, Partial<CalendarEvent>> = new Map();
+
+/** Forgets every opened event (sign-out, or the test seam). */
+export function clearSealedEvents(): void {
+    opened.clear();
+}
+
+async function openFields(event: CalendarEvent): Promise<Partial<CalendarEvent> | undefined> {
+    const sealed: string = event.sealedContent!.sealed;
+    const known = opened.get(sealed);
+    if (known) {
+        return known;
+    }
+    const keys = getUnlockedKeys(event.mailboxUid)?.zeroAccessKeys;
+    if (!keys?.length) {
+        return undefined;
+    }
+    try {
+        const { decryptEnvelopedDataWithKeys } = await import("../../../lib/crypto/smime.js");
+        const fields = JSON.parse(new TextDecoder().decode(await decryptEnvelopedDataWithKeys(fromBase64(sealed), keys))) as SealedEventFields;
+        const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+        const result: Partial<CalendarEvent> = {
+            title: text(fields.title) ?? event.title,
+            location: text(fields.location),
+            description: text(fields.description) ?? null,
+            descriptionHtml: text(fields.descriptionHtml) ?? null,
+        };
+        opened.set(sealed, result);
+        return result;
+    } catch {
+        return undefined;
+    }
+}
+
+/** `events` with every sealed one this device can open shown with its real title, location and description. Never rejects. */
+export async function openSealedEvents(events: CalendarEvent[]): Promise<CalendarEvent[]> {
+    if (!events.some((event) => event.sealedContent)) {
+        return events;
+    }
+    return Promise.all(
+        events.map(async (event) => {
+            if (!event.sealedContent) {
+                return event;
+            }
+            const fields = await openFields(event);
+            return fields ? { ...event, ...fields } : event;
+        }),
+    );
+}
+
+/** `openSealedEvents()` for one event. */
+export async function openSealedEvent(event: CalendarEvent): Promise<CalendarEvent> {
+    return (await openSealedEvents([event]))[0];
+}
+
+onSigningOut(clearSealedEvents);

@@ -9,6 +9,7 @@
  */
 import { addDays } from "date-fns";
 import { CalendarEvent, listCalendarEvents } from "../../../../lib/calendar/calendarApi.js";
+import { openSealedEvents } from "../../calendar/sealedEvents.js";
 import { type CalendarOccurrence, expandAllOccurrences } from "../../../../lib/calendar/recurrence.js";
 import { type Contact, createContact, listContactsInFolders } from "../../../../lib/contacts/contactsApi.js";
 import { type ParsedVCardContact, parseVCards } from "../../../../lib/contacts/vcard.js";
@@ -90,7 +91,7 @@ export async function loadRecentMessages(mailboxes: readonly Mailbox[], address:
 export async function loadUpcomingEvents(folders: readonly Folder[], address: string, now: Date, client?: ApiClient): Promise<CalendarOccurrence[]> {
     const wanted = normalizeAddress(address);
     const calendars = folders.filter((folder) => folder.type === "calendar");
-    const lists = await Promise.all(calendars.map((folder) => listCalendarEvents(folder.uid, client)));
+    const lists = await Promise.all(calendars.map((folder) => listCalendarEvents(folder.uid, client).then(openSealedEvents)));
     const involved = lists
         .flat()
         .filter(

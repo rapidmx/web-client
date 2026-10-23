@@ -459,6 +459,8 @@ describe("MatterDetailPage", () => {
                     createdAt: 1735689600000,
                 },
             ],
+            wrappedKeys: [{ ciphertext: "ct", nonce: "n", algorithm: "AES-256-GCM", fingerprint: "fp-za", useType: "zero-access" }],
+            certificates: [{ publicKey: "cert", type: "x509", useType: "zero-access", fingerprint: "fp-za", notBefore: 0, notAfter: 1 }],
         };
         mockMatterFetch({
             "/api/escrow/access-requests": () => jsonResponse(200, [approvedRequest]),
@@ -471,6 +473,8 @@ describe("MatterDetailPage", () => {
         await user.click(screen.getByRole("button", { name: "Get material" }));
 
         expect(await screen.findByText(/"method": "escrow"/)).toBeInTheDocument();
+        // The private keys that read the mailbox's mail come with it, for the holder's offline tooling.
+        expect(screen.getByText(/"useType": "zero-access"/)).toBeInTheDocument();
     });
 
     it("shows an error message when getting material fails", async () => {

@@ -14,6 +14,7 @@
 
 import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, RequestListParams, buildQuery } from "../util/apiQuery.js";
+import type { PublicKey, WrappedPrivateKey } from "../crypto/keyvaultApi.js";
 
 export type { ListParams, RequestListParams };
 
@@ -65,6 +66,11 @@ export interface MasterKeyWrap {
  * tooling, per `specs/end-to-end_encryption.md`'s "this server never holds the scope's private key". */
 export interface EscrowAccessMaterial {
     masterKeyWraps: MasterKeyWrap[];
+    /** The mailbox's wrapped private keys that read mail (zero-access and encryption keys, never signing), sealed under its master key. Absent
+     * from a server that predates releasing them. */
+    wrappedKeys?: WrappedPrivateKey[];
+    /** The certificate of each of `wrappedKeys`, matched by fingerprint. */
+    certificates?: PublicKey[];
 }
 
 /** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one

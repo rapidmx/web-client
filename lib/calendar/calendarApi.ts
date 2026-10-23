@@ -135,6 +135,9 @@ export interface CalendarEvent {
      * `mailto` only). Still to be rendered through `sanitizeEventDescriptionHtml()` (`eventDescription.ts`), never trusted as it stands. `null` or absent:
      * the description, if any, is plain text. */
     descriptionHtml?: string | null;
+    /** Response-only. An event made from an invitation that reached a zero-access mailbox: its title, location and description are only
+     * sealed to the mailbox's zero-access key (`title` is `[...]`). `apps/shared/calendar/sealedEvents.ts` opens them. */
+    sealedContent?: { keyFingerprint: string; sealed: string };
     /** Who may see the event's details - absent (or `null`, on a row stored before this existed) reads as `"default"`; see `visibilityOf()`. */
     visibility?: EventVisibility | null;
     /** Whether the guests may ask for the event to change (default `false`). Absent or `null` reads as the default; see `guestPermissionsOf()`. */

@@ -3827,3 +3827,15 @@ Not committed. Every new `client` is an optional trailing parameter; without one
 - **Known gaps:**
   - Flag filters (read, flagged) don't match zero-access rows, because their flags stay empty.
   - **tauri-client's native upsert and `moveEntity` need the same COALESCE and version handling.** Until then, a re-import there clears a recorded folder, and moves repeat every pass.
+
+## 2026-10-23 - Zero-access encryption, Phase 6
+
+- **`apps/shared/calendar/sealedEvents.ts`:** `openSealedEvents` and `openSealedEvent` decrypt `CalendarEvent.sealedContent` (events restapi made from invitations to a zero-access mailbox; the row's `title` is `[...]`) with the event mailbox's unlocked zero-access keys.
+  - `smime.js` is lazy-loaded only when a sealed event is present.
+  - Results are cached by sealed text and cleared on sign-out.
+  - While locked, events keep the placeholder.
+  - They are used by the calendar page (list, live update, open by link) and by `contactCardData.loadUpcomingEvents`.
+  - An edit sends the decrypted fields back, and restapi re-seals them (`keepSealed`).
+- **Escrow console:** the material modal now shows the whole release (master-key wraps, `wrappedKeys`, `certificates`). `EscrowAccessMaterial` has gained the two optional fields.
+- **Not done:** Source C (client-built segments for end-to-end mail) stays deferred, as "(Later)" in the plan. The escrow console still doesn't decrypt anything by design; holders use offline tooling.
+- **Known gap:** an open calendar view doesn't re-decrypt sealed events when the mailbox is unlocked after it loaded; a reload does.
