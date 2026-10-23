@@ -24,6 +24,11 @@
  * fully searchable via Tier 1; indexing it here too would spend this index's bounded byte budget on
  * content that didn't need it.
  *
+ * **Shared with the mailbox's other devices (Source C).** In a mailbox with a zero-access key, a pass first imports the end-to-end mail
+ * other devices already decrypted (`importClientSegments()`), at each message's version, so it isn't decrypted again here; and what this
+ * pass decrypts it uploads for them, sealed to the zero-access key (`uploadClientDocuments()`). Both are best effort - see
+ * `zeroAccessIndexSync.ts`.
+ *
  * **Verification seals.** A message this pass decrypts that has no seal for the vault's current `masterKeyGeneration` is
  * evaluated with `evaluateMessageSecurityWithSeal()`, against the sender's pinned signing keys from the reader's
  * contacts (`pinnedSigners.ts`, the message pane's own source, looked up once per sender per pass), so a verified
@@ -54,6 +59,7 @@ import {
 } from "./localIndexRpcClient.js";
 import { deriveLocalIndexKey } from "./localIndexKey.js";
 import { getLocalIndexByteBudget } from "./localIndexSizePreference.js";
+import { importClientSegments, uploadClientDocuments } from "./zeroAccessIndexSync.js";
 
 /** The RFC 9788 placeholder subject every encrypted message's outer envelope carries server-side - see
  * `apps/www/index.tsx`'s identical constant and its own doc comment for the full citation. */
@@ -370,6 +376,9 @@ async function runBuildPass(
     await initLocalIndex({ mailboxUid, indexKey, generation });
     let { evictedBefore } = await setLocalIndexWindow(mailboxUid, windowConfig.timeFloorMonths, windowConfig.byteBudgetBytes, generation);
     await setLocalIndexBuilding(mailboxUid, true, { complete: false, generation });
+    // End-to-end mail another device already decrypted: imported at its version, so the walk below skips it.
+    await importClientSegments(mailboxUid, unlocked, client, { generation }).catch(() => undefined);
+    signal.throwIfAborted();
     // Mail arriving after this moment isn't guaranteed to be picked up by this pass.
     const coveredUntil = new Date(Date.now() - CLOCK_SKEW_MARGIN_MS).toISOString();
     let cutoff: Date | undefined;
@@ -390,6 +399,8 @@ async function runBuildPass(
             .filter((f) => MESSAGE_FOLDER_TYPES.has(f.type))
             .sort((a, b) => (FOLDER_PRIORITY[a.type] ?? 99) - (FOLDER_PRIORITY[b.type] ?? 99));
         const seenEncryptedUids = new Set<string>();
+        // What this pass decrypted, for the mailbox's other devices.
+        const decrypted: LocalIndexEntity[] = [];
 
         async function walkFolder(folder: Folder): Promise<WalkOutcome> {
             for (let page = 0; ; page++) {
@@ -437,6 +448,7 @@ async function runBuildPass(
                     const entities = built.filter((e): e is LocalIndexEntity => e !== undefined && e !== FETCH_FAILED);
                     if (entities.length > 0) {
                         ({ evictedBefore } = await indexLocalEntities(mailboxUid, entities, generation));
+                        decrypted.push(...entities);
                     }
                 }
                 const oldestOnPage = messages[messages.length - 1].receivedDate;
@@ -494,6 +506,7 @@ async function runBuildPass(
             const since = evictedBefore && isWithinTimeFloor(evictedBefore, cutoff) ? evictedBefore : cutoff?.toISOString();
             await pruneLocalEntities(mailboxUid, [...seenEncryptedUids], since, { folderUids: reliable, generation });
         }
+        await uploadClientDocuments(mailboxUid, unlocked, decrypted, client).catch(() => undefined);
     } catch (err) {
         complete = false;
         throw err;

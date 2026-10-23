@@ -14,6 +14,12 @@
  * A segment (format version 1, `specs/search.md` §16) is gzipped JSON `{ v: 1, documents }` of the same documents the entries carry, so
  * everything is imported through `indexLocalEntities()` - no new storage primitive, on web and on tauri alike.
  *
+ * **Client segments (Source C).** End-to-end mail never reaches the server readable, so the server has nothing to index for it: the local
+ * index builder (`localIndexBuilder.ts`) decrypts it on one device and uploads what it built with `uploadClientDocuments()`, as `origin:
+ * "client"` segments sealed to the same zero-access key, merged into the week's current one. Every device imports them
+ * (`importClientSegments()`, run by the builder before it decrypts anything and by each sync pass), so end-to-end mail is decrypted for
+ * search once per mailbox rather than once per device - a row imported at the message's current version is not decrypted again.
+ *
  * Nothing here ever sends the server anything it can read: entries are decrypted on this device, and a segment is sealed before upload.
  */
 import { fromBase64, toBase64 } from "../../../lib/crypto/encoding.js";
@@ -24,6 +30,7 @@ import {
     getSearchIndexSegment,
     type IndexSegment,
     listSearchIndexEntries,
+    type SegmentManifest,
     putSearchIndexSegment,
     type SealedIndexEntry,
     type ZeroAccessIndexDocument,
@@ -44,6 +51,9 @@ export const MAX_COMPACTIONS_PER_PASS = 4;
 /** Entities handed to the worker per call. */
 const IMPORT_BATCH = 200;
 
+/** How many times `uploadClientDocuments()` re-reads a week's client segment after another device replaced it first. */
+export const CLIENT_UPLOAD_ATTEMPTS = 3;
+
 /** What a sync pass remembers between passes, per mailbox (`localStorage`): which segment generations it imported and when its live tail
  * last ran. Forgotten whenever the local index is found empty (a new device, a sign-out, a destroyed index). */
 interface SyncState {
@@ -56,6 +66,8 @@ interface SyncState {
 /** What a pass did, for the caller's logging and tests. */
 export interface ZeroAccessSyncResult {
     segmentsImported: number;
+    /** Client segments (end-to-end mail other devices indexed) imported. */
+    clientSegmentsImported: number;
     entriesImported: number;
     weeksCompacted: number;
     /** Entries or segments that wouldn't decrypt with this device's keys (a key it doesn't have) - left as they are. */
@@ -148,13 +160,210 @@ async function importDocuments(mailboxUid: string, docs: ZeroAccessIndexDocument
     }
 }
 
-/** The documents of a segment generation, or `undefined` when it won't open or is a format this client doesn't read. */
-async function readSegment(mailboxUid: string, segment: IndexSegment, keys: ZeroAccessKeys, client?: ApiClient): Promise<ZeroAccessIndexDocument[] | undefined> {
+/** The documents of a segment generation that pass `accept`, or `undefined` when it won't open or is a format this client doesn't read. */
+async function readSegmentAs<T>(
+    mailboxUid: string,
+    segment: IndexSegment,
+    keys: ZeroAccessKeys,
+    accept: (value: unknown) => value is T,
+    client?: ApiClient,
+): Promise<T[] | undefined> {
     if (segment.schemaVersion !== SEGMENT_SCHEMA_VERSION) {
         return undefined;
     }
     const bundle = (await openSealedJson(await getSearchIndexSegment(mailboxUid, segment, client), keys)) as { v?: number; documents?: unknown[] } | undefined;
-    return bundle?.v === SEGMENT_SCHEMA_VERSION && Array.isArray(bundle.documents) ? bundle.documents.filter(isDocument) : undefined;
+    return bundle?.v === SEGMENT_SCHEMA_VERSION && Array.isArray(bundle.documents) ? bundle.documents.filter(accept) : undefined;
+}
+
+const readSegment = (mailboxUid: string, segment: IndexSegment, keys: ZeroAccessKeys, client?: ApiClient): Promise<ZeroAccessIndexDocument[] | undefined> =>
+    readSegmentAs(mailboxUid, segment, keys, isDocument, client);
+
+/** `documents` gzipped and sealed to `key` as a segment file, base64. */
+async function sealSegment(documents: unknown[], key: ZeroAccessKeys[number]): Promise<string> {
+    const file = await gzip(new TextEncoder().encode(JSON.stringify({ v: SEGMENT_SCHEMA_VERSION, documents })));
+    return toBase64(await encryptForRecipients(file, [key.certDer]));
+}
+
+/** One document of a client segment: a local index row of an end-to-end message, as the device that decrypted it built it. */
+export interface ClientIndexDocument {
+    v: 1;
+    messageUid: string;
+    folderUid?: string;
+    /** ISO 8601. */
+    dateForSort: string;
+    participants: string;
+    flags: string;
+    hasAttachments: boolean;
+    subject?: string;
+    body?: string;
+    attachmentText?: string;
+    /** The message's version when it was decrypted (`localIndexBuilder.ts`'s `versionOf()`). */
+    entityVersion?: string;
+}
+
+function isClientDocument(value: unknown): value is ClientIndexDocument {
+    const doc = value as ClientIndexDocument | undefined;
+    return !!doc && doc.v === 1 && typeof doc.messageUid === "string" && typeof doc.dateForSort === "string" && typeof doc.participants === "string";
+}
+
+/** A local index row as a client segment document. */
+export function clientDocument(entity: LocalIndexEntity): ClientIndexDocument {
+    return {
+        v: 1,
+        messageUid: entity.entityUid,
+        folderUid: entity.folderUid,
+        dateForSort: entity.dateForSort,
+        participants: entity.participants,
+        flags: entity.flags,
+        hasAttachments: entity.hasAttachments,
+        subject: entity.subject,
+        body: entity.body,
+        attachmentText: entity.attachmentText,
+        entityVersion: entity.entityVersion,
+    };
+}
+
+/** A client segment document as a row of the local index. */
+export function clientDocumentEntity(mailboxUid: string, doc: ClientIndexDocument): LocalIndexEntity {
+    const text: number = [doc.subject, doc.body, doc.attachmentText, doc.participants].reduce((total, value) => total + (value?.length ?? 0), 0);
+    return {
+        entityType: "message",
+        entityUid: doc.messageUid,
+        mailboxUid,
+        ...(doc.folderUid !== undefined ? { folderUid: doc.folderUid } : {}),
+        dateForSort: doc.dateForSort,
+        participants: doc.participants,
+        flags: typeof doc.flags === "string" ? doc.flags : "",
+        hasAttachments: doc.hasAttachments === true,
+        ...(doc.subject !== undefined ? { subject: doc.subject } : {}),
+        ...(doc.body !== undefined ? { body: doc.body } : {}),
+        ...(doc.attachmentText !== undefined ? { attachmentText: doc.attachmentText } : {}),
+        byteSize: text,
+        ...(doc.entityVersion !== undefined ? { entityVersion: doc.entityVersion } : {}),
+    };
+}
+
+/** The ISO 8601 week (UTC) of `date`, as `YYYY-Www` - the week a message's segment is filed under (restapi's `isoWeekId()`). */
+export function isoWeekId(date: Date): string {
+    const day = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    // The Thursday of this ISO week decides its year (weeks start on Monday; getUTCDay() has Sunday as 0).
+    const weekday: number = day.getUTCDay() || 7;
+    day.setUTCDate(day.getUTCDate() + 4 - weekday);
+    const yearStart = new Date(Date.UTC(day.getUTCFullYear(), 0, 1));
+    const week: number = Math.ceil(((day.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+    return `${day.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+/** The sync state, started over when the local index is empty (nothing remembered in it is there any more). */
+async function currentState(mailboxUid: string): Promise<SyncState> {
+    return (await getLocalCoverage(mailboxUid)).indexedCount === 0 ? { segments: {} } : loadState(mailboxUid);
+}
+
+/**
+ * Imports the client segments of `mailboxUid` (end-to-end mail indexed by another device - see this module's comment) not yet imported in
+ * their current generation, newest week first: how many. `manifest` saves reading it again; `generation` is the calling build pass's (see
+ * `GenerationParams`). Segments this device can't open are skipped.
+ */
+export async function importClientSegments(
+    mailboxUid: string,
+    unlocked: UnlockedKeys,
+    client?: ApiClient,
+    { manifest, generation }: { manifest?: SegmentManifest; generation?: number } = {},
+): Promise<number> {
+    const keys: ZeroAccessKeys | undefined = unlocked.zeroAccessKeys;
+    if (!keys?.length) {
+        return 0;
+    }
+    const segments: IndexSegment[] = (manifest ?? (await getSearchIndexManifest(mailboxUid, client))).segments.filter((segment) => segment.origin === "client");
+    const state: SyncState = await currentState(mailboxUid);
+    let imported = 0;
+    for (const segment of segments.sort((a, b) => b.weekId.localeCompare(a.weekId))) {
+        const key = `${segment.weekId}:${segment.origin}`;
+        if (state.segments[key] === segment.etag) {
+            continue;
+        }
+        const docs = await readSegmentAs(mailboxUid, segment, keys, isClientDocument, client);
+        if (!docs) {
+            continue;
+        }
+        for (let i = 0; i < docs.length; i += IMPORT_BATCH) {
+            await indexLocalEntities(
+                mailboxUid,
+                docs.slice(i, i + IMPORT_BATCH).map((doc) => clientDocumentEntity(mailboxUid, doc)),
+                generation,
+            );
+        }
+        state.segments[key] = segment.etag;
+        saveState(mailboxUid, state);
+        imported++;
+    }
+    return imported;
+}
+
+/**
+ * Uploads end-to-end messages this device just decrypted and indexed (`entities`) to `mailboxUid`'s client segments, one per ISO week of
+ * `dateForSort`, each merged by message into the week's current segment and sealed to the active zero-access key: how many weeks were
+ * written. A week whose current segment this device can't read is left alone (merging would drop what is in it), as is one that already
+ * holds every document at the same version. Another device replacing a week first (`409`) is retried with its generation, up to
+ * `CLIENT_UPLOAD_ATTEMPTS` times. Does nothing without unlocked zero-access keys.
+ */
+export async function uploadClientDocuments(mailboxUid: string, unlocked: UnlockedKeys, entities: LocalIndexEntity[], client?: ApiClient): Promise<number> {
+    const keys: ZeroAccessKeys | undefined = unlocked.zeroAccessKeys;
+    if (!keys?.length || entities.length === 0) {
+        return 0;
+    }
+    const weeks = new Map<string, ClientIndexDocument[]>();
+    for (const entity of entities) {
+        const weekId: string = isoWeekId(new Date(entity.dateForSort));
+        weeks.set(weekId, [...(weeks.get(weekId) ?? []), clientDocument(entity)]);
+    }
+    const state: SyncState = loadState(mailboxUid);
+    let written = 0;
+    let manifest: SegmentManifest | undefined;
+    for (const [weekId, docs] of weeks) {
+        for (let attempt = 0; attempt < CLIENT_UPLOAD_ATTEMPTS; attempt++) {
+            manifest ??= await getSearchIndexManifest(mailboxUid, client);
+            const current: IndexSegment | undefined = manifest.segments.find((segment) => segment.origin === "client" && segment.weekId === weekId);
+            const previous: ClientIndexDocument[] | undefined = current ? await readSegmentAs(mailboxUid, current, keys, isClientDocument, client) : [];
+            if (!previous) {
+                break;
+            }
+            const merged = new Map<string, ClientIndexDocument>(previous.map((doc) => [doc.messageUid, doc]));
+            if (docs.every((doc) => merged.has(doc.messageUid) && merged.get(doc.messageUid)!.entityVersion === doc.entityVersion)) {
+                break;
+            }
+            for (const doc of docs) {
+                merged.set(doc.messageUid, doc);
+            }
+            try {
+                const stored = await putSearchIndexSegment(
+                    mailboxUid,
+                    weekId,
+                    {
+                        expectedGeneration: current?.generation ?? 0,
+                        segment: await sealSegment([...merged.values()], keys[0]),
+                        keyFingerprint: keys[0].fingerprint,
+                        schemaVersion: SEGMENT_SCHEMA_VERSION,
+                        origin: "client",
+                    },
+                    client,
+                );
+                // This device already holds every document of the new generation only if it held the previous one.
+                if (current && state.segments[`${weekId}:client`] === current.etag) {
+                    state.segments[`${weekId}:client`] = stored.etag;
+                    saveState(mailboxUid, state);
+                }
+                written++;
+                break;
+            } catch (err) {
+                if (!(err instanceof ApiRequestError && err.status === 409)) {
+                    throw err;
+                }
+                manifest = undefined;
+            }
+        }
+    }
+    return written;
 }
 
 /** Every pending entry of `week` (or, without one, written since `since`), paged through. */
@@ -191,16 +400,13 @@ async function openEntries(entries: SealedIndexEntry[], keys: ZeroAccessKeys): P
  * can't be read; any later failure ends the pass early with what it had done so far remembered.
  */
 export async function syncZeroAccessIndex(mailboxUid: string, unlocked: UnlockedKeys, client?: ApiClient): Promise<ZeroAccessSyncResult> {
-    const result: ZeroAccessSyncResult = { segmentsImported: 0, entriesImported: 0, weeksCompacted: 0, unreadable: 0 };
+    const result: ZeroAccessSyncResult = { segmentsImported: 0, clientSegmentsImported: 0, entriesImported: 0, weeksCompacted: 0, unreadable: 0 };
     const keys: ZeroAccessKeys | undefined = unlocked.zeroAccessKeys;
     if (!keys?.length) {
         return result;
     }
     const manifest = await getSearchIndexManifest(mailboxUid, client);
-    let state: SyncState = loadState(mailboxUid);
-    if ((await getLocalCoverage(mailboxUid)).indexedCount === 0) {
-        state = { segments: {} };
-    }
+    let state: SyncState = await currentState(mailboxUid);
 
     // Segments, newest week first.
     const zeroAccessSegments: IndexSegment[] = manifest.segments.filter((segment) => segment.origin === "zero-access");
@@ -219,6 +425,11 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
         result.segmentsImported++;
         saveState(mailboxUid, state);
     }
+
+    // End-to-end mail other devices indexed.
+    saveState(mailboxUid, state);
+    result.clientSegmentsImported = await importClientSegments(mailboxUid, unlocked, client, { manifest });
+    state = loadState(mailboxUid);
 
     // The live tail.
     const tailStart = new Date().toISOString();
@@ -247,14 +458,13 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
         for (const doc of pending.docs) {
             merged.set(doc.messageUid, doc);
         }
-        const file = await gzip(new TextEncoder().encode(JSON.stringify({ v: SEGMENT_SCHEMA_VERSION, documents: [...merged.values()] })));
         try {
             const stored = await putSearchIndexSegment(
                 mailboxUid,
                 week.weekId,
                 {
                     expectedGeneration: current?.generation ?? 0,
-                    segment: toBase64(await encryptForRecipients(file, [active.certDer])),
+                    segment: await sealSegment([...merged.values()], active),
                     keyFingerprint: active.fingerprint,
                     schemaVersion: SEGMENT_SCHEMA_VERSION,
                     foldedEntryUids: pending.uids,

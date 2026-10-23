@@ -3837,7 +3837,13 @@ Not committed. Every new `client` is an optional trailing parameter; without one
   - They are used by the calendar page (list, live update, open by link) and by `contactCardData.loadUpcomingEvents`.
   - An edit sends the decrypted fields back, and restapi re-seals them (`keepSealed`).
 - **Escrow console:** the material modal now shows the whole release (master-key wraps, `wrappedKeys`, `certificates`). `EscrowAccessMaterial` has gained the two optional fields.
-- **Not done:** Source C (client-built segments for end-to-end mail) stays deferred, as "(Later)" in the plan. The escrow console still doesn't decrypt anything by design; holders use offline tooling.
+- **Source C (done 2026-10-23):** client-built segments for end-to-end mail, in `zeroAccessIndexSync.ts`.
+  - A client segment is the same v1 bundle (`{ v: 1, documents }`, gzipped, sealed to the active zero-access key) of `ClientIndexDocument`s: a local index row (folder, flags, `entityVersion` included) keyed by `messageUid`, one segment per ISO week of `dateForSort` (`isoWeekId()`, a port of restapi's), `origin: "client"`.
+  - `buildLocalIndex` calls `importClientSegments()` right after opening the index (with the pass's generation), so a row imported at the message's current version isn't decrypted again; after the walk it calls `uploadClientDocuments()` with what it decrypted. Both are best effort (`.catch`).
+  - `uploadClientDocuments()` merges into the week's current client segment by message, skips a week that already holds every document at the same version or that this device can't read, and retries a `409` up to `CLIENT_UPLOAD_ATTEMPTS` with a fresh manifest. It advances the remembered etag only when this device had imported the previous generation.
+  - `syncZeroAccessIndex` also imports client segments from its manifest (`clientSegmentsImported`). Client and zero-access segments share the sync state (`weekId:origin`).
+  - Only mailboxes with a zero-access key take part: there is nothing else to seal to.
+- The escrow console still doesn't decrypt anything by design; holders use offline tooling.
 - **Known gap:** an open calendar view doesn't re-decrypt sealed events when the mailbox is unlocked after it loaded; a reload does.
 
 ## 2026-10-23 - Zero-access encryption, Phase 7 (shared mailboxes)
@@ -3864,6 +3870,6 @@ Not committed. Every new `client` is an optional trailing parameter; without one
 - **`ZeroAccessSetting`** no longer blocks shared mailboxes. An ownerless mailbox gets an explanatory notice instead of "only the owner".
 - **Known gaps:**
   - tauri-client needs no change for this; it uses web-client's TS.
-  - There is no escrow wrap for an ownerless mailbox's zero-access key.
+  - (Fixed 2026-10-23) A mailbox without an owner assigned to an escrow scope gets each zero-access key wrapped to the scope's certificate (`getEscrowInfo()`): `enrollNewSharedKey` sends `escrowWrap` with a new key, and `maintainSharedMailbox` wraps the keys in `escrowPending` it holds (`putZeroAccessEscrowWraps`, result `escrowed`), skipping them when the escrow info names another scope than the status.
   - (Fixed 2026-10-23) Locking a personal mailbox now also locks the shared sessions opened through it: `UnlockedKeys.openedWith` names the own mailboxes whose keys opened a shared session's wraps, and `destroyUnlockedKeys(uid)` destroys every shared session listing `uid`. `personalSessions()` returns `{ mailboxUid, unlocked }` for the non-shared sessions.
   - Every test that mocks `keySession.js` under `MailShell` must export `personallyUnlockedKeys` (`SharedMailboxKeyManager` calls it); its absence showed only as unhandled errors, which fail the run.

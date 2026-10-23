@@ -23,7 +23,18 @@ vi.mock("../../../lib/search/zeroAccessIndexApi.js", () => api);
 const rpc = vi.hoisted(() => ({ getLocalCoverage: vi.fn(), indexLocalEntities: vi.fn() }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => rpc);
 
-const { documentEntity, forgetZeroAccessSync, syncZeroAccessIndex, TAIL_OVERLAP_MS } = await import("../../../apps/shared/search/zeroAccessIndexSync.js");
+const {
+    CLIENT_UPLOAD_ATTEMPTS,
+    clientDocument,
+    clientDocumentEntity,
+    documentEntity,
+    forgetZeroAccessSync,
+    importClientSegments,
+    isoWeekId,
+    syncZeroAccessIndex,
+    TAIL_OVERLAP_MS,
+    uploadClientDocuments,
+} = await import("../../../apps/shared/search/zeroAccessIndexSync.js");
 
 async function zeroAccessKey(fingerprint: string) {
     const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -117,7 +128,13 @@ Object.defineProperty(globalThis, "localStorage", { value: memoryStorage, config
 
 describe("syncZeroAccessIndex", () => {
     it("does nothing without unlocked zero-access keys", async () => {
-        expect(await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1) })).toEqual({ segmentsImported: 0, entriesImported: 0, weeksCompacted: 0, unreadable: 0 });
+        expect(await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1) })).toEqual({
+            segmentsImported: 0,
+            clientSegmentsImported: 0,
+            entriesImported: 0,
+            weeksCompacted: 0,
+            unreadable: 0,
+        });
         expect(api.getSearchIndexManifest).not.toHaveBeenCalled();
     });
 
@@ -269,5 +286,146 @@ describe("documentEntity", () => {
         });
         const bare = documentEntity("mb", { ...doc("m2"), dateForSort: Number.NaN, participants: undefined, attachmentNames: undefined, attachmentText: undefined } as any);
         expect(bare).toMatchObject({ dateForSort: "1970-01-01T00:00:00.000Z", participants: "", hasAttachments: false, attachmentText: "" });
+    });
+});
+
+/** A local index row of an end-to-end message, as the builder makes it. */
+const entity = (uid: string, extra: object = {}) => ({
+    entityType: "message" as const,
+    entityUid: uid,
+    mailboxUid: "mb",
+    folderUid: "inbox",
+    dateForSort: "2026-10-21T12:00:00.000Z",
+    participants: "alice@example.com",
+    flags: ",read,",
+    hasAttachments: false,
+    subject: `Subject ${uid}`,
+    body: `Body ${uid}`,
+    byteSize: 10,
+    entityVersion: `1:inbox`,
+    ...extra,
+});
+
+const clientSegment = (weekId: string, generation: number, etag: string) => segment(weekId, generation, etag, { origin: "client" });
+
+describe("client segments (Source C)", () => {
+    const unlocked = () => ({ masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+
+    it("imports each client segment generation once, newest week first, with its folder, flags and version, under the caller's generation", async () => {
+        const stranger = await zeroAccessKey("other");
+        api.getSearchIndexManifest.mockResolvedValue({
+            mailboxUid: "mb",
+            segments: [clientSegment("2026-W41", 1, "c41"), clientSegment("2026-W43", 2, "c43"), clientSegment("2026-W42", 1, "c42"), segment("2026-W43", 1, "z43")],
+            weeks: [],
+        });
+        api.getSearchIndexSegment.mockImplementation(async (_mb: string, s: any) =>
+            s.weekId === "2026-W42"
+                ? sealSegment([clientDocument(entity("x"))], stranger.certDer)
+                : sealSegment([clientDocument(entity(`m${s.weekId.slice(-2)}`)), { v: 1, junk: true }], key.certDer),
+        );
+
+        expect(await importClientSegments("mb", unlocked(), undefined, { generation: 7 })).toBe(2);
+        expect(indexedUids()).toEqual(["m43", "m41"]);
+        const [, rows, generation] = rpc.indexLocalEntities.mock.calls[0];
+        expect(generation).toBe(7);
+        expect(rows[0]).toMatchObject({ entityUid: "m43", mailboxUid: "mb", folderUid: "inbox", flags: ",read,", entityVersion: "1:inbox", subject: "Subject m43" });
+
+        rpc.indexLocalEntities.mockClear();
+        expect(await importClientSegments("mb", unlocked())).toBe(0);
+        expect(await importClientSegments("mb", { masterKey: new Uint8Array(1) })).toBe(0);
+        expect(indexedUids()).toEqual([]);
+    });
+
+    it("imports client segments in a sync pass too, from the manifest it already read", async () => {
+        api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [clientSegment("2026-W43", 1, "c43")], weeks: [] });
+        api.getSearchIndexSegment.mockResolvedValue(await sealSegment([clientDocument(entity("m1"))], key.certDer));
+
+        const result = await syncZeroAccessIndex("mb", unlocked());
+
+        expect(result.clientSegmentsImported).toBe(1);
+        expect(api.getSearchIndexManifest).toHaveBeenCalledTimes(1);
+        expect(indexedUids()).toEqual(["m1"]);
+    });
+
+    it("uploads what was decrypted per week, merged into the week's segment and sealed to the active key, leaving unchanged weeks alone", async () => {
+        const older = await zeroAccessKey("fp-older");
+        api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [clientSegment("2026-W43", 3, "c43"), clientSegment("2026-W40", 1, "c40")], weeks: [] });
+        api.getSearchIndexSegment.mockImplementation(async (_mb: string, s: any) =>
+            sealSegment(s.weekId === "2026-W43" ? [clientDocument(entity("kept")), clientDocument(entity("same"))] : [clientDocument(entity("w40"))], key.certDer),
+        );
+        api.putSearchIndexSegment.mockImplementation(async (_mb: string, weekId: string) => ({ weekId, origin: "client", etag: `new-${weekId}` }));
+        // This device imported week 43's current generation, so the new one is already in its index.
+        await importClientSegments("mb", unlocked());
+
+        const written = await uploadClientDocuments(
+            "mb",
+            { masterKey: new Uint8Array(1), zeroAccessKeys: [key, older] },
+            [entity("same"), entity("new", { entityVersion: "2:inbox" }), entity("w40", { dateForSort: "2026-10-01T00:00:00.000Z" }), entity("w44", { dateForSort: "2026-10-26T00:00:00.000Z" })],
+        );
+
+        expect(written).toBe(2);
+        expect(api.putSearchIndexSegment.mock.calls.map(([, weekId, upload]) => [weekId, upload.expectedGeneration, upload.origin, upload.keyFingerprint])).toEqual([
+            ["2026-W43", 3, "client", "fp-active"],
+            ["2026-W44", 0, "client", "fp-active"],
+        ]);
+        const bundle = await gunzipJson(await decryptEnvelopedDataWithKeys(fromBase64(api.putSearchIndexSegment.mock.calls[0][2].segment), [key]));
+        expect(bundle.documents.map((d: any) => d.messageUid)).toEqual(["kept", "same", "new"]);
+        expect(bundle.documents[2]).toEqual(clientDocument(entity("new", { entityVersion: "2:inbox" })));
+
+        // The new week 43 generation is remembered; week 44's (never imported here) isn't, so the next import reads it.
+        rpc.indexLocalEntities.mockClear();
+        api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [clientSegment("2026-W43", 4, "new-2026-W43"), clientSegment("2026-W44", 1, "new-2026-W44")], weeks: [] });
+        api.getSearchIndexSegment.mockResolvedValue(await sealSegment([clientDocument(entity("w44"))], key.certDer));
+        expect(await importClientSegments("mb", unlocked())).toBe(1);
+    });
+
+    it("retries a week another device replaced first, leaves one it can't read, and rethrows any other failure", async () => {
+        const stranger = await zeroAccessKey("other");
+        api.getSearchIndexManifest
+            .mockResolvedValueOnce({ mailboxUid: "mb", segments: [], weeks: [] })
+            .mockResolvedValue({ mailboxUid: "mb", segments: [clientSegment("2026-W43", 1, "c43")], weeks: [] });
+        api.getSearchIndexSegment.mockResolvedValue(await sealSegment([clientDocument(entity("theirs"))], key.certDer));
+        api.putSearchIndexSegment.mockRejectedValueOnce(new ApiRequestError("conflict", 409)).mockResolvedValue({ weekId: "2026-W43", origin: "client", etag: "e" });
+
+        expect(await uploadClientDocuments("mb", unlocked(), [entity("mine")])).toBe(1);
+        expect(api.putSearchIndexSegment.mock.calls.map(([, , upload]) => upload.expectedGeneration)).toEqual([0, 1]);
+
+        // Lost every race.
+        api.putSearchIndexSegment.mockReset().mockRejectedValue(new ApiRequestError("conflict", 409));
+        expect(await uploadClientDocuments("mb", unlocked(), [entity("mine2")])).toBe(0);
+        expect(api.putSearchIndexSegment).toHaveBeenCalledTimes(CLIENT_UPLOAD_ATTEMPTS);
+
+        api.getSearchIndexSegment.mockResolvedValue(await sealSegment([clientDocument(entity("theirs"))], stranger.certDer));
+        api.putSearchIndexSegment.mockClear();
+        expect(await uploadClientDocuments("mb", unlocked(), [entity("mine3")])).toBe(0);
+        expect(api.putSearchIndexSegment).not.toHaveBeenCalled();
+
+        api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [], weeks: [] });
+        api.putSearchIndexSegment.mockRejectedValue(new ApiRequestError("boom", 500));
+        await expect(uploadClientDocuments("mb", unlocked(), [entity("mine4")])).rejects.toMatchObject({ status: 500 });
+
+        expect(await uploadClientDocuments("mb", unlocked(), [])).toBe(0);
+        expect(await uploadClientDocuments("mb", { masterKey: new Uint8Array(1) }, [entity("x")])).toBe(0);
+    });
+
+    it("maps rows to documents and back, and names ISO weeks across a year boundary", () => {
+        const bare = { ...entity("b"), folderUid: undefined, subject: undefined, body: undefined, entityVersion: undefined };
+        expect(clientDocumentEntity("mb", JSON.parse(JSON.stringify(clientDocument(bare))))).toEqual({
+            entityType: "message",
+            entityUid: "b",
+            mailboxUid: "mb",
+            dateForSort: bare.dateForSort,
+            participants: "alice@example.com",
+            flags: ",read,",
+            hasAttachments: false,
+            byteSize: "alice@example.com".length,
+        });
+        const full = clientDocumentEntity("mb", { ...clientDocument(entity("f", { attachmentText: "pdf" })), flags: undefined, hasAttachments: "yes" } as any);
+        expect(full).toMatchObject({ flags: "", hasAttachments: false, attachmentText: "pdf", folderUid: "inbox", entityVersion: "1:inbox" });
+
+        expect(isoWeekId(new Date("2026-01-01T00:00:00Z"))).toBe("2026-W01");
+        expect(isoWeekId(new Date("2026-12-31T23:00:00Z"))).toBe("2026-W53");
+        expect(isoWeekId(new Date("2027-01-03T12:00:00Z"))).toBe("2026-W53");
+        expect(isoWeekId(new Date("2027-01-04T00:00:00Z"))).toBe("2027-W01");
     });
 });

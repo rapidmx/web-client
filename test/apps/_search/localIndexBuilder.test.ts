@@ -35,6 +35,9 @@ const rpc = vi.hoisted(() => ({
 }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => rpc);
 
+const sourceC = vi.hoisted(() => ({ importClientSegments: vi.fn(), uploadClientDocuments: vi.fn() }));
+vi.mock("../../../apps/shared/search/zeroAccessIndexSync.js", () => sourceC);
+
 // No readable vault generation, so these passes never seal - see localIndexBuilder.seal.test.ts.
 vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({ getKeyVault: vi.fn(async () => Promise.reject(new Error("no vault"))) }));
 
@@ -82,6 +85,8 @@ beforeEach(() => {
     evaluateMessageSecurity.mockResolvedValue({ subject: "Secret subject", html: "<p>héllo</p>" });
     listMessages.mockResolvedValue([]);
     listFolders.mockResolvedValue([]);
+    sourceC.importClientSegments.mockResolvedValue(0);
+    sourceC.uploadClientDocuments.mockResolvedValue(0);
 });
 
 describe("buildLocalIndex", () => {
@@ -393,6 +398,41 @@ describe("buildLocalIndex", () => {
 // per-account index build) passes that `useApiClient()` value through as `buildLocalIndex()`'s own trailing `client` argument, which must reach
 // every real (non-local-index-transport) REST call the pass makes - listMessages() and listFolders(). Every test above calls buildLocalIndex()
 // with no client at all, proving the other half: that path is untouched, `client` staying `undefined` all the way down.
+describe("buildLocalIndex - end-to-end mail shared with the mailbox's other devices", () => {
+    it("imports other devices' client segments before walking, under the pass's generation, and uploads what the pass decrypted", async () => {
+        const order: string[] = [];
+        sourceC.importClientSegments.mockImplementation(async () => {
+            order.push("import");
+            return 1;
+        });
+        listMessages.mockImplementation(async (folderUid: string) => {
+            order.push("list");
+            return folderUid === "inbox" ? [message("m1"), message("m2")] : [];
+        });
+        // m2 came from another device's segment at its current version: not decrypted again.
+        rpc.getIndexedVersions.mockResolvedValue({ m2: "1:inbox" });
+        const client = { fetch: vi.fn(), setUnauthorizedObserver: vi.fn() };
+
+        await buildLocalIndex("mb1", unlocked, [folder("inbox", "inbox")], WINDOW, client);
+
+        expect(order[0]).toBe("import");
+        expect(sourceC.importClientSegments).toHaveBeenCalledWith("mb1", unlocked, client, { generation: 1 });
+        expect(getMessageRawContent.mock.calls.map(([uid]) => uid)).toEqual(["m1"]);
+        const [mailboxUid, keys, entities, uploadClient] = sourceC.uploadClientDocuments.mock.calls[0];
+        expect([mailboxUid, keys, uploadClient]).toEqual(["mb1", unlocked, client]);
+        expect(entities.map((e: { entityUid: string }) => e.entityUid)).toEqual(["m1"]);
+    });
+
+    it("builds on when either fails", async () => {
+        sourceC.importClientSegments.mockRejectedValue(new Error("offline"));
+        sourceC.uploadClientDocuments.mockRejectedValue(new Error("offline"));
+        listMessages.mockImplementation(async (folderUid: string) => (folderUid === "inbox" ? [message("m1")] : []));
+
+        await expect(buildLocalIndex("mb1", unlocked, [folder("inbox", "inbox")], WINDOW)).resolves.toBeUndefined();
+        expect(rpc.indexLocalEntities).toHaveBeenCalled();
+    });
+});
+
 describe("buildLocalIndex - an explicit ApiClient is threaded through", () => {
     const client = { fetch: vi.fn(), setUnauthorizedObserver: vi.fn() };
 
