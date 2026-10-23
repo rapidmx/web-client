@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Zero-access encryption** (restapi's `specs/search.md` §3/§7-8) - this client holds the keys that open mail sealed at rest.
+  - **Keys.** A zero-access key is provisioned at first setup, and silently for existing users on their next unlock, sealed under the master key. Settings > Encryption gains an "Enable zero-access encryption" switch (locked with a notice when the administrator disallows it), and the encryption policy form an "Allow zero-access encryption" switch.
+  - **Reading.** Sealed messages open with the mailbox's zero-access keys and show the new `protected_at_rest` state, distinct from end-to-end encrypted; the list shows their decrypted subject and preview. Drafts, reports and invitations of sealed mail are assembled or decrypted on the client.
+  - **Search.** The local index is fed from the server's sealed index (segments and the live tail), and this client compacts closed weeks for the mailbox. End-to-end mail decrypted for search is shared with the mailbox's other devices as client segments, so it is decrypted once per mailbox, not once per device.
+  - **Key export.** "Export keys for Outlook or a phone": a passphrase-protected PKCS#12 of the zero-access and encryption keys (the signing key optional).
+  - **Calendar.** Events sealed for a zero-access mailbox show their real title, location and description.
+  - **Shared mailboxes.** Mailboxes shared with the user open through their member key wraps once a mailbox of their own is unlocked, with no password; locking that mailbox locks them too. The client of an owner or full-access member provisions, shares and rotates shared mailboxes' keys in the background, and escrows the keys of a mailbox without an owner to its escrow scope.
+
 ## v0.35.0
 
 ## v0.34.0
