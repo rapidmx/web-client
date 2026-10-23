@@ -15,6 +15,7 @@ import Modal from "../../../../lib/components/overlays/Modal.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import FormField from "../../../../lib/components/forms/FormField.js";
+import { notify } from "../../notifications/store.js";
 import {
     RECOVERY_CODE_ERROR,
     RecoveryFollowUp,
@@ -98,6 +99,34 @@ const UnlockPromptContext = createContext<UnlockPromptContextValue | null>(null)
  * mailbox happens to resolve - see `KeyEnrollmentGate`'s `blocking` prop, which `MailShell` now sets to
  * `false` for exactly this reason.
  */
+/** Messages for a shared mailbox `openShared()` can't open. */
+export const SHARED_ACCESS_PENDING_MESSAGE = "This mailbox is shared with you, and is waiting for another member to share its key with you. Try again shortly.";
+export const SHARED_OWN_KEYS_LOCKED_MESSAGE = "Unlock your own mailbox first: it holds the key that opens the mailboxes shared with you.";
+
+/**
+ * Opens `mailboxUid` through the user's member key wraps when it is a mailbox shared with them (`sharedMailboxKeys.ts`): its keys, or
+ * `undefined` when it isn't one of theirs (the password prompt applies). Rejects, after saying why, when it is shared with them but can't
+ * open yet. The shared key code is loaded only here.
+ */
+async function openShared(mailboxUid: string): Promise<UnlockedKeys | undefined> {
+    let outcome: string;
+    try {
+        const { unlockSharedMailbox } = await import("../../../../lib/crypto/sharedMailboxKeys.js");
+        outcome = await unlockSharedMailbox(mailboxUid);
+    } catch {
+        return undefined;
+    }
+    if (outcome === "unlocked") {
+        return getUnlockedKeys(mailboxUid);
+    }
+    if (outcome === "pending" || outcome === "own_keys_locked") {
+        const message = outcome === "pending" ? SHARED_ACCESS_PENDING_MESSAGE : SHARED_OWN_KEYS_LOCKED_MESSAGE;
+        notify({ kind: "info", title: "Shared mailbox", message });
+        throw new Error(message);
+    }
+    return undefined;
+}
+
 export function UnlockPromptProvider({ children }: { children: React.ReactNode }) {
     const [pending, setPendingState] = useState<PendingUnlock | null>(null);
     // Mirrors `pending` synchronously, so two requests issued in the same tick see each other.
@@ -122,6 +151,11 @@ export function UnlockPromptProvider({ children }: { children: React.ReactNode }
         if (existing) {
             return Promise.resolve(existing);
         }
+        // A mailbox shared with the user opens through their member key wraps, not a password - and its password, if it has one, isn't theirs.
+        return openShared(mailboxUid).then((shared) => shared ?? promptForPassword(mailboxUid, mailboxKeys));
+    }, []);
+
+    const promptForPassword = useCallback((mailboxUid: string, mailboxKeys: PublicKey[]): Promise<UnlockedKeys> => {
         return new Promise<UnlockedKeys>((resolve, reject) => {
             const current = pendingRef.current;
             if (current?.mailboxUid === mailboxUid) {

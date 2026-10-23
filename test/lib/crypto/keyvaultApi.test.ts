@@ -20,6 +20,11 @@ import {
     normalizeEnrollmentResult,
     rekey,
     recordKeyExport,
+    enrollSharedZeroAccessKey,
+    getMyMemberKeyWraps,
+    getSharedKeyStatus,
+    putMemberKeyWraps,
+    removeMemberKeyWraps,
     removeMasterKeyWrap,
     resolveKeyConflict,
     SignerKeyConflictError,
@@ -507,5 +512,26 @@ describe("with an explicit ApiClient", () => {
         await getKeyVault("mb1");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1/keyvault", expect.anything());
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
+    });
+});
+
+describe("shared mailbox key wraps", () => {
+    it("calls the member wrap routes of the mailbox's key vault", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { members: [] }));
+        const wrap = { memberUserUid: "u", recipientFingerprint: "r", zeroAccessKeyFingerprint: "z", cms: "c" };
+        await getSharedKeyStatus("m/1");
+        await getMyMemberKeyWraps("m/1");
+        await putMemberKeyWraps("m/1", [wrap]);
+        await removeMemberKeyWraps("m/1", "u/2");
+        await enrollSharedZeroAccessKey("m/1", { csr: "CSR", wraps: [{ memberUserUid: "u", recipientFingerprint: "r", cms: "c" }] });
+
+        expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method ?? "GET"])).toEqual([
+            ["/api/mail/mailboxes/m%2F1/keyvault/members", "GET"],
+            ["/api/mail/mailboxes/m%2F1/keyvault/member-wraps", "GET"],
+            ["/api/mail/mailboxes/m%2F1/keyvault/member-wraps", "PUT"],
+            ["/api/mail/mailboxes/m%2F1/keyvault/member-wraps/u%2F2", "DELETE"],
+            ["/api/mail/mailboxes/m%2F1/keyvault/shared-zero-access-key", "POST"],
+        ]);
+        expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ wraps: [wrap] });
     });
 });

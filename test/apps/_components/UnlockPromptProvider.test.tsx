@@ -5,7 +5,7 @@
 import React, { useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UnlockPromptProvider, useUnlockPrompt } from "../../../apps/shared/components/layout/UnlockPromptProvider.js";
 
 const { getUnlockedKeys, unlockWithPassword, unlockWithRecoveryCode, getKeyVault, consumeRecoveryCode } = vi.hoisted(() => ({
@@ -23,6 +23,15 @@ vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({
 }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({ getKeyVault }));
 vi.mock("../../../lib/crypto/masterKeyWraps.js", () => ({ consumeRecoveryCode, replacePasswordWrap: vi.fn() }));
+const { unlockSharedMailbox } = vi.hoisted(() => ({ unlockSharedMailbox: vi.fn() }));
+vi.mock("../../../lib/crypto/sharedMailboxKeys.js", () => ({ unlockSharedMailbox }));
+const { notify } = vi.hoisted(() => ({ notify: vi.fn() }));
+vi.mock("../../../apps/shared/notifications/store.js", async (importOriginal) => ({ ...(await importOriginal<object>()), notify }));
+
+beforeEach(() => {
+    unlockSharedMailbox.mockReset();
+    unlockSharedMailbox.mockResolvedValue("not_shared");
+});
 
 const fakeUnlockedKeys = { masterKey: new Uint8Array(32) };
 
@@ -162,8 +171,13 @@ describe("UnlockPromptProvider", () => {
     });
 
     it("a second request for the same mailbox joins the open dialog, and one unlock settles both callers", async () => {
-        getUnlockedKeys.mockReturnValueOnce(undefined).mockReturnValueOnce(undefined).mockReturnValue(fakeUnlockedKeys);
-        unlockWithPassword.mockResolvedValue({ unopenableKeys: [] });
+        // Locked until the password opens it - however many times the provider looks before then.
+        getUnlockedKeys.mockReset();
+        getUnlockedKeys.mockReturnValue(undefined);
+        unlockWithPassword.mockImplementation(async () => {
+            getUnlockedKeys.mockReturnValue(fakeUnlockedKeys);
+            return { unopenableKeys: [] };
+        });
         let request!: ReturnType<typeof useUnlockPrompt>["requestUnlock"];
         function Capture() {
             request = useUnlockPrompt().requestUnlock;
@@ -376,5 +390,58 @@ describe("UnlockPromptProvider", () => {
             await secondOutcome;
             expect(await screen.findByText("Set a new encryption password")).toBeInTheDocument();
         });
+    });
+});
+
+describe("UnlockPromptProvider (shared mailboxes)", () => {
+    function renderConsumer() {
+        render(
+            <UnlockPromptProvider>
+                <TestConsumer mailboxUid="shared" />
+            </UnlockPromptProvider>,
+        );
+    }
+
+    it("opens a mailbox shared with the user through their member key wraps, with no password", async () => {
+        getUnlockedKeys.mockReset();
+        getUnlockedKeys.mockReturnValueOnce(undefined).mockReturnValue(fakeUnlockedKeys);
+        unlockSharedMailbox.mockResolvedValue("unlocked");
+        const user = userEvent.setup();
+        renderConsumer();
+
+        await user.click(screen.getByRole("button", { name: "Do encrypted thing" }));
+
+        expect(await screen.findByText("Result: unlocked")).toBeInTheDocument();
+        expect(unlockSharedMailbox).toHaveBeenCalledWith("shared");
+        expect(screen.queryByText("Unlock your mailbox")).not.toBeInTheDocument();
+    });
+
+    it.each([
+        ["pending", /waiting for another member to share its key/],
+        ["own_keys_locked", /Unlock your own mailbox first/],
+    ])("never asks a member for a password when it is %s, and says why", async (outcome, message) => {
+        getUnlockedKeys.mockReset();
+        getUnlockedKeys.mockReturnValue(undefined);
+        unlockSharedMailbox.mockResolvedValue(outcome);
+        const user = userEvent.setup();
+        renderConsumer();
+
+        await user.click(screen.getByRole("button", { name: "Do encrypted thing" }));
+
+        expect(await screen.findByText("Result: cancelled")).toBeInTheDocument();
+        expect(screen.queryByText("Unlock your mailbox")).not.toBeInTheDocument();
+        expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(message) }));
+    });
+
+    it("falls back to the password prompt when the shared check fails", async () => {
+        getUnlockedKeys.mockReset();
+        getUnlockedKeys.mockReturnValue(undefined);
+        unlockSharedMailbox.mockRejectedValue(new Error("offline"));
+        const user = userEvent.setup();
+        renderConsumer();
+
+        await user.click(screen.getByRole("button", { name: "Do encrypted thing" }));
+
+        expect(await screen.findByText("Unlock your mailbox")).toBeInTheDocument();
     });
 });

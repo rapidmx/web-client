@@ -17,6 +17,9 @@ import {
     addZeroAccessKey,
     destroyUnlockedKeys,
     getUnlockedKeys,
+    installSharedSession,
+    personallyUnlockedKeys,
+    sharedUnlockGeneration,
     subscribeKeySession,
     unlockWithPassword,
     unlockWithRecoveryCode,
@@ -932,5 +935,38 @@ describe("zero-access keys", () => {
             expect(first.zeroAccessKeys).toBeUndefined();
             expect(second.zeroAccessKeys).toBeUndefined();
         });
+    });
+});
+
+describe("shared sessions (member key wraps)", () => {
+    it("stores a shared mailbox's keys as its session, notifies, and keeps it out of the user's own unlocked mailboxes", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const events: KeySessionEvent[] = [];
+        const unsubscribe = subscribeKeySession((event) => events.push(event));
+
+        const shared = { masterKey: new Uint8Array(32).fill(7) };
+        installSharedSession("shared-mb", shared, sharedUnlockGeneration("shared-mb"));
+
+        expect(getUnlockedKeys("shared-mb")).toBe(shared);
+        expect(shared).toMatchObject({ shared: true });
+        expect(events).toEqual([{ mailboxUid: "shared-mb", state: "unlocked" }]);
+        expect(personallyUnlockedKeys()).toEqual([getUnlockedKeys(MAILBOX_UID)]);
+
+        // Locked like any other session.
+        destroyUnlockedKeys("shared-mb");
+        expect(shared.masterKey.every((b) => b === 0)).toBe(true);
+        unsubscribe();
+    });
+
+    it("discards a shared unlock that a lock overtook", () => {
+        const generation = sharedUnlockGeneration("shared-mb");
+        destroyUnlockedKeys("shared-mb");
+        const shared = { masterKey: new Uint8Array(32).fill(7) };
+
+        expect(() => installSharedSession("shared-mb", shared, generation)).toThrow(KeysLockedError);
+        expect(getUnlockedKeys("shared-mb")).toBeUndefined();
+        expect(shared.masterKey.every((b) => b === 0)).toBe(true);
     });
 });

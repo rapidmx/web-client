@@ -79,6 +79,10 @@ export interface UnlockedKeys {
      * index entries and sealed summaries to - the active one first, then retained ones newest first, at most
      * `MAX_RETAINED_ENCRYPTION_KEYS + 1`. Decryption only. Absent when the mailbox has none (or none opened). */
     zeroAccessKeys?: RetainedEncryptionKey[];
+    /** A shared mailbox opened through this user's member key wraps (`sharedMailboxKeys.ts`), not with its own master key: it holds
+     * only `zeroAccessKeys`, and `masterKey` is a per-key secret derived from its zero-access private key (what the local search
+     * index's key is derived from), never a key that opens the mailbox's vault. */
+    shared?: boolean;
 }
 
 const sessions = new Map<string, UnlockedKeys>();
@@ -163,6 +167,34 @@ export function addZeroAccessKey(mailboxUid: string, unlocked: UnlockedKeys, key
         return;
     }
     unlocked.zeroAccessKeys = [key, ...(unlocked.zeroAccessKeys ?? []).filter((k) => k.fingerprint !== key.fingerprint)];
+}
+
+/**
+ * Stores the keys of a shared mailbox opened through member key wraps (`sharedMailboxKeys.ts`'s `unlockSharedMailbox()`) as that mailbox's
+ * session, exactly as an unlock would - tracked for `destroyUnlockedKeys()`, and notified - unless the mailbox was locked since `generation`
+ * was taken (`sharedUnlockGeneration()`), when they are destroyed instead and `KeysLockedError` is thrown.
+ */
+export function installSharedSession(mailboxUid: string, unlocked: UnlockedKeys, generation: string): void {
+    if (lockGeneration(mailboxUid) !== generation) {
+        destroyObject(unlocked);
+        throw new KeysLockedError();
+    }
+    unlocked.shared = true;
+    sessions.set(mailboxUid, unlocked);
+    const objects = issued.get(mailboxUid) ?? new Set<WeakHandle<UnlockedKeys>>();
+    objects.add(weakHandle(unlocked));
+    issued.set(mailboxUid, objects);
+    notify({ mailboxUid, state: "unlocked" });
+}
+
+/** The lock generation to pass `installSharedSession()`, taken before a shared unlock starts its requests. */
+export function sharedUnlockGeneration(mailboxUid: string): string {
+    return lockGeneration(mailboxUid);
+}
+
+/** Every mailbox unlocked this session with its own keys (not a shared one opened through member key wraps). */
+export function personallyUnlockedKeys(): UnlockedKeys[] {
+    return [...sessions.values()].filter((unlocked) => !unlocked.shared);
 }
 
 /** Reads back a mailbox's already-unlocked keys this session, or `undefined` if it hasn't been

@@ -522,6 +522,72 @@ export function removeMasterKeyWrap(mailboxUid: string, method: string, methodId
     });
 }
 
+/** One member's copy of a shared mailbox's zero-access private key: base64 CMS of its PKCS#8, to the member's own zero-access certificate. */
+export interface MemberKeyWrap {
+    memberUserUid: string;
+    recipientFingerprint: string;
+    zeroAccessKeyFingerprint: string;
+    cms: string;
+    createdAt?: number;
+}
+
+/** One member in `SharedKeyStatus`. */
+export interface SharedKeyMember {
+    userUid: string;
+    full: boolean;
+    /** Their own zero-access certificate - absent until they first sign in and get one. */
+    certificate?: ZeroAccessKey;
+    /** The mailbox's zero-access keys they hold a wrap of. */
+    wrapped: string[];
+}
+
+/** Where a shared mailbox's zero-access key stands with its members - restapi `GET /mail/mailboxes/:id/keyvault/members`. */
+export interface SharedKeyStatus {
+    ownerless: boolean;
+    /** The caller: the mailbox's owner, one of its members, or neither (an administrator acting through a role). */
+    role?: "owner" | "member" | "other";
+    activeKeyFingerprint?: string;
+    zeroAccessKeys: ZeroAccessKey[];
+    members: SharedKeyMember[];
+    /** Members with a certificate but no wrap of the active key. */
+    pending: string[];
+    /** Users holding wraps who are no longer members. */
+    departed: string[];
+    /** A departed user holds the active key: a new key must be provisioned. */
+    rotationPending: boolean;
+    /** The caller may change the wraps. */
+    manager: boolean;
+}
+
+const vaultPath = (mailboxUid: string): string => `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`;
+
+export function getSharedKeyStatus(mailboxUid: string, client?: ApiClient): Promise<SharedKeyStatus> {
+    return withClient(client, `${vaultPath(mailboxUid)}/members`);
+}
+
+/** The caller's own member key wraps of `mailboxUid` (`[]` for its owner and for a member still waiting). */
+export function getMyMemberKeyWraps(mailboxUid: string, client?: ApiClient): Promise<MemberKeyWrap[]> {
+    return withClient(client, `${vaultPath(mailboxUid)}/member-wraps`);
+}
+
+export function putMemberKeyWraps(mailboxUid: string, wraps: MemberKeyWrap[], client?: ApiClient): Promise<SharedKeyStatus> {
+    return withClient(client, `${vaultPath(mailboxUid)}/member-wraps`, { method: "PUT", body: JSON.stringify({ wraps }) });
+}
+
+/** Removes every wrap of a user who is no longer a member - the last step of a rotation. */
+export function removeMemberKeyWraps(mailboxUid: string, memberUserUid: string, client?: ApiClient): Promise<SharedKeyStatus> {
+    return withClient(client, `${vaultPath(mailboxUid)}/member-wraps/${encodeURIComponent(memberUserUid)}`, { method: "DELETE" });
+}
+
+/** Provisions (or rotates) a mailbox-without-an-owner's zero-access key with its member wraps, in one write. */
+export function enrollSharedZeroAccessKey(
+    mailboxUid: string,
+    input: { csr: string; wraps: Omit<MemberKeyWrap, "zeroAccessKeyFingerprint">[] },
+    client?: ApiClient,
+): Promise<SharedKeyStatus> {
+    return withClient(client, `${vaultPath(mailboxUid)}/shared-zero-access-key`, { method: "POST", body: JSON.stringify(input) });
+}
+
 /** One key a "Export keys for Outlook/phone" file held, as `recordKeyExport()` reports it. */
 export interface ExportedKeyRecord {
     kind: "zero-access" | "encrypt" | "sign";

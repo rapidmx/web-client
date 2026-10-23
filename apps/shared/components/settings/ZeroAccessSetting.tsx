@@ -4,16 +4,15 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
 import { getEncryptionPolicy } from "../../../../lib/crypto/keyvaultApi.js";
-import { listMailboxAccess } from "../../../../lib/mail/mailboxAccessApi.js";
 import { getMailbox, type Mailbox, updateMailbox } from "../../../../lib/mail/mailApi.js";
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import PolicyLockedNotice from "./PolicyLockedNotice.js";
 
-/** Why zero-access encryption can't be on for this mailbox, when it can't - mirrors restapi's `ZeroAccessStatus` reasons
- * that the user can't fix by ticking the box. */
-type Blocker = "disabled_by_admin" | "unsupported" | "shared_mailbox";
+/** Why zero-access encryption can't be changed here, when it can't - mirrors restapi's `ZeroAccessStatus` reasons that the user can't fix
+ * by ticking the box. */
+type Blocker = "disabled_by_admin" | "unsupported";
 
 export interface ZeroAccessSettingProps {
     mailbox: Mailbox;
@@ -24,8 +23,8 @@ export interface ZeroAccessSettingProps {
 /**
  * "Enable zero-access encryption" for one mailbox (restapi `specs/search.md` §3): unencrypted mail is encrypted to the
  * mailbox's zero-access key as it arrives and the server keeps no readable copy. On by default. Shown disabled, with the
- * reason, when the administrator has turned "Allow zero-access encryption" off for the server, when the server doesn't
- * support it, or for a shared mailbox (not covered yet, so its delegates keep their access to new mail).
+ * reason, when the administrator has turned "Allow zero-access encryption" off for the server, or when the server doesn't
+ * support it. A shared mailbox is covered too: its members read it through member key wraps (`sharedMailboxKeys.ts`).
  */
 export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSettingProps) {
     const client = useApiClient();
@@ -42,14 +41,6 @@ export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSett
                 next = "unsupported";
             } else if (!policy.allowZeroAccess) {
                 next = "disabled_by_admin";
-            } else if (!mailbox.ownerUserUid) {
-                next = "shared_mailbox";
-            } else if (canManage) {
-                // Delegates are listed to whoever may update the mailbox; anybody else can't change the setting anyway.
-                const members = await listMailboxAccess(mailbox.uid, client).catch(() => []);
-                if (members.some((member) => member.userOrRoleId !== mailbox.ownerUserUid)) {
-                    next = "shared_mailbox";
-                }
             }
             if (!cancelled) {
                 setBlocker(next);
@@ -58,7 +49,7 @@ export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSett
         return () => {
             cancelled = true;
         };
-    }, [mailbox.uid, mailbox.ownerUserUid, canManage, client]);
+    }, [mailbox.uid, client]);
 
     async function save(next: boolean) {
         setSaving(true);
@@ -113,13 +104,12 @@ export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSett
                 </PolicyLockedNotice>
             )}
             {blocker === "unsupported" && <PolicyLockedNotice>This server doesn&rsquo;t offer zero-access encryption.</PolicyLockedNotice>}
-            {blocker === "shared_mailbox" && (
+            {!mailbox.ownerUserUid && !locked && (
                 <PolicyLockedNotice>
-                    Zero-access encryption isn&rsquo;t available yet for a mailbox shared with other people, so they keep access to
-                    new mail.
+                    This shared mailbox has no owner: it is protected for its members, whose apps share its key with each other.
                 </PolicyLockedNotice>
             )}
-            {!canManage && !locked && (
+            {!canManage && !locked && mailbox.ownerUserUid && (
                 <PolicyLockedNotice>Only this mailbox&rsquo;s owner, signed in as themselves, can change this.</PolicyLockedNotice>
             )}
         </div>

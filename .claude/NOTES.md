@@ -3839,3 +3839,30 @@ Not committed. Every new `client` is an optional trailing parameter; without one
 - **Escrow console:** the material modal now shows the whole release (master-key wraps, `wrappedKeys`, `certificates`). `EscrowAccessMaterial` has gained the two optional fields.
 - **Not done:** Source C (client-built segments for end-to-end mail) stays deferred, as "(Later)" in the plan. The escrow console still doesn't decrypt anything by design; holders use offline tooling.
 - **Known gap:** an open calendar view doesn't re-decrypt sealed events when the mailbox is unlocked after it loaded; a reload does.
+
+## 2026-10-23 - Zero-access encryption, Phase 7 (shared mailboxes)
+
+- **`lib/crypto/sharedMailboxKeys.ts`:**
+  - `unlockSharedMailbox(uid)` returns `unlocked`, `pending` (a member without a wrap yet), `own_keys_locked` (none of their own mailboxes is unlocked) or `not_shared` (owner or non-member).
+    - It opens the member's wraps (`GET .../keyvault/member-wraps`) with the zero-access keys of their personally unlocked mailboxes. The keys are installed via `keySession.installSharedSession` (active first).
+    - `masterKey` is SHA-256 of a label plus the active key's PKCS#8. It is only what the local index key is derived from, never a vault key. `UnlockedKeys.shared` is true.
+  - `maintainSharedMailbox(uid, address)` runs on the owner's or a FULL member's client:
+    - It provisions an ownerless mailbox's key (unless `allowZeroAccess` is false), wrapped for every member with a certificate, via `POST .../shared-zero-access-key`.
+    - On `rotationPending` it rotates: the owner through `provisionZeroAccessKey` with the master key, an ownerless mailbox through `shared-zero-access-key`.
+    - It then removes departed users' wraps and wraps every key it can open for waiting members. The owner re-derives the PKCS#8 from the vault with the master key; a member re-derives it from their own wraps.
+- **`keySession`:**
+  - `installSharedSession(uid, unlocked, generation)` and `sharedUnlockGeneration(uid)` mean a lock that overtakes the unlock destroys it with `KeysLockedError`.
+  - `personallyUnlockedKeys()` returns only non-shared sessions.
+- **`keyvaultApi`:** `getSharedKeyStatus`, `getMyMemberKeyWraps`, `putMemberKeyWraps`, `removeMemberKeyWraps`, `enrollSharedZeroAccessKey`, and the `SharedKeyStatus` type (with `role`).
+- **`SharedMailboxKeyManager`** (mounted in `MailShell`) lazy-loads the module.
+  - It runs whenever a personal mailbox unlocks, and every 5 minutes, never two passes at once.
+  - For each mailbox: one the user doesn't own is unlocked as shared and then maintained; an owned mailbox is maintained once it is unlocked with its own keys.
+- **`UnlockPromptProvider.requestUnlock`** first tries `unlockSharedMailbox`.
+  - `unlocked` resolves with no prompt.
+  - `pending` and `own_keys_locked` notify and reject, so a member is never asked for a password that isn't theirs.
+  - Anything else falls back to the password prompt. `promptForPassword` doesn't re-check the session.
+- **`ZeroAccessSetting`** no longer blocks shared mailboxes. An ownerless mailbox gets an explanatory notice instead of "only the owner".
+- **Known gaps:**
+  - tauri-client needs no change for this; it uses web-client's TS.
+  - There is no escrow wrap for an ownerless mailbox's zero-access key.
+  - A personal-mailbox lock doesn't lock the shared sessions opened through it (the idle and logout lock-all does).

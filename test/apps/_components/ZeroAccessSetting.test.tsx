@@ -93,25 +93,16 @@ describe("ZeroAccessSetting", () => {
         expect(await screen.findByText(/doesn.t offer zero-access encryption/)).toBeInTheDocument();
     });
 
-    it("is disabled and explained for an ownerless mailbox or one with delegates", async () => {
+    it("explains that a mailbox without an owner is protected for its members, and leaves one with delegates to its owner", async () => {
         mockServer({});
         const { unmount } = render(<ZeroAccessSetting mailbox={{ ...MAILBOX, ownerUserUid: undefined }} canManage={false} />);
-        expect(await screen.findByText(/isn.t available yet for a mailbox shared with other people/)).toBeInTheDocument();
+        expect(await screen.findByText(/protected for its members, whose apps share its key/)).toBeInTheDocument();
+        expect(screen.queryByText(/Only this mailbox.s owner/)).toBeNull();
         expect(checkbox()).toBeDisabled();
         unmount();
 
-        mockServer({ members: [{ userOrRoleId: "u1", role: "manager" }, { userOrRoleId: "u2", role: "viewer" }] });
-        render(<ZeroAccessSetting mailbox={MAILBOX} canManage />);
-        expect(await screen.findByText(/isn.t available yet for a mailbox shared with other people/)).toBeInTheDocument();
-    });
-
-    it("treats a member list it can't read, or one listing only the owner, as unshared", async () => {
-        mockServer({ members: jsonResponse(500, {}) });
-        const { unmount } = render(<ZeroAccessSetting mailbox={MAILBOX} canManage />);
-        await waitFor(() => expect(checkbox()).toBeEnabled());
-        unmount();
-
-        mockServer({ members: [{ userOrRoleId: "u1", role: "manager" }] });
+        // Delegates are no reason to turn it off any more: they read through member key wraps.
+        mockServer({});
         render(<ZeroAccessSetting mailbox={MAILBOX} canManage />);
         await waitFor(() => expect(checkbox()).toBeEnabled());
     });

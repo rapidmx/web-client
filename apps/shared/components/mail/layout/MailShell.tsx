@@ -15,6 +15,7 @@ import KeyEnrollmentGate from "../../layout/KeyEnrollmentGate.js";
 import MailboxProvisioning from "../../layout/MailboxProvisioning.js";
 import { prefetchComposeWindow, useCompose } from "../compose/ComposeContext.js";
 import LocalIndexLifecycle from "../../../search/LocalIndexLifecycle.js";
+import SharedMailboxKeyManager from "../../layout/SharedMailboxKeyManager.js";
 import { LiveUpdates, NO_LIVE_UPDATES } from "../../../mail/useMailLiveUpdates.js";
 import { MAILBOX_LIST_LIMIT, MailConnectionContext, useMailConnection } from "../../../mail/useMailConnection.js";
 import { folderRows } from "../../../mail/folderTree.js";
@@ -538,6 +539,7 @@ export default function MailShell({
             // the impersonated user's own mailbox: an administrator must never choose its password/recovery codes.
             canProvision={!impersonating && activeMailbox?.ownerUserUid === userUid}
         >
+            <SharedMailboxKeyManager mailboxes={mailboxes} userUid={userUid} />
             <LocalIndexLifecycle
                 mailboxUid={activeMailboxUid}
                 mailboxKeys={activeMailbox?.keys}
