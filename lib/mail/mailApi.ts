@@ -809,7 +809,7 @@ export type MessageReportKind = "junk" | "phishing" | "not_junk";
 /** Why the server did not teach its spam filter from a report: `encrypted` (it has no plaintext to teach), `disabled` (learning is switched off),
  * `unsupported` (no spam engine, or one that cannot learn), `too_large` (over the size it reads) or `failed` (the engine could not be reached,
  * refused, or the message could not be read). The report itself still happened. */
-export type MessageLearnSkipped = "encrypted" | "disabled" | "unsupported" | "too_large" | "failed";
+export type MessageLearnSkipped = "encrypted" | "zero_access" | "disabled" | "unsupported" | "too_large" | "failed";
 
 /** What `reportMessage()` answers. */
 export interface MessageReportResult {
@@ -832,6 +832,9 @@ export interface ReportMessageOptions {
     /** With `not_junk` only (else a 400): also add the message's From address to the mailbox's safe senders. Needs full access to the mailbox (403 otherwise,
      * before anything is done). */
     alwaysTrustSender?: boolean;
+    /** For a zero-access message only (else a 400): its original source, base64-encoded, decrypted here - the server holds only the sealed
+     * copy, so this is what its spam filter learns from (never stored). Without it the server skips learning (`learnSkipped: "zero_access"`). */
+    rawMessage?: string;
 }
 
 /**
@@ -849,7 +852,11 @@ export function reportMessage(
 ): Promise<MessageReportResult> {
     return withClient(client, `/mail/messages/${encodeURIComponent(uid)}/report`, {
         method: "POST",
-        body: JSON.stringify({ kind, ...(options.alwaysTrustSender ? { alwaysTrustSender: true } : {}) }),
+        body: JSON.stringify({
+            kind,
+            ...(options.alwaysTrustSender ? { alwaysTrustSender: true } : {}),
+            ...(options.rawMessage ? { rawMessage: options.rawMessage } : {}),
+        }),
     });
 }
 

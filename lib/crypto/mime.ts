@@ -541,6 +541,32 @@ export function extractAttachments(entity: MimeEntity, depth = 0): MimeAttachmen
     ];
 }
 
+/**
+ * The text of the first calendar file in `entity` (descending into multipart children, bounded depth): a `text/calendar` or
+ * `application/ics` leaf, whether a body alternative (as Outlook sends an invitation) or an attached `.ics`. `undefined` when there is none.
+ */
+export function extractCalendarText(entity: MimeEntity, depth = 0): string | undefined {
+    const contentType = parseParameterizedHeader(entity.headers["content-type"] ?? "text/plain");
+    if (contentType.value.startsWith("multipart/")) {
+        const boundary = contentType.params["boundary"];
+        if (!boundary || depth >= MAX_MULTIPART_DEPTH) {
+            return undefined;
+        }
+        for (const part of splitMultipart(entity.body, boundary)) {
+            const found = extractCalendarText(parseMimeEntity(part), depth + 1);
+            if (found !== undefined) {
+                return found;
+            }
+        }
+        return undefined;
+    }
+    if (contentType.value !== "text/calendar" && contentType.value !== "application/ics") {
+        return undefined;
+    }
+    const bytes = decodeBodyBytes(entity);
+    return bytes ? new TextDecoder().decode(bytes) : undefined;
+}
+
 /** HTML-escapes plain text and wraps it in a whitespace-preserving `<pre>`, so a `text/plain` body can be
  * rendered through the same HTML path without ever being interpreted as markup. */
 export function plainTextToHtml(text: string): string {

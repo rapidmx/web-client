@@ -4,6 +4,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { useCallback, useEffect, useReducer } from "react";
 import { MessageInvite, getMessageInvite } from "../../../../../lib/calendar/inviteApi.js";
+import { clearSealedInvites, sealedInviteCalendar } from "../../../../../lib/calendar/sealedInvites.js";
+import { onSigningOut } from "../compose/composeFlushRegistry.js";
 import { ApiClient } from "../../../../../lib/util/api.js";
 import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
 
@@ -51,7 +53,9 @@ function normalize(invite: MessageInvite | null): MessageInvite | null {
  */
 export function loadInvite(uid: string, client?: ApiClient): Promise<MessageInvite | null> {
     const existing = entries.get(uid);
-    if (existing && (existing.value === undefined || Date.now() - existing.at < INVITE_TTL_MS)) {
+    // "No invitation" for a zero-access message is asked again once its calendar file has been decrypted here (the list asks before that).
+    const stale = existing?.value === null && sealedInviteCalendar(uid) !== undefined;
+    if (existing && !stale && (existing.value === undefined || Date.now() - existing.at < INVITE_TTL_MS)) {
         return existing.promise;
     }
     const entry: Entry = {
@@ -120,3 +124,5 @@ export function useMessageInvite(uid: string, enabled = true): { invite: Message
     const value = enabled ? entries.get(uid)?.value : undefined;
     return { invite: value ?? null, settled: value !== undefined, setInvite };
 }
+
+onSigningOut(clearSealedInvites);

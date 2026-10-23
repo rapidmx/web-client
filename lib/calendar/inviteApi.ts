@@ -10,6 +10,14 @@
 
 import { ApiClient, ApiRequestError, withClient } from "../util/api.js";
 import type { EventVisibility, GuestPermissions } from "./calendarApi.js";
+import { sealedInviteCalendar } from "./sealedInvites.js";
+
+/** The calendar file to send for `messageUid` - a zero-access message this device decrypted (`sealedInvites.ts`) - as the request body's
+ * `ics`, or nothing for a message the server reads itself. */
+function sealedSource(messageUid: string): { ics?: string } {
+    const ics = sealedInviteCalendar(messageUid);
+    return ics !== undefined ? { ics } : {};
+}
 
 /** What the reader can answer an invitation with. */
 export type InviteResponse = "accepted" | "tentative" | "declined";
@@ -104,8 +112,15 @@ export interface MessageInvite {
  * common, expected answer for a message that merely has an attachment - and rejects for any other failure.
  */
 export async function getMessageInvite(messageUid: string, client?: ApiClient): Promise<MessageInvite | null> {
+    const source = sealedSource(messageUid);
     try {
-        return await withClient<MessageInvite>(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}`);
+        // A zero-access message's invitation is read from the calendar file decrypted here (`POST .../view`).
+        return source.ics !== undefined
+            ? await withClient<MessageInvite>(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}/view`, {
+                  method: "POST",
+                  body: JSON.stringify(source),
+              })
+            : await withClient<MessageInvite>(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}`);
     } catch (err) {
         if (err instanceof ApiRequestError && err.status === 404) {
             return null;
@@ -122,13 +137,17 @@ export async function getMessageInvite(messageUid: string, client?: ApiClient): 
 export function respondToMessageInvite(messageUid: string, responseStatus: InviteResponse, client?: ApiClient): Promise<MessageInvite> {
     return withClient(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}/respond`, {
         method: "POST",
-        body: JSON.stringify({ responseStatus }),
+        body: JSON.stringify({ responseStatus, ...sealedSource(messageUid) }),
     });
 }
 
 /** Takes a canceled meeting off the reader's calendar. Resolves with the invitation as it now stands. */
 export function removeMessageInvite(messageUid: string, client?: ApiClient): Promise<MessageInvite> {
-    return withClient(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}/remove`, { method: "POST" });
+    const source = sealedSource(messageUid);
+    return withClient(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}/remove`, {
+        method: "POST",
+        ...(source.ics !== undefined ? { body: JSON.stringify(source) } : {}),
+    });
 }
 
 /** A different time to suggest to the organizer. */
@@ -144,11 +163,15 @@ export interface ProposedTime {
 export function proposeNewTime(messageUid: string, proposal: ProposedTime, client?: ApiClient): Promise<MessageInvite> {
     return withClient(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}/propose`, {
         method: "POST",
-        body: JSON.stringify(proposal),
+        body: JSON.stringify({ ...proposal, ...sealedSource(messageUid) }),
     });
 }
 
 /** Accepts an attendee's proposed time (a `COUNTER`) for a meeting the reader organizes: the server moves the event and sends the attendees the update. Resolves with the invitation as it now stands. */
 export function acceptProposal(messageUid: string, client?: ApiClient): Promise<MessageInvite> {
-    return withClient(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}/accept-proposal`, { method: "POST" });
+    const source = sealedSource(messageUid);
+    return withClient(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}/accept-proposal`, {
+        method: "POST",
+        ...(source.ics !== undefined ? { body: JSON.stringify(source) } : {}),
+    });
 }

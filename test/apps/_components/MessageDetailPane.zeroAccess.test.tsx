@@ -100,3 +100,48 @@ describe("MessageDetailPane (zero-access)", () => {
         expect(evaluateMessageSecurity).not.toHaveBeenCalled();
     });
 });
+
+describe("MessageDetailPane (zero-access invitation)", () => {
+    it("reads the invitation of a sealed message from the calendar file decrypted here", async () => {
+        getPinnedSignerFingerprints.mockResolvedValue([]);
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [{}] });
+        evaluateMessageSecurity.mockResolvedValue({ state: "protected_at_rest", zeroAccess: true, subject: "Invitation", text: "Join us", attachments: [], calendar: "ICS-TEXT" });
+        const views: string[] = [];
+        mockFetch((url, init) => {
+            if (url.endsWith("/raw")) return new Response("sealed mime");
+            if (url.endsWith("/invite/m1/view")) {
+                views.push(String(init.body));
+                return new Response(
+                    JSON.stringify({
+                        method: "REQUEST",
+                        uid: "ical-1",
+                        sequence: 0,
+                        summary: "Sealed planning",
+                        startDate: "2026-06-16T14:00:00.000Z",
+                        endDate: "2026-06-16T15:00:00.000Z",
+                        allDay: false,
+                        organizer: { address: "sender@example.com" },
+                        attendees: [],
+                        recurring: false,
+                        isOrganizer: false,
+                        onCalendar: false,
+                        outdated: false,
+                        canRespond: true,
+                        canAdd: false,
+                        canRemove: false,
+                        canPropose: false,
+                        canAcceptProposal: false,
+                        conflicts: [],
+                        schedule: [],
+                    }),
+                    { status: 200, headers: { "content-type": "application/json" } },
+                );
+            }
+            return new Response("{}");
+        });
+        render(<MessageDetailPane message={sealedMessage({ uid: "m1" }) as never} attachments={[]} />);
+
+        expect((await screen.findAllByText(/Sealed planning/)).length).toBeGreaterThan(0);
+        expect(views.map((body) => JSON.parse(body))).toContainEqual({ ics: "ICS-TEXT" });
+    });
+});

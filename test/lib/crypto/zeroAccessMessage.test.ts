@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import * as x509 from "@peculiar/x509";
 import { describe, expect, it } from "vitest";
 import { toBase64 } from "../../../lib/crypto/encoding.js";
-import { evaluateMessageSecurity, openZeroAccessSummary } from "../../../lib/crypto/messageSecurity.js";
+import { evaluateMessageSecurity, openZeroAccessMessage, openZeroAccessSummary } from "../../../lib/crypto/messageSecurity.js";
 import { computeCertFingerprint, encryptForRecipients } from "../../../lib/crypto/smime.js";
 import { type ProtectedHeaders, assembleOutboundMime, buildSignedOnlyMessage } from "../../../lib/crypto/smimeMessage.js";
 
@@ -141,5 +141,50 @@ describe("openZeroAccessSummary", () => {
         expect(await openZeroAccessSummary(notSummary, [za])).toBeUndefined();
         const nullJson = toBase64(await encryptForRecipients(new Uint8Array(Buffer.from("null")), [za.certDer]));
         expect(await openZeroAccessSummary(nullJson, [za])).toBeUndefined();
+    });
+});
+
+describe("zero-access invitations and sources", () => {
+    const ICS = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:meet-1\r\nSUMMARY:Planning\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    const invitation = [
+        "From: boss@example.org",
+        "Subject: Invitation: Planning",
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/alternative; boundary="b"',
+        "",
+        "--b",
+        "Content-Type: text/plain",
+        "",
+        "You are invited.",
+        "--b",
+        "Content-Type: text/calendar; method=REQUEST; charset=utf-8",
+        "Content-Transfer-Encoding: base64",
+        "",
+        Buffer.from(ICS).toString("base64"),
+        "--b--",
+        "",
+    ].join("\r\n");
+
+    it("hands back the calendar file of a sealed invitation, which the server can't read", async () => {
+        const za = await identity("za@example.com", "encrypt");
+        const result = await evaluateMessageSecurity(await sealAtRest(invitation, za.certDer), { zeroAccessKeys: [za] });
+
+        expect(result.state).toBe("protected_at_rest");
+        expect(result.calendar).toBe(ICS);
+    });
+
+    it("has no calendar file for a sealed message without one", async () => {
+        const result = await evaluateMessageSecurity(Buffer.from(fixture.sealedMessage, "base64").toString("latin1"), { zeroAccessKeys: [await fixtureKey()] });
+        expect(result.calendar).toBeUndefined();
+    });
+
+    it("opens a sealed message's original source, and nothing for anything else", async () => {
+        const za = await identity("za@example.com", "encrypt");
+        const sealed = await sealAtRest(invitation, za.certDer);
+
+        expect(await openZeroAccessMessage(sealed, { zeroAccessKeys: [za] })).toBe(invitation);
+        expect(await openZeroAccessMessage(sealed, undefined)).toBeUndefined();
+        expect(await openZeroAccessMessage(invitation, { zeroAccessKeys: [za] })).toBeUndefined();
+        expect(await openZeroAccessMessage("no headers at all", { zeroAccessKeys: [za] })).toBeUndefined();
     });
 });

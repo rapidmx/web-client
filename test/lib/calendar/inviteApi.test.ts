@@ -13,6 +13,7 @@ import {
     respondToMessageInvite,
     type MessageInvite,
 } from "../../../lib/calendar/inviteApi.js";
+import { clearSealedInvites, rememberSealedInvite, sealedInviteCalendar } from "../../../lib/calendar/sealedInvites.js";
 
 const invite: MessageInvite = {
     method: "REQUEST",
@@ -179,5 +180,53 @@ describe("with an explicit ApiClient", () => {
         await getMessageInvite("m1");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/invite/m1", expect.anything());
         expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
+    });
+});
+
+describe("a zero-access message's invitation (the calendar file decrypted here goes along)", () => {
+    afterEach(() => {
+        clearSealedInvites();
+    });
+
+    it("reads it with POST .../view, and sends the file with every answer", async () => {
+        rememberSealedInvite("m1", "ICS");
+        const fetchMock = mockFetch(() => jsonResponse(200, invite));
+        const body = (i: number) => JSON.parse(fetchMock.mock.calls[i][1].body);
+
+        await getMessageInvite("m1");
+        await respondToMessageInvite("m1", "accepted");
+        await removeMessageInvite("m1");
+        await proposeNewTime("m1", { startDate: "a", endDate: "b" });
+        await acceptProposal("m1");
+
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+            "/api/mail/calendar-events/invite/m1/view",
+            "/api/mail/calendar-events/invite/m1/respond",
+            "/api/mail/calendar-events/invite/m1/remove",
+            "/api/mail/calendar-events/invite/m1/propose",
+            "/api/mail/calendar-events/invite/m1/accept-proposal",
+        ]);
+        expect([0, 1, 2, 3, 4].map(body)).toEqual([
+            { ics: "ICS" },
+            { responseStatus: "accepted", ics: "ICS" },
+            { ics: "ICS" },
+            { startDate: "a", endDate: "b", ics: "ICS" },
+            { ics: "ICS" },
+        ]);
+    });
+
+    it("keeps only the most recently read messages' files, and forgets them all on clear", () => {
+        for (let i = 0; i <= 100; i++) {
+            rememberSealedInvite(`m${i}`, `ICS${i}`);
+        }
+        rememberSealedInvite("m1", "again");
+        rememberSealedInvite("m101", "ICS101");
+
+        expect(sealedInviteCalendar("m0")).toBeUndefined();
+        expect(sealedInviteCalendar("m1")).toBe("again");
+        expect(sealedInviteCalendar("m2")).toBeUndefined();
+        expect(sealedInviteCalendar("m101")).toBe("ICS101");
+        clearSealedInvites();
+        expect(sealedInviteCalendar("m1")).toBeUndefined();
     });
 });

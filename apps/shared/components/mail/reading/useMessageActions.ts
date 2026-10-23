@@ -28,6 +28,7 @@ import { resolveFolderOfType } from "../../../mail/folderOfType.js";
 import { setReadStateMany } from "../../../mail/messageReadState.js";
 import { usePermanentDelete } from "../../../mail/usePermanentDelete.js";
 import { reportFolderName, reportNotice, reportNoun, reportTitle, senderListsHref } from "../../../mail/reportNotices.js";
+import { zeroAccessSourceBase64 } from "../../../mail/zeroAccessSource.js";
 import { blockSender, neverBlockSender, normalizeAddresses, removeSenderRule } from "../../../mail/senderBlocking.js";
 import { notifyApiError } from "../../../notifications/apiErrors.js";
 import { notify } from "../../../notifications/store.js";
@@ -190,7 +191,9 @@ export function useMessageActions(params: MessageActionsParams): MessageActions 
         await exclusive(async () => {
             let result: MessageReportResult;
             try {
-                result = await reportMessage(message.uid, kind, { alwaysTrustSender }, client);
+                // The server holds only the sealed copy of a zero-access message: its spam filter learns from the source decrypted here.
+                const rawMessage: string | undefined = await zeroAccessSourceBase64(message, client);
+                result = await reportMessage(message.uid, kind, { alwaysTrustSender, ...(rawMessage ? { rawMessage } : {}) }, client);
             } catch (err) {
                 if (isNotFound(err)) {
                     await reportByMoving(kind, alwaysTrustSender);

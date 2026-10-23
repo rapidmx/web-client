@@ -3798,3 +3798,14 @@ Not committed. Every new `client` is an optional trailing parameter; without one
   - `assembleDraft`/`assembleDraftRaw` take `intent` (`AssembleIntent`). Autosaves leave it at the default `"save"`, so the server seals them in a zero-access mailbox. The send job passes `"send"`.
   - `resumeFromDraft()` decrypts a sealed draft (`draft.zeroAccess`) with the unlocked keys and takes its subject from the decrypted message. While the mailbox is locked, the draft stays read-only.
   - `quotedBody` treats `message.zeroAccess` like `encrypted`: no prefetch and no `/content`, so the body comes only from the decrypted `security`.
+
+## 2026-10-23 - Zero-access encryption, Phase 4 (report, invitations, export copy)
+
+- **Report:** `useMessageActions.report()` sends `rawMessage` for a zero-access message: its original source, decrypted with the unlocked keys (`apps/shared/mail/zeroAccessSource.ts`, built on `messageSecurity.openZeroAccessMessage()`). While the mailbox is locked it's left out, and the server answers `learnSkipped: "zero_access"`; `reportNotice()` words that.
+- **Invitations:**
+  - `MessageSecurityResult.calendar` holds a zero-access message's calendar file (`mime.extractCalendarText()`: a text/calendar or application/ics leaf, alternative or attachment).
+  - `MessageDetailPane` registers it in `lib/calendar/sealedInvites.ts` *during render*. An effect ran after the invite lookup's effect, so the first lookup went out as a plain GET.
+  - `inviteApi` then sends `ics` with every call, and uses `POST .../view` instead of the GET.
+  - `inviteStore` asks again about a cached "no invitation" once a calendar is registered, since the list chip asks before the message is opened.
+  - The registry keeps 100 entries and is cleared on sign-out.
+- **Privacy page:** the export copy says zero-access mail is exported encrypted and opens with the exported keys.

@@ -48,6 +48,7 @@ import MoveToFolderDialog from "./MoveToFolderDialog.js";
 import InviteCard from "./InviteCard.js";
 import { isCalendarAttachment } from "./invite/inviteFormat.js";
 import { useMessageInvite } from "./invite/inviteStore.js";
+import { rememberSealedInvite } from "../../../../lib/calendar/sealedInvites.js";
 import { getUnlockedKeys, subscribeKeySession } from "../../../../lib/crypto/keySession.js";
 import type { MessageSecurityResult, SignatureFailureReason } from "../../../../lib/crypto/messageSecurity.js";
 import { extractAddresses, type MimeAttachment } from "../../../../lib/crypto/mime.js";
@@ -1142,7 +1143,18 @@ function MessageDetailContent({
     // Only a message the server can read and that carries a calendar file is worth asking about an invitation. An encrypted message is out: the
     // server holds only its ciphertext (the calendar file is inside it), so there is nothing for it to find. Drafts and Outbox hold messages
     // that are being written or sent, not received invitations.
-    const mayHoldInvite = !message.encrypted && !inOutbox && message.folderUid !== draftsFolderUid && attachments.some(isCalendarAttachment);
+    // A zero-access message's calendar file is inside the sealed copy: the server reads the invitation from the one decrypted here.
+    const sealedCalendar: string | undefined = security?.zeroAccess ? security.calendar : undefined;
+    // Registered while rendering, not in an effect: the invitation lookup below must find it the moment it is enabled. Writing the same
+    // file for the same message again is a no-op.
+    if (sealedCalendar !== undefined) {
+        rememberSealedInvite(message.uid, sealedCalendar);
+    }
+    const mayHoldInvite =
+        !message.encrypted &&
+        !inOutbox &&
+        message.folderUid !== draftsFolderUid &&
+        (attachments.some(isCalendarAttachment) || sealedCalendar !== undefined);
     // The calendar file of a message whose invitation card is drawn is the card, not a chip in the attachment list (a nameless "attachment" to click):
     // it is listed again if the card could not be drawn (no invitation the server can read, or the lookup failed), so the file is never out of reach.
     const { invite: shownInvite } = useMessageInvite(message.uid, mayHoldInvite);

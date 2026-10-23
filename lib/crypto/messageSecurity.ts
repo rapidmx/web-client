@@ -46,6 +46,7 @@ import {
     decodeHeaderText,
     extractAddresses,
     extractAttachments,
+    extractCalendarText,
     extractDisplayBody,
     parseMimeEntity,
     parseParameterizedHeader,
@@ -131,6 +132,9 @@ export interface MessageSecurityResult {
      * zero-access key. `state` then describes the original message inside: `protected_at_rest` when it arrived unprotected, or its own
      * signed/encrypted state otherwise. */
     zeroAccess?: boolean;
+    /** With `zeroAccess`: the original's calendar file (`extractCalendarText()`), which the server can't read from the sealed copy - the
+     * client sends it with the invitation endpoints. Absent when the message carries none. */
+    calendar?: string;
     /** See `ParsedEncryptedMessage.headerTamperDetected`'s own doc comment - a deliberately separate,
      * orthogonal signal from `state`, since RFC 9788's `HP-Outer` is written on every encrypted message
      * regardless of whether it's also signed. `undefined` for anything that isn't an encrypted message
@@ -392,6 +396,20 @@ export async function openZeroAccessSummary(
 }
 
 /**
+ * The original MIME (as a binary string) of a stored message the server sealed at rest, opened with `unlocked.zeroAccessKeys` -
+ * `undefined` when it isn't a sealed message or no key opens it. For what needs the original itself, e.g. reporting it to the spam
+ * filter (`reportMessage()`'s `rawMessage`).
+ */
+export async function openZeroAccessMessage(rawMime: string, unlocked: MessageSecurityKeys | undefined): Promise<string | undefined> {
+    const { headers, body } = parseMimeEntity(rawMime);
+    const rawContentType = headers["content-type"];
+    if (!unlocked?.zeroAccessKeys?.length || !rawContentType || !isEncryptedContentType(parseParameterizedHeader(rawContentType))) {
+        return undefined;
+    }
+    return openZeroAccess(body, unlocked.zeroAccessKeys);
+}
+
+/**
  * The original MIME of a message the server sealed at rest (restapi `specs/search.md` §3) - the stored S/MIME `enveloped-data`
  * message's content, decrypted with one of `keys` - or `undefined` when none of them opens it. Only the server ever encrypts to a
  * zero-access key (it is never published), so a message that opens with one was sealed at rest, never sent end-to-end.
@@ -520,15 +538,18 @@ async function evaluateLive(
             const inner = await evaluateLive(original, unlocked, pinnedSignerFingerprints, readerAddress, true);
             const entity = parseMimeEntity(original);
             const subject = entity.headers["subject"];
+            const calendarText = extractCalendarText(entity);
+            const calendar = calendarText !== undefined ? { calendar: calendarText } : {};
             if (inner.result.state !== "unprotected") {
                 // The stored message's own Subject is the placeholder: the original's stands in when the inner result has none.
                 const fallbackSubject = inner.result.subject === undefined && subject !== undefined ? { subject: decodeHeaderText(subject) } : {};
-                return { ...inner, result: { ...inner.result, ...fallbackSubject, zeroAccess: true } };
+                return { ...inner, result: { ...inner.result, ...fallbackSubject, ...calendar, zeroAccess: true } };
             }
             return {
                 result: {
                     state: "protected_at_rest",
                     zeroAccess: true,
+                    ...calendar,
                     ...renderDisplayBody(extractDisplayBody(entity)),
                     ...(subject !== undefined ? { subject: decodeHeaderText(subject) } : {}),
                     attachments: extractAttachments(entity),

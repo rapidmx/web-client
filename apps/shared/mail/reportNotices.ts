@@ -61,6 +61,8 @@ export function reportNotice(result: MessageReportResult, subject: string, alway
             ? "The spam filter could not be trained from this report."
             : result.learnSkipped === "encrypted"
               ? "Not used to train the spam filter: the message is encrypted."
-              : undefined;
+              : result.learnSkipped === "zero_access"
+                ? "Not used to train the spam filter: unlock your mailbox to let it learn from protected mail."
+                : undefined;
     return { title: kind.title, message: parts.join(" "), hint };
 }

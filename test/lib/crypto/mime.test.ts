@@ -14,6 +14,7 @@ import {
     encodeAddressListHeaderValue,
     encodeUnstructuredHeaderValue,
     extractAddresses,
+    extractCalendarText,
     isBinaryString,
     extractDisplayBody,
     parseMimeEntity,
@@ -312,5 +313,39 @@ describe("extractAddresses", () => {
         ]);
         expect(extractAddresses(undefined)).toEqual([]);
         expect(extractAddresses("")).toEqual([]);
+    });
+});
+
+describe("extractCalendarText", () => {
+    const ICS = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
+    const multipart = (type: string, parts: string[]) =>
+        [`Content-Type: ${type}; boundary="b"`, "", ...parts.flatMap((part) => ["--b", part]), "--b--", ""].join("\r\n");
+
+    it("finds a calendar body alternative, as Outlook sends an invitation", () => {
+        const raw = multipart("multipart/alternative", ["Content-Type: text/plain\r\n\r\nInvited", `Content-Type: text/calendar; method=REQUEST\r\n\r\n${ICS}`]);
+        expect(extractCalendarText(parseMimeEntity(raw))).toBe(ICS);
+    });
+
+    it("finds an attached .ics, nested", () => {
+        const inner = multipart("multipart/alternative", ["Content-Type: text/plain\r\n\r\nInvited"]).replace(/"b"/, '"c"').replace(/--b/g, "--c");
+        const raw = multipart("multipart/mixed", [
+            inner,
+            `Content-Type: application/ics; name="invite.ics"\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(ICS).toString("base64")}`,
+        ]);
+        expect(extractCalendarText(parseMimeEntity(raw))).toBe(ICS);
+    });
+
+    it("is undefined without a calendar part, for a multipart without a boundary, and for a part that won't decode", () => {
+        expect(extractCalendarText(parseMimeEntity("Content-Type: text/plain\r\n\r\nhi"))).toBeUndefined();
+        expect(extractCalendarText(parseMimeEntity("Content-Type: multipart/mixed\r\n\r\nhi"))).toBeUndefined();
+        expect(extractCalendarText(parseMimeEntity("Content-Type: text/calendar\r\nContent-Transfer-Encoding: base64\r\n\r\n!!!"))).toBeUndefined();
+    });
+
+    it("stops descending at the depth limit", () => {
+        let raw = `Content-Type: text/calendar\r\n\r\n${ICS}`;
+        for (let i = 0; i < 40; i++) {
+            raw = [`Content-Type: multipart/mixed; boundary="d${i}"`, "", `--d${i}`, raw, `--d${i}--`, ""].join("\r\n");
+        }
+        expect(extractCalendarText(parseMimeEntity(raw))).toBeUndefined();
     });
 });

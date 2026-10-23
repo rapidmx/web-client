@@ -42,6 +42,8 @@ const permanentDelete = vi.hoisted(() => ({
     usePermanentDelete: vi.fn(() => ({ requestPermanentDelete: vi.fn(), busy: false, dialog: null })),
 }));
 vi.mock("../../../apps/shared/mail/usePermanentDelete.js", () => permanentDelete);
+const zeroAccessSource = vi.hoisted(() => ({ zeroAccessSourceBase64: vi.fn() }));
+vi.mock("../../../apps/shared/mail/zeroAccessSource.js", () => zeroAccessSource);
 
 function message(uid = "m1"): Message {
     return {
@@ -140,5 +142,21 @@ describe("useMessageActions - ApiClient threading", () => {
 
         await waitFor(() => expect(folderOfType.resolveFolderOfType).toHaveBeenCalledWith("mb1", "junk", "Junk Email", [], undefined, client));
         expect(mailApi.moveMessage).toHaveBeenCalledWith(expect.objectContaining({ uid: "m1" }), "junk-uid", client);
+    });
+});
+
+describe("useMessageActions report of a zero-access message", () => {
+    it("sends the source decrypted here, so the spam filter can learn from it", async () => {
+        const client = {} as ApiClient;
+        zeroAccessSource.zeroAccessSourceBase64.mockResolvedValueOnce("U09VUkNF");
+        mailApi.reportMessage.mockResolvedValue({ kind: "junk", folderUid: "inbox", moved: false, learned: true });
+        const { view, msg } = setUp(client);
+
+        await act(async () => {
+            await view.result.current.reportJunk();
+        });
+
+        expect(zeroAccessSource.zeroAccessSourceBase64).toHaveBeenCalledWith(msg, client);
+        expect(mailApi.reportMessage).toHaveBeenCalledWith("m1", "junk", { alwaysTrustSender: false, rawMessage: "U09VUkNF" }, client);
     });
 });

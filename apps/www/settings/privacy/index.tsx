@@ -174,7 +174,8 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
             <p className="text-xs text-text-muted mb-3">
                 Requests a copy of <strong>{mailboxLabel}</strong>&rsquo;s messages, contacts, calendar, tasks, and notes. This runs
                 in the background and can take a few minutes — check back here for a download link once it&rsquo;s
-                ready.
+                ready. Mail stored with zero-access encryption is exported encrypted: open it in a mail app that has your
+                exported keys (Settings &rsaquo; Encryption).
             </p>
 
             <form onSubmit={handleCreate} className="flex items-end gap-3 mb-5">
